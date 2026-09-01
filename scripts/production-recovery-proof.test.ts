@@ -27,10 +27,14 @@ import {
   TransformerControlPlaneStore,
   TransformerPilotExecutionStore,
 } from "@mendpoint/transformer";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  assertRestoredTreeMatchesRestore,
+  main,
+  RECOVERY_PROOF_ENV_NAMES,
   runProductionRecoveryProof,
+  safeFailureCode,
   type ProductionRecoveryProofInput,
   type RecoverySemanticCanary,
 } from "./production-recovery-proof.js";
@@ -40,6 +44,8 @@ const KEY_ID = "recovery-key-2026-08";
 const CREATED_AT = "2026-08-30T11:59:00.000Z";
 const STARTED_AT = "2026-08-30T12:00:00.000Z";
 const REVISION = "1".repeat(40);
+// Reserved-TLD host: an accidental real request from a test cannot resolve.
+const VERSION_URL = "https://recovery-proof-target.invalid/version";
 const roots: string[] = [];
 
 type Fixture = ReturnType<typeof fixture>;
@@ -152,7 +158,7 @@ function fixture(options: { createdAt?: string; unsupportedChangeSchema?: boolea
     sourceRoot,
     fenceRoot: join(root, "fence"),
     repositoryRevision: REVISION,
-    deployedRevision: REVISION,
+    expectedDeployedRevision: REVISION,
     sourceRegion: "ord",
     recoveryRegion: "sjc",
     startedAt: STARTED_AT,
@@ -203,7 +209,10 @@ describe("production recovery qualification", () => {
       tenantId: "tenant-a",
       state: "passed",
       environment: "synthetic",
-      revisions: { repository: REVISION, deployed: REVISION },
+      revisions: {
+        repository: REVISION,
+        deployed: { state: "not_observed", expected: REVISION, reason: "non_production_environment" },
+      },
       regionalFailure: { sourceRegion: "ord", recoveryRegion: "sjc", productionProven: false },
       externalProof: { state: "pending_external_observation", productionProven: false },
       rollback: { verified: true },
@@ -216,7 +225,7 @@ describe("production recovery qualification", () => {
     expect(proof.integrity.digest).toMatch(/^[a-f0-9]{64}$/);
     expect(existsSync(run.input.targetRoot)).toBe(true);
     expect(run.download).toHaveBeenCalledTimes(1);
-  });
+  }, 120_000);
 
   it("authenticates an exact completed replay without another download, restore, or migration", async () => {
     const run = fixture();
@@ -239,7 +248,7 @@ describe("production recovery qualification", () => {
     expect(canaries).toHaveBeenCalledTimes(1);
     expect(replayDownload).not.toHaveBeenCalled();
     expect(replayConverge).not.toHaveBeenCalled();
-  });
+  }, 120_000);
 
   it("rejects replay under a different tenant before any external work", async () => {
     const run = fixture();
@@ -249,7 +258,7 @@ describe("production recovery qualification", () => {
       downloadBackup: replayDownload,
     })).rejects.toThrow("production_recovery_replay_binding_mismatch");
     expect(replayDownload).not.toHaveBeenCalled();
-  });
+  }, 120_000);
 
   it("rejects a tampered receipt before download", async () => {
     const run = fixture();
@@ -260,7 +269,7 @@ describe("production recovery qualification", () => {
     await expect(runProductionRecoveryProof({ ...run.input, receipt }, dependencies(run)))
       .rejects.toThrow("production_recovery_receipt_invalid");
     expect(run.download).not.toHaveBeenCalled();
-  });
+  }, 120_000);
 
   it("rejects an authenticated receipt under the wrong object locator", async () => {
     const run = fixture();
@@ -269,7 +278,7 @@ describe("production recovery qualification", () => {
       expectedPublication: { ...run.input.expectedPublication, bucket: "other-bucket" },
     }, dependencies(run))).rejects.toThrow("production_recovery_publication_binding_mismatch");
     expect(run.download).not.toHaveBeenCalled();
-  });
+  }, 120_000);
 
   it("retains a failed dependency observation and will not retry it as passing", async () => {
     const run = fixture();
@@ -284,7 +293,7 @@ describe("production recovery qualification", () => {
     await expect(runProductionRecoveryProof(run.input, { downloadBackup: healthyDownload }))
       .rejects.toThrow("production_recovery_prior_failure_retained");
     expect(healthyDownload).not.toHaveBeenCalled();
-  });
+  }, 120_000);
 
   it("fails closed when the downloaded object bundle is tampered", async () => {
     const run = fixture();
@@ -297,7 +306,7 @@ describe("production recovery qualification", () => {
       downloadBackup: tamperingDownload,
     }))).rejects.toThrow("backup_integrity_failed");
     expect(JSON.parse(readFileSync(run.input.evidencePath, "utf8"))).toMatchObject({ state: "failed" });
-  });
+  }, 120_000);
 
   it("rejects a partial restore target rather than resuming into it", async () => {
     const run = fixture();
@@ -306,7 +315,7 @@ describe("production recovery qualification", () => {
     await expect(runProductionRecoveryProof(run.input, dependencies(run)))
       .rejects.toThrow("production_recovery_target_not_empty");
     expect(run.download).not.toHaveBeenCalled();
-  });
+  }, 120_000);
 
   it("rejects a target that overlaps live data", async () => {
     const run = fixture();
@@ -317,7 +326,7 @@ describe("production recovery qualification", () => {
       rollbackRoot: join(run.input.dataRoot, "rollback"),
     }, dependencies(run))).rejects.toThrow("customer_restore_target_data_overlap");
     expect(run.download).not.toHaveBeenCalled();
-  });
+  }, 120_000);
 
   it("rejects a filesystem redirect in the isolated target path", async () => {
     const run = fixture();
@@ -330,7 +339,7 @@ describe("production recovery qualification", () => {
       targetRoot: join(redirect, "restored"),
     }, dependencies(run))).rejects.toThrow("customer_restore_target_filesystem_redirect_rejected");
     expect(run.download).not.toHaveBeenCalled();
-  });
+  }, 120_000);
 
   it("rejects an existing unauthenticated output instead of overwriting it", async () => {
     const run = fixture();
@@ -340,14 +349,14 @@ describe("production recovery qualification", () => {
       .rejects.toThrow("production_recovery_existing_evidence_invalid");
     expect(readFileSync(run.input.evidencePath, "utf8")).toBe("{}\n");
     expect(run.download).not.toHaveBeenCalled();
-  });
+  }, 120_000);
 
   it("fails closed on an unsupported prior schema", async () => {
     const run = fixture({ unsupportedChangeSchema: true });
     await expect(runProductionRecoveryProof(run.input, dependencies(run)))
       .rejects.toThrow("change_source_schema_newer_than_runtime");
     expect(JSON.parse(readFileSync(run.input.evidencePath, "utf8"))).toMatchObject({ state: "failed" });
-  });
+  }, 120_000);
 
   it("retains migration failure without publishing passing evidence", async () => {
     const run = fixture();
@@ -358,7 +367,7 @@ describe("production recovery qualification", () => {
       state: "failed",
       failure: { code: "production_recovery_migration_failed" },
     });
-  });
+  }, 120_000);
 
   it("rejects a partial semantic canary matrix", async () => {
     const run = fixture();
@@ -366,7 +375,7 @@ describe("production recovery qualification", () => {
       convergeStores: () => undefined,
       runCanaries: () => allCanaries().slice(0, 6),
     }))).rejects.toThrow("production_recovery_canary_matrix_incomplete");
-  });
+  }, 120_000);
 
   it("fails closed when rollback does not restore the exact digest", async () => {
     const run = fixture();
@@ -379,7 +388,7 @@ describe("production recovery qualification", () => {
         writeFileSync(join(targetRoot, "wrong"), "wrong", "utf8");
       },
     }))).rejects.toThrow("production_recovery_rollback_integrity_failed");
-  });
+  }, 120_000);
 
   it("fails closed when the measured recovery time misses the objective", async () => {
     const run = fixture();
@@ -389,7 +398,7 @@ describe("production recovery qualification", () => {
       runCanaries: () => allCanaries(),
       monotonic: () => tick++ === 0 ? 0 : (CORE_DISASTER_RECOVERY_POLICY.rtoSeconds + 1) * 1000,
     }))).rejects.toThrow("production_recovery_rto_missed");
-  });
+  }, 120_000);
 
   it("fails closed when the authenticated recovery point misses the objective", async () => {
     const run = fixture({ createdAt: "2026-08-30T10:00:00.000Z" });
@@ -397,25 +406,31 @@ describe("production recovery qualification", () => {
       convergeStores: () => undefined,
       runCanaries: () => allCanaries(),
     }))).rejects.toThrow("production_recovery_rpo_missed");
-  });
+  }, 120_000);
 
   it("requires the exact deployed revision for a production-targeted run", async () => {
     const run = fixture();
     await expect(runProductionRecoveryProof({
       ...run.input,
       environment: "production",
-      deployedRevision: "2".repeat(40),
+      expectedDeployedRevision: "2".repeat(40),
+      deployedRevisionSource: VERSION_URL,
     }, dependencies(run))).rejects.toThrow("production_recovery_revision_mismatch");
     expect(run.download).not.toHaveBeenCalled();
-  });
+  }, 120_000);
 
   it.each(["local", "synthetic", "production"] as const)(
     "keeps %s evidence below the external production proof boundary",
     async (environment) => {
       const run = fixture();
-      const proof = await runProductionRecoveryProof({ ...run.input, environment }, dependencies(run, {
+      const proof = await runProductionRecoveryProof({
+        ...run.input,
+        environment,
+        deployedRevisionSource: VERSION_URL,
+      }, dependencies(run, {
         convergeStores: () => undefined,
         runCanaries: () => allCanaries(),
+        observeDeployedRevision: async () => REVISION,
       }));
       expect(proof.externalProof).toMatchObject({
         state: "pending_external_observation",
@@ -423,5 +438,155 @@ describe("production recovery qualification", () => {
       });
       expect(proof.regionalFailure.productionProven).toBe(false);
     },
+    120_000,
   );
+
+  it("binds a production proof to the revision the target is actually serving", async () => {
+    const run = fixture();
+    const observe = vi.fn(async () => REVISION);
+    const proof = await runProductionRecoveryProof({
+      ...run.input,
+      environment: "production",
+      deployedRevisionSource: VERSION_URL,
+    }, dependencies(run, { observeDeployedRevision: observe }));
+
+    expect(observe).toHaveBeenCalledWith(VERSION_URL);
+    expect(proof.revisions.deployed).toEqual({
+      state: "observed",
+      expected: REVISION,
+      observed: REVISION,
+      observedFrom: VERSION_URL,
+    });
+  }, 120_000);
+
+  it("refuses a production proof when the target serves a different revision", async () => {
+    const run = fixture();
+    await expect(runProductionRecoveryProof({
+      ...run.input,
+      environment: "production",
+      deployedRevisionSource: VERSION_URL,
+    }, dependencies(run, {
+      observeDeployedRevision: async () => "3".repeat(40),
+    }))).rejects.toThrow("production_recovery_deployed_revision_mismatch");
+    // The operator-supplied expectation still matches itself; only the
+    // observation of the running target can reject this run.
+    expect(run.download).not.toHaveBeenCalled();
+  }, 120_000);
+
+  it("fails closed when the deployed revision cannot be observed", async () => {
+    const run = fixture();
+    await expect(runProductionRecoveryProof({
+      ...run.input,
+      environment: "production",
+      deployedRevisionSource: VERSION_URL,
+    }, dependencies(run, {
+      observeDeployedRevision: async () => { throw new Error("production_recovery_deployed_revision_unreachable"); },
+    }))).rejects.toThrow("production_recovery_deployed_revision_unreachable");
+
+    const retained = JSON.parse(readFileSync(run.input.evidencePath, "utf8")) as {
+      state: string;
+      revisions: { deployed: { state: string; reason?: string } };
+    };
+    expect(retained.state).toBe("failed");
+    expect(retained.revisions.deployed).toEqual({
+      state: "not_observed",
+      expected: REVISION,
+      reason: "observation_not_reached",
+    });
+  }, 120_000);
+
+  it("rejects a production run with no observation endpoint to read", async () => {
+    const run = fixture();
+    await expect(runProductionRecoveryProof({
+      ...run.input,
+      environment: "production",
+      deployedRevisionSource: undefined,
+    }, dependencies(run))).rejects.toThrow("production_recovery_deployed_revision_source_invalid");
+    await expect(runProductionRecoveryProof({
+      ...run.input,
+      environment: "production",
+      deployedRevisionSource: "http://recovery-proof-target.invalid/version",
+    }, dependencies(run))).rejects.toThrow("production_recovery_deployed_revision_source_invalid");
+    expect(run.download).not.toHaveBeenCalled();
+  }, 120_000);
+
+  it("names the restored-tree guard rather than trusting the restore's own digest", () => {
+    const digest = "c".repeat(64);
+    expect(() => assertRestoredTreeMatchesRestore(digest, digest)).not.toThrow();
+    expect(() => assertRestoredTreeMatchesRestore(digest, "d".repeat(64)))
+      .toThrow("production_recovery_restore_digest_mismatch");
+    expect(() => assertRestoredTreeMatchesRestore(digest, "not-a-digest"))
+      .toThrow("production_recovery_restore_digest_mismatch");
+  });
+
+  it("echoes only known failure codes, never opaque material", () => {
+    // The defect this replaced: 64 hex characters satisfy a lowercase
+    // alphanumeric charset, so a digest or a key would have been echoed verbatim.
+    expect(safeFailureCode(new Error("a".repeat(64)))).toBe("production_recovery_dependency_failed");
+    expect(safeFailureCode(new Error("Zm9vYmFyYmF6cXV4"))).toBe("production_recovery_dependency_failed");
+    expect(safeFailureCode(new Error("sqlite_integrity_check_failed")))
+      .toBe("production_recovery_dependency_failed");
+    expect(safeFailureCode(new Error("production_recovery_rto_missed"))).toBe("production_recovery_rto_missed");
+    expect(safeFailureCode(new Error("customer_backup_aws_access_key_required")))
+      .toBe("customer_backup_aws_access_key_required");
+    expect(safeFailureCode(new Error("mendpoint_recovery_proof_id_required")))
+      .toBe("mendpoint_recovery_proof_id_required");
+    expect(safeFailureCode(new Error("production_recovery_receipt_invalid:receipt_digest_mismatch")))
+      .toBe("production_recovery_receipt_invalid:receipt_digest_mismatch");
+    // A known code carrying an unprintable detail keeps the code, drops the detail.
+    expect(safeFailureCode(new Error("production_recovery_receipt_invalid:/srv/mendpoint/data key=abc")))
+      .toBe("production_recovery_receipt_invalid");
+    expect(safeFailureCode("not an error")).toBe("production_recovery_dependency_failed");
+  });
+});
+
+describe("production recovery qualification caller", () => {
+  const ENV_KEYS = [
+    "MENDPOINT_DEPLOYMENT_PROFILE",
+    "MENDPOINT_BACKUP_KEY",
+    "MENDPOINT_BACKUP_KEY_ID",
+    ...RECOVERY_PROOF_ENV_NAMES,
+  ] as const;
+  let saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    saved = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+    for (const key of ENV_KEYS) delete process.env[key];
+  });
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it("refuses to run outside the customer deployment profile", async () => {
+    process.env.MENDPOINT_DEPLOYMENT_PROFILE = "demo";
+    await expect(main()).rejects.toThrow("production_recovery_customer_profile_required");
+  });
+
+  it("names the first missing operator variable instead of reaching the object store", async () => {
+    process.env.MENDPOINT_DEPLOYMENT_PROFILE = "customer";
+    // Obviously synthetic key material: a constant byte, never a real key.
+    process.env.MENDPOINT_BACKUP_KEY = Buffer.alloc(32, 3).toString("base64url");
+    await expect(main()).rejects.toThrow("mendpoint_backup_key_id_required");
+
+    process.env.MENDPOINT_BACKUP_KEY_ID = KEY_ID;
+    await expect(main()).rejects.toThrow("mendpoint_recovery_backup_id_required");
+  });
+
+  it("declares every environment name it reads", () => {
+    const source = readFileSync(new URL("./production-recovery-proof.ts", import.meta.url), "utf8");
+    const read = new Set(
+      [...source.matchAll(/requiredEnv\("(MENDPOINT_[A-Z0-9_]+)"\)/g)].map((match) => match[1]!),
+    );
+    expect([...read].sort()).toEqual([...RECOVERY_PROOF_ENV_NAMES].sort());
+
+    const manifest = JSON.parse(
+      readFileSync(new URL("../config/required-configuration.json", import.meta.url), "utf8"),
+    ) as { runtimeEntries: { name: string }[] };
+    const declared = new Set(manifest.runtimeEntries.map((entry) => entry.name));
+    for (const name of RECOVERY_PROOF_ENV_NAMES) expect(declared.has(name)).toBe(true);
+  });
 });

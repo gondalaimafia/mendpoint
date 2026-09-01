@@ -54,6 +54,7 @@ export const PRODUCTION_RECOVERY_PROOF_SCHEMA_VERSION = 1 as const;
 const SHA256 = /^[a-f0-9]{64}$/;
 const REVISION = /^[a-f0-9]{40,64}$/;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const DEPLOYED_REVISION_TIMEOUT_MS = 10_000;
 const RESOURCE_KINDS: readonly RecoveryResourceKind[] = Object.freeze([
   "artifacts",
   "changeSources",
@@ -70,6 +71,32 @@ const SQLITE_KINDS = new Set<RecoveryResourceKind>([
   "transformerControlPlane",
   "transformerPilot",
 ]);
+/**
+ * Every name `main()` reads from the environment, in one place, because two
+ * things depend on the list being exact: `config/required-configuration.json`
+ * declares each one as `required_when_active`, and the failure-code allowlist
+ * derives the `<name>_required` codes from it. A name added to `main()` but not
+ * to this list is undeclared configuration, and its absence reports as an opaque
+ * dependency failure instead of naming itself.
+ */
+export const RECOVERY_PROOF_ENV_NAMES = Object.freeze([
+  "MENDPOINT_BACKUP_FENCE_ROOT",
+  "MENDPOINT_BACKUP_KEY_ID",
+  "MENDPOINT_DATA_DIR",
+  "MENDPOINT_RECOVERY_BACKUP_ID",
+  "MENDPOINT_RECOVERY_DEPLOYED_REVISION",
+  "MENDPOINT_RECOVERY_DEPLOYED_VERSION_URL",
+  "MENDPOINT_RECOVERY_ENVIRONMENT",
+  "MENDPOINT_RECOVERY_EVIDENCE_PATH",
+  "MENDPOINT_RECOVERY_PROOF_ID",
+  "MENDPOINT_RECOVERY_REGION",
+  "MENDPOINT_RECOVERY_REPOSITORY_REVISION",
+  "MENDPOINT_RECOVERY_ROLLBACK_ROOT",
+  "MENDPOINT_RECOVERY_SOURCE_REGION",
+  "MENDPOINT_RECOVERY_STAGING_ROOT",
+  "MENDPOINT_RECOVERY_TARGET_ROOT",
+  "MENDPOINT_RECOVERY_TENANT_ID",
+] as const);
 const CANARY_TABLES: Readonly<Record<string, string>> = Object.freeze({
   changeSources: "change_source_schema_migrations",
   database: "providers",
@@ -94,6 +121,31 @@ export type RecoverySemanticCanary = Readonly<{
   detail: Readonly<Record<string, string | number>>;
 }>;
 
+/**
+ * What binds a proof to a specific production deploy.
+ *
+ * The operator supplies the revision they believe is deployed. That is an
+ * expectation, not an observation: comparing it against another operator-supplied
+ * value proves only that one person typed the same string twice. For a
+ * production-targeted run the deployed revision is read from the running target's
+ * `/version`, and the proof is published only when the observation matches the
+ * expectation. An unreachable or unreadable target fails the run; it never
+ * degrades into "assume it matches".
+ *
+ * Three states, never two. `not_observed` records why the observation is absent,
+ * so "we did not look" can never be read as "we looked and it matched". Only
+ * `non_production_environment` can accompany a published passing proof; the
+ * `observation_not_reached` case exists so a retained failure envelope tells the
+ * truth about a run that died before or during the observation.
+ */
+export type DeployedRevisionEvidence =
+  | Readonly<{ state: "observed"; expected: string; observed: string; observedFrom: string }>
+  | Readonly<{
+      state: "not_observed";
+      expected: string;
+      reason: "non_production_environment" | "observation_not_reached";
+    }>;
+
 export type ProductionRecoveryProof = Readonly<{
   schemaVersion: typeof PRODUCTION_RECOVERY_PROOF_SCHEMA_VERSION;
   proofId: string;
@@ -110,11 +162,21 @@ export type ProductionRecoveryProof = Readonly<{
     manifestSha256: string;
     createdAt: string;
   }>;
-  revisions: Readonly<{ repository: string; deployed: string }>;
+  revisions: Readonly<{ repository: string; deployed: DeployedRevisionEvidence }>;
+  /**
+   * `backupCiphertextSha256` and `restoredPlaintextSha256` are NOT an
+   * expected-versus-observed pair and are never compared. The manifest value
+   * digests the encrypted-file metadata of the backup
+   * (`sha256(JSON.stringify(encryptedFiles))`, `packages/ops/src/disaster-recovery.ts:1544`,
+   * re-derived on verification at `:1680`); the restored value digests the
+   * decrypted tree on disk. They differ on every successful run by construction.
+   * Both are retained because they identify different objects: what was stored,
+   * and what came back out.
+   */
   resources: readonly Readonly<{
     kind: RecoveryResourceKind;
-    manifestSha256: string;
-    restoredSha256: string;
+    backupCiphertextSha256: string;
+    restoredPlaintextSha256: string;
     sizeBytes: number;
     fileCount: number;
   }>[];
@@ -162,7 +224,7 @@ type FailedProductionRecoveryProof = Readonly<{
   state: "failed";
   environment: ProofEnvironment;
   requestDigest: string;
-  revisions: Readonly<{ repository: string; deployed: string }>;
+  revisions: Readonly<{ repository: string; deployed: DeployedRevisionEvidence }>;
   failedAt: string;
   failure: Readonly<{ code: string }>;
   externalProof: Readonly<{
@@ -194,7 +256,13 @@ export type ProductionRecoveryProofInput = Readonly<{
   sourceRoot?: string;
   fenceRoot: string;
   repositoryRevision: string;
-  deployedRevision: string;
+  /** What the operator expects to be deployed. Never used as the observation. */
+  expectedDeployedRevision: string;
+  /**
+   * The running target's `/version` endpoint, which reports `revision`. Required
+   * for a production-targeted run and unused otherwise.
+   */
+  deployedRevisionSource?: string;
   sourceRegion: string;
   recoveryRegion: string;
   startedAt?: string;
@@ -211,6 +279,7 @@ export type ProductionRecoveryProofDependencies = Readonly<{
     paths: Readonly<Record<RecoveryResourceKind, string>>,
   ) => readonly RecoverySemanticCanary[];
   rollback?: (targetRoot: string, rollbackRoot: string) => void;
+  observeDeployedRevision?: (source: string) => Promise<string>;
   now?: () => number;
   monotonic?: () => number;
 }>;
@@ -338,11 +407,45 @@ function persistCreateOnly(path: string, value: PersistedRecoveryProof): void {
   }
 }
 
-function safeFailureCode(error: unknown): string {
-  const message = error instanceof Error ? error.message : "production_recovery_failed";
-  return /^[a-z0-9_:,.-]{1,256}$/.test(message)
-    ? message
-    : "production_recovery_dependency_failed";
+/**
+ * A failure code is written into signed evidence and printed to stderr, so the
+ * echoed text must not be able to carry material this script holds. A charset
+ * allowlist cannot make that promise: sixty-four hex characters are all
+ * lowercase alphanumerics, so an error whose message happened to be a digest or a
+ * key would have passed through verbatim. No path interpolates key material into
+ * a message today, which is the only reason that was not already a leak.
+ *
+ * `production_recovery_*` is a closed family: every message in it is either a
+ * literal in this file, or a literal with one of `RESOURCE_KINDS` or a fixed
+ * field name interpolated into it. Nothing else in the family can be constructed
+ * here, so matching it by prefix enumerates exactly this module's own codes. The
+ * `customer_backup_*` and `customer_restore_*` families are the literal codes of
+ * `./customer-object-store.js`, kept echoable so a first-run configuration
+ * mistake still names itself. Everything else, a dependency's own code included,
+ * reports as a dependency failure.
+ */
+const OWN_FAILURE_CODE_PREFIXES: readonly string[] = Object.freeze([
+  "production_recovery_",
+  "customer_backup_",
+  "customer_restore_",
+]);
+const OWN_FAILURE_CODES: ReadonlySet<string> = new Set<string>([
+  "change_source_schema_newer_than_runtime",
+  "unsupported_transformer_schema",
+  ...RECOVERY_PROOF_ENV_NAMES.map((name) => `${name.toLowerCase()}_required`),
+]);
+const FAILURE_CODE = /^[a-z][A-Za-z0-9_]{0,127}$/;
+const FAILURE_CODE_DETAIL = /^[A-Za-z0-9_,.-]{1,128}$/;
+
+export function safeFailureCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  const separator = message.indexOf(":");
+  const code = separator === -1 ? message : message.slice(0, separator);
+  const known = OWN_FAILURE_CODE_PREFIXES.some((prefix) => code.startsWith(prefix)) ||
+    OWN_FAILURE_CODES.has(code);
+  if (!known || !FAILURE_CODE.test(code)) return "production_recovery_dependency_failed";
+  const detail = separator === -1 ? "" : message.slice(separator + 1);
+  return detail && FAILURE_CODE_DETAIL.test(detail) ? `${code}:${detail}` : code;
 }
 
 function requestMaterial(input: ProductionRecoveryProofInput): Record<string, unknown> {
@@ -359,7 +462,8 @@ function requestMaterial(input: ProductionRecoveryProofInput): Record<string, un
     manifestSha256: input.receipt.publication.manifestSha256,
     publication: input.expectedPublication,
     repositoryRevision: input.repositoryRevision,
-    deployedRevision: input.deployedRevision,
+    expectedDeployedRevision: input.expectedDeployedRevision,
+    deployedRevisionSource: input.deployedRevisionSource ?? null,
     sourceRegion: input.sourceRegion,
     recoveryRegion: input.recoveryRegion,
     pathBindings: {
@@ -375,9 +479,30 @@ function requestMaterial(input: ProductionRecoveryProofInput): Record<string, un
   };
 }
 
+/**
+ * The observation endpoint must be an exact https origin the operator names, with
+ * no credentials in the URL and nothing that could redirect the read somewhere
+ * else. A revision read over a channel that can be rewritten in transit is not an
+ * observation.
+ */
+function requiredDeployedRevisionSource(value: string | undefined): string {
+  const text = value?.trim() ?? "";
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    throw new Error("production_recovery_deployed_revision_source_invalid");
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.hash) {
+    throw new Error("production_recovery_deployed_revision_source_invalid");
+  }
+  return url.toString();
+}
+
 function validateInput(input: ProductionRecoveryProofInput): {
   evidencePath: string;
   requestDigest: string;
+  deployedRevisionSource: string | null;
 } {
   requiredId(input.proofId, "production_recovery_proof_id");
   requiredId(input.tenantId, "production_recovery_tenant_id");
@@ -387,10 +512,16 @@ function validateInput(input: ProductionRecoveryProofInput): {
   }
   if (input.key.byteLength !== 32) throw new Error("production_recovery_key_invalid");
   requiredRevision(input.repositoryRevision, "production_recovery_repository_revision");
-  requiredRevision(input.deployedRevision, "production_recovery_deployed_revision");
-  if (input.environment === "production" && input.repositoryRevision !== input.deployedRevision) {
+  requiredRevision(input.expectedDeployedRevision, "production_recovery_deployed_revision");
+  // Operator-side consistency only: both values come from the same caller, so
+  // this catches a typo, not a wrong deploy. The binding to the running target is
+  // the observation in runProductionRecoveryProof.
+  if (input.environment === "production" && input.repositoryRevision !== input.expectedDeployedRevision) {
     throw new Error("production_recovery_revision_mismatch");
   }
+  const deployedRevisionSource = input.environment === "production"
+    ? requiredDeployedRevisionSource(input.deployedRevisionSource)
+    : null;
   const sourceRegion = requiredId(input.sourceRegion, "production_recovery_source_region");
   const recoveryRegion = requiredId(input.recoveryRegion, "production_recovery_region");
   if (sourceRegion === recoveryRegion) throw new Error("production_recovery_regions_must_differ");
@@ -415,9 +546,51 @@ function validateInput(input: ProductionRecoveryProofInput): {
   return {
     evidencePath,
     requestDigest: keyedDigest(input.key, "production-recovery-request", requestMaterial(input)),
+    deployedRevisionSource,
   };
 }
 
+/**
+ * Read the revision the target is actually serving. `/version` on the customer
+ * app answers `{ "revision": "<40-64 hex>" }`; anything else — an unreachable
+ * host, a non-200, a body that is not JSON, a missing or malformed `revision` —
+ * fails the run. There is deliberately no "could not tell" result: the caller
+ * cannot publish a passing production proof without a revision it actually read.
+ */
+async function observeDeployedRevisionOverHttps(source: string): Promise<string> {
+  let response: Response;
+  try {
+    response = await fetch(source, {
+      redirect: "error",
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(DEPLOYED_REVISION_TIMEOUT_MS),
+    });
+  } catch {
+    throw new Error("production_recovery_deployed_revision_unreachable");
+  }
+  if (!response.ok) throw new Error("production_recovery_deployed_revision_unreachable");
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error("production_recovery_deployed_revision_unreadable");
+  }
+  const revision = (payload as { revision?: unknown } | null)?.revision;
+  if (typeof revision !== "string" || !REVISION.test(revision)) {
+    throw new Error("production_recovery_deployed_revision_unreadable");
+  }
+  return revision;
+}
+
+/**
+ * Deliberately not `packages/ops/src/disaster-recovery.ts:556`, whose digest
+ * arithmetic this reproduces exactly. That one checks the leaf for a symlink and
+ * treats every non-directory entry as a readable file; this one rejects a symlink
+ * anywhere in the ancestor chain and rejects a non-regular entry outright
+ * (`production_recovery_resource_type_invalid`). Collapsing onto the shared
+ * implementation would drop both checks on the path that decides whether evidence
+ * gets published, so the duplication is kept and the divergence is the point.
+ */
 function digestPath(path: string): { sha256: string; sizeBytes: number; fileCount: number } {
   assertNoExistingRedirect(path, "production_recovery_resource_redirect_rejected");
   const info = statSync(path);
@@ -442,6 +615,17 @@ function digestPath(path: string): { sha256: string; sizeBytes: number; fileCoun
   };
   visit(path);
   return { sha256: sha256(JSON.stringify(entries)), sizeBytes, fileCount: entries.length };
+}
+
+/**
+ * The restore digests its staging tree and then renames it into place; this
+ * re-reads the tree at its final path and requires the two to agree. Exported so
+ * the guard has a test of its own: it is unreachable from an end-to-end run
+ * (nothing can perturb the tree inside the rename), which is exactly the shape of
+ * check that gets deleted as dead weight because no test dies with it.
+ */
+export function assertRestoredTreeMatchesRestore(observed: string, reported: string): void {
+  if (!safeEqual(observed, reported)) throw new Error("production_recovery_restore_digest_mismatch");
 }
 
 function restoredPaths(
@@ -653,7 +837,7 @@ export async function runProductionRecoveryProof(
   input: ProductionRecoveryProofInput,
   dependencies: ProductionRecoveryProofDependencies,
 ): Promise<ProductionRecoveryProof> {
-  const { evidencePath, requestDigest } = validateInput(input);
+  const { evidencePath, requestDigest, deployedRevisionSource } = validateInput(input);
   const replay = readCompletedReplay(input, evidencePath, requestDigest);
   if (replay) return replay;
 
@@ -664,7 +848,33 @@ export async function runProductionRecoveryProof(
   const perfStarted = monotonic();
   let manifest: BackupManifest | undefined;
   let lease: ReturnType<typeof tryAcquireMutationLease> | null = null;
+  let deployed: DeployedRevisionEvidence = Object.freeze({
+    state: "not_observed" as const,
+    expected: input.expectedDeployedRevision,
+    reason: input.environment === "production"
+      ? ("observation_not_reached" as const)
+      : ("non_production_environment" as const),
+  });
   try {
+    // Observed before anything is downloaded, restored, or leased: a proof
+    // against the wrong deploy is worthless, so learn that first and cheaply.
+    if (deployedRevisionSource !== null) {
+      const observed = await (dependencies.observeDeployedRevision ?? observeDeployedRevisionOverHttps)(
+        deployedRevisionSource,
+      );
+      if (typeof observed !== "string" || !REVISION.test(observed)) {
+        throw new Error("production_recovery_deployed_revision_unreadable");
+      }
+      if (observed !== input.expectedDeployedRevision) {
+        throw new Error("production_recovery_deployed_revision_mismatch");
+      }
+      deployed = Object.freeze({
+        state: "observed" as const,
+        expected: input.expectedDeployedRevision,
+        observed,
+        observedFrom: deployedRevisionSource,
+      });
+    }
     validateRunPaths(input);
     lease = tryAcquireMutationLease(input.fenceRoot);
     if (!lease) throw new Error("production_recovery_mutation_fence_unavailable");
@@ -691,15 +901,13 @@ export async function runProductionRecoveryProof(
     });
     const paths = restoredPaths(input.targetRoot, manifest);
     const restoredDigest = digestPath(input.targetRoot).sha256;
-    if (!safeEqual(restoredDigest, restore.restoredDigest)) {
-      throw new Error("production_recovery_restore_digest_mismatch");
-    }
+    assertRestoredTreeMatchesRestore(restoredDigest, restore.restoredDigest);
     const resourceDigests = Object.freeze(manifest.resources.map((resource) => {
       const restoredResource = digestPath(paths[resource.kind]);
       return Object.freeze({
         kind: resource.kind,
-        manifestSha256: resource.sha256,
-        restoredSha256: restoredResource.sha256,
+        backupCiphertextSha256: resource.sha256,
+        restoredPlaintextSha256: restoredResource.sha256,
         sizeBytes: restoredResource.sizeBytes,
         fileCount: restoredResource.fileCount,
       });
@@ -761,7 +969,7 @@ export async function runProductionRecoveryProof(
         manifestSha256: input.receipt.publication.manifestSha256,
         createdAt: manifest.createdAt,
       }),
-      revisions: Object.freeze({ repository: input.repositoryRevision, deployed: input.deployedRevision }),
+      revisions: Object.freeze({ repository: input.repositoryRevision, deployed }),
       resources: resourceDigests,
       schemaConvergence,
       canaries,
@@ -802,7 +1010,7 @@ export async function runProductionRecoveryProof(
         state: "failed" as const,
         environment: input.environment,
         requestDigest,
-        revisions: Object.freeze({ repository: input.repositoryRevision, deployed: input.deployedRevision }),
+        revisions: Object.freeze({ repository: input.repositoryRevision, deployed }),
         failedAt: new Date(now()).toISOString(),
         failure: Object.freeze({ code: safeFailureCode(error) }),
         externalProof: Object.freeze({ state: "pending_external_observation" as const, productionProven: false as const }),
@@ -821,7 +1029,7 @@ function requiredEnv(name: string): string {
   return value;
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   if (process.env.MENDPOINT_DEPLOYMENT_PROFILE !== "customer") {
     throw new Error("production_recovery_customer_profile_required");
   }
@@ -838,10 +1046,11 @@ async function main(): Promise<void> {
   }, transport);
   const stagingRoot = requiredEnv("MENDPOINT_RECOVERY_STAGING_ROOT");
   const backupRoot = resolveCustomerRestoreStagingPath(stagingRoot, `proof-${backupId}`);
+  const environment = requiredEnv("MENDPOINT_RECOVERY_ENVIRONMENT") as ProofEnvironment;
   const proof = await runProductionRecoveryProof({
     proofId: requiredEnv("MENDPOINT_RECOVERY_PROOF_ID"),
     tenantId: requiredEnv("MENDPOINT_RECOVERY_TENANT_ID"),
-    environment: requiredEnv("MENDPOINT_RECOVERY_ENVIRONMENT") as ProofEnvironment,
+    environment,
     key,
     keyId,
     receipt,
@@ -858,7 +1067,12 @@ async function main(): Promise<void> {
     sourceRoot: process.env.MENDPOINT_BACKUP_SOURCE_ROOT?.trim(),
     fenceRoot: requiredEnv("MENDPOINT_BACKUP_FENCE_ROOT"),
     repositoryRevision: requiredEnv("MENDPOINT_RECOVERY_REPOSITORY_REVISION"),
-    deployedRevision: requiredEnv("MENDPOINT_RECOVERY_DEPLOYED_REVISION"),
+    expectedDeployedRevision: requiredEnv("MENDPOINT_RECOVERY_DEPLOYED_REVISION"),
+    // Required only where there is a running deployment to read. A local or
+    // synthetic drill has none, and must not be able to invent one.
+    deployedRevisionSource: environment === "production"
+      ? requiredEnv("MENDPOINT_RECOVERY_DEPLOYED_VERSION_URL")
+      : undefined,
     sourceRegion: requiredEnv("MENDPOINT_RECOVERY_SOURCE_REGION"),
     recoveryRegion: requiredEnv("MENDPOINT_RECOVERY_REGION"),
   }, {

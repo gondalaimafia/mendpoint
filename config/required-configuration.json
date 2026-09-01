@@ -2,12 +2,140 @@
   "schemaVersion": 1,
   "runtimeEntries": [
     {
+      "name": "MENDPOINT_BACKUP_FENCE_ROOT",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer; required by both scripts/customer-backup.ts and operator-run npm run recovery:proof",
+      "note": "Absolute root holding the mutation-fence marker both the backup and the recovery proof lease"
+    },
+    {
+      "name": "MENDPOINT_BACKUP_KEY_ID",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer; required by both scripts/customer-backup.ts and operator-run npm run recovery:proof",
+      "note": "Identifier of the active backup key; the key material itself is never a workflow input"
+    },
+    {
+      "name": "MENDPOINT_DATA_DIR",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer; required by both scripts/customer-backup.ts and operator-run npm run recovery:proof",
+      "note": "Live application data root, which the recovery proof must never restore into"
+    },
+    {
       "name": "MENDPOINT_ENVELOPE_KEY_CATALOG_JSON",
       "type": "secret",
       "scope": "protected_application_environment",
       "status": "required_when_active",
       "activatedBy": "MENDPOINT_SECRET_LIFECYCLE_ENABLED=1",
       "note": "Versioned envelope-key catalog for only the app instances that activate secret lifecycle operations"
+    },
+    {
+      "name": "MENDPOINT_RECOVERY_BACKUP_ID",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer, operator-run npm run recovery:proof",
+      "note": "Identifier of the committed object backup the proof restores"
+    },
+    {
+      "name": "MENDPOINT_RECOVERY_DEPLOYED_REVISION",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer, operator-run npm run recovery:proof",
+      "note": "Revision the operator expects to be deployed; the expectation, never the observation"
+    },
+    {
+      "name": "MENDPOINT_RECOVERY_DEPLOYED_VERSION_URL",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer, operator-run npm run recovery:proof",
+      "note": "https /version endpoint of the running target, read to observe the deployed revision; required only for a production-targeted run"
+    },
+    {
+      "name": "MENDPOINT_RECOVERY_ENVIRONMENT",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer, operator-run npm run recovery:proof",
+      "note": "local, synthetic, or production; only production observes a running deployment"
+    },
+    {
+      "name": "MENDPOINT_RECOVERY_EVIDENCE_PATH",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer, operator-run npm run recovery:proof",
+      "note": "Absolute create-only path for the signed proof envelope"
+    },
+    {
+      "name": "MENDPOINT_RECOVERY_PROOF_ID",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer, operator-run npm run recovery:proof",
+      "note": "Operator identifier for one proof run; also the replay binding"
+    },
+    {
+      "name": "MENDPOINT_RECOVERY_REGION",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer, operator-run npm run recovery:proof",
+      "note": "Recovery region identifier; must differ from the source region"
+    },
+    {
+      "name": "MENDPOINT_RECOVERY_REPOSITORY_REVISION",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer, operator-run npm run recovery:proof",
+      "note": "Repository revision the proof is recorded against"
+    },
+    {
+      "name": "MENDPOINT_RECOVERY_ROLLBACK_ROOT",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer, operator-run npm run recovery:proof",
+      "note": "Absolute empty path for the pre-migration rollback snapshot"
+    },
+    {
+      "name": "MENDPOINT_RECOVERY_SOURCE_REGION",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer, operator-run npm run recovery:proof",
+      "note": "Region the backup was taken from"
+    },
+    {
+      "name": "MENDPOINT_RECOVERY_STAGING_ROOT",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer, operator-run npm run recovery:proof",
+      "note": "Absolute root the encrypted bundle is downloaded into"
+    },
+    {
+      "name": "MENDPOINT_RECOVERY_TARGET_ROOT",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer, operator-run npm run recovery:proof",
+      "note": "Absolute empty isolated restore target; never the live data root"
+    },
+    {
+      "name": "MENDPOINT_RECOVERY_TENANT_ID",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer, operator-run npm run recovery:proof",
+      "note": "Tenant label recorded in the signed envelope"
     },
     {
       "name": "MENDPOINT_SECRET_BREAK_GLASS",
