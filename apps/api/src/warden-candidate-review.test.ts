@@ -776,6 +776,7 @@ describe("Warden candidate human review", () => {
     const { db } = fixture();
     bindMission(db);
     workingTask(db);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     openTaskHandoff(db, {
       tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID, reason: "architecture_decision_required",
       question: "Keep the public signature?", context: "Candidate changed the mapping.",
@@ -885,6 +886,7 @@ describe("Warden candidate human review", () => {
     const { app, db } = fixture();
     bindMission(db);
     workingTask(db);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     openTaskHandoff(db, {
       tenantId: "tenant-a",
       missionId: "m1",
@@ -913,6 +915,7 @@ describe("Warden candidate human review", () => {
     bindMission(db);
     workingTask(db);
     seedCiRepairCandidate(db);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     openTaskHandoff(db, {
       tenantId: "tenant-a",
       missionId: "m1",
