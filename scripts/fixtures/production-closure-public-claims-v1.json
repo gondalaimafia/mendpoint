@@ -1,0 +1,296 @@
+{
+  "schemaVersion": 2,
+  "website": "https://www.mendpoint.ai/",
+  "websiteStatus": "replacement_candidate",
+  "auditedRevision": "94e837863e3f47d143084c9b9e52e29cf9afcacc",
+  "claims": [
+    {
+      "id": "CLM-001",
+      "claimKind": "capability",
+      "requirementIds": ["ME-GTM-001", "ME-GTM-003"],
+      "surfaces": ["metadata", "header", "hero", "faq"],
+      "surfacePaths": ["apps/web/app/layout.tsx", "apps/web/app/nav.tsx", "apps/web/app/page.tsx"],
+      "wording": "Mendpoint is available as a Private Design Partner Preview.",
+      "owner": "product",
+      "evidenceOwner": "engineering",
+      "state": "preview",
+      "scope": "Approved private pilot teams",
+      "evidence": [
+        { "id": "CLM-001-EV01", "type": "live", "locator": "https://proposal-authority-fixture.invalid/livez", "observedAt": "2026-08-25T09:41:12.318Z", "freshUntil": "2026-09-01T09:41:12.318Z", "revision": "94e837863e3f47d143084c9b9e52e29cf9afcacc" },
+        { "id": "CLM-001-EV02", "type": "document", "locator": "docs/PRODUCT_CONTRACT.md" }
+      ],
+      "limitations": ["Public signup is not available", "Pilot access is approved manually"],
+      "requiredQualifier": "Private Design Partner Preview",
+      "lastVerifiedAt": "2026-08-25",
+      "expiresAt": null
+    },
+    {
+      "id": "CLM-002",
+      "claimKind": "capability",
+      "requirementIds": ["ME-ING-001", "ME-ING-002", "ME-SCM-003", "ME-WAR-003"],
+      "surfaces": ["metadata", "hero", "workflow"],
+      "surfacePaths": ["apps/web/app/layout.tsx", "apps/web/app/page.tsx", "apps/web/app/docs/page.tsx"],
+      "wording": "Turn submitted OpenAPI changes into evidence backed migration pull request candidates for supported GitHub repositories.",
+      "owner": "warden",
+      "evidenceOwner": "engineering",
+      "state": "limited_availability",
+      "scope": "Submitted OpenAPI JSON and configured GitHub pilot repositories",
+      "evidence": [
+        { "id": "CLM-002-EV01", "type": "test", "locator": "packages/pipeline/src/index.test.ts" },
+        { "id": "CLM-002-EV02", "type": "test", "locator": "packages/github/src/index.test.ts" }
+      ],
+      "limitations": ["Change class and language coverage are bounded", "Customer delivery requires approved repository access"],
+      "requiredQualifier": "supported GitHub repositories",
+      "lastVerifiedAt": "2026-08-01",
+      "expiresAt": null
+    },
+    {
+      "id": "CLM-003",
+      "claimKind": "capability",
+      "requirementIds": ["ME-GRF-001", "ME-GRF-003", "ME-GRF-004", "ME-GRF-006"],
+      "surfaces": ["workflow", "scope", "faq"],
+      "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/docs/page.tsx"],
+      "wording": "Fettler analyzes configured repository snapshots using static, graph backed, and heuristic evidence.",
+      "owner": "warden",
+      "evidenceOwner": "engineering",
+      "state": "limited_availability",
+      "scope": "Configured repository snapshots and supported language frontends",
+      "evidence": [
+        { "id": "CLM-003-EV01", "type": "test", "locator": "packages/graph/src/graph.test.ts" },
+        { "id": "CLM-003-EV02", "type": "test", "locator": "packages/pipeline/src/index.test.ts" }
+      ],
+      "limitations": ["Runtime behavior may not be visible to static analysis", "Bounded traversals report truncation and uncertainty"],
+      "requiredQualifier": "configured repository snapshots",
+      "lastVerifiedAt": "2026-08-01",
+      "expiresAt": null
+    },
+    {
+      "id": "CLM-004",
+      "claimKind": "capability",
+      "requirementIds": ["ME-ING-009", "ME-WAR-001"],
+      "surfaces": ["workflow", "scope"],
+      "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/docs/page.tsx"],
+      "wording": "Fettler generates proposed patches for supported migration patterns.",
+      "owner": "warden",
+      "evidenceOwner": "engineering",
+      "state": "limited_availability",
+      "scope": "Versioned deterministic recipes and bounded repair profiles",
+      "evidence": [
+        { "id": "CLM-004-EV01", "type": "test", "locator": "packages/repair/src/session.test.ts" },
+        { "id": "CLM-004-EV02", "type": "test", "locator": "packages/pipeline/src/index.test.ts" }
+      ],
+      "limitations": ["Unsupported migrations may abstain or require manual changes"],
+      "requiredQualifier": "supported migration patterns",
+      "lastVerifiedAt": "2026-08-01",
+      "expiresAt": null
+    },
+    {
+      "id": "CLM-005",
+      "claimKind": "guardrail",
+      "requirementIds": ["ME-WAR-002", "ME-WAR-005"],
+      "surfaces": ["workflow", "security", "faq"],
+      "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/docs/page.tsx", "apps/web/app/security/page.tsx"],
+      "wording": "Configured verification checks run before a draft pull request is eligible for delivery.",
+      "owner": "warden",
+      "evidenceOwner": "engineering",
+      "state": "limited_availability",
+      "scope": "Discovered and approved verification profiles",
+      "evidence": [
+        { "id": "CLM-005-EV01", "type": "test", "locator": "packages/repair/src/session.test.ts" },
+        { "id": "CLM-005-EV02", "type": "test", "locator": "packages/contract/src/verification-waiver.test.ts" }
+      ],
+      "limitations": ["Verifier coverage depends on the repository profile", "Waivers are attributable, scoped, and expiring"],
+      "requiredQualifier": "Configured verification checks",
+      "lastVerifiedAt": "2026-08-01",
+      "expiresAt": null
+    },
+    {
+      "id": "CLM-006",
+      "claimKind": "guardrail",
+      "requirementIds": ["ME-WAR-004", "ME-SCM-003"],
+      "surfaces": ["workflow", "security", "faq"],
+      "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/docs/page.tsx", "apps/web/app/terms/page.tsx"],
+      "wording": "On supported GitHub repositories, draft pull requests require human review, and Mendpoint does not merge them.",
+      "owner": "warden",
+      "evidenceOwner": "engineering",
+      "state": "limited_availability",
+      "scope": "Current GitHub delivery runtime",
+      "evidence": [
+        { "id": "CLM-006-EV01", "type": "test", "locator": "packages/github/src/index.test.ts" },
+        { "id": "CLM-006-EV02", "type": "document", "locator": "docs/PRODUCT_CONTRACT.md" }
+      ],
+      "limitations": ["Review and merge remain in GitHub"],
+      "requiredQualifier": "supported GitHub repositories",
+      "lastVerifiedAt": "2026-08-18",
+      "expiresAt": null
+    },
+    {
+      "id": "CLM-007",
+      "claimKind": "capability",
+      "requirementIds": ["ME-TRN-001", "ME-TRN-003", "ME-TRN-010"],
+      "surfaces": ["product", "faq"],
+      "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/docs/page.tsx"],
+      "wording": "Regauge is an experimental planning preview.",
+      "owner": "transformer",
+      "evidenceOwner": "engineering",
+      "state": "preview",
+      "scope": "Durable campaign planning and review controls",
+      "evidence": [
+        { "id": "CLM-007-EV01", "type": "test", "locator": "packages/transformer/src/control-plane-store.test.ts" },
+        { "id": "CLM-007-EV02", "type": "test", "locator": "apps/api/src/transformer-control-plane.test.ts" }
+      ],
+      "limitations": ["Repository execution and staged pull request campaigns are not customer ready"],
+      "requiredQualifier": "experimental planning preview",
+      "lastVerifiedAt": "2026-08-01",
+      "expiresAt": null
+    },
+    {
+      "id": "CLM-008",
+      "claimKind": "capability",
+      "requirementIds": ["ME-SCM-004"],
+      "surfaces": ["product", "faq"],
+      "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/docs/page.tsx"],
+      "wording": "GitLab delivery is on the roadmap.",
+      "owner": "repository-platform",
+      "evidenceOwner": "engineering",
+      "state": "roadmap",
+      "scope": "Adapter prototype only",
+      "evidence": [
+        { "id": "CLM-008-EV01", "type": "test", "locator": "packages/platform/src/scm.test.ts" },
+        { "id": "CLM-008-EV02", "type": "document", "locator": "docs/PRODUCT_REQUIREMENTS.json" }
+      ],
+      "limitations": ["End to end onboarding, checkout, delivery, review, and revocation are not available"],
+      "requiredQualifier": null,
+      "lastVerifiedAt": "2026-08-01",
+      "expiresAt": null
+    },
+    {
+      "id": "CLM-009",
+      "claimKind": "capability",
+      "requirementIds": ["ME-ENT-006", "ME-ENT-010"],
+      "surfaces": ["deployment", "security", "faq"],
+      "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/security/page.tsx"],
+      "wording": "A single node self hosted control plane is available for pilot evaluation.",
+      "owner": "platform",
+      "evidenceOwner": "engineering",
+      "state": "limited_availability",
+      "scope": "Docker Compose and Fly pilot deployment",
+      "evidence": [
+        { "id": "CLM-009-EV01", "type": "code", "locator": "docker-compose.yml" },
+        { "id": "CLM-009-EV02", "type": "test", "locator": "tests/e2e/deployment.spec.ts" }
+      ],
+      "limitations": ["Optional model and source control integrations can create network egress", "High availability and enterprise support are not included"],
+      "requiredQualifier": "pilot evaluation",
+      "lastVerifiedAt": "2026-08-01",
+      "expiresAt": null
+    },
+    {
+      "id": "CLM-010",
+      "claimKind": "guardrail",
+      "requirementIds": ["ME-COM-003", "ME-GTM-002"],
+      "surfaces": ["commercial", "cta", "faq"],
+      "surfacePaths": ["apps/web/app/page.tsx", "apps/web/app/terms/page.tsx"],
+      "wording": "Private pilot terms are agreed case by case before access with approved design partners.",
+      "owner": "commercial",
+      "evidenceOwner": "product",
+      "state": "preview",
+      "scope": "Manually approved design partner engagements",
+      "evidence": [
+        { "id": "CLM-010-EV01", "type": "document", "locator": "docs/PRODUCT_CONTRACT.md" }
+      ],
+      "limitations": ["Public plans, trials, card charging, and standard invoices are not available"],
+      "requiredQualifier": "Private pilot terms",
+      "lastVerifiedAt": "2026-08-01",
+      "expiresAt": null
+    },
+    {
+      "id": "CLM-011",
+      "claimKind": "guardrail",
+      "requirementIds": ["ME-GTM-003"],
+      "surfaces": ["demo"],
+      "surfacePaths": ["apps/web/app/operator-home.tsx"],
+      "wording": "Product figures shown in the preview are illustrative examples, not customer results.",
+      "owner": "product",
+      "evidenceOwner": "product",
+      "state": "illustrative",
+      "scope": "Synthetic preview data",
+      "evidence": [
+        { "id": "CLM-011-EV01", "type": "document", "locator": "docs/PRODUCT_CONTRACT.md" }
+      ],
+      "limitations": ["No customer outcome is implied"],
+      "requiredQualifier": null,
+      "lastVerifiedAt": "2026-08-01",
+      "expiresAt": null
+    },
+    {
+      "id": "CLM-012",
+      "claimKind": "capability",
+      "requirementIds": ["ME-GTM-001", "ME-GTM-002"],
+      "surfaces": ["cta"],
+      "surfacePaths": ["apps/web/app/design-partners/page.tsx", "apps/web/app/design-partners/application-form.tsx"],
+      "wording": "Teams can apply for a scoped Private Design Partner Preview.",
+      "owner": "growth",
+      "evidenceOwner": "product",
+      "state": "preview",
+      "scope": "Design partner application flow",
+      "evidence": [
+        { "id": "CLM-012-EV01", "type": "code", "locator": "apps/web/app/design-partners/page.tsx" }
+      ],
+      "limitations": ["Application does not guarantee acceptance"],
+      "requiredQualifier": "Private Design Partner Preview",
+      "lastVerifiedAt": "2026-08-01",
+      "expiresAt": null
+    },
+    {
+      "id": "CLM-013",
+      "claimKind": "capability",
+      "requirementIds": ["ME-ENT-005", "ME-ENT-010"],
+      "surfaces": ["login", "status"],
+      "surfacePaths": ["apps/web/app/access/page.tsx", "apps/web/app/service-status/page.tsx"],
+      "wording": "On the Fly pilot deployment, approved operators can open the pilot workspace and public deployment health is available.",
+      "owner": "platform",
+      "evidenceOwner": "engineering",
+      "state": "limited_availability",
+      "scope": "Fly pilot deployment",
+      "evidence": [
+        { "id": "CLM-013-EV01", "type": "live", "locator": "https://proposal-authority-fixture.invalid/access", "observedAt": "2026-08-25T09:41:13.902Z", "freshUntil": "2026-09-01T09:41:13.902Z", "revision": "94e837863e3f47d143084c9b9e52e29cf9afcacc" },
+        { "id": "CLM-013-EV02", "type": "live", "locator": "https://proposal-authority-fixture.invalid/healthz", "observedAt": "2026-08-25T09:41:15.244Z", "freshUntil": "2026-09-01T09:41:15.244Z", "revision": "94e837863e3f47d143084c9b9e52e29cf9afcacc" }
+      ],
+      "limitations": ["Workspace access requires an approved operator credential", "Health reports degraded while recovery work requires operator review"],
+      "requiredQualifier": "Fly pilot deployment",
+      "lastVerifiedAt": "2026-08-25",
+      "expiresAt": null
+    },
+    {
+      "id": "CLM-014",
+      "claimKind": "guardrail",
+      "requirementIds": ["ME-ENT-003", "ME-ENT-004", "ME-GTM-001"],
+      "surfaces": ["privacy", "application operations"],
+      "surfacePaths": ["apps/web/app/privacy/page.tsx", "apps/web/app/applications/page.tsx"],
+      "wording": "Private preview application details use encrypted per record keys, a 90 day access window, audited owner access, and cryptographic erasure.",
+      "owner": "product operations",
+      "evidenceOwner": "engineering",
+      "state": "limited_availability",
+      "scope": "Private preview design partner applications",
+      "evidence": [
+        { "id": "CLM-014-EV01", "type": "test", "locator": "apps/api/src/design-partner-applications-store.test.ts" },
+        { "id": "CLM-014-EV02", "type": "test", "locator": "apps/api/src/design-partner-applications.test.ts" }
+      ],
+      "limitations": ["Redacted consent, retention, access, and erasure metadata remains after payload key destruction", "Expired payloads require an operator retention purge to remove the wrapped record key"],
+      "requiredQualifier": "Private preview application details",
+      "lastVerifiedAt": "2026-08-01",
+      "expiresAt": null
+    }
+  ],
+  "destinations": [
+    { "id": "DST-001", "label": "Apply for the preview", "href": "/design-partners", "purpose": "Start a design partner application", "claimId": "CLM-012" },
+    { "id": "DST-002", "label": "Product login", "href": "/access", "purpose": "Open approved operator access", "claimId": "CLM-013" },
+    { "id": "DST-003", "label": "Documentation", "href": "/docs", "purpose": "Read supported scope and operating guidance", "claimId": "CLM-002" },
+    { "id": "DST-004", "label": "Security", "href": "/security", "purpose": "Read the deployment and trust boundary", "claimId": "CLM-009" },
+    { "id": "DST-005", "label": "Status", "href": "/service-status", "purpose": "Check public deployment health", "claimId": "CLM-013" },
+    { "id": "DST-006", "label": "Privacy", "href": "/privacy", "purpose": "Read application data handling terms", "claimId": "CLM-012" },
+    { "id": "DST-007", "label": "Terms", "href": "/terms", "purpose": "Read pilot website terms", "claimId": "CLM-010" },
+    { "id": "DST-008", "label": "GitHub", "href": "https://github.com/gondalaimafia/mendpoint", "purpose": "Inspect the public source repository", "claimId": "CLM-002" },
+    { "id": "DST-009", "label": "Contact", "href": "/contact", "purpose": "Send a scoped application to the pilot owner", "claimId": "CLM-012" }
+  ]
+}
