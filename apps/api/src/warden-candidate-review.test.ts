@@ -693,11 +693,13 @@ describe("Warden candidate human review", () => {
     const taskB = missionTaskIdForJob("source-job-2");
     advanceTaskToWorking(db, taskA);
     advanceTaskToWorking(db, taskB);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     const openedA = openTaskHandoff(db, {
       tenantId: "tenant-a", missionId: "m1", taskId: taskA, reason: "architecture_decision_required",
       question: "Task A: keep the public signature?", context: "Task A candidate changed the mapping.",
       ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
     });
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     const openedB = openTaskHandoff(db, {
       tenantId: "tenant-a", missionId: "m1", taskId: taskB, reason: "architecture_decision_required",
       question: "Task B: keep the public signature?", context: "Task B candidate changed the mapping.",
