@@ -627,6 +627,7 @@ export function recordOrganizationMemoryObservation(
     confidence?: OrganizationMemoryConfidence;
     structuredValue?: unknown;
     appliesTo?: readonly string[];
+    sourceRefs?: readonly string[];
     reason?: string;
     at: string;
   },
@@ -665,7 +666,7 @@ export function recordOrganizationMemoryObservation(
         statement,
         structuredValue: input.structuredValue ?? null,
         source: input.source,
-        sourceRefs: [],
+        sourceRefs: normalizeRefs("organization_memory_source_ref", input.sourceRefs),
         observationFingerprint: authority.fingerprint,
         confidence,
         status: "MEMORY_CANDIDATE",
@@ -705,7 +706,7 @@ export function recordOrganizationMemoryObservation(
       statement: head.statement,
       structuredValue: head.structuredValue ?? null,
       source: input.source,
-      sourceRefs: [],
+      sourceRefs: normalizeRefs("organization_memory_source_ref", input.sourceRefs),
       observationFingerprint: authority.fingerprint,
       confidence: head.confidence,
       status: advancesToValidation ? "VALIDATION" : head.status,
