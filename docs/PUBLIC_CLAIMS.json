@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "website": "https://www.mendpoint.ai/",
   "websiteStatus": "replacement_candidate",
-  "auditedRevision": "94e837863e3f47d143084c9b9e52e29cf9afcacc",
+  "auditedRevision": "efebab1e2beee7e10a25e9b9dd1923522839d3f2",
   "claims": [
     {
       "id": "CLM-001",
@@ -16,12 +16,12 @@
       "state": "preview",
       "scope": "Approved private pilot teams",
       "evidence": [
-        { "id": "CLM-001-EV01", "type": "live", "locator": "https://mendpoint-fettler-production.fly.dev/livez", "observedAt": "2026-08-31T23:15:19.747Z", "freshUntil": "2026-09-07T23:15:19.747Z", "revision": "94e837863e3f47d143084c9b9e52e29cf9afcacc" },
+        { "id": "CLM-001-EV01", "type": "live", "locator": "https://mendpoint-fettler-production.fly.dev/livez", "observedAt": "2026-09-01T22:42:05.485Z", "freshUntil": "2026-09-08T22:42:05.485Z", "revision": "efebab1e2beee7e10a25e9b9dd1923522839d3f2" },
         { "id": "CLM-001-EV02", "type": "document", "locator": "docs/PRODUCT_CONTRACT.md" }
       ],
       "limitations": ["Public signup is not available", "Pilot access is approved manually"],
       "requiredQualifier": "Private Design Partner Preview",
-      "lastVerifiedAt": "2026-08-25",
+      "lastVerifiedAt": "2026-09-01",
       "expiresAt": null
     },
     {
@@ -41,7 +41,7 @@
       ],
       "limitations": ["Change class and language coverage are bounded", "Customer delivery requires approved repository access"],
       "requiredQualifier": "supported GitHub repositories",
-      "lastVerifiedAt": "2026-08-01",
+      "lastVerifiedAt": "2026-09-01",
       "expiresAt": null
     },
     {
@@ -61,7 +61,7 @@
       ],
       "limitations": ["Runtime behavior may not be visible to static analysis", "Bounded traversals report truncation and uncertainty"],
       "requiredQualifier": "configured repository snapshots",
-      "lastVerifiedAt": "2026-08-01",
+      "lastVerifiedAt": "2026-09-01",
       "expiresAt": null
     },
     {
@@ -81,7 +81,7 @@
       ],
       "limitations": ["Unsupported migrations may abstain or require manual changes"],
       "requiredQualifier": "supported migration patterns",
-      "lastVerifiedAt": "2026-08-01",
+      "lastVerifiedAt": "2026-09-01",
       "expiresAt": null
     },
     {
@@ -101,7 +101,7 @@
       ],
       "limitations": ["Verifier coverage depends on the repository profile", "Waivers are attributable, scoped, and expiring"],
       "requiredQualifier": "Configured verification checks",
-      "lastVerifiedAt": "2026-08-01",
+      "lastVerifiedAt": "2026-09-01",
       "expiresAt": null
     },
     {
@@ -121,7 +121,7 @@
       ],
       "limitations": ["Review and merge remain in GitHub"],
       "requiredQualifier": "supported GitHub repositories",
-      "lastVerifiedAt": "2026-08-18",
+      "lastVerifiedAt": "2026-09-01",
       "expiresAt": null
     },
     {
@@ -141,7 +141,7 @@
       ],
       "limitations": ["Repository execution and staged pull request campaigns are not customer ready"],
       "requiredQualifier": "experimental planning preview",
-      "lastVerifiedAt": "2026-08-01",
+      "lastVerifiedAt": "2026-09-01",
       "expiresAt": null
     },
     {
@@ -161,7 +161,7 @@
       ],
       "limitations": ["End to end onboarding, checkout, delivery, review, and revocation are not available"],
       "requiredQualifier": null,
-      "lastVerifiedAt": "2026-08-01",
+      "lastVerifiedAt": "2026-09-01",
       "expiresAt": null
     },
     {
@@ -253,8 +253,8 @@
       "state": "limited_availability",
       "scope": "Fly pilot deployment",
       "evidence": [
-        { "id": "CLM-013-EV01", "type": "live", "locator": "https://mendpoint-fettler-production.fly.dev/access", "observedAt": "2026-08-31T23:15:21.075Z", "freshUntil": "2026-09-07T23:15:21.075Z", "revision": "94e837863e3f47d143084c9b9e52e29cf9afcacc" },
-        { "id": "CLM-013-EV02", "type": "live", "locator": "https://mendpoint-fettler-production.fly.dev/healthz", "observedAt": "2026-08-31T23:15:22.676Z", "freshUntil": "2026-09-07T23:15:22.676Z", "revision": "94e837863e3f47d143084c9b9e52e29cf9afcacc" }
+        { "id": "CLM-013-EV01", "type": "live", "locator": "https://mendpoint-fettler-production.fly.dev/access", "observedAt": "2026-09-01T22:42:06.969Z", "freshUntil": "2026-09-08T22:42:06.969Z", "revision": "efebab1e2beee7e10a25e9b9dd1923522839d3f2" },
+        { "id": "CLM-013-EV02", "type": "live", "locator": "https://mendpoint-fettler-production.fly.dev/healthz", "observedAt": "2026-09-01T22:42:08.740Z", "freshUntil": "2026-09-08T22:42:08.740Z", "revision": "efebab1e2beee7e10a25e9b9dd1923522839d3f2" }
       ],
       "limitations": ["Workspace access requires an approved operator credential", "Health reports degraded while recovery work requires operator review"],
       "requiredQualifier": "Fly pilot deployment",
