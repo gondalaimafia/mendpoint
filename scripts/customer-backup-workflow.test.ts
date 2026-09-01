@@ -19,8 +19,19 @@ function step(name: string): Record<string, any> {
 }
 
 describe("customer backup workflow", () => {
-  it("runs every 30 minutes on the default branch under the protected environment", () => {
-    expect(workflow.on.schedule).toEqual([{ cron: "*/30 * * * *" }]);
+  it("is an hourly dead-machine fallback on the default branch, under the protected environment", () => {
+    // This cron was the PRIMARY trigger and asked for every 30 minutes against a
+    // 3600s RPO. GitHub delivered it 2h13m to 8h23m apart, so last_verified_backup
+    // went overdue between runs while every run that fired succeeded. The primary
+    // trigger is now scripts/customer-backup-scheduler.ts, running on the machine
+    // at a cadence derived from the RPO; what remains here is the one case an
+    // on-machine trigger cannot cover -- a machine that is not running.
+    //
+    // Hourly is not a claim of better delivery: this repo's own hourly cron is
+    // delivered 2h42m to 6h01m apart. It is an acknowledgement that no cron can
+    // hold this RPO, which is why the guard that matters now lives in
+    // check-customer-backup-freshness.test.ts against the scheduler's interval.
+    expect(workflow.on.schedule).toEqual([{ cron: "47 * * * *" }]);
     expect(workflow.on).toHaveProperty("workflow_dispatch");
     expect(workflow.on).not.toHaveProperty("push");
     expect(job.if).toContain("github.event.repository.default_branch");
