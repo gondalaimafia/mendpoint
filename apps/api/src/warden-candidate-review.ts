@@ -149,7 +149,6 @@ export function tryResolveBoundReviewHandoff(
   input: {
     tenantId: string;
     missionId: string | null;
-    repositoryId: string | null;
     jobId: string | null;
     current?: SnapshotIdentity;
     runId: string;
@@ -182,6 +181,11 @@ export function tryResolveBoundReviewHandoff(
     return Boolean(task && HUMAN_HANDOFF_TASK_STATUSES.has(task.status));
   });
   if (candidates.length !== 1) {
+    // TELEMETRY GAP (deliberate; follow-up work, not this change): only the
+    // blocking-but-unmatched case is reported. When `blocking` is empty this
+    // returns silently, and that is the path that always fires in production
+    // today, because nothing currently opens a task-bound blocking Mission
+    // exception for this resolver to close.
     if (blocking.length > 0) {
       console.warn(JSON.stringify({
         event: "warden_review_handoff_resolution_skipped",
@@ -413,8 +417,6 @@ export function registerWardenCandidateReviewRoutes(
     const reviewedSource = result.source && typeof result.source === "object"
       ? result.source as Record<string, unknown>
       : null;
-    const reviewedRepositoryId = typeof reviewedSource?.repositoryId === "string"
-      ? reviewedSource.repositoryId : null;
     const reviewedSnapshot: SnapshotIdentity | undefined =
       typeof reviewedSource?.snapshotId === "string" && typeof reviewedSource?.revision === "string"
         ? { snapshotId: reviewedSource.snapshotId, resolvedSha: reviewedSource.revision }
@@ -544,7 +546,6 @@ export function registerWardenCandidateReviewRoutes(
           tryResolveBoundReviewHandoff(db, {
             tenantId,
             missionId: regenerateMissionId,
-            repositoryId: reviewedRepositoryId,
             jobId: run.job_id,
             ...(reviewedSnapshot ? { current: reviewedSnapshot } : {}),
             runId: run.id,
@@ -598,7 +599,6 @@ export function registerWardenCandidateReviewRoutes(
           tryResolveBoundReviewHandoff(db, {
             tenantId,
             missionId: approveMissionId,
-            repositoryId: reviewedRepositoryId,
             jobId: run.job_id,
             ...(reviewedSnapshot ? { current: reviewedSnapshot } : {}),
             runId: run.id,

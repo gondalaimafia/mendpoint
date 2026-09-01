@@ -726,6 +726,7 @@ describe("Warden candidate human review", () => {
     bindMission(db);
     workingTask(db);
     advanceTaskToWorking(db, ENROLLMENT_TASK_ID);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     const openedJob = openTaskHandoff(db, {
       tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID, reason: "architecture_decision_required",
       question: "Job: keep the public signature?", context: "Reviewed run changed the mapping.",
@@ -783,7 +784,6 @@ describe("Warden candidate human review", () => {
     const resolved = tryResolveBoundReviewHandoff(db, {
       tenantId: "tenant-a",
       missionId: "m1",
-      repositoryId: "repo-1",
       jobId: null,
       runId: "warden-run-1",
       rationale: "Keep the public signature.",
@@ -795,7 +795,6 @@ describe("Warden candidate human review", () => {
     const blankJob = tryResolveBoundReviewHandoff(db, {
       tenantId: "tenant-a",
       missionId: "m1",
-      repositoryId: "repo-1",
       jobId: "   ",
       runId: "warden-run-1",
       rationale: "Keep the public signature.",
@@ -818,6 +817,7 @@ describe("Warden candidate human review", () => {
     bindMission(db);
     workingTask(db);
     seedReviewedSnapshot(db);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     const opened = openTaskHandoff(db, {
       tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID, reason: "architecture_decision_required",
       question: "Keep the public signature?", context: "Candidate changed the mapping.",
@@ -842,6 +842,7 @@ describe("Warden candidate human review", () => {
     const { app, db } = fixture();
     bindMission(db);
     workingTask(db);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     const openedHandoff = openTaskHandoff(db, {
       tenantId: "tenant-a",
       missionId: "m1",
