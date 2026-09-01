@@ -462,6 +462,33 @@ function auditHash(input: AuditEvent): string {
   }));
 }
 
+type AuditSourceIndex =
+  | Readonly<{ ok: true; hashById: ReadonlyMap<string, string> }>
+  | Readonly<{ ok: false; error: string }>;
+
+/**
+ * Recompute the tenant audit chain once and index every row hash by id.
+ *
+ * Manifest verification needs both the chain proof and per-record hashes. Doing
+ * that inside each manifest made an admin request O(manifests x audit_events)
+ * plus one row lookup per exported record; sharing one pass makes a governance
+ * sweep a single linear scan regardless of how many manifests a tenant holds.
+ */
+function auditSourceIndex(db: AppDb, tenantId: string): AuditSourceIndex {
+  try {
+    const hashById = new Map<string, string>();
+    for (const row of verifiedAuditRows(db, tenantId, Number.MAX_SAFE_INTEGER)) {
+      hashById.set(row.id, row.event_hash);
+    }
+    return Object.freeze({ ok: true as const, hashById });
+  } catch (error) {
+    return Object.freeze({
+      ok: false as const,
+      error: error instanceof Error ? error.message : "audit_source_integrity_invalid",
+    });
+  }
+}
+
 function verifiedAuditRows(db: AppDb, tenantId: string, limit: number): AuditEvent[] {
   const allRows = many<AuditEvent>(db,
     "SELECT * FROM audit_events WHERE tenant_id = ? ORDER BY event_sequence", [tenantId]);
@@ -478,12 +505,19 @@ function verifiedAuditRows(db: AppDb, tenantId: string, limit: number): AuditEve
   return allRows.slice(Math.max(0, allRows.length - limit));
 }
 
+/**
+ * Classify one audit row for retention. An action no pattern recognises falls
+ * through to the longest retention, not the shortest: an unclassified security
+ * or compliance event must never be the first record to become eligible for
+ * deletion simply because nobody taught the classifier about it. Shortening a
+ * class is a deliberate act — add the action to a pattern above.
+ */
 function retentionClass(row: AuditEvent): AuditRetentionClass {
   const subject = `${row.action}:${row.resource_type}`.toLowerCase();
   if (/(billing|invoice|usage|credit|refund|payment|mcu)/.test(subject)) return "financial";
   if (/(consent|legal_hold|retention|compliance)/.test(subject)) return "regulated";
   if (/(auth|identity|secret|policy|audit|security|deploy|repository)/.test(subject)) return "security";
-  return "operational";
+  return "regulated";
 }
 
 function metadata(row: AuditEvent): Readonly<Record<string, unknown>> {
@@ -619,6 +653,15 @@ export function getAuditExportManifest(db: AppDb, tenantId: string, id: string):
 export function verifyStoredAuditExport(db: AppDb, tenantId: string, id: string): Readonly<{
   ok: boolean; checked: number; error?: string;
 }> {
+  return verifyStoredAuditExportAgainst(db, tenantId, id, auditSourceIndex(db, tenantId));
+}
+
+function verifyStoredAuditExportAgainst(
+  db: AppDb,
+  tenantId: string,
+  id: string,
+  source: AuditSourceIndex,
+): Readonly<{ ok: boolean; checked: number; error?: string }> {
   let stored: ReturnType<typeof getAuditExportManifest>;
   try {
     stored = getAuditExportManifest(db, tenantId, id);
@@ -653,16 +696,9 @@ export function verifyStoredAuditExport(db: AppDb, tenantId: string, id: string)
     (stored.bundle.records.at(-1)?.sourceEventHash ?? null) !== stored.manifest.source_last_hash) {
     return { ok: false, checked: result.checked, error: "audit_export_manifest_mismatch" };
   }
-  try {
-    verifiedAuditRows(db, tenantId, Number.MAX_SAFE_INTEGER);
-  } catch (error) {
-    return { ok: false, checked: result.checked,
-      error: error instanceof Error ? error.message : "audit_source_integrity_invalid" };
-  }
+  if (!source.ok) return { ok: false, checked: result.checked, error: source.error };
   for (const record of stored.bundle.records) {
-    const source = one<{ event_hash: string }>(db,
-      "SELECT event_hash FROM audit_events WHERE tenant_id = ? AND id = ?", [tenantId, record.id]);
-    if (!source || source.event_hash !== record.sourceEventHash) {
+    if (source.hashById.get(record.id) !== record.sourceEventHash) {
       return { ok: false, checked: result.checked, error: `audit_export_source_mismatch:${record.id}` };
     }
   }
@@ -747,10 +783,15 @@ export function verifyAuditGovernanceIntegrity(db: AppDb, tenantId: string): Rea
 
   const manifests = many<{ id: string }>(db,
     "SELECT id FROM audit_export_manifests WHERE tenant_id = ? ORDER BY created_at, id", [tenantId]);
-  for (const manifest of manifests) {
-    const result = verifyStoredAuditExport(db, tenantId, manifest.id);
-    if (!result.ok) return { ok: false, checked, error: result.error ?? "audit_export_replay_invalid" };
-    checked += 1;
+  if (manifests.length > 0) {
+    // One source-chain pass for the whole sweep. Computed only when there is a
+    // manifest to check so hold-only and destination-only tenants never pay it.
+    const source = auditSourceIndex(db, tenantId);
+    for (const manifest of manifests) {
+      const result = verifyStoredAuditExportAgainst(db, tenantId, manifest.id, source);
+      if (!result.ok) return { ok: false, checked, error: result.error ?? "audit_export_replay_invalid" };
+      checked += 1;
+    }
   }
   return { ok: true, checked };
 }

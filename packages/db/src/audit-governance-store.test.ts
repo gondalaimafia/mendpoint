@@ -284,4 +284,82 @@ describe("durable audit governance", () => {
       ).get(`${table}_append_only_update`)).toBeTruthy();
     }
   });
+  it("holds an action no classifier pattern recognises under the longest retention", () => {
+    const { db } = fixture();
+    recordAudit(db, {
+      id: "audit-a-unclassified",
+      tenantId: "tenant-a",
+      actor: "worker",
+      action: "widget.frobnicated",
+      resourceType: "widget",
+      resourceId: "widget-1",
+    });
+    const row = db.raw.prepare("SELECT created_at FROM audit_events WHERE id = ?")
+      .get("audit-a-unclassified") as { created_at: string };
+    const occurredAt = Date.parse(row.created_at);
+    const decisionAfter = (days: number) =>
+      listAuditRetentionDecisions(db, "tenant-a", new Date(occurredAt + days * 86_400_000).toISOString())
+        .find((entry) => entry.recordId === "audit-a-unclassified")!;
+
+    // Pins the fall-through class in both directions: day 91 dies if the default
+    // becomes "operational" (90 days), day 401 dies if it becomes "security"
+    // (400 days), and day 2556 dies if the default stops being 2555 days.
+    expect(decisionAfter(91)).toMatchObject({ disposition: "retain", reason: "within_retention" });
+    expect(decisionAfter(401)).toMatchObject({ disposition: "retain", reason: "within_retention" });
+    expect(decisionAfter(2556)).toMatchObject({
+      disposition: "eligible_for_deletion",
+      reason: "retention_elapsed",
+    });
+  });
+
+  it("recomputes the tenant source chain once per sweep however many manifests exist", () => {
+    const { db } = fixture();
+    registerAuditExportDestination(db, {
+      id: "destination-event-cost",
+      destinationId: "destination-cost",
+      tenantId: "tenant-a",
+      uri: "customer://tenant-a/audit",
+      actorId: "human:owner-a",
+      idempotencyKey: "destination-cost",
+      createdAt: at,
+    });
+    for (const index of [1, 2, 3]) {
+      createAuditExportManifest(db, {
+        id: `export-cost-${index}`,
+        tenantId: "tenant-a",
+        destinationId: "destination-cost",
+        requestedByActorId: "human:owner-a",
+        redactionProfile: "minimal",
+        limit: 100,
+        idempotencyKey: `export-cost-${index}`,
+        createdAt: at,
+      });
+    }
+
+    const prepared: string[] = [];
+    const counted: AppDb = {
+      raw: new Proxy(db.raw, {
+        get(target, key) {
+          if (key === "prepare") {
+            return (sql: string) => {
+              prepared.push(sql);
+              return target.prepare(sql);
+            };
+          }
+          const value = Reflect.get(target, key) as unknown;
+          return typeof value === "function"
+            ? (value as (...args: unknown[]) => unknown).bind(target)
+            : value;
+        },
+      }),
+    };
+
+    expect(verifyAuditGovernanceIntegrity(counted, "tenant-a")).toMatchObject({ ok: true });
+    // The sweep cost must not multiply by manifest count: one full-chain scan and
+    // no per-record row lookup, with three manifests in the tenant.
+    expect(prepared.filter((sql) =>
+      sql.includes("FROM audit_events WHERE tenant_id = ? ORDER BY event_sequence")).length).toBe(1);
+    expect(prepared.filter((sql) =>
+      sql.includes("SELECT event_hash FROM audit_events")).length).toBe(0);
+  });
 });

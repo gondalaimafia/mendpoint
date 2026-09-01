@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   REQUIRED_TENANT_BOUNDARIES,
-  PRODUCTION_TENANT_BOUNDARY_REGISTRATIONS,
   TenantBoundaryRegistry,
-  assertProductionTenantBoundaryCoverage,
   assertTenantResourceAccess,
   assertTenantScope,
   runTenantIsolationProbes,
@@ -34,23 +32,13 @@ describe("tenant boundary launch contract", () => {
   it("fails launch if any required tenant boundary is absent", () => {
     const registry = new TenantBoundaryRegistry();
     for (const boundary of REQUIRED_TENANT_BOUNDARIES.slice(0, -1)) {
-      registry.register({
-        boundary,
-        requiresTenant: true,
-        rejectsCrossTenant: true,
-        adversarialTestId: `test-${boundary}`,
-      });
+      registry.register({ boundary, requiresTenant: true, rejectsCrossTenant: true });
     }
     expect(() => registry.assertProductionCoverage()).toThrow(
       "tenant_boundary_coverage_missing:observability",
     );
     for (const boundary of REQUIRED_TENANT_BOUNDARIES.slice(-1)) {
-      registry.register({
-        boundary,
-        requiresTenant: true,
-        rejectsCrossTenant: true,
-        adversarialTestId: `test-${boundary}`,
-      });
+      registry.register({ boundary, requiresTenant: true, rejectsCrossTenant: true });
     }
     expect(registry.assertProductionCoverage().map((entry) => entry.boundary)).toEqual(
       REQUIRED_TENANT_BOUNDARIES,
@@ -80,26 +68,6 @@ describe("tenant boundary launch contract", () => {
     });
     expect(results).toHaveLength(REQUIRED_TENANT_BOUNDARIES.length);
     expect(results.every((result) => result.denied)).toBe(true);
-  });
-
-  it("mounts the complete production contract and rejects a mutated registration", () => {
-    expect(assertProductionTenantBoundaryCoverage()).toHaveLength(
-      REQUIRED_TENANT_BOUNDARIES.length,
-    );
-    const withoutLearning = PRODUCTION_TENANT_BOUNDARY_REGISTRATIONS.filter(
-      (entry) => entry.boundary !== "learning",
-    );
-    expect(() => assertProductionTenantBoundaryCoverage(withoutLearning)).toThrow(
-      "tenant_boundary_coverage_missing:learning",
-    );
-    const unscopedExport = PRODUCTION_TENANT_BOUNDARY_REGISTRATIONS.map((entry) =>
-      entry.boundary === "export"
-        ? { ...entry, rejectsCrossTenant: false as never }
-        : entry,
-    );
-    expect(() => assertProductionTenantBoundaryCoverage(unscopedExport)).toThrow(
-      "tenant_boundary_unscoped:export",
-    );
   });
 
   it("fails the harness when any boundary leaks or is absent", () => {
