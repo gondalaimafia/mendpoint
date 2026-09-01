@@ -55,4 +55,20 @@ describe("shared Transformer artifact backends", () => {
     const oversized = createS3CompatibleTransformerArtifactBackend({ bucket: "mendpoint-checkpoints", keyPrefix: "prod", maxStoredBytes: 4 }, transport);
     await expect(oversized.read(receipt.storageKey)).rejects.toThrow("s3_artifact_read_too_large");
   });
+
+  it("distinguishes missing bucket and denied credentials without exposing provider bodies", async () => {
+    const status = { get: 403, put: 403 };
+    const transport: S3CompatibleArtifactTransport = {
+      putObject: async () => ({ status: status.put }),
+      getObject: async () => ({ status: status.get, body: new TextEncoder().encode("provider-secret") }),
+    };
+    const backend = createS3CompatibleTransformerArtifactBackend({ bucket: "mendpoint-checkpoints", keyPrefix: "prod", maxStoredBytes: 2_048 }, transport);
+
+    await expect(backend.read("readiness/worker-a")).rejects.toThrow("s3_artifact_access_denied");
+    await expect(backend.createOnly("readiness/worker-a", new Uint8Array([1]))).rejects.toThrow("s3_artifact_access_denied");
+    status.get = 404;
+    status.put = 404;
+    expect(await backend.read("readiness/worker-a")).toBeNull();
+    await expect(backend.createOnly("readiness/worker-a", new Uint8Array([1]))).rejects.toThrow("s3_artifact_bucket_not_found");
+  });
 });

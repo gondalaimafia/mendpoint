@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { describe, expect, it, beforeEach } from "vitest";
 import {
   RELEASE,
+  resolveRelease,
   resolveReleaseRevision,
   validateApiEnv,
   rateLimit,
@@ -69,6 +70,32 @@ describe("ops GA", () => {
     expect(RELEASE.channel).toBe("ga");
     expect(releaseBanner()).toBe("Mendpoint / Fettler 1.0.0 (ga)");
     expect(RELEASE.gaFeatures.length).toBeGreaterThan(5);
+  });
+
+  it("reports the canonical Regauge product and GA capability only for its production profile", () => {
+    const env = {
+      MENDPOINT_DEPLOYMENT_PROFILE: "regauge_production",
+      MENDPOINT_REGAUGE_ENABLED: "1",
+    };
+    const release = resolveRelease(env);
+
+    expect(release.product).toBe("Regauge");
+    expect(release.channel).toBe("internal");
+    expect(release.gaFeatures).not.toContain("transformer_bsg_campaigns");
+    expect(release.experimentalFeatures).toContain("transformer_bsg_campaigns");
+    expect(releaseBanner(env)).toBe("Mendpoint / Regauge 1.0.0 (internal)");
+    expect(featureMatrix(env)).toContainEqual({
+      id: "transformer_bsg_campaigns",
+      tier: "experimental",
+      enabled: true,
+    });
+
+    expect(resolveRelease({ MENDPOINT_DEPLOYMENT_PROFILE: "customer" })).toBe(RELEASE);
+    expect(featureMatrix({ MENDPOINT_DEPLOYMENT_PROFILE: "customer" })).toContainEqual({
+      id: "transformer_bsg_campaigns",
+      tier: "experimental",
+      enabled: false,
+    });
   });
 
   it("accepts only an immutable deployed source revision", () => {
@@ -635,6 +662,40 @@ describe("ops GA", () => {
     const r = readiness();
     expect(["ok", "degraded", "fail"]).toContain(r.status);
     expect(r.release.version).toBe("1.0.0");
+  });
+
+  // Wiring proof, not helper proof. resolveRelease() being correct says
+  // nothing about whether the probe payloads actually call it: RELEASE.product
+  // is a frozen constant, so a probe that still read the constant would keep
+  // reporting Fettler on a ReGauge deployment and every helper test would stay
+  // green. These probes are what /live, /ready, and /status serve, so this
+  // asserts the resolved identity reaches the payload the customer sees --
+  // release.product AND the release.banner interpolated beside it. It reads
+  // process.env because that is the env the probes resolve against in
+  // production; the helper's own env-argument form is covered above.
+  it("propagates the resolved product identity into the probe payloads and banner", () => {
+    const original = process.env.MENDPOINT_DEPLOYMENT_PROFILE;
+    try {
+      process.env.MENDPOINT_DEPLOYMENT_PROFILE = "regauge_production";
+      expect(liveness().release.product).toBe("Regauge");
+      expect(liveness().release.banner).toBe("Mendpoint / Regauge 1.0.0 (internal)");
+      expect(readiness().release.product).toBe("Regauge");
+      expect(readiness().release.banner).toBe("Mendpoint / Regauge 1.0.0 (internal)");
+
+      process.env.MENDPOINT_DEPLOYMENT_PROFILE = "transformer_pilot";
+      expect(liveness().release.product).toBe(RELEASE.product);
+      expect(readiness().release.product).toBe(RELEASE.product);
+
+      // An indeterminate deployment falls back to the platform default rather
+      // than silently claiming the ReGauge identity.
+      delete process.env.MENDPOINT_DEPLOYMENT_PROFILE;
+      expect(liveness().release.product).toBe(RELEASE.product);
+      expect(liveness().release.banner).toBe("Mendpoint / Fettler 1.0.0 (ga)");
+      expect(readiness().release.product).toBe(RELEASE.product);
+    } finally {
+      if (original === undefined) delete process.env.MENDPOINT_DEPLOYMENT_PROFILE;
+      else process.env.MENDPOINT_DEPLOYMENT_PROFILE = original;
+    }
   });
 
   it("fails boot when local_only egress is configured with an external model endpoint", () => {

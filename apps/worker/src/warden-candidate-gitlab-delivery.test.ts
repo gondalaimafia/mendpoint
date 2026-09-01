@@ -141,7 +141,8 @@ describe("Warden candidate GitLab draft delivery", () => {
     const result = await runWardenCandidateDelivery({
       db, job, github, artifactEnv: { MENDPOINT_DATA_DIR: dataRoot },
       now: () => "2026-08-06T12:00:01.000Z",
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main",
+        snapshotExpiresAt: "2035-08-06T12:00:00.000Z" }),
     });
 
     expect(result).toMatchObject({
@@ -189,7 +190,8 @@ describe("Warden candidate GitLab draft delivery", () => {
     const result = await runWardenCandidateDelivery({
       db, job, github: gitlabGithub(nonDraft), artifactEnv: { MENDPOINT_DATA_DIR: dataRoot },
       now: () => "2026-08-06T12:00:01.000Z",
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main",
+        snapshotExpiresAt: "2035-08-06T12:00:00.000Z" }),
     });
 
     expect(result.status).toBe("delivery_failed");

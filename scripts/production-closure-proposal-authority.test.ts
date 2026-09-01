@@ -264,13 +264,14 @@ describe("production closure proposal authority", () => {
     );
   });
 
-
   it("does not report an open pull request head the local object database cannot resolve, but still flags an unreachable merge revision", async () => {
     // #490 re-armed via #486's local-git oracle: closure:proposal:check resolves
     // revisions against the checked-out object database, which cannot see OTHER open
     // PRs' force-pushed heads. "Absent locally" must not read as "unreachable on
     // GitHub" for open-PR heads (openPullRequestHeadsVerifiable: false at the proposal
     // call site). Merge revisions are on main and stay locally checked (ungated).
+    // Note (#530): open-PR heads/state are no longer re-verified live by github-
+    // authority either; this remains a local reporting relaxation, not a delegation.
     const openHead = "63711d9aac1a2d9e89a50bd9b4a6b8f3b2ea3c3f"; // fixture open PR #284 head
     const mergeRevision = "b3279db5157a2a33c8684f1cf595356953ff2a96"; // fixture merged PR #333 merge revision
     class LocalObjectDatabaseClient extends FixtureClient {
@@ -411,6 +412,86 @@ describe("production closure proposal authority", () => {
     const codes = result.issues.map((issue) => issue.code);
     expect(codes).not.toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");
     expect(codes.filter((code) => code.startsWith("AUTHORITY_ROTATION_"))).toEqual([]);
+  });
+
+  it("does not charge an ordinary proposal for an inherited rotation bootstrap", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    matrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = {
+      rotationId: "rotation-20260827-008",
+      kind: "runtime",
+      issuedAt: "2026-08-27T08:29:00.000Z",
+      expiresAt: "2026-08-29T08:29:00.000Z",
+      basePolicySha256: `sha256:${"1".repeat(64)}`,
+      proposedPolicySha256: `sha256:${"2".repeat(64)}`,
+    };
+    matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
+    const inheritedBytes = Buffer.from(JSON.stringify(matrix));
+    const inheritedSha = sha(inheritedBytes);
+    client.blobs.set(inheritedSha, inheritedBytes);
+    client.pathToSha.set(matrixPath, inheritedSha);
+    client.basePathToSha.set(matrixPath, inheritedSha);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    const rotationIssues = result.issues.filter((issue) =>
+      issue.code.startsWith("AUTHORITY_ROTATION_"),
+    );
+    expect(rotationIssues, JSON.stringify(result.issues, null, 2)).toEqual([]);
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+  });
+
+  it("does not let an inherited bootstrap hide provider record removal", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const baseMatrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    const removed = baseMatrix.releaseTrain.pullRequests[0]!;
+    baseMatrix.releaseTrain.currentPullRequestBootstrap!.number = removed.number;
+    baseMatrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = {
+      rotationId: "rotation-20260827-008",
+      kind: "runtime",
+      issuedAt: "2026-08-27T08:29:00.000Z",
+      expiresAt: "2026-08-29T08:29:00.000Z",
+      basePolicySha256: `sha256:${"1".repeat(64)}`,
+      proposedPolicySha256: `sha256:${"2".repeat(64)}`,
+    };
+    baseMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(baseMatrix);
+    const baseBytes = Buffer.from(JSON.stringify(baseMatrix));
+    const baseSha = sha(baseBytes);
+    client.blobs.set(baseSha, baseBytes);
+    client.basePathToSha.set(matrixPath, baseSha);
+
+    const proposedMatrix = structuredClone(baseMatrix);
+    proposedMatrix.releaseTrain.pullRequests = proposedMatrix.releaseTrain.pullRequests
+      .filter((record) => record.number !== removed.number);
+    proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
+    client.replace(matrixPath, proposedMatrix);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: "PROPOSAL_PROVIDER_RECORD_REMOVAL_UNVERIFIED",
+      subject: String(removed.number),
+    }));
   });
 
   it("still demands a rotation when the proposal itself edits the policy on a stale base", async () => {
@@ -610,6 +691,48 @@ describe("production closure proposal authority", () => {
     );
     expect(removalSubjects, JSON.stringify(result.issues, null, 2)).not.toContain(
       String(promoted.number),
+    );
+  });
+
+  it("keys the self-removal exemption on the CI-supplied number, not a forged bootstrap number", async () => {
+    // Constraint: event-sourced identity is strictly stronger. The matrix forges a
+    // different bootstrap number; the exemption must follow the CI-attested number
+    // passed by the workflow (promoted.number), so the forged declaration grants no
+    // exemption of its own and cannot influence which removal is allowed.
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    // Remove the CI-attested PR's own record AND a second tracked record. Exactly one
+    // exemption is allowed, and it must follow the CI number, not the forged bootstrap.
+    const promoted = matrix.releaseTrain.pullRequests.shift()!;
+    const alsoRemoved = matrix.releaseTrain.pullRequests.shift()!;
+    matrix.releaseTrain.currentPullRequestBootstrap!.number = 999999; // forged, not the real PR
+    matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
+    client.replace(matrixPath, matrix);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+      promoted.number, // CI-attested current pull request number
+    );
+
+    const removalSubjects = result.issues
+      .filter((issue) => issue.code === "PROPOSAL_PROVIDER_RECORD_REMOVAL_UNVERIFIED")
+      .map((issue) => issue.subject);
+    // The CI-attested PR's own removal is exempt. Had the exemption keyed on the forged
+    // bootstrap number (999999) instead, promoted.number would have been flagged too.
+    expect(removalSubjects, JSON.stringify(result.issues, null, 2)).not.toContain(
+      String(promoted.number),
+    );
+    // The exemption is exactly one number: any OTHER removed record still flags.
+    expect(removalSubjects, JSON.stringify(result.issues, null, 2)).toContain(
+      String(alsoRemoved.number),
     );
   });
 

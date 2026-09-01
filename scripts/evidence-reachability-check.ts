@@ -142,7 +142,7 @@ const NEXT_ENTRY_FILES: ReadonlySet<string> = new Set([
   "opengraph-image.tsx",
 ]);
 
-function isTestPath(rel: string): boolean {
+export function isTestPath(rel: string): boolean {
   if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(rel)) return true;
   const segments = rel.split("/");
   return segments.includes("__tests__");

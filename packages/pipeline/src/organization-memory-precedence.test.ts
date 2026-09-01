@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   organizationMemoryPrecedenceLayer,
+  organizationMemoryScopeApplies,
   PRECEDENCE_ORDER,
   resolveOrganizationDecision,
   toOrganizationMemoryReference,
@@ -173,5 +174,32 @@ describe("Organization Memory layer classification", () => {
       status: "ACTIVE",
       statement: "hello",
     });
+  });
+});
+
+describe("organizationMemoryScopeApplies", () => {
+  it("keeps memory that is not repository-scoped", () => {
+    expect(organizationMemoryScopeApplies("tenant", [])).toBe(true);
+    expect(organizationMemoryScopeApplies("service:payments", ["repo-a"])).toBe(true);
+  });
+
+  it("keeps repository-scoped memory for a repository in play", () => {
+    expect(organizationMemoryScopeApplies("repository:repo-a", ["repo-a", "repo-b"])).toBe(true);
+  });
+
+  // The control this predicate exists for: a reviewer preference recorded against
+  // repository A must not reach a plan about repository B. Deleting the prefix
+  // branch (returning true unconditionally) fails here.
+  it("drops repository-scoped memory for a repository not in play", () => {
+    expect(organizationMemoryScopeApplies("repository:repo-a", ["repo-b"])).toBe(false);
+  });
+
+  it("drops all repository-scoped memory when the consult is bound to no repository", () => {
+    expect(organizationMemoryScopeApplies("repository:repo-a", [])).toBe(false);
+  });
+
+  it("matches the whole repository id, never a prefix of it", () => {
+    expect(organizationMemoryScopeApplies("repository:repo-a", ["repo-a-extra"])).toBe(false);
+    expect(organizationMemoryScopeApplies("repository:repo-a/with:colon", ["repo-a/with:colon"])).toBe(true);
   });
 });

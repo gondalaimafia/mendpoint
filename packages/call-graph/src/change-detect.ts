@@ -7,7 +7,7 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { CallGraph, FunctionNode } from "./types.js";
 
 
@@ -243,7 +243,10 @@ const MANIFEST_NAMES = new Set([
 export function classifyChanges(
   previous: CallGraph,
   changedFiles: string[],
-  opts?: { previousFileTexts?: Record<string, string> },
+  opts?: {
+    previousFileTexts?: Record<string, string>;
+    sources?: ReadonlyMap<string, string>;
+  },
 ): ChangeSet {
   const repoRoot = previous.repoRoot;
   const files = [...new Set(changedFiles.map(normPath))];
@@ -279,7 +282,8 @@ export function classifyChanges(
       newPackagePaths.push(filePath);
     }
 
-    if (!existsSync(abs)) {
+    const capturedText = opts?.sources?.get(resolve(abs));
+    if (opts?.sources ? capturedText === undefined : !existsSync(abs)) {
       deletedFiles.push(filePath);
       for (const n of Object.values(previous.nodes)) {
         if (n.filePath !== filePath) continue;
@@ -299,7 +303,7 @@ export function classifyChanges(
       continue;
     }
 
-    const text = readFileSync(abs, "utf8");
+    const text = capturedText ?? readFileSync(abs, "utf8");
     const prevText = opts?.previousFileTexts?.[filePath];
     if (fileHasHierarchySignal(text)) hierarchyChanged = true;
     if (fileHasImportSignal(text, prevText)) importChanged = true;

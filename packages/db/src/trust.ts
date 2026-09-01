@@ -142,6 +142,42 @@ export function getPrincipal(
   );
 }
 
+export function listPrincipals(
+  db: AppDb,
+  tenantId: string,
+  kind?: PrincipalRow["kind"],
+): PrincipalRow[] {
+  requireText("tenant_id", tenantId);
+  if (kind !== undefined && !PRINCIPAL_KINDS.has(kind)) {
+    throw new Error("principal_kind_invalid");
+  }
+  return many(
+    db,
+    `SELECT * FROM principals
+     WHERE tenant_id = ? ${kind ? "AND kind = ?" : ""}
+     ORDER BY created_at, id`,
+    kind ? [tenantId, kind] : [tenantId],
+  );
+}
+
+export function revokePrincipal(
+  db: AppDb,
+  input: { tenantId: string; principalId: string; revokedAt: string },
+): PrincipalRow | undefined {
+  requireText("tenant_id", input.tenantId);
+  requireText("principal_id", input.principalId);
+  if (!Number.isFinite(Date.parse(input.revokedAt)) || new Date(input.revokedAt).toISOString() !== input.revokedAt) {
+    throw new Error("principal_revoked_at_invalid");
+  }
+  const result = db.raw.prepare(
+    `UPDATE principals SET revoked_at = ?
+     WHERE tenant_id = ? AND id = ? AND revoked_at IS NULL`,
+  ).run(input.revokedAt, input.tenantId, input.principalId);
+  return result.changes === 1
+    ? getPrincipal(db, input.tenantId, input.principalId)
+    : undefined;
+}
+
 export function insertArtifactManifest(
   db: AppDb,
   input: {
@@ -582,4 +618,66 @@ export function verifyDomainEventIntegrity(
     previousHash = row.event_hash;
   }
   return { ok: true, checked: rows.length };
+}
+
+/**
+ * Verify one domain event and its immediate chain links in bounded time.
+ *
+ * The worker's periodic audit still verifies the complete tenant chain. Replay
+ * paths use this bounded check so one old tenant cannot make a single dispatch
+ * hold the global mutation lease while rehashing its entire history.
+ */
+export function verifyDomainEventRecordIntegrity(
+  db: AppDb,
+  tenantId: string,
+  eventId: string,
+): { ok: boolean; checked: number; error?: string } {
+  const row = one<DomainEventRow>(
+    db,
+    "SELECT * FROM domain_events WHERE tenant_id = ? AND id = ?",
+    [tenantId, eventId],
+  );
+  if (!row) return { ok: false, checked: 0, error: `domain_event_missing:${eventId}` };
+  const previous = row.event_sequence > 1
+    ? one<DomainEventRow>(
+        db,
+        "SELECT * FROM domain_events WHERE tenant_id = ? AND event_sequence = ?",
+        [tenantId, row.event_sequence - 1],
+      )
+    : undefined;
+  if (row.event_sequence > 1 && !previous) {
+    return { ok: false, checked: 0, error: `domain_event_predecessor_missing:${row.id}` };
+  }
+  const previousHash = previous?.event_hash ?? null;
+  if (row.prev_hash !== previousHash) {
+    return { ok: false, checked: 0, error: `domain_event_sequence:${row.id}` };
+  }
+  const payloadSha256 = digest(row.payload_json);
+  const expected = eventHash({
+    tenantId: row.tenant_id,
+    sequence: row.event_sequence,
+    schemaVersion: row.schema_version,
+    eventType: row.event_type,
+    aggregateType: row.aggregate_type,
+    aggregateId: row.aggregate_id,
+    actorPrincipalId: row.actor_principal_id,
+    correlationId: row.correlation_id,
+    causationId: row.causation_id,
+    idempotencyKey: row.idempotency_key,
+    payloadSha256,
+    previousHash,
+    createdAt: row.created_at,
+  });
+  if (row.payload_sha256 !== payloadSha256 || row.event_hash !== expected) {
+    return { ok: false, checked: 0, error: `domain_event_hash:${row.id}` };
+  }
+  const next = one<DomainEventRow>(
+    db,
+    "SELECT * FROM domain_events WHERE tenant_id = ? AND event_sequence = ?",
+    [tenantId, row.event_sequence + 1],
+  );
+  if (next && next.prev_hash !== row.event_hash) {
+    return { ok: false, checked: 1, error: `domain_event_successor:${row.id}` };
+  }
+  return { ok: true, checked: 1 };
 }

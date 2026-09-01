@@ -62,6 +62,10 @@ describe("Transformer experimental gate", () => {
   it("requires an exact external approval reference for production delivery", () => {
     expect(authorizeTransformerDelivery({ tenantId: "tenant-a", environment: "production" }, config())).toMatchObject({ allowed: false, reasons: ["production_delivery_approval_missing"] });
     expect(authorizeTransformerDelivery({ tenantId: "tenant-a", environment: "production", productionDeliveryApprovalRefs: ["approval:wrong"] }, config()).allowed).toBe(false);
-    expect(authorizeTransformerDelivery({ tenantId: "tenant-a", environment: "production", productionDeliveryApprovalRefs: ["approval:release-a"] }, config())).toMatchObject({ allowed: true, boundary: "delivery" });
+    expect(authorizeTransformerDelivery({ tenantId: "tenant-a", environment: "production", productionDeliveryApprovalRefs: ["approval:release-a"] }, config())).toMatchObject({
+      allowed: true,
+      boundary: "delivery",
+      productionDeliveryApprovalRefs: ["approval:release-a"],
+    });
   });
 });

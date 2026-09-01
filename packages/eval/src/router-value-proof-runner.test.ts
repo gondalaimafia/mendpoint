@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  ROUTER_VALUE_INPUT_MAX_BYTES,
   persistRouterValueProofReport,
   runRouterValueProofArtifact,
   type RouterValueProofInput,
@@ -58,5 +59,64 @@ describe("router value proof artifact runner", () => {
     const second = fixture();
     persistRouterValueProofReport(second.input, second.output);
     expect(() => persistRouterValueProofReport(second.input, second.output)).toThrow("router_value_output_exists");
+  });
+
+  it("rejects string booleans from untyped JSON artifacts", () => {
+    const heldOut = fixture();
+    const heldOutValue = JSON.parse(readFileSync(heldOut.input, "utf8"));
+    heldOutValue.cohort.heldOut = "false";
+    writeFileSync(heldOut.input, JSON.stringify(heldOutValue));
+    expect(() => runRouterValueProofArtifact(heldOut.input)).toThrow(
+      "router_value_cohort_not_held_out",
+    );
+
+    const accepted = fixture();
+    const acceptedValue = JSON.parse(readFileSync(accepted.input, "utf8"));
+    acceptedValue.observations[0].accepted = "false";
+    writeFileSync(accepted.input, JSON.stringify(acceptedValue));
+    expect(() => runRouterValueProofArtifact(accepted.input)).toThrow(
+      "router_value_acceptance_invalid",
+    );
+  });
+
+  it("retains a failed attributable report when accepted-output cost overflows", () => {
+    const { input } = fixture();
+    const value = JSON.parse(readFileSync(input, "utf8"));
+    value.observations = [
+      ...value.observations,
+      { ...value.observations[0], taskId: "task-b", costUsd: 1e308 },
+      { ...value.observations[1], taskId: "task-b", costUsd: 1e308 },
+    ];
+    value.observations[0].costUsd = 1e308;
+    value.observations[1].costUsd = 1e308;
+    writeFileSync(input, JSON.stringify(value));
+
+    expect(runRouterValueProofArtifact(input)).toMatchObject({
+      ok: false,
+      acceptedOutputCostUsd: { baseline: null, candidate: null },
+      acceptedOutputCostRegressionTaskIds: ["task-a", "task-b"],
+    });
+  });
+
+  it("refuses empty, oversized, and structurally incomplete cohort artifacts", () => {
+    const empty = fixture();
+    writeFileSync(empty.input, "");
+    expect(() => runRouterValueProofArtifact(empty.input)).toThrow("router_value_input_size_invalid");
+
+    const oversized = fixture();
+    writeFileSync(oversized.input, Buffer.alloc(ROUTER_VALUE_INPUT_MAX_BYTES + 1, "x"));
+    expect(() => runRouterValueProofArtifact(oversized.input)).toThrow(
+      "router_value_input_size_invalid",
+    );
+
+    const incomplete = fixture();
+    writeFileSync(incomplete.input, JSON.stringify({
+      version: "2026-08-02.v1",
+      cohort: { id: "held-out-v1", revision: "a".repeat(40), heldOut: true },
+      policy: {},
+    }));
+    expect(() => runRouterValueProofArtifact(incomplete.input)).toThrow(
+      "router_value_observations_required",
+    );
   });
 });

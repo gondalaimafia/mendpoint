@@ -15,6 +15,7 @@ import {
   type GitHubCheckRun,
   type GitHubCommitStatus,
   type GitHubIssue,
+  type GitHubIssueEvent,
   type GitHubPullRequest,
   type GitHubReview,
   type GitHubWorkflowJob,
@@ -28,6 +29,9 @@ const MERGED = "d".repeat(40);
 
 function matrix(): GitHubAuthorityMatrix {
   return {
+    requirements: [
+      { requirementId: "ME-FND-001", issues: [430], pullRequests: [440] },
+    ],
     issueAuthority: {
       repository: "gondalaimafia/mendpoint",
       issues: [
@@ -163,8 +167,11 @@ class FixtureClient implements GitHubAuthorityClient {
   pullRequestReads: number[] = [];
   issueReads: number[] = [];
   mainRevisions = [MAIN, MAIN];
+  ancestorRevisions: string[] = [];
+  ancestorPairs: string[] = [];
   openPullRequests = [pullRequest()];
   trackedPullRequest = pullRequest();
+  pullRequestsByNumber = new Map<number, GitHubPullRequest>();
   trackedChecks = checks();
   trackedWorkflowRuns: GitHubWorkflowRun[] = [{
     id: 101,
@@ -190,14 +197,27 @@ class FixtureClient implements GitHubAuthorityClient {
     if (this.failure) throw this.failure;
     return this.mainRevisions[Math.min(this.mainReads++, this.mainRevisions.length - 1)];
   }
+  async revisionIsAncestor(revision: string, descendant: string): Promise<boolean> {
+    if (this.failure) throw this.failure;
+    return (
+      revision === descendant ||
+      this.ancestorPairs.includes(`${revision}:${descendant}`) ||
+      this.ancestorRevisions.includes(revision)
+    );
+  }
   async listOpenPullRequests(): Promise<GitHubPullRequest[]> {
     if (this.failure) throw this.failure;
     return this.openPullRequests;
   }
+  pullRequestsForCommit: GitHubPullRequest[] | null = null;
   async getPullRequest(number: number): Promise<GitHubPullRequest> {
     if (this.failure) throw this.failure;
     this.pullRequestReads.push(number);
-    return this.trackedPullRequest;
+    return this.pullRequestsByNumber.get(number) ?? this.trackedPullRequest;
+  }
+  async listPullRequestsForCommit(): Promise<GitHubPullRequest[]> {
+    if (this.failure) throw this.failure;
+    return this.pullRequestsForCommit ?? [this.trackedPullRequest];
   }
   async listCheckRuns(): Promise<GitHubCheckRun[]> {
     if (this.failure) throw this.failure;
@@ -214,6 +234,13 @@ class FixtureClient implements GitHubAuthorityClient {
   async listReviews(): Promise<GitHubReview[]> {
     if (this.failure) throw this.failure;
     return this.trackedReviews;
+  }
+  trackedIssueEvents: GitHubIssueEvent[] = [
+    { event: "labeled", created_at: "2026-08-25T09:00:00.000Z", label: { name: "release-owner:codex" } },
+  ];
+  async listIssueEvents(): Promise<GitHubIssueEvent[]> {
+    if (this.failure) throw this.failure;
+    return this.trackedIssueEvents;
   }
   async listCommitStatuses(): Promise<GitHubCommitStatus[]> {
     return this.trackedStatuses;
@@ -503,16 +530,300 @@ describe("GitHub production closure authority", () => {
     expect(result.verifiedIssues).toEqual([430]);
   });
 
-  it("requires a base-trusted exact-head attestation for an authority rotation", async () => {
+  it("resolves the current pull request from the event, not a forged matrix bootstrap number", async () => {
+    // The matrix declares a different, non-existent pull request number. Identity is
+    // taken from the CI event (440), so the forged declaration cannot redirect the
+    // judgement: the live pull request read is 440 and 440 is what is verified.
     const configured = matrix();
-    configured.releaseTrain.currentPullRequestBootstrap.authorityRotation = {
-      rotationId: "rotation-20260825-001",
+    configured.releaseTrain.currentPullRequestBootstrap!.number = 999;
+    configured.releaseTrain.currentPullRequestBootstrap!.url =
+      "https://github.com/gondalaimafia/mendpoint/pull/999";
+    const client = new FixtureClient();
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(result.verifiedPullRequests).toEqual([440]);
+    expect(client.pullRequestReads).toContain(440);
+    expect(client.pullRequestReads).not.toContain(999);
+  });
+
+  it("accepts a matrix with no currentPullRequestBootstrap (event-sourced identity)", async () => {
+    // Dual-schema: the new schema omits the bootstrap entirely. Identity comes from
+    // the event, so a matrix without the field still verifies the current PR.
+    const configured = matrix();
+    delete (configured.releaseTrain as { currentPullRequestBootstrap?: unknown })
+      .currentPullRequestBootstrap;
+    const client = new FixtureClient();
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(result.verifiedPullRequests).toEqual([440]);
+  });
+
+  it("treats a present non-rotation bootstrap as inert", async () => {
+    // ~17 open pull requests carry a bootstrap describing whatever merged last. A
+    // stale non-rotation bootstrap naming another pull request must not fail the
+    // current one; it is simply ignored.
+    const configured = matrix();
+    configured.releaseTrain.currentPullRequestBootstrap!.number = 512;
+    configured.releaseTrain.currentPullRequestBootstrap!.url =
+      "https://github.com/gondalaimafia/mendpoint/pull/512";
+    configured.releaseTrain.currentPullRequestBootstrap!.title = "some other merged PR";
+    const client = new FixtureClient();
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+  });
+
+  it("does not inherit a merged rotation's bootstrap for the next pull request", async () => {
+    // #504 defect: after a rotation merges, its authorityRotation stays on main and
+    // is inherited unchanged by the next branch. Because the inherited bootstrap does
+    // not name the resolved pull request (440), no rotation attestation is demanded.
+    const configured = matrix();
+    configured.releaseTrain.currentPullRequestBootstrap!.number = 521;
+    configured.releaseTrain.currentPullRequestBootstrap!.url =
+      "https://github.com/gondalaimafia/mendpoint/pull/521";
+    configured.releaseTrain.currentPullRequestBootstrap!.authorityRotation = {
+      rotationId: "rotation-20260828-004",
       kind: "runtime",
       issuedAt: "2026-08-25T11:00:00.000Z",
       expiresAt: "2026-08-26T11:00:00.000Z",
       basePolicySha256: `sha256:${"1".repeat(64)}`,
       proposedPolicySha256: `sha256:${"2".repeat(64)}`,
     };
+    const client = new FixtureClient();
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    // Inert, not rejected: no attestation demand and no foreign-declaration rejection,
+    // and the resolved pull request (440) is positively verified so the assertion does
+    // not pass vacuously if the rotation logic were removed outright.
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(result.verifiedPullRequests).toContain(440);
+    expect(codes(result)).not.toContain("AUTHORITY_ROTATION_REVIEW_ATTESTATION_REQUIRED");
+    expect(codes(result)).not.toContain("AUTHORITY_ROTATION_FOREIGN_DECLARATION");
+  });
+
+  it("fails closed when the resolved pull request has no release-owner label", async () => {
+    // Owner is derived from the live pull request labels. With no release-owner label
+    // the owner is unresolved, so the metadata guard fires and the trusted-reviewer
+    // set is empty (no approval can qualify), failing closed regardless of policy.
+    // Uses the production-shaped single-actor trusted policy so the fail-closed guard
+    // is exercised as it is in production, not masked by a second trusted actor.
+    const client = new FixtureClient();
+    client.trackedPullRequest = pullRequest({ labels: [] });
+    client.openPullRequests = [client.trackedPullRequest];
+
+    const result = await verifyGitHubClosureAuthority(
+      matrix(),
+      context({
+        trustedReviewerIdentities: {
+          Claude: [{ login: "claude-reviewer[bot]", userId: 71 }],
+        },
+      }),
+      client,
+    );
+
+    expect(result.verdict).toBe("fail");
+    expect(codes(result)).toContain("PR_METADATA_MISMATCH");
+    expect(codes(result)).toContain("PR_EXACT_TRUSTED_REVIEW_REQUIRED");
+  });
+
+  it("does not qualify a trusted approval submitted before the current owner label was applied", async () => {
+    // Blocker 2: the owner label selects the trusted set but is not part of the head
+    // SHA. An exact-head approval made under a previous owner label must not be
+    // promoted by flipping the label; an approval only qualifies if it was submitted
+    // at or after the current owner label was last applied.
+    const client = new FixtureClient();
+    client.trackedReviews = reviews({ submitted_at: "2026-08-25T12:00:00.000Z" });
+    // The owner label was (re)applied AFTER the approval — e.g. flipped to unlock this
+    // approval on an unchanged head.
+    client.trackedIssueEvents = [
+      { event: "labeled", created_at: "2026-08-25T13:00:00.000Z", label: { name: "release-owner:codex" } },
+    ];
+
+    const result = await verifyGitHubClosureAuthority(matrix(), context(), client);
+
+    expect(result.verdict).toBe("fail");
+    expect(codes(result)).toContain("PR_EXACT_TRUSTED_REVIEW_REQUIRED");
+  });
+
+  it("demands an attestation for a proposal-reported rotation and rejects a foreign-numbered declaration", async () => {
+    // Blocker 3: the attestation demand follows the rotation the proposal actually
+    // validated (context.proposalAuthorityRotation), not the self-declared bootstrap
+    // number. A real rotation whose matrix bootstrap names a foreign pull request is
+    // both attested-demanded AND rejected as a foreign declaration, so it cannot merge
+    // on a generic approval.
+    const rotation = {
+      rotationId: "rotation-20260825-001",
+      kind: "runtime" as const,
+      issuedAt: "2026-08-25T11:00:00.000Z",
+      expiresAt: "2026-08-25T11:30:00.000Z",
+      basePolicySha256: `sha256:${"1".repeat(64)}`,
+      proposedPolicySha256: `sha256:${"2".repeat(64)}`,
+    };
+    const configured = matrix();
+    configured.releaseTrain.currentPullRequestBootstrap!.number = 521; // foreign
+    configured.releaseTrain.currentPullRequestBootstrap!.authorityRotation = rotation;
+    const client = new FixtureClient();
+
+    const result = await verifyGitHubClosureAuthority(
+      configured,
+      context({ proposalAuthorityRotation: rotation }),
+      client,
+    );
+
+    expect(codes(result)).toContain("AUTHORITY_ROTATION_REVIEW_ATTESTATION_REQUIRED");
+    expect(codes(result)).toContain("AUTHORITY_ROTATION_FOREIGN_DECLARATION");
+  });
+
+  // Sweep shape: eventName is forced to pull_request but observationScope stays
+  // full_release_train, so the proposal determination never runs and
+  // proposalAuthorityRotation is undefined. context() defaults to that exact shape.
+  const sweepRotation = {
+    rotationId: "rotation-20260825-003",
+    kind: "runtime" as const,
+    issuedAt: "2026-08-25T11:00:00.000Z",
+    expiresAt: "2026-08-26T11:00:00.000Z",
+    basePolicySha256: `sha256:${"1".repeat(64)}`,
+    proposedPolicySha256: `sha256:${"2".repeat(64)}`,
+  };
+  const attestationReview = () =>
+    reviews({
+      submitted_at: "2026-08-25T12:00:00.000Z",
+      body: [
+        "## Authority rotation attestation",
+        "",
+        "- Rotation ID: rotation-20260825-003",
+        "- Transition: runtime",
+        `- Base policy: sha256:${"1".repeat(64)}`,
+        `- Proposed policy: sha256:${"2".repeat(64)}`,
+      ].join("\n"),
+    });
+
+  it("gates a self-named rotation on the sweep even though the proposal determination did not run", async () => {
+    // Blocker: proposalAuthorityRotation is undefined on the sweep (determination did
+    // not run). That third state must NOT collapse to "no rotation": a self-named
+    // rotation is adjudicated from the number-bound matrix declaration, so a plain
+    // approval on the */30 sweep still demands the attestation and cannot clear the gate.
+    const configured = matrix();
+    configured.releaseTrain.currentPullRequestBootstrap!.authorityRotation = sweepRotation;
+    const client = new FixtureClient(); // default reviews carry no attestation
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.verdict).toBe("fail");
+    expect(codes(result)).toContain("AUTHORITY_ROTATION_REVIEW_ATTESTATION_REQUIRED");
+  });
+
+  it("accepts a correctly attested self-named rotation on the sweep without flapping", async () => {
+    // The paired non-inverted incentive: with a correct exact-head attestation the same
+    // sweep passes (no AUTHORITY_ROTATION_REVIEW_UNEXPECTED, no flapping red). Attest =>
+    // green, skip => red, on the sweep exactly as on the proposal path.
+    const configured = matrix();
+    configured.releaseTrain.currentPullRequestBootstrap!.authorityRotation = sweepRotation;
+    const client = new FixtureClient();
+    client.trackedReviews = attestationReview();
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(codes(result)).not.toContain("AUTHORITY_ROTATION_REVIEW_UNEXPECTED");
+    expect(codes(result)).not.toContain("AUTHORITY_ROTATION_REVIEW_ATTESTATION_REQUIRED");
+  });
+
+  it("invalidates a trusted approval when a release-owner label is removed after it (unlabeled laundering)", async () => {
+    // Should-fix 1: removal emits `unlabeled`, not `labeled`. Anchoring only on labeled
+    // events would leave a stale approval promoted. The current-label anchor is the
+    // latest of ANY release-owner labeled OR unlabeled event, so a removal at T3 after
+    // the approval at T2 invalidates it.
+    const client = new FixtureClient();
+    client.trackedReviews = reviews({ submitted_at: "2026-08-25T12:00:00.000Z" });
+    client.trackedIssueEvents = [
+      { event: "labeled", created_at: "2026-08-25T08:00:00.000Z", label: { name: "release-owner:codex" } },
+      { event: "labeled", created_at: "2026-08-25T09:00:00.000Z", label: { name: "release-owner:claude" } },
+      { event: "unlabeled", created_at: "2026-08-25T13:00:00.000Z", label: { name: "release-owner:claude" } },
+    ];
+
+    const result = await verifyGitHubClosureAuthority(matrix(), context(), client);
+
+    expect(result.verdict).toBe("fail");
+    expect(codes(result)).toContain("PR_EXACT_TRUSTED_REVIEW_REQUIRED");
+  });
+
+  it("fails closed when no release-owner label event establishes the current label time", async () => {
+    // Should-fix 2 (MUT-A): when the owner label's mutation time cannot be established,
+    // no approval qualifies. This kills the mutation that treats an unresolvable label
+    // time as permissive.
+    const client = new FixtureClient();
+    client.trackedReviews = reviews({ submitted_at: "2026-08-25T12:00:00.000Z" });
+    client.trackedIssueEvents = []; // no labeled/unlabeled events at all
+
+    const result = await verifyGitHubClosureAuthority(matrix(), context(), client);
+
+    expect(result.verdict).toBe("fail");
+    expect(codes(result)).toContain("PR_EXACT_TRUSTED_REVIEW_REQUIRED");
+  });
+
+  it("flags a requirement the matrix credits to the current PR that the live body does not declare", async () => {
+    // Should-fix 3 (MUT-F): the cross-check must compare the LIVE body mapping against
+    // the requirements the MATRIX credits to this PR. If both sides were sourced from
+    // the body it would be a tautology; here the matrix credits ME-FND-002 to PR 440
+    // while the body declares only ME-FND-001, so the mismatch must fire.
+    const configured = matrix();
+    configured.requirements = [
+      { requirementId: "ME-FND-001", issues: [430], pullRequests: [440] },
+      { requirementId: "ME-FND-002", issues: [], pullRequests: [440] },
+    ];
+    const client = new FixtureClient();
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(codes(result)).toContain("PR_REQUIREMENT_MAPPING_MISMATCH");
+  });
+
+  it("fails closed when a pushed commit resolves to more than one merged pull request", async () => {
+    const client = new FixtureClient();
+    client.trackedPullRequest = pullRequest({
+      state: "closed",
+      merged: true,
+      merge_commit_sha: MERGED,
+    });
+    client.pullRequestsForCommit = [
+      pullRequest({ number: 440, merged: true, merge_commit_sha: MERGED }),
+      pullRequest({ number: 441, merged: true, merge_commit_sha: MERGED }),
+    ];
+    client.openPullRequests = [];
+    client.mainRevisions = [MERGED, MERGED];
+
+    const result = await verifyGitHubClosureAuthority(
+      matrix(),
+      context({
+        eventName: "push",
+        githubSha: MERGED,
+        checkout: { headRevision: MERGED, parentRevisions: [MAIN] },
+        pullRequest: undefined,
+      }),
+      client,
+    );
+
+    expect(codes(result)).toContain("PUSH_MERGED_PULL_REQUEST_UNRESOLVED");
+  });
+
+  it("requires a base-trusted exact-head attestation for an authority rotation", async () => {
+    const rotation = {
+      rotationId: "rotation-20260825-001",
+      kind: "runtime" as const,
+      issuedAt: "2026-08-25T11:00:00.000Z",
+      expiresAt: "2026-08-26T11:00:00.000Z",
+      basePolicySha256: `sha256:${"1".repeat(64)}`,
+      proposedPolicySha256: `sha256:${"2".repeat(64)}`,
+    };
+    const configured = matrix();
+    configured.releaseTrain.currentPullRequestBootstrap!.authorityRotation = rotation;
     const client = new FixtureClient();
     client.trackedReviews = [...reviews({
       body: [
@@ -529,21 +840,26 @@ describe("GitHub production closure authority", () => {
       body: null,
     })];
 
-    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+    const result = await verifyGitHubClosureAuthority(
+      configured,
+      context({ proposalAuthorityRotation: rotation }),
+      client,
+    );
 
     expect(codes(result)).not.toContain("AUTHORITY_ROTATION_REVIEW_ATTESTATION_REQUIRED");
   });
 
   it("rejects a wrong or out-of-window authority rotation attestation", async () => {
-    const configured = matrix();
-    configured.releaseTrain.currentPullRequestBootstrap.authorityRotation = {
+    const rotation = {
       rotationId: "rotation-20260825-001",
-      kind: "runtime",
+      kind: "runtime" as const,
       issuedAt: "2026-08-25T11:00:00.000Z",
       expiresAt: "2026-08-25T11:30:00.000Z",
       basePolicySha256: `sha256:${"1".repeat(64)}`,
       proposedPolicySha256: `sha256:${"2".repeat(64)}`,
     };
+    const configured = matrix();
+    configured.releaseTrain.currentPullRequestBootstrap!.authorityRotation = rotation;
     const client = new FixtureClient();
     client.trackedReviews = reviews({
       body: [
@@ -557,16 +873,19 @@ describe("GitHub production closure authority", () => {
       submitted_at: "2026-08-25T12:00:00.000Z",
     });
 
-    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+    const result = await verifyGitHubClosureAuthority(
+      configured,
+      context({ proposalAuthorityRotation: rotation }),
+      client,
+    );
 
     expect(codes(result)).toContain("AUTHORITY_ROTATION_REVIEW_ATTESTATION_REQUIRED");
   });
 
   it("requires a staged successor live run on the activation head and current base", async () => {
-    const configured = matrix();
-    configured.releaseTrain.currentPullRequestBootstrap.authorityRotation = {
+    const rotation = {
       rotationId: "rotation-20260825-002",
-      kind: "activate_successor",
+      kind: "activate_successor" as const,
       issuedAt: "2026-08-25T11:00:00.000Z",
       expiresAt: "2026-08-26T11:00:00.000Z",
       basePolicySha256: `sha256:${"1".repeat(64)}`,
@@ -584,6 +903,9 @@ describe("GitHub production closure authority", () => {
         activationDeadline: "2026-08-26T11:00:00.000Z",
       },
     };
+    const configured = matrix();
+    configured.releaseTrain.currentPullRequestBootstrap!.authorityRotation = rotation;
+    const rotationContext = () => context({ proposalAuthorityRotation: rotation });
     const client = new FixtureClient();
     client.trackedReviews = reviews({
       body: [
@@ -622,28 +944,359 @@ describe("GitHub production closure authority", () => {
       html_url: "https://github.com/gondalaimafia/mendpoint/actions/runs/202",
     });
 
-    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+    const result = await verifyGitHubClosureAuthority(configured, rotationContext(), client);
 
     expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
     expect(result.workflowRunIds).toContain(202);
 
     client.trackedChecks.at(-1)!.app = { id: 999 };
-    const wrongApp = await verifyGitHubClosureAuthority(configured, context(), client);
+    const wrongApp = await verifyGitHubClosureAuthority(configured, rotationContext(), client);
     expect(codes(wrongApp)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
 
     client.trackedChecks.at(-1)!.app = { id: 123 };
     client.trackedStatuses[0].creator = { login: "untrusted-bot", id: 999 };
-    const wrongControllerProducer = await verifyGitHubClosureAuthority(configured, context(), client);
+    const wrongControllerProducer = await verifyGitHubClosureAuthority(configured, rotationContext(), client);
     expect(codes(wrongControllerProducer)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
   });
 
-  it("fails closed when the live open PR set is incomplete", async () => {
+  it("accepts a matrix that omits a newer live-open pull request", async () => {
+    // Cross-PR completeness is unsatisfiable by a PR-authored snapshot: PR #441 was
+    // opened after this matrix was authored, so the matrix cannot enumerate it. The
+    // snapshot omitting a live-open sibling must not fail.
     const client = new FixtureClient();
     client.openPullRequests = [pullRequest(), pullRequest({ number: 441 })];
 
     const result = await verifyGitHubClosureAuthority(matrix(), context(), client);
 
-    expect(codes(result)).toContain("OPEN_PR_COMPLETENESS_MISMATCH");
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(codes(result)).not.toContain("OPEN_PR_COMPLETENESS_MISMATCH");
+  });
+
+  it("accepts a matrix that still lists a pull request that has since merged", async () => {
+    // The matrix records #439 as open; it has since merged and left the live open set.
+    // Dropping completeness means this stale-but-honest snapshot passes. #439 carries no
+    // green check state, so only the (now open-relaxed) metadata mirror would have fired.
+    const configured = matrix();
+    configured.releaseTrain.pullRequests.push({
+      number: 439,
+      state: "open",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/439",
+      title: "Prior release work",
+      headBranch: "codex/prior-release-work",
+      baseBranch: "main",
+      headRevision: MERGE,
+      mergeRevision: null,
+      requirementIds: ["ME-FND-001"],
+      checkState: "stale_checks",
+    });
+    const client = new FixtureClient();
+    client.openPullRequests = [pullRequest()];
+    client.pullRequestsByNumber.set(
+      439,
+      pullRequest({ number: 439, state: "closed", merged: true, merge_commit_sha: MERGED }),
+    );
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(codes(result)).not.toContain("OPEN_PR_COMPLETENESS_MISMATCH");
+  });
+
+  it("relaxes the metadata mirror for an open sibling that drifted, retitled or closed", async () => {
+    // The live sibling has been retitled and re-pushed and its state moved on since the
+    // snapshot; because the record is open (not the bootstrap), the mirror is not judged.
+    const configured = matrix();
+    configured.releaseTrain.pullRequests.push({
+      number: 439,
+      state: "open",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/439",
+      title: "Prior release work",
+      headBranch: "codex/prior-release-work",
+      baseBranch: "main",
+      headRevision: MERGE,
+      mergeRevision: null,
+      requirementIds: ["ME-FND-001"],
+      checkState: "stale_checks",
+    });
+    const client = new FixtureClient();
+    client.pullRequestsByNumber.set(
+      439,
+      pullRequest({
+        number: 439,
+        state: "closed",
+        title: "Prior release work (renamed)",
+        html_url: "https://github.com/gondalaimafia/mendpoint/pull/439",
+        head: { ref: "codex/prior-release-work", sha: "e".repeat(40) },
+        body: "## Requirement mapping\n\n- ME-FND-777\n",
+      }),
+    );
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(result.issues).not.toContainEqual(
+      expect.objectContaining({ code: "PR_METADATA_MISMATCH", subject: "439" }),
+    );
+    expect(result.issues).not.toContainEqual(
+      expect.objectContaining({ code: "PR_REQUIREMENT_MAPPING_MISMATCH", subject: "439" }),
+    );
+  });
+
+  it("still fails a matrix that records a pull request number that never existed", async () => {
+    // A fabricated open sibling number resolves to nothing on GitHub; the live read
+    // throws and the observation fails closed. Dropping completeness does not open a
+    // hole for fabricated numbers in a full-release-train sweep.
+    const configured = matrix();
+    configured.releaseTrain.pullRequests.push({
+      number: 999999,
+      state: "open",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/999999",
+      title: "Fabricated",
+      headBranch: "codex/fabricated",
+      baseBranch: "main",
+      headRevision: MERGE,
+      mergeRevision: null,
+      requirementIds: ["ME-FND-001"],
+      checkState: "stale_checks",
+    });
+    const notFound = new (class extends FixtureClient {
+      async getPullRequest(number: number): Promise<GitHubPullRequest> {
+        this.pullRequestReads.push(number);
+        if (number === 999999) throw new Error("GitHub API request failed with HTTP 404");
+        return super.getPullRequest(number);
+      }
+    })();
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), notFound);
+
+    expect(result.verdict).toBe("fail");
+    expect(codes(result)).toContain("GITHUB_AUTHORITY_UNAVAILABLE");
+  });
+
+  it("accepts a matrix observed revision that is an ancestor of main but not the tip", async () => {
+    // The snapshot was taken at an earlier main; main advanced afterward. Ancestry holds,
+    // so both the start- and end-of-observation revision checks pass. Exact equality (the
+    // prior behavior at both sites) would have failed this.
+    const client = new FixtureClient();
+    const configured = matrix();
+    const earlierMain = "e".repeat(40);
+    configured.releaseTrain.observedMainRevision = earlierMain;
+    client.ancestorRevisions = [earlierMain];
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(codes(result)).not.toContain("MATRIX_MAIN_REVISION_MISMATCH");
+  });
+
+  it("still fails a matrix observed revision that is not an ancestor of main", async () => {
+    // A forked or fabricated revision is not an ancestor of live main; the ancestry guard
+    // still rejects it at both emission sites.
+    const client = new FixtureClient();
+    const configured = matrix();
+    configured.releaseTrain.observedMainRevision = "f".repeat(40);
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(codes(result)).toContain("MATRIX_MAIN_REVISION_MISMATCH");
+  });
+
+  it("still fails a matrix claiming a merged sibling at a revision that is not its merge commit", async () => {
+    // The load-bearing dependency binding. #439 is recorded merged at MERGE (a real
+    // ancestor of main), but its actual merge_commit_sha is MERGED. Merged records stay
+    // strictly mirrored, so this fabricated merge revision is caught. This is the only
+    // live proof a claimed-merged dependency actually merged at the recorded revision.
+    const configured = matrix();
+    configured.releaseTrain.observedMainRevision = MAIN;
+    configured.releaseTrain.pullRequests.push({
+      number: 439,
+      state: "merged",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/439",
+      title: "Merged dependency",
+      headBranch: "codex/merged-dependency",
+      baseBranch: "main",
+      headRevision: HEAD,
+      mergeRevision: MERGE,
+      requirementIds: ["ME-FND-001"],
+      checkState: "stale_checks",
+    });
+    const client = new FixtureClient();
+    client.ancestorRevisions = [MERGE];
+    client.pullRequestsByNumber.set(
+      439,
+      pullRequest({
+        number: 439,
+        state: "closed",
+        merged: true,
+        merge_commit_sha: MERGED,
+        title: "Merged dependency",
+        html_url: "https://github.com/gondalaimafia/mendpoint/pull/439",
+        head: { ref: "codex/merged-dependency", sha: HEAD },
+      }),
+    );
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ code: "PR_METADATA_MISMATCH", subject: "439" }),
+    );
+  });
+
+  // Reconstruction of the #284 case (its live instance has since been corrected on
+  // main): an unfinished requirement whose sole closure path cites a pull request the
+  // matrix records as open but which is absent from the live open set. This is the
+  // durable evidence the live-open closure-path guard works.
+  function me284Matrix(): GitHubAuthorityMatrix {
+    const configured = matrix();
+    configured.requirements = [
+      { requirementId: "ME-GTM-003", issues: [], pullRequests: [284] },
+    ];
+    configured.releaseTrain.pullRequests.push({
+      number: 284,
+      state: "open",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/284",
+      title: "Make the public claims gate able to fail",
+      headBranch: "claude/claims-gate-drift",
+      baseBranch: "main",
+      headRevision: MERGE,
+      mergeRevision: null,
+      requirementIds: ["ME-GTM-003"],
+      checkState: "behind",
+    });
+    return configured;
+  }
+
+  it("fails an unfinished requirement whose only closure-path PR is absent from the live open set", async () => {
+    const client = new FixtureClient();
+    client.openPullRequests = [pullRequest()]; // live open = {440}; #284 has closed
+
+    const result = await verifyGitHubClosureAuthority(
+       me284Matrix(),
+      context({ canonicalRequirementStatuses: { "ME-GTM-003": "partial" } }),
+      client,
+    );
+
+    expect(codes(result)).toContain("REQUIREMENT_CLOSURE_PATH_PR_NOT_LIVE_OPEN");
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({
+        code: "REQUIREMENT_CLOSURE_PATH_PR_NOT_LIVE_OPEN",
+        subject: "ME-GTM-003",
+      }),
+    );
+  });
+
+  it("accepts the same requirement when its closure-path PR is still in the live open set", async () => {
+    const client = new FixtureClient();
+    client.openPullRequests = [pullRequest(), pullRequest({ number: 284 })];
+
+    const result = await verifyGitHubClosureAuthority(
+       me284Matrix(),
+      context({ canonicalRequirementStatuses: { "ME-GTM-003": "partial" } }),
+      client,
+    );
+
+    expect(codes(result)).not.toContain("REQUIREMENT_CLOSURE_PATH_PR_NOT_LIVE_OPEN");
+  });
+
+  it("does not apply the live-open closure-path check to a verified requirement", async () => {
+    const client = new FixtureClient();
+    client.openPullRequests = [pullRequest()];
+
+    const result = await verifyGitHubClosureAuthority(
+      me284Matrix(),
+      context({ canonicalRequirementStatuses: { "ME-GTM-003": "verified" } }),
+      client,
+    );
+
+    expect(codes(result)).not.toContain("REQUIREMENT_CLOSURE_PATH_PR_NOT_LIVE_OPEN");
+  });
+
+  it("rejects a non-ancestor observed revision on push (start-of-observation site)", async () => {
+    // On push only the start-of-observation site runs; this isolates site A so it is
+    // individually killable rather than only when both revision sites are removed.
+    const client = new FixtureClient();
+    client.trackedPullRequest = pullRequest({
+      state: "closed",
+      merged: true,
+      merge_commit_sha: MERGED,
+    });
+    client.openPullRequests = [];
+    client.mainRevisions = [MERGED, MERGED];
+    const configured = matrix();
+    configured.releaseTrain.observedMainRevision = "f".repeat(40); // not ancestor of parent
+
+    const result = await verifyGitHubClosureAuthority(
+      configured,
+      context({
+        eventName: "push",
+        githubSha: MERGED,
+        checkout: { headRevision: MERGED, parentRevisions: [MAIN] },
+        pullRequest: undefined,
+      }),
+      client,
+    );
+
+    expect(codes(result)).toContain("MATRIX_MAIN_REVISION_MISMATCH");
+  });
+
+  it("rejects an observed revision that is not an ancestor of the final main (end-of-observation site)", async () => {
+    // Main diverges between the two reads: the observed revision is an ancestor of the
+    // start revision but not of the divergent end revision. Only the end-of-observation
+    // site fires MATRIX_MAIN_REVISION_MISMATCH here, isolating site B.
+    const startMain = MAIN;
+    const endMain = "e".repeat(40);
+    const observed = "1".repeat(40);
+    const client = new FixtureClient();
+    client.mainRevisions = [startMain, endMain];
+    client.ancestorPairs = [`${observed}:${startMain}`]; // ancestor of start, not of end
+    const configured = matrix();
+    configured.releaseTrain.observedMainRevision = observed;
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(codes(result)).toContain("MATRIX_MAIN_REVISION_MISMATCH");
+    expect(codes(result)).toContain("MAIN_CHANGED_DURING_OBSERVATION");
+  });
+
+  it("maps GitHub compare status onto ancestry in the real REST client", async () => {
+    const base = "a".repeat(40);
+    const head = "b".repeat(40);
+    const makeClient = (status: string) =>
+      new GitHubRestClient(
+        "gondalaimafia/mendpoint",
+        "token-value",
+        (async (url: string | URL) => {
+          expect(String(url)).toContain(`/compare/${base}...${head}`);
+          return new Response(JSON.stringify({ status }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }) as unknown as typeof fetch,
+      );
+
+    await expect(makeClient("ahead").revisionIsAncestor(base, head)).resolves.toBe(true);
+    await expect(makeClient("identical").revisionIsAncestor(base, head)).resolves.toBe(true);
+    await expect(makeClient("behind").revisionIsAncestor(base, head)).resolves.toBe(false);
+    await expect(makeClient("diverged").revisionIsAncestor(base, head)).resolves.toBe(false);
+  });
+
+  it("rejects non-SHA arguments to the real REST ancestry check before calling GitHub", async () => {
+    let fetched = false;
+    const client = new GitHubRestClient(
+      "gondalaimafia/mendpoint",
+      "token-value",
+      (async () => {
+        fetched = true;
+        return new Response(JSON.stringify({ status: "ahead" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+    );
+
+    await expect(client.revisionIsAncestor("HEAD", "b".repeat(40))).rejects.toThrow();
+    await expect(client.revisionIsAncestor("a".repeat(40), "origin/main")).rejects.toThrow();
+    expect(fetched).toBe(false);
   });
 
   it("binds event base and head while executing immutable base authority", async () => {
@@ -758,7 +1411,7 @@ describe("GitHub production closure authority", () => {
 
   it("accepts a trusted exact-head review on the declared remediation PR", async () => {
     const configured = matrix();
-    configured.releaseTrain.currentPullRequestBootstrap.remediatesPullRequests = [416];
+    configured.releaseTrain.currentPullRequestBootstrap!.remediatesPullRequests = [416];
     configured.releaseTrain.pullRequests.push({
       number: 416,
       state: "merged",
@@ -797,7 +1450,7 @@ describe("GitHub production closure authority", () => {
 
   it("rejects a remediation approval that does not attest the exact historical head", async () => {
     const configured = matrix();
-    configured.releaseTrain.currentPullRequestBootstrap.remediatesPullRequests = [416];
+    configured.releaseTrain.currentPullRequestBootstrap!.remediatesPullRequests = [416];
     configured.releaseTrain.pullRequests.push({
       number: 416,
       state: "merged",
@@ -930,7 +1583,9 @@ describe("GitHub production closure authority", () => {
       client,
     );
 
-    expect(codes(result)).toContain("PUSH_MAIN_REVISION_MISMATCH");
+    // The pushed commit resolves to no merged pull request whose merge commit is the
+    // pushed SHA, so identity resolution itself fails closed before any later check.
+    expect(codes(result)).toContain("PUSH_MERGED_PULL_REQUEST_UNRESOLVED");
   });
 
   it("paginates GitHub list endpoints without exposing the token", async () => {

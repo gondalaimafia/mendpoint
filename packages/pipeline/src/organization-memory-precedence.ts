@@ -193,6 +193,37 @@ export function organizationMemoryPrecedenceLayer(
   }
 }
 
+/**
+ * Scope prefix that binds a memory to ONE repository. A scope without this prefix
+ * is not repository-bound and applies wherever its tenant does.
+ */
+export const ORGANIZATION_MEMORY_REPOSITORY_SCOPE_PREFIX = "repository:";
+
+/**
+ * Whether a memory scope applies to the repositories a consult is actually about.
+ *
+ * `listOrganizationMemory` is tenant-wide and carries no scope filter, so every
+ * consumer receives repository-scoped memory for repositories it is not planning.
+ * Applying one of those is always wrong: a reviewer preference recorded against
+ * repository A is not evidence about repository B, and the consult picks a single
+ * representative per precedence layer by sorting on `recordId` (a sha256), so which
+ * repository won would otherwise be arbitrary. Consumers that render a capped
+ * section would also let unrelated repositories crowd out relevant memory.
+ *
+ * `repositoryIds` is REQUIRED and may be empty: an empty set means the caller knows
+ * the consult is bound to no repository, and repository-scoped memory demonstrably
+ * does not apply to it. There is deliberately no "unknown" value — a caller that
+ * cannot name its repositories must not silently keep or silently drop them.
+ */
+export function organizationMemoryScopeApplies(
+  scope: string,
+  repositoryIds: readonly string[],
+): boolean {
+  if (!scope.startsWith(ORGANIZATION_MEMORY_REPOSITORY_SCOPE_PREFIX)) return true;
+  const repositoryId = scope.slice(ORGANIZATION_MEMORY_REPOSITORY_SCOPE_PREFIX.length);
+  return repositoryIds.includes(repositoryId);
+}
+
 /** Narrow an Organization Memory head record to a precedence reference. */
 export function toOrganizationMemoryReference(
   record: Pick<

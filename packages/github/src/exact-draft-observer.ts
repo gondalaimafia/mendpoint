@@ -12,6 +12,8 @@ export type ExactDraftObservationInput = Readonly<{
   expectedBaseSha: string;
   expectedHeadBranch: string;
   expectedHeadSha: string;
+  expectedCampaignBranchPrefix?: string;
+  compatibilityCampaignBranchPrefixes?: readonly string[];
   expectedRepositoryId?: number;
   expectedInstallationId?: number;
   requireExactDraft?: boolean;
@@ -103,6 +105,8 @@ const MAX_FAILURE_TEXT = 2_000;
 const MAX_REVIEW_FEEDBACK = 50;
 const MAX_REVIEW_FEEDBACK_BYTES = 64 * 1_024;
 const MAX_CHANGED_FILES = 300;
+const MAX_OPEN_PULL_PAGES = 10;
+const OPEN_PULLS_PER_PAGE = 100;
 
 function bounded(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -137,10 +141,25 @@ function canonicalTimestamp(value: unknown): string {
 }
 
 function validate(input: ExactDraftObservationInput): void {
+  const allowedCampaignBranchPrefixes = input.expectedCampaignBranchPrefix === undefined
+    ? []
+    : [input.expectedCampaignBranchPrefix, ...(input.compatibilityCampaignBranchPrefixes ?? [])];
   if (!IDENTITY.test(input.owner) || !IDENTITY.test(input.repo) ||
       !Number.isSafeInteger(input.pullRequestNumber) || input.pullRequestNumber < 1 ||
       !input.expectedBaseBranch || !input.expectedHeadBranch ||
       !SHA.test(input.expectedBaseSha) || !SHA.test(input.expectedHeadSha) ||
+      (input.expectedCampaignBranchPrefix !== undefined &&
+        (!validBranchPrefix(input.expectedCampaignBranchPrefix) ||
+          !allowedCampaignBranchPrefixes.some((prefix) =>
+            input.expectedHeadBranch.startsWith(prefix)))) ||
+      (input.compatibilityCampaignBranchPrefixes !== undefined &&
+        (input.expectedCampaignBranchPrefix === undefined ||
+          input.compatibilityCampaignBranchPrefixes.length === 0 ||
+          input.compatibilityCampaignBranchPrefixes.length > 10 ||
+          input.compatibilityCampaignBranchPrefixes.some((prefix) =>
+            !validBranchPrefix(prefix) || prefix === input.expectedCampaignBranchPrefix) ||
+          new Set(input.compatibilityCampaignBranchPrefixes).size !==
+            input.compatibilityCampaignBranchPrefixes.length)) ||
       (input.expectedRepositoryId !== undefined &&
         (!Number.isSafeInteger(input.expectedRepositoryId) || input.expectedRepositoryId < 1)) ||
       (input.expectedInstallationId !== undefined &&
@@ -149,6 +168,13 @@ function validate(input: ExactDraftObservationInput): void {
         input.expectedRepositoryId === undefined || input.expectedInstallationId === undefined))) {
     throw new Error("github_exact_draft_observation_invalid");
   }
+}
+
+function validBranchPrefix(value: string): boolean {
+  return value.length > 0 && value.length <= 255 &&
+    /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) &&
+    !value.includes("..") && !value.includes("//") && !value.includes("@{") &&
+    !value.endsWith(".") && !value.endsWith(".lock");
 }
 
 function validRepositoryPath(value: string): boolean {
@@ -161,21 +187,43 @@ function linkHasNext(headers: Readonly<Record<string, unknown>>): boolean {
   return String(headers.link ?? "").includes('rel="next"');
 }
 
+async function listCompleteOpenPulls(octokit: Octokit, input: ExactDraftObservationInput) {
+  const pulls: Awaited<ReturnType<Octokit["pulls"]["list"]>>["data"] = [];
+  const seen = new Set<number>();
+  for (let page = 1; page <= MAX_OPEN_PULL_PAGES; page += 1) {
+    const response = await octokit.pulls.list({
+      owner: input.owner,
+      repo: input.repo,
+      state: "open",
+      per_page: OPEN_PULLS_PER_PAGE,
+      page,
+    });
+    for (const pull of response.data) {
+      if (!Number.isSafeInteger(pull.number) || pull.number < 1 || seen.has(pull.number)) {
+        throw new Error("github_exact_draft_observation_incomplete");
+      }
+      seen.add(pull.number);
+      pulls.push(pull);
+    }
+    if (!linkHasNext(response.headers)) return pulls;
+  }
+  throw new Error("github_exact_draft_observation_incomplete");
+}
+
 async function observeDeliveryEvidence(octokit: Octokit, input: ExactDraftObservationInput, headRevision: string) {
   if (input.includeDeliveryEvidence !== true) return null;
   const repositoryId = input.expectedRepositoryId!;
   const installationId = input.expectedInstallationId!;
-  const [comparisonResponse, pullsResponse, commitResponse] = await Promise.all([
+  const [comparisonResponse, openPulls, commitResponse] = await Promise.all([
     octokit.repos.compareCommitsWithBasehead({ owner: input.owner, repo: input.repo,
       basehead: `${input.expectedBaseSha}...${input.expectedHeadSha}`, per_page: 100 }),
-    octokit.pulls.list({ owner: input.owner, repo: input.repo, state: "open",
-      head: `${input.owner}:${input.expectedHeadBranch}`, per_page: 100 }),
+    listCompleteOpenPulls(octokit, input),
     octokit.git.getCommit({ owner: input.owner, repo: input.repo, commit_sha: headRevision }),
   ]);
   const comparedFiles = comparisonResponse.data.files ?? [];
   const comparedCommits = comparisonResponse.data.commits ?? [];
-  if (linkHasNext(comparisonResponse.headers) || linkHasNext(pullsResponse.headers) ||
-      comparedFiles.length === 0 || comparedFiles.length >= MAX_CHANGED_FILES) {
+  if (linkHasNext(comparisonResponse.headers) || comparedFiles.length === 0 ||
+      comparedFiles.length >= MAX_CHANGED_FILES) {
     throw new Error("github_exact_draft_observation_incomplete");
   }
   if (comparisonResponse.data.base_commit.sha !== input.expectedBaseSha || comparedCommits.length === 0 ||
@@ -188,16 +236,27 @@ async function observeDeliveryEvidence(octokit: Octokit, input: ExactDraftObserv
   if (changedPaths.some((path) => !validRepositoryPath(path)) || new Set(changedPaths).size !== changedPaths.length) {
     throw new Error("github_exact_draft_observation_authority_mismatch");
   }
-  const matching = pullsResponse.data.filter((candidate) => candidate.number === input.pullRequestNumber &&
+  const campaignDrafts = openPulls.filter((candidate) => {
+    const candidateBranch = String(candidate.head.ref ?? "");
+    const campaignPrefixes = input.expectedCampaignBranchPrefix === undefined
+      ? []
+      : [input.expectedCampaignBranchPrefix, ...(input.compatibilityCampaignBranchPrefixes ?? [])];
+    const inCampaignNamespace = input.expectedCampaignBranchPrefix === undefined
+      ? candidateBranch === input.expectedHeadBranch
+      : campaignPrefixes.some((prefix) => candidateBranch.startsWith(prefix));
+    return candidate.state === "open" && candidate.draft === true && inCampaignNamespace;
+  });
+  const matching = campaignDrafts.filter((candidate) => candidate.number === input.pullRequestNumber &&
     candidate.state === "open" && candidate.draft === true && candidate.base.ref === input.expectedBaseBranch &&
     candidate.base.sha === input.expectedBaseSha && candidate.head.ref === input.expectedHeadBranch &&
-    candidate.head.sha === input.expectedHeadSha);
-  if (pullsResponse.data.length !== 1 || matching.length !== 1) {
+    candidate.head.sha === input.expectedHeadSha && candidate.base.repo?.id === repositoryId &&
+    candidate.head.repo?.id === repositoryId);
+  if (campaignDrafts.length !== 1 || matching.length !== 1) {
     throw new Error("github_exact_draft_observation_authority_mismatch");
   }
   const remoteTreeSha = String(commitResponse.data.tree?.sha ?? "");
   if (!SHA.test(remoteTreeSha)) throw new Error("github_exact_draft_observation_authority_mismatch");
-  return Object.freeze({ repositoryId, installationId, matchingOpenDrafts: matching.length,
+  return Object.freeze({ repositoryId, installationId, matchingOpenDrafts: campaignDrafts.length,
     changedPaths: Object.freeze(changedPaths), remoteTreeSha, evidenceRefs: Object.freeze([
       `github:installation:${installationId}`, `github:repository:${repositoryId}`, `github:tree:${remoteTreeSha}`,
       ...changedPaths.map((path) => `github:changed-path-sha256:${createHash("sha256").update(path, "utf8").digest("hex")}`),

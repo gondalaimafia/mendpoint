@@ -15,11 +15,14 @@ import {
   insertArtifactManifest,
   insertPrincipal,
   linkFettlerCampaignToMission,
+  linkRegaugeCampaignToMission,
+  listArtifactManifests,
   listMissionArtifactLineage,
   listMissionArtifacts,
   type AppDb,
 } from "@mendpoint/db";
 import {
+  persistAndRegisterRegaugeCompleteAttemptArtifacts,
   tryRegisterBoundMissionArtifacts,
   tryRegisterFettlerCampaignMissionArtifacts,
 } from "./mission-artifact-register.js";
@@ -179,5 +182,140 @@ describe("tryRegisterFettlerCampaignMissionArtifacts", () => {
     });
     expect(result).toEqual({ status: "registered", missionId: "m1", count: 1 });
     expect(listMissionArtifacts(db, "t1", "m1")).toHaveLength(1);
+  });
+});
+
+describe("persistAndRegisterRegaugeCompleteAttemptArtifacts", () => {
+  function seedRegauge(db: AppDb, opts: { link?: boolean; service?: boolean } = {}) {
+    createMission(db, {
+      id: "m-regauge", tenantId: "t1", product: "regauge", triggerKind: "migration_objective",
+      objective: "Modernize node 18", ownerPrincipalId: "p1", eventId: "ev-mr",
+      idempotencyKey: "cm-mr", correlationId: "campaign-r", createdAt: T0,
+    });
+    if (opts.link !== false) {
+      linkRegaugeCampaignToMission(db, {
+        tenantId: "t1", missionId: "m-regauge", regaugeCampaignId: "campaign-r",
+        actorPrincipalId: "p1", eventId: "linked-r", idempotencyKey: "linked-r",
+        correlationId: "campaign-r", createdAt: T0,
+      });
+    }
+    if (opts.service !== false) {
+      insertPrincipal(db, {
+        id: "svc-regauge", tenantId: "t1", kind: "service",
+        subject: "service:regauge-production-bootstrap",
+        displayName: "ReGauge bootstrap", createdAt: T0,
+      });
+    }
+  }
+
+  it("skips when the campaign is not linked to a Mission", () => {
+    const db = fixture();
+    seedRegauge(db, { link: false });
+    const result = persistAndRegisterRegaugeCompleteAttemptArtifacts(db, {
+      tenantId: "t1",
+      campaignId: "campaign-r",
+      unitId: "unit-a",
+      candidateDigest: "d".repeat(64),
+      candidateRevision: "c".repeat(40),
+      createdAt: T0,
+    });
+    expect(result).toEqual({ status: "skipped_unbound" });
+    expect(listArtifactManifests(db, "t1")).toHaveLength(0);
+    expect(listMissionArtifacts(db, "t1", "m-regauge")).toHaveLength(0);
+  });
+
+  it("skips when the ReGauge service principal is absent", () => {
+    const db = fixture();
+    seedRegauge(db, { service: false });
+    const result = persistAndRegisterRegaugeCompleteAttemptArtifacts(db, {
+      tenantId: "t1",
+      campaignId: "campaign-r",
+      unitId: "unit-a",
+      candidateDigest: "d".repeat(64),
+      candidateRevision: "c".repeat(40),
+      createdAt: T0,
+    });
+    expect(result).toEqual({ status: "skipped_producer_absent" });
+    expect(listArtifactManifests(db, "t1")).toHaveLength(0);
+    expect(listMissionArtifacts(db, "t1", "m-regauge")).toHaveLength(0);
+  });
+
+  it("persists a complete-attempt manifest and registers it as candidate_patch", () => {
+    const db = fixture();
+    seedRegauge(db);
+    const result = persistAndRegisterRegaugeCompleteAttemptArtifacts(db, {
+      tenantId: "t1",
+      campaignId: "campaign-r",
+      unitId: "unit-a",
+      candidateDigest: "d".repeat(64),
+      candidateRevision: "c".repeat(40),
+      sourceSnapshot: "snapshot-a",
+      evidenceRefs: ["tcman_a", "tre_execution_a"],
+      createdAt: T0,
+    });
+    expect(result).toEqual({ status: "registered", missionId: "m-regauge", count: 1 });
+    const manifests = listArtifactManifests(db, "t1");
+    expect(manifests).toEqual([
+      expect.objectContaining({
+        kind: "regauge-complete-attempt",
+        producer_principal_id: "svc-regauge",
+      }),
+    ]);
+    expect(manifests[0]!.producer_principal_id).not.toBe("p1");
+    const registered = listMissionArtifacts(db, "t1", "m-regauge");
+    expect(registered).toEqual([
+      expect.objectContaining({
+        role: "candidate_patch",
+        artifactId: manifests[0]!.id,
+        sourceSnapshot: "snapshot-a",
+      }),
+    ]);
+  });
+
+  it("is idempotent across a second complete of the same attempt", () => {
+    const db = fixture();
+    seedRegauge(db);
+    const first = persistAndRegisterRegaugeCompleteAttemptArtifacts(db, {
+      tenantId: "t1",
+      campaignId: "campaign-r",
+      unitId: "unit-a",
+      candidateDigest: "d".repeat(64),
+      candidateRevision: "c".repeat(40),
+      createdAt: T0,
+    });
+    const second = persistAndRegisterRegaugeCompleteAttemptArtifacts(db, {
+      tenantId: "t1",
+      campaignId: "campaign-r",
+      unitId: "unit-a",
+      candidateDigest: "d".repeat(64),
+      candidateRevision: "c".repeat(40),
+      createdAt: T0,
+    });
+    expect(first.status).toBe("registered");
+    expect(second.status).toBe("registered");
+    expect(listArtifactManifests(db, "t1")).toHaveLength(1);
+    expect(listMissionArtifacts(db, "t1", "m-regauge")).toHaveLength(1);
+  });
+
+  it("does not throw when the manifest write fails (manifest store unavailable)", () => {
+    const db = fixture();
+    seedRegauge(db);
+    // Fault-inject the persist seam itself. "failed" and "skipped_no_artifacts"
+    // mean opposite things: one is a lost artifact, the other is a campaign
+    // that produced nothing. Collapsing them hides the loss from every caller.
+    db.raw.exec("DROP TABLE artifact_manifests");
+    const result = persistAndRegisterRegaugeCompleteAttemptArtifacts(db, {
+      tenantId: "t1",
+      campaignId: "campaign-r",
+      unitId: "unit-a",
+      candidateDigest: "d".repeat(64),
+      candidateRevision: "c".repeat(40),
+      createdAt: T0,
+    });
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.missionId).toBe("m-regauge");
+    expect(result.reason).toMatch(/artifact_manifests/);
+    expect(listMissionArtifacts(db, "t1", "m-regauge")).toHaveLength(0);
   });
 });

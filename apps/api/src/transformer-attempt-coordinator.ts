@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Hono, type Context } from "hono";
 import {
   createTransformerPilotCheckpointAuthority,
@@ -65,7 +66,9 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
     expectedBaseRevision: string;
   }>): TransformerDraftRepositoryTarget | Promise<TransformerDraftRepositoryTarget>;
 }>): Hono<ApiEnv> {
-  if (options.enabled) parseTransformerGateConfig(options.gateConfig);
+  const parsedGateConfig = options.enabled
+    ? parseTransformerGateConfig(options.gateConfig)
+    : undefined;
   const app = new Hono<ApiEnv>();
   const now = options.now ?? (() => new Date().toISOString());
   const configuredAt = serverTime(now);
@@ -144,10 +147,23 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
       const campaign = authorization
         ? options.store.getCampaign(authorization.tenantId, authorization.campaignId)
         : null;
+      const currentGrant = authorization
+        ? parsedGateConfig?.grants.find((candidate) =>
+          candidate.tenantId === authorization.tenantId &&
+          candidate.environment === authorization.environment &&
+          candidate.boundaries.includes("delivery") &&
+          candidate.productionDeliveryApprovalRefs.includes(authorization.productionApprovalRef))
+        : undefined;
       const durableAuthorizationReplay = Boolean(
-        campaign && authorization &&
+        campaign && authorization && currentGrant &&
         campaign.units.length === authorization.maximumDrafts &&
-        campaign.units.every((unit) => unit.state === "draft"),
+        campaign.units.every((unit) =>
+          unit.state === "draft" &&
+          unit.draftDelivery !== undefined &&
+          (unit.draftDelivery.productionDeliveryApprovalRefs ?? [])
+            .includes(authorization.productionApprovalRef) &&
+          currentGrant.acceptanceEvidenceRefs.every((reference) =>
+            unit.draftDelivery!.authorizationEvidenceRefs.includes(reference))),
       );
       const activeDraftAuthorization =
         draftAuthorizationExpiresAt !== null &&
@@ -180,7 +196,11 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
         campaignId: authorization.campaignId,
         observedAt,
         evidenceRefs: input.evidenceRefs as string[],
-        idempotencyKey: input.idempotencyKey,
+        idempotencyKey: draftAuthorizationIdempotencyKey(
+          input.idempotencyKey,
+          authorization,
+          parsedGateConfig,
+        ),
         gateConfig: options.gateConfig,
         productionDeliveryApprovalRefs: [authorization.productionApprovalRef],
       });
@@ -350,6 +370,24 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
     return c.json({ result, serverTime: observedAt });
   }));
   return app;
+}
+
+function draftAuthorizationIdempotencyKey(
+  clientKey: string,
+  authorization: TransformerProductionDraftAuthorization,
+  gateConfig: ReturnType<typeof parseTransformerGateConfig> | undefined,
+): string {
+  const grant = gateConfig?.grants.find((candidate) =>
+    candidate.tenantId === authorization.tenantId &&
+    candidate.environment === authorization.environment &&
+    candidate.boundaries.includes("delivery") &&
+    candidate.productionDeliveryApprovalRefs.includes(authorization.productionApprovalRef));
+  if (!grant) throw new Error("coordinator_draft_authorization_denied");
+  const authorityDigest = createHash("sha256").update(JSON.stringify({
+    approvalRef: authorization.productionApprovalRef,
+    acceptanceEvidenceRefs: [...grant.acceptanceEvidenceRefs].sort(),
+  }), "utf8").digest("hex").slice(0, 24);
+  return `${clientKey}:${authorityDigest}`;
 }
 
 function requireWorker(c: Context<ApiEnv>): void {

@@ -1,4 +1,5 @@
 export type { MemoryLayer, MemoryEntry, AgentMemory } from "./memory.js";
+export { scimBindingsFromEnv, type ScimBinding } from "./scim-bindings.js";
 export {
   createMemory,
   remember,
@@ -228,20 +229,32 @@ export {
   ENVELOPE_SECRET_SCHEMA_VERSION,
   EnvelopeKeyLifecycleRegistry,
   DisabledExternalVaultProvider,
+  ConfiguredEnvelopeKeyProvider,
   LocalEnvelopeKeyProvider,
+  cryptographicKeyMaterialFingerprint,
+  envelopeKeyProvidersFromEnvironment,
+  attestEnvelopeKey,
+  sealEnvelopeSecret,
+  openEnvelopeSecret,
   EnvelopeSecretVault,
+  DurableEnvelopeSecretProvider,
   type EnvelopeKeyReference,
+  type EnvelopeKeyLocator,
+  type EnvelopeKeyAttestation,
   type EnvelopeKeyState,
   type EnvelopeKeyLifecycle,
   type SecretAccessContext,
   type EnvelopeSecret,
   type EnvelopeAccessAuditEvent,
   type KeyEncryptionKeyProvider,
+  type DurableEnvelopeSecretVersion,
+  type DurableEnvelopeSecretProviderOptions,
 } from "./vault-envelope.js";
 
 export {
   ExecutorRegistry,
   ExecutorCircuitBreaker,
+  ROUTER_REGISTRY_SCHEMA_VERSION,
   ROUTER_FAILURE_CODES,
   routeTask,
   selectPolicyBoundFallback,
@@ -255,6 +268,8 @@ export {
   type RouterTaskSpec,
   type RouterPolicySnapshot,
   type ExecutorDescriptor,
+  type ExecutorRegistryContract,
+  type ExecutorRegistryBinding,
   type CircuitBreakerConfig,
   type CircuitBreakerState,
   type ExecutorAvailability,

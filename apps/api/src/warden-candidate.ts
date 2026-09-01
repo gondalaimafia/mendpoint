@@ -17,6 +17,7 @@ import {
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
+  parseFettlerProviderChangeEvidence,
   readWardenApprovalArtifact as readSharedWardenApprovalArtifact,
   WARDEN_CANDIDATE_REVIEW_LIMITS,
 } from "@mendpoint/agent";
@@ -542,6 +543,20 @@ export async function sealWardenCandidateApproval(
   ) {
     throw new Error("warden_candidate_approval_binding_invalid");
   }
+  const intake = validated.result.intake && typeof validated.result.intake === "object" &&
+    !Array.isArray(validated.result.intake)
+    ? validated.result.intake as Record<string, unknown>
+    : null;
+  const providerChange = intake?.fettlerProviderChange === undefined
+    ? null
+    : parseFettlerProviderChangeEvidence(intake.fettlerProviderChange);
+  if (providerChange && (
+    providerChange.repositoryId !== source.repositoryId ||
+    providerChange.snapshotId !== source.snapshotId ||
+    providerChange.revision !== source.revision
+  )) {
+    throw new Error("fettler_provider_change_evidence_binding_mismatch");
+  }
   let totalBytes = 0;
   const files = validated.changedPaths.map((path) => {
     const before = validated.sourceFiles.get(path) ?? null;
@@ -563,7 +578,9 @@ export async function sealWardenCandidateApproval(
     });
   });
   const artifact = {
-    schemaVersion: validated.reviewEvidence.schemaVersion === 2 ? 4 : 3,
+    schemaVersion: providerChange
+      ? validated.reviewEvidence.schemaVersion === 2 ? 6 : 5
+      : validated.reviewEvidence.schemaVersion === 2 ? 4 : 3,
     tenantId: input.tenantId,
     repositoryId: source.repositoryId,
     snapshotId: source.snapshotId,
@@ -572,6 +589,7 @@ export async function sealWardenCandidateApproval(
     reviewerPrincipalId: input.reviewerPrincipalId!.trim(),
     rationale: input.rationale!.trim(),
     reviewEvidence: validated.reviewEvidence,
+    ...(providerChange ? { fettlerProviderChange: providerChange } : {}),
     changedPaths: [...validated.changedPaths],
     sourceDigest: validated.sourceDigest,
     candidate: {

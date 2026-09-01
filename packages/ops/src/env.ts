@@ -57,71 +57,6 @@ export function isProduction(): boolean {
 }
 
 /**
- * Customer readiness is a three-valued fact, never a boolean pin.
- *
- * A customer deployment declares its own readiness through
- * MENDPOINT_CUSTOMER_READY rather than inheriting a hardcoded constant:
- *   - "1"  the deployment declares itself ready;
- *   - "0"  the deployment declares itself not ready (an honest hold);
- *   - anything else, or unset  the declaration could not be determined.
- *
- * The third state must never collapse into "ready": an indeterminate or
- * unmet deployment fails closed. When readiness cannot be honestly claimed the
- * specific reason(s) are named, so an operator sees which precondition blocks
- * readiness instead of a single opaque zero.
- */
-export type CustomerReadinessStatus = "ready" | "not_ready" | "indeterminate";
-
-export type CustomerReadinessAssessment = {
-  status: CustomerReadinessStatus;
-  declared: CustomerReadinessStatus;
-  reasons: string[];
-};
-
-/**
- * Combine a deployment's readiness declaration with the preconditions it has
- * failed to meet. `unmetPreconditions` is the already-computed, named list of
- * blockers the caller can see (for the boot gate, the profile errors; for the
- * runtime probe, the env-report errors). This function never re-derives them —
- * it only decides whether the declaration may honestly read as ready.
- */
-export function assessCustomerReadiness(
-  env: Readonly<Record<string, string | undefined>>,
-  unmetPreconditions: readonly string[] = [],
-): CustomerReadinessAssessment {
-  const declared = resolveEitherRenamedEnv(env, "MENDPOINT_CUSTOMER_READY")?.trim();
-  if (declared !== "0" && declared !== "1") {
-    return {
-      status: "indeterminate",
-      declared: "indeterminate",
-      reasons: [
-        `MENDPOINT_CUSTOMER_READY could not be determined: set it to exactly "1" (this deployment declares itself ready) or "0" (declares itself not ready); got ${
-          declared ? JSON.stringify(declared) : "unset"
-        }`,
-      ],
-    };
-  }
-  if (declared === "0") {
-    return {
-      status: "not_ready",
-      declared: "not_ready",
-      reasons: [
-        "MENDPOINT_CUSTOMER_READY=0: this deployment declares itself not ready",
-        ...unmetPreconditions,
-      ],
-    };
-  }
-  if (unmetPreconditions.length > 0) {
-    return {
-      status: "not_ready",
-      declared: "ready",
-      reasons: [...unmetPreconditions],
-    };
-  }
-  return { status: "ready", declared: "ready", reasons: [] };
-}
-
-/**
  * Validate env for API process.
  * Production requires API_AUTH=required (or on) and a stable data dir.
  */
@@ -172,7 +107,46 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
     CORS_ORIGINS: env.CORS_ORIGINS,
     TRUST_PROXY: env.TRUST_PROXY,
     TRUST_PROXY_SECRET: env.TRUST_PROXY_SECRET ? "[set]" : undefined,
+    MENDPOINT_SECRET_LIFECYCLE_ENABLED: env.MENDPOINT_SECRET_LIFECYCLE_ENABLED,
+    MENDPOINT_ENVELOPE_KEY_CATALOG_JSON: env.MENDPOINT_ENVELOPE_KEY_CATALOG_JSON ? "[set]" : undefined,
+    MENDPOINT_SECRET_BREAK_GLASS: env.MENDPOINT_SECRET_BREAK_GLASS,
+    MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON: env.MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON ? "[set]" : undefined,
+    MENDPOINT_SECRET_LINEAGE_KEYRING_JSON: env.MENDPOINT_SECRET_LINEAGE_KEYRING_JSON ? "[set]" : undefined,
   };
+
+  const secretLifecycleEnabled = env.MENDPOINT_SECRET_LIFECYCLE_ENABLED === "1";
+  if (
+    env.MENDPOINT_SECRET_LIFECYCLE_ENABLED !== undefined &&
+    env.MENDPOINT_SECRET_LIFECYCLE_ENABLED !== "0" &&
+    env.MENDPOINT_SECRET_LIFECYCLE_ENABLED !== "1"
+  ) {
+    errors.push("MENDPOINT_SECRET_LIFECYCLE_ENABLED must be exactly 0 or 1");
+  }
+  const secretLifecycleBindings = [
+    "MENDPOINT_ENVELOPE_KEY_CATALOG_JSON",
+    "MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON",
+    "MENDPOINT_SECRET_LINEAGE_KEYRING_JSON",
+  ] as const;
+  if (mode === "production" && secretLifecycleEnabled) {
+    for (const name of secretLifecycleBindings) {
+      if (!env[name]?.trim()) {
+        errors.push(`${name} is required when MENDPOINT_SECRET_LIFECYCLE_ENABLED=1 in production`);
+      }
+    }
+    if (env.MENDPOINT_SECRET_BREAK_GLASS !== "true" && env.MENDPOINT_SECRET_BREAK_GLASS !== "false") {
+      errors.push(
+        "MENDPOINT_SECRET_BREAK_GLASS must be explicitly true or false when MENDPOINT_SECRET_LIFECYCLE_ENABLED=1 in production",
+      );
+    }
+  }
+  if (!secretLifecycleEnabled && (
+    secretLifecycleBindings.some((name) => Boolean(env[name]?.trim())) ||
+    env.MENDPOINT_SECRET_BREAK_GLASS === "true"
+  )) {
+    errors.push(
+      "Secret lifecycle authority bindings require MENDPOINT_SECRET_LIFECYCLE_ENABLED=1; partial or inactive bindings are forbidden",
+    );
+  }
 
   // Retired environment names (Transformer -> Regauge): the legacy name is no
   // longer read. A deployment that still sets only the retired legacy name would

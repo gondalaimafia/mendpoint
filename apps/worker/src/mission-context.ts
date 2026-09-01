@@ -14,23 +14,26 @@
  * `no_mission_bound` — distinct from "store unavailable" — while the tenant-scoped
  * organization memory still applies. When a Fettler job IS mission-bound (a
  * separate, acknowledged binding gap), passing the resolved `mission` lights up
- * decisions, exceptions, verification, and history too.
+ * decisions, exceptions, verification, history, and mission artifacts too.
  */
 import {
   classifyMissionVerificationEvidence,
   evaluateMissionExceptions,
   getActiveMissionDecisions,
   getMissionPolicyEnvelope,
+  listMissionArtifacts,
   listMissionVerifications,
   listOrganizationMemory,
   listTrajectories,
   resolveMissionSnapshotIdentity,
+  selectCurrentVerificationRecords,
   type AppDb,
   type Mission,
   type MissionVerificationStanding,
 } from "@mendpoint/db";
 import {
   compileAndRenderMissionContext,
+  organizationMemoryScopeApplies,
   policyEnvelopeDirectives,
   type CompiledMissionContext,
   type InheritedContextEnvelope,
@@ -38,6 +41,21 @@ import {
   type VerificationInput,
 } from "@mendpoint/pipeline";
 import { queryFettlerEndpointImpact, type GraphLearnDb } from "@mendpoint/graph-learn";
+import { createHash } from "node:crypto";
+
+/**
+ * Mission and fallback repository ids must agree when both are present. Silently
+ * picking one would consult the wrong tenant surface (or pin the wrong identity
+ * on the envelope). This is an identity contradiction, not a store read.
+ */
+function boundRepositoryId(params: BuildMissionContextParams): string | null {
+  const missionRepo = params.mission?.repositoryId ?? null;
+  const fallbackRepo = params.fallback.repositoryId;
+  if (missionRepo && fallbackRepo && missionRepo !== fallbackRepo) {
+    throw new Error("mission_context_repository_mismatch");
+  }
+  return missionRepo ?? fallbackRepo;
+}
 
 export type BuildMissionContextParams = Readonly<{
   tenantId: string;
@@ -59,7 +77,32 @@ export type BuildMissionContextParams = Readonly<{
    * (`getGraphLearnDb` is not a production graph). Tests inject `openGraphLearnMemory()`.
    */
   graphDb?: GraphLearnDb | null;
+  /**
+   * Why `graphDb` is absent, when the caller resolved a handle and it came back
+   * unavailable. `resolveTenantGraphHandle` distinguishes five causes and the
+   * caller must not collapse them: the section still reports `store_not_available`
+   * (so the fail-closed scan is unaffected) and carries this as `detail`.
+   */
+  graphUnavailableReason?: string | null;
 }>;
+
+/**
+ * Bounded, stable entry id for an absence (`no_current_evidence`) verification.
+ * The absence paths carry no record id, so the id must be derived from the scope.
+ * A production scope is `warden.campaign.execute:<campaignId>:<targetId>:candidate:
+ * <64 hex>` — with the real generators (campaignId 49 chars, targetId 68 chars) the
+ * scope is 217 chars, and the raw `verification:<scope>` id was 230. The compiler
+ * validates ids against `maxIdentifier` (200) with a THROW, not a clip, so an
+ * over-long id sinks the whole mission context to `context_not_loaded` on exactly
+ * the missions this scoping serves. Keying on a sha256 of the scope fixes the id at
+ * 77 chars: stable across runs, unique per verification family (sha256 is
+ * collision-resistant), and its `verification:` namespace never overlaps a real
+ * record id. The id is opaque downstream — recorded in context refs, never parsed
+ * back into a scope.
+ */
+function verificationAbsenceEntryId(scope: string): string {
+  return `verification:${createHash("sha256").update(scope, "utf8").digest("hex")}`;
+}
 
 /** Map a per-scope verification standing to the compiler's carried-through input. */
 function verificationInputsForStanding(
@@ -95,7 +138,7 @@ function verificationInputsForStanding(
   // "never verified" stays distinct from "only stale" and from a failed current run.
   return {
     tenantId,
-    id: `verification:${scope}`,
+    id: verificationAbsenceEntryId(scope),
     statement: `scope ${scope}`,
     verdict: "none",
     state: "no_current_evidence",
@@ -108,10 +151,21 @@ function buildGraphSource(params: BuildMissionContextParams): MissionContextInpu
   if (!graphVersionId) return { consulted: false, reason: "graph_version_absent" };
   const endpointKey = params.task.endpointKey?.trim() ?? "";
   if (!endpointKey) return { consulted: false, reason: "endpoint_key_absent" };
-  const repositoryId = params.mission?.repositoryId ?? params.fallback.repositoryId;
-  if (!repositoryId) return { consulted: false, reason: "not_applicable_to_task" };
+  // The SAME bound identity the envelope pins on `missionIdentity.repositoryId`.
+  // Deriving a second one here is what let the envelope claim a repository while
+  // the graph section denied one applied. `boundRepositoryId` throws when mission
+  // and fallback disagree, and `readSoftwareGraphVersion` (below, inside
+  // `queryFettlerEndpointImpact`) re-checks `repository_id` against the published
+  // row, so a wrong repository fails closed rather than reading another surface.
+  const repositoryId = boundRepositoryId(params);
+  // A pinned graph version and a live endpoint key with NO repository identity at
+  // all is an incomplete binding, not "this task has no graph". It fails closed.
+  if (!repositoryId) return { consulted: false, reason: "graph_repository_unresolved" };
   const graphDb = params.graphDb ?? null;
-  if (!graphDb) return { consulted: false, reason: "store_not_available" };
+  if (!graphDb) {
+    const detail = params.graphUnavailableReason?.trim() ?? "";
+    return { consulted: false, reason: "store_not_available", ...(detail ? { detail } : {}) };
+  }
   try {
     const impact = queryFettlerEndpointImpact(graphDb, {
       tenantId: params.tenantId,
@@ -123,7 +177,16 @@ function buildGraphSource(params: BuildMissionContextParams): MissionContextInpu
       maxRelationships: 100,
     });
     return { consulted: true, impact };
-  } catch {
+  } catch (error) {
+    // The pin resolved to no published version for this tenant/repository —
+    // unpublished, deleted, or scoped elsewhere. That is a DANGLING PIN, not the
+    // `graph_version_absent` of "nothing was pinned", and it must fail closed
+    // under its own reason. Every other throw (integrity, scope, identity,
+    // canonical, query bounds) stays `graph_projection_failed`, so an unrecognised
+    // failure degrades to the closed side, never the reassuring one.
+    if (error instanceof Error && error.message === "software_graph_version_not_found") {
+      return { consulted: false, reason: "graph_version_unresolvable" };
+    }
     return { consulted: false, reason: "graph_projection_failed" };
   }
 }
@@ -139,11 +202,23 @@ export function buildMissionContext(
   params: BuildMissionContextParams,
 ): CompiledMissionContext {
   const { tenantId, mission } = params;
+  const repositoryId = boundRepositoryId(params);
 
   // Organization memory is tenant-scoped and applies with or without a mission.
   // Subject key is the memory scope, which decisions share, so a decision and a
   // memory on the same scope contend under the single precedence resolver.
-  const memoryHeads = listOrganizationMemory(db, { tenantId });
+  //
+  // `listOrganizationMemory` is tenant-wide, so repository-scoped memory for OTHER
+  // repositories must be dropped here: it is not evidence about this task, and the
+  // compiler caps each section, so unrelated repositories would crowd out relevant
+  // memory. A task bound to no repository (`repositoryId === null`) is bound to no
+  // repository-scoped convention either, so the set is empty rather than unknown.
+  const contextRepositoryIds = (() => {
+    const repositoryId = mission?.repositoryId ?? params.fallback.repositoryId;
+    return repositoryId ? [repositoryId] : [];
+  })();
+  const memoryHeads = listOrganizationMemory(db, { tenantId })
+    .filter((record) => organizationMemoryScopeApplies(record.scope, contextRepositoryIds));
   const organizationMemory: MissionContextInput["organizationMemory"] = {
     consulted: true,
     records: memoryHeads.map((record) => ({ subjectKey: record.scope, record })),
@@ -191,19 +266,35 @@ export function buildMissionContext(
     if (!mission.snapshotId) return { consulted: false, reason: "no_mission_bound" as const };
     const current = resolveMissionSnapshotIdentity(db, tenantId, mission.snapshotId);
     const all = listMissionVerifications(db, tenantId, mission.id);
-    const scopes = [...new Set(all.map((record) => record.scope))].sort();
+    // Only the newest record in each scope family is current. An older
+    // candidate's passed row on the same source snapshot must not appear as
+    // current_evidence beside a later attempt. A family whose newest record
+    // cannot be determined (a createdAt tie) is refused, not guessed: it
+    // surfaces as no_current_evidence rather than crediting either contender.
+    const selections = selectCurrentVerificationRecords(all);
     return {
       consulted: true,
-      records: scopes.map((scope) =>
-        verificationInputsForStanding(
+      records: selections.map((selection) => {
+        // An unresolvable candidate tie is an absence with its own reason, decided
+        // by selectCurrentVerificationRecords and carried through the single
+        // standing->input mapper — never a hand-built input with an ad-hoc reason.
+        // The reason is a first-class MissionVerificationAbsence member, so the
+        // currency decision stays owned by the verification classification types.
+        if (selection.standing === "ambiguous") {
+          return verificationInputsForStanding(tenantId, selection.family, {
+            standing: "no_current_evidence",
+            reason: "ambiguous_current_candidate",
+          });
+        }
+        return verificationInputsForStanding(
           tenantId,
-          scope,
+          selection.record.scope,
           classifyMissionVerificationEvidence(
-            all.filter((record) => record.scope === scope),
+            all.filter((row) => row.scope === selection.record.scope),
             current,
           ),
-        ),
-      ),
+        );
+      }),
     };
   })();
 
@@ -235,13 +326,39 @@ export function buildMissionContext(
       }
     : { consulted: false, reason: "no_mission_bound" };
 
+  const artifacts: MissionContextInput["artifacts"] = (() => {
+    if (!mission) return { consulted: false, reason: "no_mission_bound" };
+    try {
+      return {
+        consulted: true,
+        records: listMissionArtifacts(db, tenantId, mission.id, undefined, 32).map((artifact) => ({
+          tenantId,
+          id: artifact.id,
+          role: artifact.role,
+          artifactId: artifact.artifactId,
+          artifactSha256: artifact.artifactSha256,
+          label: artifact.label,
+          createdAt: artifact.createdAt,
+          taskId: artifact.taskId,
+        })),
+      };
+    } catch (error) {
+      console.error(
+        `  mission artifact context read failed tenant=${tenantId} mission=${mission.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return { consulted: false, reason: "store_not_available" };
+    }
+  })();
+
   const input: MissionContextInput = {
     tenantId,
     mission: {
       missionId,
       product: mission?.product ?? "fettler",
       objective: mission?.objective ?? params.fallback.objective,
-      repositoryId: mission?.repositoryId ?? params.fallback.repositoryId,
+      repositoryId,
       snapshotId,
       graphVersionId: mission?.graphVersionId ?? null,
     },
@@ -260,6 +377,7 @@ export function buildMissionContext(
     history,
     verification,
     exceptions,
+    artifacts,
     ...(params.evidenceRefs ? { evidenceRefs: params.evidenceRefs } : {}),
   };
 
@@ -272,7 +390,11 @@ export function buildMissionContext(
  * prompt is not grown for nothing.
  */
 export function hasInheritedContent(envelope: InheritedContextEnvelope): boolean {
-  if (envelope.missionIdentity.graphVersionId !== null) return true;
+  // NOTE: a graph-version PIN is deliberately not content. It records what we
+  // meant to consult, not what we read, so answering "yes, there is content"
+  // from it makes every not-consulted graph reason — including ones added later —
+  // read as `loaded` (docs/agents/FAILURE_MODES.md §1). Content is claimed below
+  // only by sections that actually carry entries or bytes.
   if (envelope.relevantOrgMemory.status === "consulted" && envelope.relevantOrgMemory.applied.length > 0) {
     return true;
   }
@@ -280,10 +402,17 @@ export function hasInheritedContent(envelope: InheritedContextEnvelope): boolean
   if (envelope.unresolvedExceptions.status === "consulted" && envelope.unresolvedExceptions.entries.length > 0) {
     return true;
   }
+  if (envelope.missionArtifacts.status === "consulted" && envelope.missionArtifacts.entries.length > 0) {
+    return true;
+  }
   if (envelope.verificationState.status === "consulted" && envelope.verificationState.entries.length > 0) return true;
   if (envelope.policyConstraints.status === "consulted" && envelope.policyConstraints.entries.length > 0) return true;
   // An unreadable envelope always carries the restrictive fallback and must reach the model.
   if (envelope.policyConstraints.status === "unreadable") return true;
+  // A CONSULTED projection is content: the compiler always emits bounded bytes,
+  // including the "we looked and the endpoint is not in this graph" case, which is
+  // itself a real finding. Consulted is the only graph status that may claim
+  // content - every not-consulted reason is adjudicated by the resume classifier.
   if (envelope.graphProjection.status === "consulted") return true;
   return false;
 }

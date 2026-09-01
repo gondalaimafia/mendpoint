@@ -5,11 +5,17 @@ import { resolveRenamedEnv } from "@mendpoint/shared";
 import { TransformerCampaignService } from "./transformer-control-plane.js";
 import { TransformerPilotExecutionService } from "./transformer-pilot-executions.js";
 import { createChangeSourceRoutes } from "./change-sources.js";
-import { createBillingEconomicsRoutes } from "./billing-economics.js";
+import {
+  createBillingEconomicsRoutes,
+  invoiceExportSignerFromEnv,
+} from "./billing-economics.js";
 import { createDesignPartnerApplicationRoutes } from "./design-partner-applications.js";
 import { createPilotSuccessContractRoutes } from "./pilot-success-contracts.js";
 import { createMigrationPrReviewRoutes } from "./review-routes.js";
 import { createTenantMembershipRoutes } from "./tenant-memberships.js";
+import { createServicePrincipalRoutes } from "./service-principals.js";
+import { createIdentitySessionRoutes } from "./identity-sessions.js";
+import { createScimRoutes, scimBindingsFromEnv, validateScimBindings } from "./scim.js";
 import { initializeApiDurableState } from "./production.js";
 import {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
@@ -42,6 +48,8 @@ export function initializeApiRuntime(
 ) {
   return initializeApiDurableState(() => {
     const db = createDb();
+    const scimBindings = scimBindingsFromEnv(env);
+    validateScimBindings(db, scimBindings);
     const transformerCampaigns = new TransformerCampaignService();
     const transformerExecutions = new TransformerPilotExecutionService();
     const transformerMissionAuthority = createAppDbTransformerMissionAuthority(db);
@@ -75,11 +83,17 @@ export function initializeApiRuntime(
         appDb: db,
       }),
       changeSourceRoutes: createChangeSourceRoutes(),
-      billingRoutes: createBillingEconomicsRoutes({ db }),
+      billingRoutes: createBillingEconomicsRoutes({
+        db,
+        invoiceSigner: invoiceExportSignerFromEnv(env),
+      }),
       designPartnerRoutes: createDesignPartnerApplicationRoutes({ db, env }),
       pilotSuccessRoutes: createPilotSuccessContractRoutes({ db }),
       migrationPrRoutes: createMigrationPrReviewRoutes({ db }),
       tenantMembershipRoutes: createTenantMembershipRoutes({ db }),
+      servicePrincipalRoutes: createServicePrincipalRoutes({ db }),
+      identitySessionRoutes: createIdentitySessionRoutes({ db }),
+      scimRoutes: createScimRoutes({ db, bindings: scimBindings }),
     };
   }, env);
 }

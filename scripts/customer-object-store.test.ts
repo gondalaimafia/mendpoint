@@ -1,10 +1,49 @@
 import { createHash } from "node:crypto";
+import type { EventEmitter as EventEmitterType } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse, relative, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import type { PassThrough as PassThroughType } from "node:stream";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const spawnCalls = vi.hoisted(() => [] as Array<{
+  command: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+}>);
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  const { EventEmitter } = await import("node:events");
+  const { PassThrough } = await import("node:stream");
+  const spawn = ((
+    command: string,
+    args: readonly string[] = [],
+    options: { env?: NodeJS.ProcessEnv } = {},
+  ) => {
+    spawnCalls.push({ command, args: [...args], env: { ...options.env } });
+    const child = new EventEmitter() as EventEmitterType & {
+      stdin: PassThroughType;
+      stdout: PassThroughType;
+      stderr: PassThroughType;
+      kill: () => boolean;
+    };
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    queueMicrotask(() => {
+      child.stdout.end(Buffer.from("stub-output"));
+      child.stderr.end();
+      child.emit("exit", 0, null);
+    });
+    return child;
+  }) as unknown as typeof actual.spawn;
+  return { ...actual, spawn };
+});
 import {
   customerObjectStoreProcessEnv,
+  createRcloneCustomerObjectStoreTransport,
   downloadCommittedCustomerBackup,
   loadCustomerBackupRecoveryReceipt,
   loadCustomerObjectStoreConfig,
@@ -70,6 +109,7 @@ class MemoryTransport implements CustomerObjectStoreTransport {
 }
 
 afterEach(() => {
+  spawnCalls.length = 0;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -87,6 +127,44 @@ function config() {
 }
 
 describe("customer object store", () => {
+  it("pins the spawned rclone process to no configuration file after the privilege drop", async () => {
+    expect(config().connectionArgs).toEqual([
+      "--config", process.platform === "win32" ? "NUL" : "/dev/null",
+      "--s3-provider", "Other",
+      "--s3-env-auth",
+      "--s3-endpoint", "https://fly.storage.tigris.dev",
+      "--s3-region", "auto",
+    ]);
+    const configIndex = config().connectionArgs.indexOf("--config");
+    expect(configIndex).toBeGreaterThanOrEqual(0);
+    expect(config().connectionArgs[configIndex + 1]).toBe(
+      process.platform === "win32" ? "NUL" : "/dev/null",
+    );
+    const env = {
+      PATH: "safe-path",
+      HOME: "/root",
+      RCLONE_CONFIG: "/root/.rclone.conf",
+      AWS_ACCESS_KEY_ID: "access",
+      AWS_SECRET_ACCESS_KEY: "secret",
+    };
+    const transport = createRcloneCustomerObjectStoreTransport(config(), env);
+    await expect(transport.read("health/probe")).resolves.toEqual(Buffer.from("stub-output"));
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]).toEqual({
+      command: "rclone",
+      args: [
+        "cat",
+        ":s3:customer-bucket/health/probe",
+        ...config().connectionArgs,
+      ],
+      env: {
+        PATH: "safe-path",
+        AWS_ACCESS_KEY_ID: "access",
+        AWS_SECRET_ACCESS_KEY: "secret",
+      },
+    });
+  });
+
   it("scopes credentials to rclone and proves startup write, read, and delete", async () => {
     const env = customerObjectStoreProcessEnv({
       PATH: "safe-path",

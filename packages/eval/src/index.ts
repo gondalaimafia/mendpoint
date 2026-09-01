@@ -143,6 +143,8 @@ export {
 } from "./performance-runner.js";
 export {
   ROUTER_VALUE_PROOF_VERSION,
+  ROUTER_VALUE_MAX_OBSERVATIONS,
+  ROUTER_VALUE_MAX_EVIDENCE_REFS_PER_OBSERVATION,
   evaluateRouterValueProof,
   type RouterValueArm,
   type RouterValueObservation,
@@ -150,6 +152,7 @@ export {
   type RouterValueProofReport,
 } from "./router-value-proof.js";
 export {
+  ROUTER_VALUE_INPUT_MAX_BYTES,
   runRouterValueProofArtifact,
   persistRouterValueProofReport,
   type RouterValueProofInput,

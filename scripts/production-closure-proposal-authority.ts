@@ -396,6 +396,14 @@ export async function verifyProductionClosureProposal(
     policyBytes?: Buffer;
     rotationLedgerBytes?: Buffer;
   } = {},
+  // The pull request under judgement, from the CI-attested MENDPOINT_CLOSURE_PR_NUMBER
+  // when it is available. In PRODUCTION it is usually ABSENT: the workflow sets that
+  // env var only on the closure:github:check step, not on this proposal step (leaving
+  // it optional here is what keeps the pinned workflow out of this rotation's
+  // changeset — see main()). So the merge-base bootstrapChanged rule below is the
+  // production path for the self-removal exemption; this value refines it only when a
+  // caller (a future workflow wiring, or a unit test) does supply it.
+  currentPullRequestNumber?: number,
 ): Promise<ProposalAuthorityObservation> {
   const issues: ProductionClosureMatrixIssue[] = [];
   const observation: ProposalAuthorityObservation = {
@@ -657,6 +665,10 @@ export async function verifyProductionClosureProposal(
       );
       return observation;
     }
+    const mergeBaseBootstrap = mergeBaseMatrix.releaseTrain?.currentPullRequestBootstrap;
+    const proposedBootstrap = matrix.releaseTrain?.currentPullRequestBootstrap;
+    const bootstrapChanged =
+      JSON.stringify(mergeBaseBootstrap ?? null) !== JSON.stringify(proposedBootstrap ?? null);
     const changedProviderRecords = <T extends { number: number }>(
       baseRecords: readonly T[],
       proposedRecords: readonly T[],
@@ -698,7 +710,12 @@ export async function verifyProductionClosureProposal(
       mergeBaseMatrix.releaseTrain?.pullRequests ?? [],
       matrix.releaseTrain?.pullRequests ?? [],
       "pull request",
-      matrix.releaseTrain?.currentPullRequestBootstrap?.number,
+      // Event-sourced identity: the self-removal exemption follows the CI-attested
+      // pull request number (MENDPOINT_CLOSURE_PR_NUMBER). Without it (pure-function
+      // callers) it falls back to #539's rule: only a bootstrap CHANGED by this
+      // proposal may exempt its own promoted record, so an inherited or forged
+      // bootstrap number can never hide a removal.
+      currentPullRequestNumber ?? (bootstrapChanged ? proposedBootstrap?.number : undefined),
     );
     observation.providerValidationIssues = changedProviderRecords(
       mergeBaseMatrix.issueAuthority?.issues ?? [],
@@ -726,10 +743,16 @@ export async function verifyProductionClosureProposal(
       );
       return observation;
     }
-    const bootstrapRotation = matrix.releaseTrain?.currentPullRequestBootstrap?.authorityRotation;
+    const bootstrapRotation = proposedBootstrap?.authorityRotation;
     const policyChanged = proposalTouched(policyLocator);
     const ledgerChanged = proposalTouched(ledgerLocator);
-    const rotationRequested = policyChanged || ledgerChanged || bootstrapRotation !== undefined;
+    // A bootstrap rotation inherited unchanged from the merge base belongs to
+    // an earlier proposal. Treating its mere presence as a new request makes
+    // every later product PR owe another receipt. Only a bootstrap introduced
+    // or changed by this proposal can request rotation; direct policy or ledger
+    // edits always remain rotation requests regardless of bootstrap state.
+    const rotationRequested =
+      policyChanged || ledgerChanged || (bootstrapChanged && bootstrapRotation !== undefined);
     if (!rotationRequested) {
       for (const [path, expectedDigest] of Object.entries(policy.protectedFiles)) {
         const locator = normalizedPath(path) ?? "";
@@ -832,14 +855,17 @@ export async function verifyProductionClosureProposal(
       }
       try {
         const baseMatrixBytes = await readBasePath("docs/PRODUCTION_CLOSURE_MATRIX.json");
-        const currentPullRequestNumber = matrix.releaseTrain.currentPullRequestBootstrap?.number ?? -1;
+        // Event-sourced identity: prefer the CI-attested number for the scope view,
+        // falling back to the declared bootstrap number for pure-function callers.
+        const scopeCurrentNumber =
+          currentPullRequestNumber ?? matrix.releaseTrain.currentPullRequestBootstrap?.number ?? -1;
         if (
           !baseMatrixBytes ||
           JSON.stringify(stableAuthorityRotationMatrixView(
             JSON.parse(baseMatrixBytes.toString("utf8")),
-            currentPullRequestNumber,
+            scopeCurrentNumber,
           )) !==
-            JSON.stringify(stableAuthorityRotationMatrixView(matrix, currentPullRequestNumber))
+            JSON.stringify(stableAuthorityRotationMatrixView(matrix, scopeCurrentNumber))
         ) {
           add(
             issues,
@@ -935,9 +961,15 @@ export async function verifyProductionClosureProposal(
         // local Git object database (closure:proposal:check reads the checked-out
         // repo), which cannot see OTHER open PRs' force-pushed heads — "absent
         // locally" is not "absent on GitHub". Skip the strict open-PR head
-        // reachability report here; the live-API PR_METADATA_MISMATCH verification in
-        // github-authority full_release_train scope remains the oracle for open-PR
-        // head accuracy. Merge/deploy revisions are on main and stay locally checked.
+        // reachability report here. Note (#530): github-authority NO LONGER verifies
+        // an open sibling's head or state — that live mirror was removed as
+        // unsatisfiable, since a sibling re-pushed or merged after the snapshot would
+        // fail every other PR's snapshot through no fault of the author. Open-sibling
+        // head/state is now verified by nobody by design; what github-authority does
+        // still guarantee live is REQUIREMENT_CLOSURE_PATH_PR_NOT_LIVE_OPEN (an
+        // unfinished requirement's cited closure PR must be in the live open set) and
+        // the merged-record binding. Merge/deploy revisions are on main and stay
+        // locally checked.
         openPullRequestHeadsVerifiable: false,
         revisionIsAncestor: (revision, descendant) => ancestryResults.get(`${revision}:${descendant}`) === true,
         readArtifact: (locator) => bytesByPath.get(normalizedPath(locator) ?? "") ?? null,
@@ -1169,6 +1201,21 @@ async function main(): Promise<void> {
   const configuredBaseRevision = requiredEnvironment("MENDPOINT_AUTHORITY_BASE_SHA");
   if (baseRevision !== configuredBaseRevision) throw new Error("checked-out base authority revision is not exact");
   const repository = requiredEnvironment("GITHUB_REPOSITORY");
+  // Optional: the workflow does not set MENDPOINT_CLOSURE_PR_NUMBER for the proposal
+  // step (adding it would edit the pinned workflowPath and force a successor-ceremony
+  // rotation). When absent, the self-removal exemption falls back to the merge-base
+  // bootstrapChanged rule and the rotation number-binding is enforced by the
+  // provider-side github authority, which always has the event pull request number.
+  const rawPullRequestNumber = process.env.MENDPOINT_CLOSURE_PR_NUMBER?.trim();
+  const currentPullRequestNumber = rawPullRequestNumber
+    ? Number(rawPullRequestNumber)
+    : undefined;
+  if (
+    currentPullRequestNumber !== undefined &&
+    (!Number.isInteger(currentPullRequestNumber) || currentPullRequestNumber < 1)
+  ) {
+    throw new Error("MENDPOINT_CLOSURE_PR_NUMBER must be a positive integer when set");
+  }
   const observation = await verifyProductionClosureProposal(
     policy,
     repository,
@@ -1180,6 +1227,7 @@ async function main(): Promise<void> {
       policyBytes,
       rotationLedgerBytes,
     },
+    currentPullRequestNumber,
   );
   const outputPath = requiredEnvironment("MENDPOINT_PROPOSAL_OBSERVATION_PATH");
   writeFileSync(outputPath, `${JSON.stringify(observation, null, 2)}\n`, { mode: 0o600 });

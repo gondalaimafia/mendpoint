@@ -17,10 +17,10 @@ vi.mock("next/link", () => ({
 import { Nav } from "./nav";
 
 describe("workspace navigation", () => {
-  it("uses the Regauge initial for the compatibility route", () => {
+  it("uses the ReGauge initial for the compatibility route", () => {
     const html = renderToStaticMarkup(<Nav />);
     expect(html).toMatch(/nav-glyph[^>]*>F<\/span><span>Fettler runs<\/span>/);
-    expect(html).toMatch(/nav-glyph[^>]*>R<\/span><span>Regauge<\/span>/);
+    expect(html).toMatch(/nav-glyph[^>]*>R<\/span><span>ReGauge<\/span>/);
   });
 
   it("links the customer outcome metrics dashboard", () => {

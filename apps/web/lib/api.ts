@@ -126,6 +126,57 @@ export type MigrationPr = {
     languagesSupported?: string[];
     languagesPresent?: string[];
   } | null;
+  /** Identifies the durable delivery lane that produced this console row. */
+  source?: "legacy_migration" | "fettler_candidate";
+  /** Digest verified candidate authority. Present only for the Fettler lane. */
+  candidateDelivery?: {
+    source: "fettler_candidate";
+    runId: string;
+    deliveryStatus: "delivery_pending" | "delivered" | "delivery_failed";
+    outcome: "merged" | "closed_unmerged" | "reverted" | null;
+    repositoryId: string;
+    snapshotId: string;
+    baseBranch: string;
+    expectedBaseRevision: string;
+    deliveredBaseRevision: string | null;
+    deliveredCommitSha: string | null;
+    providerChange: {
+      schemaVersion: 1;
+      providerSlug: string;
+      changeId: string;
+      pipelineJobId: string;
+      contentHash: string;
+      fromVersionId: string;
+      fromVersionLabel: string;
+      toVersionId: string;
+      toVersionLabel: string;
+      repositoryId: string;
+      snapshotId: string;
+      revision: string;
+      graphVersionId: string | null;
+      graphContextArtifactId: string | null;
+      impactEvidenceDigest: string;
+      overallConfidence: "medium" | "high";
+      whatChanged: string;
+      knownFacts: readonly string[];
+      unknowns: readonly string[];
+      whyAffected: string;
+    } | null;
+    proposedMigration: {
+      summary: string;
+      edits: readonly {
+        path: string;
+        explanation: string;
+        risk: "low" | "medium" | "high" | null;
+        confidence: number | null;
+      }[];
+    };
+    verification: {
+      summary: string;
+      commands: readonly { command: string; outputSha256: string }[];
+    };
+    changedPaths: readonly string[];
+  };
 };
 
 export type MigrationPrReview = {

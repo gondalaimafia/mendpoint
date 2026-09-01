@@ -1,6 +1,8 @@
 export {
   RELEASE,
+  REGAUGE_RELEASE,
   releaseBanner,
+  resolveRelease,
   resolveReleaseRevision,
   type ReleaseInfo,
 } from "./release.js";
@@ -10,12 +12,34 @@ export {
   deploymentProfile,
   validateApiEnv,
   assertApiEnvOrExit,
-  assessCustomerReadiness,
   type EnvReport,
   type DeploymentProfile,
-  type CustomerReadinessStatus,
-  type CustomerReadinessAssessment,
 } from "./env.js";
+export {
+  CUSTOMER_QUALIFICATION_BUNDLE_SCHEMA,
+  loadCustomerQualificationAuthority,
+  type CustomerQualificationAuthorityLoadReason,
+  type CustomerQualificationAuthorityLoadResult,
+  type LoadCustomerQualificationAuthorityInput,
+} from "./customer-qualification-authority.js";
+export {
+  assessCustomerReadiness,
+  computeCustomerReadiness,
+  parseCustomerQualificationAttestation,
+  verifyCustomerSandboxReceipt,
+  CUSTOMER_QUALIFICATION_ATTESTATION_SCHEMA,
+  CUSTOMER_QUALIFICATION_REQUIREMENT_COUNT,
+  type CustomerCriticalHealth,
+  type CustomerQualificationAttestation,
+  type CustomerQualificationTrustRoots,
+  type CustomerReadinessActivation,
+  type CustomerReadinessAssessment,
+  type CustomerReadinessAuthority,
+  type CustomerReadinessInput,
+  type CustomerReadinessReason,
+  type CustomerReadinessStatus,
+  type CustomerSandboxReceiptVerification,
+} from "./customer-readiness.js";
 export {
   rateLimit,
   rateLimitKeyFromRequest,

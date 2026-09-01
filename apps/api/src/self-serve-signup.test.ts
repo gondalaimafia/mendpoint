@@ -1,7 +1,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createApiKey, createDb, type AppDb } from "@mendpoint/db";
+import {
+  createApiKey,
+  createDb,
+  getPrincipal,
+  putTenantMembership,
+  type AppDb,
+} from "@mendpoint/db";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAuthMiddleware, type ApiEnv } from "./auth.js";
@@ -85,6 +91,46 @@ describe("self-serve signup API", () => {
     const second = await app.request("/auth/signup", { method: "POST", headers: json, body: JSON.stringify({ email: "founder@acme.test" }) });
     expect(second.status).toBe(409);
     expect(await second.json()).toMatchObject({ error: "self_serve_account_exists" });
+  });
+
+  it("migrates a legacy self-serve owner key to the founding human authority", async () => {
+    const { app, db } = fixture();
+    const createdAt = "2026-08-13T00:00:00.000Z";
+    db.raw.prepare(
+      `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+       VALUES ('tenant_ss_legacy', 'ss-legacy', 'Legacy', 'free', 'active', 3, ?)`,
+    ).run(createdAt);
+    putTenantMembership(db, {
+      tenantId: "tenant_ss_legacy",
+      issuer: "https://self-serve.mendpoint.ai",
+      subject: "legacy@example.test",
+      email: "legacy@example.test",
+      displayName: "Legacy",
+      role: "owner",
+      status: "active",
+      updatedAt: createdAt,
+    });
+    const legacy = createApiKey(db, {
+      id: "key_ss_legacy_owner",
+      name: "Legacy owner key",
+      tenantId: "tenant_ss_legacy",
+      scopes: ["*"],
+      createdAt,
+    });
+
+    const response = await app.request("/tenants/memberships", {
+      headers: { Authorization: `Bearer ${legacy.token}` },
+    });
+    expect(response.status).toBe(200);
+    const key = db.raw.prepare(
+      "SELECT authority_principal_id, authority_role FROM api_keys WHERE id = ?",
+    ).get(legacy.id) as { authority_principal_id: string | null; authority_role: string | null };
+    expect(key.authority_role).toBe("owner");
+    expect(getPrincipal(db, "tenant_ss_legacy", key.authority_principal_id!)).toMatchObject({
+      kind: "human",
+      subject: "https://self-serve.mendpoint.ai|legacy@example.test",
+      audience: "https://self-serve.mendpoint.ai",
+    });
   });
 
   it("isolates the new tenant: its key cannot read another tenant's data", async () => {

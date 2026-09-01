@@ -59,6 +59,16 @@ interface Entry {
 interface Manifest {
   schemaVersion: 1;
   entries: Entry[];
+  runtimeEntries?: RuntimeEntry[];
+}
+
+interface RuntimeEntry {
+  name: string;
+  type: "secret" | "variable";
+  scope: "protected_application_environment";
+  status: "required_when_active";
+  activatedBy: string;
+  note?: string;
 }
 
 interface Issue {
@@ -315,6 +325,22 @@ export function staticIssues(manifest: Manifest, workflowDir: string = WORKFLOW_
         }
       }
     }
+  }
+  const runtimeNames = new Set<string>();
+  for (const entry of manifest.runtimeEntries ?? []) {
+    if (
+      !/^[A-Z][A-Z0-9_]+$/u.test(entry.name) || runtimeNames.has(entry.name) ||
+      entry.scope !== "protected_application_environment" ||
+      entry.status !== "required_when_active" || !entry.activatedBy.trim()
+    ) {
+      add(
+        issues,
+        "CONFIG_RUNTIME_BINDING_INVALID",
+        entry.name || "unnamed",
+        "runtime binding must be unique and name its protected application scope and activation gate",
+      );
+    }
+    runtimeNames.add(entry.name);
   }
   return issues;
 }

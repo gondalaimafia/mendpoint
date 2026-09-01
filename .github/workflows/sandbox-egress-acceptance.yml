@@ -310,27 +310,317 @@ jobs:
           printf '%s\n' "$targets" > test-results/sandbox-egress/rotation-targets.txt
           while IFS= read -r app; do
             test -n "$app" || continue
-            flyctl secrets set --app "$app" \
-              MENDPOINT_SANDBOX_FLY_IMAGE="$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
-              MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64="$attestation" \
-              MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64="$public_key" \
-              MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID="$key_id" \
-              MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST="$policy_digest" \
-              MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA="$schema"
+            # A direct Machines-API app with a volume is unsafe to rotate through
+            # Launch because it can infer new capacity while the only volume is
+            # attached. Require an existing Launch process group before rotating
+            # anything, preserve that group while updating the exact Machines,
+            # and prove Launch v2 ownership before deploying the vault generation.
+            machines_json="$(flyctl machine list --app "$app" --json)"
+            jq -e 'length > 0 and all(.[];
+              .state == "started"
+              and (.image_ref.registry | type == "string" and length > 0)
+              and (.image_ref.repository | type == "string" and length > 0)
+              and (.image_ref.digest | type == "string" and test("^sha256:[a-f0-9]{64}$"))
+              and (.config.metadata.fly_process_group | type == "string" and length > 0)
+            )' \
+              <<<"$machines_json" >/dev/null
+            launch_groups_before="$(jq -cS '[.[] | {
+              id,
+              processGroup: .config.metadata.fly_process_group
+            }] | sort_by(.id)' <<<"$machines_json")"
+            # image_refs_before derives from image_ref on BOTH sides of the
+            # post-update comparison, so it stays as-is: it is symmetric and
+            # was never the defect.
+            image_refs_before="$(jq -cS '[.[] | {
+              id,
+              image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")
+            }] | sort_by(.id)' <<<"$machines_json")"
+            # expected_machine_configs WAS the defect: it overrode .image with
+            # a synthesised "registry/repository@digest" and compared that to
+            # the machine's real .config, whose .image is tag-form
+            # ("registry.fly.io/<app>:deployment-<id>", verified live). The two
+            # sides could never be equal, so a SUCCESSFUL rollback was still
+            # scored rollback_failed, which is what drove containment to stop
+            # the production machine. Compare the config Fly actually reports,
+            # and normalise the image's digest suffix on both sides because
+            # flyctl pins "repo:tag" to "repo:tag@sha256:..." when it applies
+            # an update.
+            expected_machine_configs="$(jq -cS '[.[]
+              | {id, state, config: (.config | .image |= split("@sha256:")[0])}
+            ] | sort_by(.id)' <<<"$machines_json")"
+            machine_backup_dir="test-results/sandbox-egress/machine-config-${app}"
+            mkdir -p "$machine_backup_dir"
+            while IFS= read -r machine_id; do
+              [[ "$machine_id" =~ ^[a-f0-9]+$ ]]
+              # Back up the config exactly as Fly reported it. Overriding
+              # .image with a synthesised digest-form string made the restore
+              # payload disagree with the machine's real image.
+              jq -c --arg id "$machine_id" \
+                '.[] | select(.id == $id) | .config' \
+                <<<"$machines_json" >"${machine_backup_dir}/${machine_id}.json"
+            done < <(jq -r '.[].id' <<<"$machines_json")
+
+            contain_current_machines() {
+              local reason="$1"
+              printf 'contain\t%s\n' "$reason" \
+                >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+              if ! containment_before_json="$(flyctl machine list --app "$app" --json)"; then
+                printf '[]\n' \
+                  >"test-results/sandbox-egress/containment-before-${app}.json"
+                printf 'containment_unproven\t%s\n' "$reason" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                return 1
+              fi
+              printf '%s\n' "$containment_before_json" \
+                >"test-results/sandbox-egress/containment-before-${app}.json"
+              if ! jq -e --argjson original "$machines_json" '
+                  ([.[].id] | sort) == ([$original[].id] | sort)
+                ' <<<"$containment_before_json" >/dev/null; then
+                printf 'containment_id_drift\t%s\n' "$reason" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+              fi
+              for containment_attempt in 1 2 3; do
+                if ! containment_pass_json="$(flyctl machine list --app "$app" --json)"; then
+                  break
+                fi
+                printf '%s\n' "$containment_pass_json" \
+                  >"test-results/sandbox-egress/containment-pass-${containment_attempt}-${app}.json"
+                if jq -e 'all(.[]; .state == "stopped")' \
+                    <<<"$containment_pass_json" >/dev/null; then
+                  break
+                fi
+                while IFS= read -r current_machine_id; do
+                  flyctl machine stop "$current_machine_id" --app "$app" || true
+                done < <(jq -r '.[] | select(.state != "stopped") | .id' \
+                  <<<"$containment_pass_json")
+              done
+              if ! contained_machines_json="$(flyctl machine list --app "$app" --json)"; then
+                printf '[]\n' \
+                  >"test-results/sandbox-egress/contained-machines-${app}.json"
+                printf 'containment_unproven\t%s\n' "$reason" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                return 1
+              fi
+              printf '%s\n' "$contained_machines_json" \
+                >"test-results/sandbox-egress/contained-machines-${app}.json"
+              if ! jq -e 'all(.[]; .state == "stopped")' \
+                  <<<"$contained_machines_json" >/dev/null; then
+                printf 'containment_unproven\t%s\n' "$reason" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                return 1
+              fi
+              printf 'containment_proven\t%s\n' "$reason" \
+                >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+            }
+
+            attempted_machine_ids=()
+            # Rollback stays, but it is NOT the safety net. In run 33288965039
+            # the restore itself SUCCEEDED ("Machine 84e696a22eee68 updated
+            # successfully!") and containment stopped the production machine
+            # anyway, because the verification baseline below could never
+            # match. The baseline being correct is what matters here; a
+            # malformed image must be caught before the mutation, not undone
+            # after it.
+            rollback_attempted_machines() {
+              local reason="$1"
+              local rollback_failed=false
+              printf 'rollback\t%s\n' "$reason" \
+                >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+              for attempted_machine_id in "${attempted_machine_ids[@]}"; do
+                if ! flyctl machine update "$attempted_machine_id" --app "$app" \
+                    --machine-config "${machine_backup_dir}/${attempted_machine_id}.json" \
+                    --skip-health-checks --yes; then
+                  rollback_failed=true
+                fi
+              done
+              if [ "$rollback_failed" = false ]; then
+                restored_machines_json="$(flyctl machine list --app "$app" --json)"
+                if ! jq -e --argjson expected "$expected_machine_configs" '
+                    ([.[]
+                      | {id, state, config: (.config | .image |= split("@sha256:")[0])}
+                    ] | sort_by(.id)) == $expected
+                  ' <<<"$restored_machines_json" >/dev/null; then
+                  rollback_failed=true
+                fi
+              fi
+              if [ "$rollback_failed" = true ]; then
+                contain_current_machines "rollback_failed:${reason}"
+              fi
+              return 1
+            }
+
+            # Pre-mutation image guard. flyctl APPENDS the resolved digest to
+            # whatever string --image is given, so a digest-form argument
+            # becomes "repo@sha256:X@sha256:X" and the Machines API rejects it
+            # with "config.image: invalid image identifier". That is exactly
+            # what broke production in run 33288965039: the workflow passed a
+            # single well-formed digest ref and flyctl doubled it. Tag-form is
+            # safe because "repo:tag@sha256:X" is a legal reference. Do NOT
+            # "simplify" this back to
+            # "\(.registry)/\(.repository)@\(.digest)" over image_ref.
+            # After a SUCCESSFUL update Fly stores config.image digest-pinned
+            # ("repo:tag@sha256:X"), so the next rotation reads that shape back
+            # and the guard below would reject it. Hand flyctl the tag it was
+            # pinned from and let flyctl re-append the digest itself, exactly as
+            # it already does for tag-form input. A BARE digest pin
+            # ("repo@sha256:X") carries no tag, so stripping it would resolve
+            # ":latest" - a DIFFERENT image - and it would pass the reference
+            # regex below because the tag group is optional. Leave that shape
+            # intact so the guard still rejects it.
+            mutable_image_jq='
+              def mutable_image:
+                if type != "string" then .
+                else
+                  . as $ref
+                  | ($ref | split("@sha256:")[0]) as $base
+                  | if $ref == $base then $ref
+                    elif ($base | split("/") | last | contains(":")) then $base
+                    else $ref
+                    end
+                end;
+            '
+            assert_mutable_image() {
+              local guard_machine_id="$1"
+              local candidate="$2"
+              local canonical
+              canonical="$(jq -r --arg id "$guard_machine_id" \
+                "$mutable_image_jq"'.[] | select(.id == $id) | .config.image | mutable_image' \
+                <<<"$machines_json")"
+              if [ -z "$canonical" ] || [ "$canonical" = "null" ]; then
+                printf 'image_guard_no_canonical\t%s\n' "$guard_machine_id" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                return 1
+              fi
+              if [ "$candidate" != "$canonical" ]; then
+                printf 'image_guard_not_canonical\t%s\t%s\n' \
+                  "$guard_machine_id" "$candidate" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                return 1
+              fi
+              case "$candidate" in
+                *@sha256:*)
+                  printf 'image_guard_digest_form\t%s\t%s\n' \
+                    "$guard_machine_id" "$candidate" \
+                    >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                  return 1
+                  ;;
+              esac
+              if ! [[ "$candidate" =~ ^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+(:[a-zA-Z0-9._-]+)?$ ]]; then
+                printf 'image_guard_malformed\t%s\t%s\n' \
+                  "$guard_machine_id" "$candidate" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                return 1
+              fi
+            }
+
+            while IFS=$'\t' read -r machine_id machine_image machine_process_group; do
+              test -n "$machine_id"
+              test -n "$machine_image"
+              test -n "$machine_process_group"
+              # Guard BEFORE the machine is recorded as attempted and before
+              # any mutating call, so a rejected image never reaches Fly and
+              # never needs rollback.
+              if ! assert_mutable_image "$machine_id" "$machine_image"; then
+                exit 1
+              fi
+              attempted_machine_ids+=("$machine_id")
+              if ! flyctl machine update "$machine_id" --app "$app" \
+                  --image "$machine_image" \
+                  --env "MENDPOINT_SANDBOX_FLY_IMAGE=$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
+                  --metadata fly_platform_version=v2 \
+                  --metadata "fly_process_group=$machine_process_group" \
+                  --skip-health-checks --yes; then
+                rollback_attempted_machines "machine_update_failed:${machine_id}" || true
+                exit 1
+              fi
+            done < <(jq -r "$mutable_image_jq"'.[] | [
+              .id,
+              (.config.image | mutable_image),
+              .config.metadata.fly_process_group
+            ] | @tsv' <<<"$machines_json")
+            updated_machines_json="$(flyctl machine list --app "$app" --json)"
+            if ! jq -e --argjson expected "$launch_groups_before" \
+                --argjson expected_images "$image_refs_before" '
+                ([.[] | {
+                  id,
+                  processGroup: .config.metadata.fly_process_group
+                }] | sort_by(.id)) == $expected
+                and ([.[] | {
+                  id,
+                  image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")
+                }] | sort_by(.id)) == $expected_images
+                and all(.[]; .config.metadata.fly_platform_version == "v2")
+              ' <<<"$updated_machines_json" >/dev/null; then
+              rollback_attempted_machines "post_update_invariant_failed" || true
+              exit 1
+            fi
+            if ! flyctl secrets set --app "$app" \
+                MENDPOINT_SANDBOX_FLY_IMAGE="$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
+                MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64="$attestation" \
+                MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64="$public_key" \
+                MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID="$key_id" \
+                MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST="$policy_digest" \
+                MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA="$schema"; then
+              contain_current_machines "secret_deploy_outcome_unknown"
+              exit 1
+            fi
+            if ! flyctl secrets list --app "$app" --json \
+                | jq -e 'length > 0 and all(.[]; .status == "Deployed")' >/dev/null; then
+              contain_current_machines "secret_generation_not_deployed"
+              exit 1
+            fi
+            post_secret_machines_json="$(flyctl machine list --app "$app" --json)"
+            if ! jq -e --argjson expected "$launch_groups_before" \
+                --argjson expected_images "$image_refs_before" \
+                --arg expected_sandbox_image "$MENDPOINT_SANDBOX_EGRESS_IMAGE" '
+                ([.[] | {
+                  id,
+                  processGroup: .config.metadata.fly_process_group
+                }] | sort_by(.id)) == $expected
+                and ([.[] | {
+                  id,
+                  image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")
+                }] | sort_by(.id)) == $expected_images
+                and all(.[];
+                  .config.metadata.fly_platform_version == "v2"
+                  and .config.env.MENDPOINT_SANDBOX_FLY_IMAGE == $expected_sandbox_image
+                )
+              ' <<<"$post_secret_machines_json" >/dev/null; then
+              contain_current_machines "post_secret_invariant_failed"
+              exit 1
+            fi
+            # This job rotates egress attestation. The only thing it is
+            # entitled to assert afterwards is that the app it just mutated is
+            # still alive and serving, which is /livez. It must NOT gate on
+            # /healthz: apps/web/app/readyz/route.ts re-exports the /healthz
+            # handler, so the two are the SAME handler, and it reports
+            # last_verified_backup. Backup freshness has nothing to do with
+            # egress, and gating on it means an unrelated subsystem going stale
+            # makes this job call contain_current_machines, which runs
+            # "flyctl machine stop" against customer production on a 6-hourly
+            # schedule. fly.customer-warden.toml already points Fly's own
+            # machine check at /livez, and ci.yml's customer deploy gate was
+            # changed the same way for the same reason (PR #555).
+            # /healthz is still probed and printed below, as diagnostic output
+            # only -- never gating.
             healthy=false
             for attempt in $(seq 1 24); do
               if curl --silent --show-error --fail --max-time 10 \
                   "https://${app}.fly.dev/livez" \
-                  >"test-results/sandbox-egress/livez-${app}.json" \
-                && curl --silent --show-error --fail --max-time 10 \
-                  "https://${app}.fly.dev/healthz" \
-                  >"test-results/sandbox-egress/healthz-${app}.json"; then
+                  >"test-results/sandbox-egress/livez-${app}.json"; then
                 healthy=true
                 break
               fi
               sleep 5
             done
+            # Diagnostic only. A red /healthz here is worth seeing precisely
+            # because we now know it used to have a destructive consequence.
+            health_code="$(curl --silent --output "test-results/sandbox-egress/healthz-${app}.json" \
+              --write-out '%{http_code}' --max-time 10 \
+              "https://${app}.fly.dev/healthz" || true)"
+            echo "  /healthz -> http ${health_code} (diagnostic only -- rotation does NOT gate on this; see the note above)"
             if [ "$healthy" != true ]; then
+              contain_current_machines "post_rotation_health_failed"
               echo "The app $app did not become healthy after receipt rotation"
               exit 1
             fi
