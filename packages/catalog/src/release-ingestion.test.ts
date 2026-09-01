@@ -1,16 +1,40 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  claimExpiredFinalReleaseDispatchForRecovery,
+  claimReleaseDispatch,
+  completeReleaseDispatch,
+  failReleaseDispatch,
   ingestReleaseDocument,
   listReleaseArtifacts,
+  listReleaseDispatchReconciliations,
+  listReleaseDispatches,
+  listReleaseObservations,
   openReleaseIngestionStore,
   recordReleaseReviewerOverride,
+  recordReleaseReviewerOverrideCas,
+  rehydrateReleaseArtifact,
+  ReleaseCatalogError,
+  reconcileReleaseDispatchFailure,
+  summarizeReleaseDispatchBacklog,
   type ReleaseIngestionStore,
 } from "./release-ingestion.js";
 
 const NOW = "2026-08-02T12:00:00.000Z";
+const RELEASE_DOCUMENT_MAX_BYTES = 1024 * 1024;
+const durableItemUrl = (value: string) => {
+  const canonical = new URL(value).toString();
+  return `${new URL(canonical).origin}/.well-known/mendpoint/release-item-source/${createHash("sha256").update(canonical).digest("hex")}`;
+};
+const durableSourceUrl = (value: string) => {
+  const canonical = new URL(value).toString();
+  return `${new URL(canonical).origin}/.well-known/mendpoint/release-source/${createHash("sha256").update(canonical).digest("hex")}`;
+};
 const fixture = (name: string) =>
   readFileSync(new URL(`../fixtures/releases/${name}`, import.meta.url), "utf8");
 const stores: ReleaseIngestionStore[] = [];
@@ -25,8 +49,8 @@ afterEach(() => {
   }
 });
 
-function store(path = ":memory:"): ReleaseIngestionStore {
-  const opened = openReleaseIngestionStore(path);
+function store(path = ":memory:", clock: () => string = () => NOW): ReleaseIngestionStore {
+  const opened = openReleaseIngestionStore(path, { clock });
   stores.push(opened);
   return opened;
 }
@@ -45,6 +69,257 @@ function input(adapter: "rss" | "atom" | "github_releases" | "provider_page" | "
   } as const;
 }
 
+function createV1Database(path: string): void {
+  const db = new DatabaseSync(path);
+  db.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE release_ingestion_schema_migrations (
+      version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+    );
+    INSERT INTO release_ingestion_schema_migrations (version, applied_at)
+      VALUES (1, '2026-08-01T00:00:00.000Z');
+    CREATE TABLE release_ingestion_artifacts (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      provider_slug TEXT NOT NULL,
+      adapter TEXT NOT NULL,
+      collection_url TEXT NOT NULL,
+      source_url TEXT NOT NULL,
+      source_item_id TEXT NOT NULL,
+      source_body_sha256 TEXT NOT NULL,
+      content_sha256 TEXT NOT NULL,
+      title TEXT NOT NULL,
+      version TEXT,
+      published_at TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      excerpt TEXT NOT NULL,
+      excerpt_location TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      change_hints_json TEXT NOT NULL,
+      sdk_json TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (tenant_id, adapter, collection_url, source_item_id, content_sha256),
+      UNIQUE (id, tenant_id)
+    );
+    CREATE TABLE release_ingestion_overrides (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      artifact_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      reviewer_principal_id TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      excerpt TEXT NOT NULL,
+      excerpt_location TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      reviewed_at TEXT NOT NULL,
+      UNIQUE (tenant_id, artifact_id, revision),
+      FOREIGN KEY (artifact_id, tenant_id) REFERENCES release_ingestion_artifacts(id, tenant_id)
+    );
+    CREATE TRIGGER release_ingestion_artifacts_no_update BEFORE UPDATE ON release_ingestion_artifacts
+      BEGIN SELECT RAISE(ABORT, 'release_ingestion_artifacts_append_only'); END;
+    CREATE TRIGGER release_ingestion_artifacts_no_delete BEFORE DELETE ON release_ingestion_artifacts
+      BEGIN SELECT RAISE(ABORT, 'release_ingestion_artifacts_append_only'); END;
+    CREATE TRIGGER release_ingestion_overrides_no_update BEFORE UPDATE ON release_ingestion_overrides
+      BEGIN SELECT RAISE(ABORT, 'release_ingestion_overrides_append_only'); END;
+    CREATE TRIGGER release_ingestion_overrides_no_delete BEFORE DELETE ON release_ingestion_overrides
+      BEGIN SELECT RAISE(ABORT, 'release_ingestion_overrides_append_only'); END;
+  `);
+  db.prepare(`INSERT INTO release_ingestion_artifacts
+    (id, tenant_id, provider_slug, adapter, collection_url, source_url, source_item_id,
+     source_body_sha256, content_sha256, title, version, published_at, observed_at,
+     excerpt, excerpt_location, confidence, change_hints_json, sdk_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run("rel_v1", "tenant-v1", "stripe", "rss", "https://docs.stripe.com/changelog/feed",
+      "https://docs.stripe.com/changelog/legacy", "legacy", "a".repeat(64), "b".repeat(64),
+      "Legacy release", null, "2026-08-01T00:00:00.000Z", "2026-08-01T01:00:00.000Z",
+      "Legacy provider wording.", "rss.channel.item[0].description", 0.9,
+      JSON.stringify({ fields: [], replacements: [], summary: "Legacy provider wording." }), null,
+      "2026-08-01T01:00:00.000Z");
+  db.prepare(`INSERT INTO release_ingestion_artifacts
+    (id, tenant_id, provider_slug, adapter, collection_url, source_url, source_item_id,
+     source_body_sha256, content_sha256, title, version, published_at, observed_at,
+     excerpt, excerpt_location, confidence, change_hints_json, sdk_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run("rel_v1_replay", "tenant-v1", "stripe", "rss", "https://docs.stripe.com/changelog/feed",
+      "https://docs.stripe.com/changelog/legacy", "legacy", "a".repeat(64), "c".repeat(64),
+      "Legacy release", null, "2026-08-01T00:00:00.000Z", "2026-08-01T03:00:00.000Z",
+      "Legacy provider wording.", "rss.channel.item[0].description", 0.9,
+      JSON.stringify({ fields: [], replacements: [], summary: "Legacy provider wording." }), null,
+      "2026-08-01T03:00:00.000Z");
+  db.prepare(`INSERT INTO release_ingestion_overrides
+    (id, tenant_id, artifact_id, revision, reviewer_principal_id, confidence, excerpt,
+     excerpt_location, reason, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run("rov_v1", "tenant-v1", "rel_v1", 1, "human:v1", 0.9, "Reviewed legacy claim.",
+      "review note, line 1", "Preserve during migration", "2026-08-01T02:00:00.000Z");
+  db.close();
+}
+
+function createImmediateParentV2Database(path: string): void {
+  const seeded = openReleaseIngestionStore(path, { clock: () => NOW });
+  const active = ingestReleaseDocument(seeded, input("rss", fixture("stripe-rss.xml")))
+    .artifacts[0]!;
+  const pending = ingestReleaseDocument(seeded, {
+    ...input("rss", fixture("stripe-rss.xml")),
+    tenantId: "tenant-b",
+  }).artifacts[0]!;
+  seeded.raw.prepare(`UPDATE release_ingestion_dispatches
+    SET status = 'claimed', lease_owner = 'worker-predecessor',
+        lease_expires_at = '2026-08-02T12:00:10.000Z', lease_generation = 1,
+        claimed_at = '2026-08-02T12:00:00.000Z', attempt_count = 1
+    WHERE tenant_id = 'tenant-a' AND artifact_id = ?`).run(active.id);
+  expect(listReleaseDispatches(seeded, "tenant-b")[0]?.artifactId).toBe(pending.id);
+  seeded.close();
+
+  const db = new DatabaseSync(path);
+  db.exec(`
+    DROP TRIGGER release_ingestion_identity_aliases_no_update;
+    DROP TRIGGER release_ingestion_identity_aliases_no_delete;
+    DROP TABLE release_ingestion_identity_aliases;
+    DROP TRIGGER release_ingestion_clock_authority_no_delete;
+    DROP TABLE release_ingestion_clock_authority;
+    ALTER TABLE release_ingestion_dispatches DROP COLUMN claimed_at;
+    DELETE FROM release_ingestion_schema_migrations WHERE version > 2;
+  `);
+  expect(db.prepare(
+    "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
+  ).get()).toEqual({ version: 2 });
+  expect(db.prepare("PRAGMA table_info(release_ingestion_dispatches)").all())
+    .not.toEqual(expect.arrayContaining([expect.objectContaining({ name: "claimed_at" })]));
+  expect(db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'release_ingestion_clock_authority'",
+  ).get()).toBeUndefined();
+  db.close();
+}
+
+function createVersionZeroDatabase(path: string): void {
+  const db = new DatabaseSync(path);
+  db.exec(`
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE release_ingestion_schema_migrations (
+      version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+    );
+  `);
+  db.close();
+}
+
+function nextChildMessage(child: ChildProcess): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const onMessage = (message: unknown) => {
+      cleanup();
+      resolve(message);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onExit = (code: number | null) => {
+      cleanup();
+      reject(new Error(`release_ingestion_child_exited_${String(code)}`));
+    };
+    const cleanup = () => {
+      child.off("message", onMessage);
+      child.off("error", onError);
+      child.off("exit", onExit);
+    };
+    child.once("message", onMessage);
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
+}
+
+function spawnStoreOpener(path: string): ChildProcess {
+  const moduleUrl = new URL("./release-ingestion.ts", import.meta.url).href;
+  const code = `
+    import { openReleaseIngestionStore } from ${JSON.stringify(moduleUrl)};
+    process.send?.("ready");
+    process.once("message", () => {
+      process.send?.("starting");
+      process.once("message", () => {
+        try {
+          const opened = openReleaseIngestionStore(process.argv[1]);
+          opened.close();
+          process.send?.({ status: "ok" }, () => process.disconnect());
+        } catch (error) {
+          process.send?.(
+            { status: "error", error: error instanceof Error ? error.message : String(error) },
+            () => process.disconnect(),
+          );
+        }
+      });
+    });
+  `;
+  return spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code, path], {
+    cwd: process.cwd(),
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+    windowsHide: true,
+  });
+}
+
+function spawnClockClaimChild(input: Readonly<{
+  path: string;
+  clock: string;
+  workerId: string;
+  lockedPath?: string;
+  releasePath?: string;
+  startedPath?: string;
+}>): ChildProcess {
+  const moduleUrl = new URL("./release-ingestion.ts", import.meta.url).href;
+  const code = `
+    import { existsSync, writeFileSync } from "node:fs";
+    import { claimReleaseDispatch, openReleaseIngestionStore } from ${JSON.stringify(moduleUrl)};
+    const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+    process.send?.("ready");
+    process.once("message", () => {
+      let opened;
+      try {
+        if (process.argv[6]) writeFileSync(process.argv[6], "started", "utf8");
+        opened = openReleaseIngestionStore(process.argv[1], { clock: () => {
+          if (process.argv[4]) {
+            writeFileSync(process.argv[4], "locked", "utf8");
+            while (!existsSync(process.argv[5])) Atomics.wait(waitBuffer, 0, 0, 10);
+          }
+          return process.argv[2];
+        }});
+        const claim = claimReleaseDispatch(opened, {
+          tenantId: "tenant-a", workerId: process.argv[3], leaseDurationMs: 1_000,
+        });
+        opened.close();
+        opened = undefined;
+        process.send?.({ status: "ok", claim }, () => process.disconnect());
+      } catch (error) {
+        opened?.close();
+        process.send?.(
+          { status: "error", error: error instanceof Error ? error.message : String(error) },
+          () => process.disconnect(),
+        );
+      }
+    });
+  `;
+  return spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code,
+    input.path, input.clock, input.workerId, input.lockedPath ?? "", input.releasePath ?? "",
+    input.startedPath ?? ""], {
+    cwd: process.cwd(),
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+    windowsHide: true,
+  });
+}
+
+async function waitForFile(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (existsSync(path)) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("release_ingestion_test_barrier_timeout");
+}
+
+async function waitForChildExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null) return;
+  await new Promise<void>((resolve, reject) => {
+    child.once("exit", () => resolve());
+    child.once("error", reject);
+  });
+}
+
 describe("release ingestion", () => {
   it("normalizes RSS and Atom fixtures with complete source evidence", () => {
     const ledger = store();
@@ -60,7 +335,7 @@ describe("release ingestion", () => {
       tenantId: "tenant-a",
       adapter: "rss",
       collectionUrl: "https://docs.stripe.com/changelog/feed",
-      sourceUrl: "https://docs.stripe.com/changelog/charges-2026-08-01",
+      sourceUrl: durableItemUrl("https://docs.stripe.com/changelog/charges-2026-08-01"),
       sourceItemId: "charges-2026-08-01",
       excerptLocation: "rss.channel.item[0].description",
       confidence: 0.9,
@@ -72,6 +347,125 @@ describe("release ingestion", () => {
     expect(atom.artifacts[0]?.changeHints.replacements).toContainEqual({ from: "max_tokens", to: "max_output_tokens" });
   });
 
+  it.each(["rss", "atom"] as const)(
+  "digest-binds %s items without IDs and retains no URL secrets across replay",
+  (adapter) => {
+    const ledger = store();
+    const urls = [
+      `https://alice:rss-password@docs.example.com/private-${adapter}-path-a?channel=query-secret-a#fragment-secret-a`,
+      `https://bob:atom-password@docs.example.com/private-${adapter}-path-b?channel=query-secret-b#fragment-secret-b`,
+    ];
+    const entries = urls.map((url, index) => adapter === "rss"
+      ? `<item><title>Release ${index}</title><link>${url}</link>
+          <pubDate>Sat, 02 Aug 2026 12:00:00 GMT</pubDate>
+          <description>Changed field ${index}.</description></item>`
+      : `<entry><title>Release ${index}</title><link href="${url}" />
+          <updated>2026-08-02T12:00:00.000Z</updated>
+          <summary>Changed field ${index}.</summary></entry>`).join("");
+    const document = adapter === "rss"
+      ? `<?xml version="1.0"?><rss><channel>${entries}</channel></rss>`
+      : `<?xml version="1.0"?><feed>${entries}</feed>`;
+    const first = ingestReleaseDocument(ledger, input(adapter, document));
+    const replay = ingestReleaseDocument(ledger, input(adapter, document));
+
+    expect(first.inserted).toBe(2);
+    expect(replay.inserted).toBe(0);
+    expect(new Set(first.artifacts.map((artifact) => artifact.sourceItemId)).size).toBe(2);
+    for (const [index, artifact] of first.artifacts.entries()) {
+      const canonical = new URL(urls[index]!).toString();
+      expect(artifact.sourceUrl).toBe(durableItemUrl(canonical));
+      expect(artifact.sourceItemId).toBe(
+        `release-item-url-sha256:${createHash("sha256").update(canonical).digest("hex")}`,
+      );
+      expect(rehydrateReleaseArtifact(
+        ledger,
+        {
+          tenantId: artifact.tenantId,
+          artifactId: artifact.id,
+          expectedContentSha256: artifact.contentSha256,
+        },
+      )).toEqual(artifact);
+    }
+    const tables = ledger.raw.prepare(`SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name LIKE 'release_ingestion_%' ORDER BY name`)
+      .all() as Array<{ name: string }>;
+    const durableRows = tables.flatMap(({ name }) =>
+      ledger.raw.prepare(`SELECT * FROM "${name}"`).all());
+    const visible = JSON.stringify({ first, replay, durableRows, dispatches: listReleaseDispatches(ledger, "tenant-a") });
+    for (const secret of [
+      "alice", "rss-password", "bob", "atom-password", `private-${adapter}-path-a`,
+      `private-${adapter}-path-b`, "query-secret-a", "query-secret-b",
+      "fragment-secret-a", "fragment-secret-b",
+    ]) expect(visible).not.toContain(secret);
+  });
+
+  it("digests hierarchical source item identifiers and preserves opaque IDs and URNs", () => {
+    const ledger = store();
+    const hierarchical = [
+      "ftp://alice:ftp-password@files.example.com/private-release-path",
+      "file://local-user/private/file-secret",
+      "custom+release://service-user:custom-password@provider/private-custom-path",
+    ];
+    const identifiers = ["opaque-release-42", "urn:provider:release:42", ...hierarchical];
+    const body = `<?xml version="1.0"?><rss><channel>${identifiers.map((id, index) =>
+      `<item><guid>${id}</guid><title>Release ${index}</title>
+        <link>https://docs.example.com/releases/${index}</link>
+        <pubDate>Sat, 02 Aug 2026 12:00:00 GMT</pubDate>
+        <description>Changed field ${index}.</description></item>`).join("")}</channel></rss>`;
+
+    const result = ingestReleaseDocument(ledger, input("rss", body));
+
+    expect(result.artifacts.map((artifact) => artifact.sourceItemId).slice(0, 2)).toEqual([
+      "opaque-release-42",
+      "urn:provider:release:42",
+    ]);
+    expect(result.artifacts.map((artifact) => artifact.sourceItemId).slice(2)).toEqual(
+      hierarchical.map((id) => `release-item-id-sha256:${createHash("sha256")
+        .update(`release-source-item-uri-v1\0${id}`)
+        .digest("hex")}`),
+    );
+    const durableRows = ledger.raw.prepare("SELECT * FROM release_ingestion_artifacts").all();
+    const visible = JSON.stringify({ result, durableRows });
+    for (const secret of [
+      "alice", "ftp-password", "private-release-path", "local-user", "file-secret",
+      "service-user", "custom-password", "private-custom-path",
+    ]) expect(visible).not.toContain(secret);
+  });
+
+  it.each([
+    [
+      "HTTPS://Docs.Example.com:443/releases/../releases/v1?channel=stable#notes",
+      "https://docs.example.com/releases/v1?channel=stable#notes",
+    ],
+    [
+      "https://docs.example.com:443/a/./b/../release/%7Eteam",
+      "https://docs.example.com/a/release/%7Eteam",
+    ],
+  ])("reuses the legacy HTTPS artifact and dispatch identity for %s", (rawGuid, canonicalGuid) => {
+    const ledger = store();
+    expect(new URL(rawGuid).toString()).toBe(canonicalGuid);
+    const legacySourceItemId = `release-item-id-sha256:${createHash("sha256")
+      .update(canonicalGuid)
+      .digest("hex")}`;
+    const rss = (guid: string) => `<?xml version="1.0"?><rss><channel><item>
+      <guid>${guid}</guid><title>Canonical HTTPS release</title>
+      <link>https://docs.example.com/releases/canonical</link>
+      <pubDate>Sat, 02 Aug 2026 12:00:00 GMT</pubDate>
+      <description>Changed canonical identity behavior.</description>
+    </item></channel></rss>`;
+
+    const seeded = ingestReleaseDocument(ledger, input("rss", rss(legacySourceItemId)));
+    const replay = ingestReleaseDocument(ledger, input("rss", rss(rawGuid)));
+
+    expect(seeded.inserted).toBe(1);
+    expect(seeded.artifacts[0]?.sourceItemId).toBe(legacySourceItemId);
+    expect(replay.inserted).toBe(0);
+    expect(replay.artifacts).toHaveLength(1);
+    expect(replay.artifacts[0]?.id).toBe(seeded.artifacts[0]?.id);
+    expect(listReleaseArtifacts(ledger, "tenant-a")).toHaveLength(1);
+    expect(listReleaseDispatches(ledger, "tenant-a")).toHaveLength(1);
+  });
+
   it("normalizes GitHub releases and a constrained provider page fixture", () => {
     const ledger = store();
     const github = ingestReleaseDocument(ledger, input("github_releases", fixture("github-releases.json")));
@@ -79,12 +473,12 @@ describe("release ingestion", () => {
 
     expect(github.artifacts[0]).toMatchObject({
       version: "v3.2.0",
-      sourceUrl: "https://github.com/acme/payments/releases/tag/v3.2.0",
+      sourceUrl: durableItemUrl("https://github.com/acme/payments/releases/tag/v3.2.0"),
       excerptLocation: "github.release[0].body",
     });
     expect(page.artifacts[0]).toMatchObject({
       sourceItemId: "charges-v2",
-      sourceUrl: "https://docs.stripe.com/changelog/charges-v2",
+      sourceUrl: durableItemUrl("https://docs.stripe.com/changelog/charges-v2"),
       excerptLocation: "provider_page.article[0]",
     });
   });
@@ -123,7 +517,7 @@ describe("release ingestion", () => {
     expect(ingestReleaseDocument(first, document).inserted).toBe(0);
     expect(ingestReleaseDocument(first, { ...document, tenantId: "tenant-b" }).inserted).toBe(1);
     const artifact = listReleaseArtifacts(first, "tenant-a")[0]!;
-    recordReleaseReviewerOverride(first, {
+    const legacyResult = recordReleaseReviewerOverride(first, {
       tenantId: "tenant-a",
       artifactId: artifact.id,
       expectedRevision: 0,
@@ -134,6 +528,7 @@ describe("release ingestion", () => {
       reason: "Compared with provider migration guide",
       reviewedAt: NOW,
     });
+    expect(legacyResult.id).toBe(artifact.id);
     expect(() => recordReleaseReviewerOverride(first, {
       tenantId: "tenant-b",
       artifactId: artifact.id,
@@ -156,6 +551,21 @@ describe("release ingestion", () => {
       reason: "Must fail",
       reviewedAt: NOW,
     })).toThrow("release_override_revision_conflict");
+    first.raw.exec("BEGIN IMMEDIATE");
+    const transactionResult = recordReleaseReviewerOverride(first, {
+      tenantId: "tenant-a",
+      artifactId: artifact.id,
+      expectedRevision: 1,
+      reviewerPrincipalId: "human:transaction-reviewer",
+      confidence: 0.99,
+      excerpt: "Transaction-scoped review.",
+      excerptLocation: "review note, line 2",
+      reason: "Preserve the legacy transaction contract",
+      reviewedAt: NOW,
+    });
+    expect(transactionResult.id).toBe(artifact.id);
+    expect(first.raw.isTransaction).toBe(true);
+    first.raw.exec("ROLLBACK");
     expect(() => first.raw.prepare("UPDATE release_ingestion_artifacts SET title = 'changed'").run())
       .toThrow(/release_ingestion_artifacts_append_only/);
     first.close();
@@ -171,6 +581,1002 @@ describe("release ingestion", () => {
     expect(listReleaseArtifacts(reopened, "tenant-c")).toHaveLength(0);
   });
 
+  it("keeps claim identity independent of observation time and appends each observation", () => {
+    const ledger = store();
+    const document = input("rss", fixture("stripe-rss.xml"));
+    const first = ingestReleaseDocument(ledger, document);
+    const later = ingestReleaseDocument(ledger, {
+      ...document,
+      observedAt: "2026-08-02T12:05:00.000Z",
+      now: "2026-08-02T12:05:00.000Z",
+    });
+
+    expect(first.inserted).toBe(1);
+    expect(later.inserted).toBe(0);
+    expect(later.artifacts[0]).toEqual(first.artifacts[0]);
+    expect(first.artifacts[0]?.normalizedClaimSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(listReleaseObservations(ledger, "tenant-a", first.artifacts[0]!.id))
+      .toMatchObject([
+        { observedAt: NOW, artifactId: first.artifacts[0]!.id },
+        { observedAt: "2026-08-02T12:05:00.000Z", artifactId: first.artifacts[0]!.id },
+      ]);
+    expect(listReleaseDispatches(ledger, "tenant-a")).toHaveLength(1);
+    expect(() => ledger.raw.prepare("UPDATE release_ingestion_observations SET observed_at = 'changed'").run())
+      .toThrow(/release_ingestion_observations_append_only/);
+    expect(() => ledger.raw.prepare("DELETE FROM release_ingestion_observations").run())
+      .toThrow(/release_ingestion_observations_append_only/);
+  });
+
+  it("binds artifact identity to the exact provider and collection", () => {
+    const ledger = store();
+    const document = input("rss", fixture("stripe-rss.xml"));
+    const original = ingestReleaseDocument(ledger, document).artifacts[0]!;
+    const otherProvider = ingestReleaseDocument(ledger, {
+      ...document,
+      providerSlug: "stripe-compatible",
+    }).artifacts[0]!;
+    const otherCollection = ingestReleaseDocument(ledger, {
+      ...document,
+      sourceUrl: "https://docs.stripe.com/changelog/archive.xml",
+    }).artifacts[0]!;
+
+    expect(new Set([original.id, otherProvider.id, otherCollection.id]).size).toBe(3);
+    expect(otherProvider.providerSlug).toBe("stripe-compatible");
+    expect(otherCollection.collectionUrl).toBe("https://docs.stripe.com/changelog/archive.xml");
+    expect(listReleaseArtifacts(ledger, "tenant-a")).toHaveLength(3);
+  });
+
+  it("creates a new artifact when the normalized claim changes", () => {
+    const ledger = store();
+    const body = fixture("stripe-rss.xml");
+    const first = ingestReleaseDocument(ledger, input("rss", body)).artifacts[0]!;
+    const changed = ingestReleaseDocument(ledger, input("rss", body.replace("amount_cents", "amount_minor"))).artifacts[0]!;
+
+    expect(changed.id).not.toBe(first.id);
+    expect(changed.normalizedClaimSha256).not.toBe(first.normalizedClaimSha256);
+    expect(listReleaseArtifacts(ledger, "tenant-a")).toHaveLength(2);
+    expect(listReleaseDispatches(ledger, "tenant-a")).toHaveLength(2);
+  });
+
+  it("converges concurrent ingestion to one artifact and one deterministic dispatch", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-concurrent-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    const first = store(path);
+    const second = store(path);
+    const document = input("rss", fixture("stripe-rss.xml"));
+
+    const [left, right] = await Promise.all([
+      Promise.resolve().then(() => ingestReleaseDocument(first, document)),
+      Promise.resolve().then(() => ingestReleaseDocument(second, document)),
+    ]);
+
+    expect(left.artifacts[0]?.id).toBe(right.artifacts[0]?.id);
+    expect(left.inserted + right.inserted).toBe(1);
+    expect(listReleaseArtifacts(first, "tenant-a")).toHaveLength(1);
+    expect(listReleaseDispatches(first, "tenant-a")).toHaveLength(1);
+  });
+
+  it("rolls back the artifact when the deterministic dispatch identity is occupied", () => {
+    const targetDocument = input("rss", fixture("stripe-rss.xml"));
+    const probe = store();
+    ingestReleaseDocument(probe, targetDocument);
+    const targetDispatchId = listReleaseDispatches(probe, "tenant-a")[0]!.id;
+
+    const ledger = store();
+    const differentDocument = {
+      ...targetDocument,
+      body: targetDocument.body.replace("amount_cents", "amount_minor"),
+    };
+    ingestReleaseDocument(ledger, differentDocument);
+    ledger.raw.prepare("UPDATE release_ingestion_dispatches SET id = ?").run(targetDispatchId);
+
+    expect(() => ingestReleaseDocument(ledger, targetDocument)).toThrow("release_dispatch_write_failed");
+    expect(listReleaseArtifacts(ledger, "tenant-a")).toHaveLength(1);
+    expect(listReleaseObservations(ledger, "tenant-a", listReleaseArtifacts(ledger, "tenant-a")[0]!.id))
+      .toHaveLength(1);
+  });
+
+  it("returns one applied reviewer CAS and one explicit revision conflict", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-override-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    const first = store(path);
+    const artifact = ingestReleaseDocument(first, input("rss", fixture("stripe-rss.xml"))).artifacts[0]!;
+    const second = store(path);
+    const override = (reviewerPrincipalId: string) => ({
+      tenantId: "tenant-a",
+      artifactId: artifact.id,
+      expectedRevision: 0,
+      reviewerPrincipalId,
+      confidence: 0.95,
+      excerpt: "Verified provider wording.",
+      excerptLocation: "review note, line 1",
+      reason: "Compared with provider source",
+      reviewedAt: NOW,
+    });
+
+    const results = await Promise.all([
+      Promise.resolve().then(() => recordReleaseReviewerOverrideCas(first, override("human:first"))),
+      Promise.resolve().then(() => recordReleaseReviewerOverrideCas(second, override("human:second"))),
+    ]);
+
+    expect(results.filter((result) => result.status === "applied")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "revision_conflict"))
+      .toEqual([{ status: "revision_conflict", expectedRevision: 0, actualRevision: 1 }]);
+  });
+
+  it("fences dispatch claims, rehydration, overrides, completion, and failure by tenant and lease", () => {
+    let clock = NOW;
+    const ledger = store(":memory:", () => clock);
+    const tenantA = ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml"))).artifacts[0]!;
+    const tenantB = ingestReleaseDocument(ledger, {
+      ...input("rss", fixture("stripe-rss.xml")),
+      tenantId: "tenant-b",
+    }).artifacts[0]!;
+
+    expect(() => rehydrateReleaseArtifact(ledger, {
+      tenantId: "tenant-b", artifactId: tenantA.id, expectedContentSha256: tenantA.contentSha256,
+    })).toThrow("release_artifact_not_found");
+    expect(() => rehydrateReleaseArtifact(ledger, {
+      tenantId: "tenant-a", artifactId: tenantA.id, expectedContentSha256: "f".repeat(64),
+    })).toThrow("release_artifact_digest_mismatch");
+    expect(rehydrateReleaseArtifact(ledger, {
+      tenantId: "tenant-a", artifactId: tenantA.id, expectedContentSha256: tenantA.contentSha256,
+    }).id).toBe(tenantA.id);
+    expect(() => recordReleaseReviewerOverride(ledger, {
+      tenantId: "tenant-b", artifactId: tenantA.id, expectedRevision: 0,
+      reviewerPrincipalId: "human:wrong", confidence: 0.8, excerpt: "Wrong tenant",
+      excerptLocation: "review note", reason: "Must fail", reviewedAt: NOW,
+    })).toThrow("release_artifact_not_found");
+
+    const firstClaim = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-a", leaseDurationMs: 1_000,
+    })!;
+    expect(firstClaim.tenantId).toBe("tenant-a");
+    expect(claimReleaseDispatch(ledger, {
+      tenantId: "tenant-c", workerId: "worker-c", leaseDurationMs: 1_000,
+    })).toBeNull();
+    clock = "2026-08-02T12:00:02.000Z";
+    const takeover = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-b", leaseDurationMs: 1_000,
+    })!;
+    expect(takeover.leaseGeneration).toBe(firstClaim.leaseGeneration + 1);
+    expect(() => completeReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: firstClaim.id, workerId: "worker-a",
+      leaseGeneration: firstClaim.leaseGeneration,
+    })).toThrow("release_dispatch_lease_lost");
+    expect(() => completeReleaseDispatch(ledger, {
+      tenantId: "tenant-b", dispatchId: takeover.id, workerId: "worker-b",
+      leaseGeneration: takeover.leaseGeneration,
+    })).toThrow("release_dispatch_lease_lost");
+    expect(completeReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: takeover.id, workerId: "worker-b",
+      leaseGeneration: takeover.leaseGeneration,
+    }).status).toBe("completed");
+
+    const failureClaim = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-b", workerId: "worker-b", leaseDurationMs: 1_000,
+    })!;
+    expect(() => failReleaseDispatch(ledger, {
+      tenantId: "tenant-b", dispatchId: failureClaim.id, workerId: "worker-b",
+      leaseGeneration: failureClaim.leaseGeneration + 1,
+      failureCode: "provider_unavailable", retryable: false,
+    })).toThrow("release_dispatch_lease_lost");
+    expect(failReleaseDispatch(ledger, {
+      tenantId: "tenant-b", dispatchId: failureClaim.id, workerId: "worker-b",
+      leaseGeneration: failureClaim.leaseGeneration,
+      failureCode: "provider_unavailable", retryable: false,
+    }).status).toBe("failed");
+    expect(tenantB.tenantId).toBe("tenant-b");
+  });
+
+  it("types rehydration infrastructure failures as retryable and artifact corruption as terminal", () => {
+    const infrastructureStore = store(":memory:");
+    const infrastructureArtifact = ingestReleaseDocument(
+      infrastructureStore,
+      input("rss", fixture("stripe-rss.xml")),
+    ).artifacts[0]!;
+    infrastructureStore.close();
+    stores.splice(stores.indexOf(infrastructureStore), 1);
+    try {
+      rehydrateReleaseArtifact(infrastructureStore, {
+        tenantId: "tenant-a",
+        artifactId: infrastructureArtifact.id,
+        expectedContentSha256: infrastructureArtifact.contentSha256,
+      });
+      throw new Error("expected rehydration infrastructure failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ReleaseCatalogError);
+      expect(error).toMatchObject({
+        code: "release_catalog_infrastructure_unavailable",
+        retryable: true,
+      });
+    }
+
+    const corruptStore = store(":memory:");
+    const corruptArtifact = ingestReleaseDocument(
+      corruptStore,
+      input("rss", fixture("stripe-rss.xml")),
+    ).artifacts[0]!;
+    corruptStore.raw.exec("DROP TRIGGER release_ingestion_artifacts_no_update");
+    corruptStore.raw.prepare(
+      "UPDATE release_ingestion_artifacts SET change_hints_json = '{' WHERE id = ?",
+    ).run(corruptArtifact.id);
+    try {
+      rehydrateReleaseArtifact(corruptStore, {
+        tenantId: "tenant-a",
+        artifactId: corruptArtifact.id,
+        expectedContentSha256: corruptArtifact.contentSha256,
+      });
+      throw new Error("expected deterministic artifact decode failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ReleaseCatalogError);
+      expect(error).toMatchObject({ code: "release_artifact_decode_invalid", retryable: false });
+    }
+  });
+
+  it("durably acknowledges or requeues the exact terminal failure without hiding a newer failure", () => {
+    let clock = NOW;
+    const ledger = store(":memory:", () => clock);
+    ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
+    const firstClaim = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-a", leaseDurationMs: 10_000,
+    })!;
+    clock = "2026-08-02T12:00:01.000Z";
+    const firstFailure = failReleaseDispatch(ledger, {
+      tenantId: "tenant-a",
+      dispatchId: firstClaim.id,
+      workerId: "worker-a",
+      leaseGeneration: firstClaim.leaseGeneration,
+      failureCode: "invalid_payload",
+      retryable: false,
+    });
+    expect(summarizeReleaseDispatchBacklog(ledger, "tenant-a").failed).toBe(1);
+
+    const acknowledgement = reconcileReleaseDispatchFailure(ledger, {
+      tenantId: "tenant-a",
+      dispatchId: firstFailure.id,
+      action: "acknowledge",
+      actorPrincipalId: "service:release-dispatch",
+      evidenceSha256: "a".repeat(64),
+      expectedLeaseGeneration: firstFailure.leaseGeneration,
+      expectedFailedAt: firstFailure.failedAt!,
+      expectedFailureCode: firstFailure.failureCode!,
+      idempotencyKey: "ack:first-terminal-failure",
+    });
+    expect(acknowledgement).toMatchObject({
+      inserted: true,
+      dispatch: { status: "failed" },
+      reconciliation: { action: "acknowledge", expectedFailureCode: "invalid_payload" },
+    });
+    expect(summarizeReleaseDispatchBacklog(ledger, "tenant-a").failed).toBe(0);
+    expect(reconcileReleaseDispatchFailure(ledger, {
+      tenantId: "tenant-a",
+      dispatchId: firstFailure.id,
+      action: "acknowledge",
+      actorPrincipalId: "service:release-dispatch",
+      evidenceSha256: "a".repeat(64),
+      expectedLeaseGeneration: firstFailure.leaseGeneration,
+      expectedFailedAt: firstFailure.failedAt!,
+      expectedFailureCode: firstFailure.failureCode!,
+      idempotencyKey: "ack:first-terminal-failure",
+    }).inserted).toBe(false);
+    expect(() => reconcileReleaseDispatchFailure(ledger, {
+      tenantId: "tenant-a",
+      dispatchId: firstFailure.id,
+      action: "requeue",
+      actorPrincipalId: "service:release-dispatch",
+      evidenceSha256: "a".repeat(64),
+      expectedLeaseGeneration: firstFailure.leaseGeneration,
+      expectedFailedAt: firstFailure.failedAt!,
+      expectedFailureCode: firstFailure.failureCode!,
+      idempotencyKey: "ack:first-terminal-failure",
+    })).toThrow("release_dispatch_reconciliation_idempotency_conflict");
+
+    clock = "2026-08-02T12:00:02.000Z";
+    const requeued = reconcileReleaseDispatchFailure(ledger, {
+      tenantId: "tenant-a",
+      dispatchId: firstFailure.id,
+      action: "requeue",
+      actorPrincipalId: "service:release-dispatch",
+      evidenceSha256: "b".repeat(64),
+      expectedLeaseGeneration: firstFailure.leaseGeneration,
+      expectedFailedAt: firstFailure.failedAt!,
+      expectedFailureCode: firstFailure.failureCode!,
+      idempotencyKey: "requeue:first-terminal-failure",
+    });
+    expect(requeued).toMatchObject({
+      inserted: true,
+      dispatch: {
+        status: "pending",
+        attemptCount: 0,
+        failedAt: null,
+        failureCode: null,
+        lastFailureAt: firstFailure.failedAt,
+        lastFailureCode: firstFailure.failureCode,
+      },
+    });
+    expect(reconcileReleaseDispatchFailure(ledger, {
+      tenantId: "tenant-a",
+      dispatchId: firstFailure.id,
+      action: "requeue",
+      actorPrincipalId: "service:release-dispatch",
+      evidenceSha256: "b".repeat(64),
+      expectedLeaseGeneration: firstFailure.leaseGeneration,
+      expectedFailedAt: firstFailure.failedAt!,
+      expectedFailureCode: firstFailure.failureCode!,
+      idempotencyKey: "requeue:first-terminal-failure",
+    }).inserted).toBe(false);
+    expect(listReleaseDispatchReconciliations(ledger, "tenant-a", firstFailure.id))
+      .toHaveLength(2);
+    expect(() => ledger.raw.prepare(
+      "UPDATE release_ingestion_dispatch_reconciliations SET action = 'acknowledge'",
+    ).run()).toThrow("release_ingestion_dispatch_reconciliations_append_only");
+    expect(() => ledger.raw.prepare(
+      "DELETE FROM release_ingestion_dispatch_reconciliations",
+    ).run()).toThrow("release_ingestion_dispatch_reconciliations_append_only");
+
+    const secondClaim = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-b", leaseDurationMs: 10_000,
+    })!;
+    expect(secondClaim).toMatchObject({
+      id: firstFailure.id,
+      leaseGeneration: firstFailure.leaseGeneration + 1,
+      attemptCount: 1,
+    });
+    clock = "2026-08-02T12:00:03.000Z";
+    const secondFailure = failReleaseDispatch(ledger, {
+      tenantId: "tenant-a",
+      dispatchId: secondClaim.id,
+      workerId: "worker-b",
+      leaseGeneration: secondClaim.leaseGeneration,
+      failureCode: "provider_unavailable",
+      retryable: false,
+    });
+    expect(secondFailure.status).toBe("failed");
+    expect(summarizeReleaseDispatchBacklog(ledger, "tenant-a").failed).toBe(1);
+    expect(() => reconcileReleaseDispatchFailure(ledger, {
+      tenantId: "tenant-b",
+      dispatchId: secondFailure.id,
+      action: "acknowledge",
+      actorPrincipalId: "service:release-dispatch",
+      evidenceSha256: "c".repeat(64),
+      expectedLeaseGeneration: secondFailure.leaseGeneration,
+      expectedFailedAt: secondFailure.failedAt!,
+      expectedFailureCode: secondFailure.failureCode!,
+      idempotencyKey: "ack:wrong-tenant",
+    })).toThrow("release_dispatch_not_found");
+    expect(() => reconcileReleaseDispatchFailure(ledger, {
+      tenantId: "tenant-a",
+      dispatchId: secondFailure.id,
+      action: "acknowledge",
+      actorPrincipalId: "service:release-dispatch",
+      evidenceSha256: "c".repeat(64),
+      expectedLeaseGeneration: firstFailure.leaseGeneration,
+      expectedFailedAt: firstFailure.failedAt!,
+      expectedFailureCode: firstFailure.failureCode!,
+      idempotencyKey: "ack:stale-failure",
+    })).toThrow("release_dispatch_reconciliation_stale_failure");
+  });
+
+  it("summarizes a tenant dispatch backlog with bounded aggregate counts", () => {
+    const ledger = store();
+    const body = fixture("stripe-rss.xml");
+    for (let index = 0; index < 7; index += 1) {
+      ingestReleaseDocument(ledger, input("rss", body.replace("amount_cents", `amount_cents_${index}`)));
+    }
+    const dispatches = listReleaseDispatches(ledger, "tenant-a");
+    expect(dispatches).toHaveLength(7);
+    ledger.raw.prepare("UPDATE release_ingestion_dispatches SET available_at = ? WHERE id = ?")
+      .run("2026-08-02T12:01:00.000Z", dispatches[1]!.id);
+    ledger.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'claimed', lease_owner = 'worker-active', claimed_at = ?,
+          lease_expires_at = ?, lease_generation = 1, attempt_count = 1 WHERE id = ?`)
+      .run(NOW, "2026-08-02T12:01:00.000Z", dispatches[2]!.id);
+    ledger.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'claimed', lease_owner = 'worker-expired', claimed_at = ?,
+          lease_expires_at = ?, lease_generation = 1, attempt_count = 1 WHERE id = ?`)
+      .run("2026-08-02T11:59:00.000Z", "2026-08-02T11:59:59.000Z", dispatches[3]!.id);
+    ledger.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'claimed', lease_owner = 'worker-exhausted', claimed_at = ?,
+          lease_expires_at = ?, lease_generation = 1, attempt_count = max_attempts WHERE id = ?`)
+      .run("2026-08-02T11:59:00.000Z", "2026-08-02T11:59:59.000Z", dispatches[4]!.id);
+    ledger.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'completed', completed_at = ? WHERE id = ?`).run(NOW, dispatches[5]!.id);
+    ledger.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'failed', failed_at = ?, failure_code = 'invalid_payload' WHERE id = ?`)
+      .run(NOW, dispatches[6]!.id);
+
+    const summary = summarizeReleaseDispatchBacklog(ledger, "tenant-a");
+    expect(summary).toEqual({
+      tenantId: "tenant-a",
+      asOf: NOW,
+      pending: 2,
+      claimed: 3,
+      completed: 1,
+      failed: 1,
+      due: 2,
+      expiredClaimed: 2,
+    });
+    expect(Object.isFrozen(summary)).toBe(true);
+  });
+
+  it("isolates backlog aggregates by validated tenant identity", () => {
+    const ledger = store();
+    const body = fixture("stripe-rss.xml");
+    ingestReleaseDocument(ledger, input("rss", body));
+    const tenantBDispatch = ingestReleaseDocument(ledger, {
+      ...input("rss", body),
+      tenantId: "tenant-b",
+    }).artifacts[0]!;
+    const tenantBClaim = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-b", workerId: "worker-b", leaseDurationMs: 10_000,
+    })!;
+    completeReleaseDispatch(ledger, {
+      tenantId: "tenant-b",
+      dispatchId: tenantBClaim.id,
+      workerId: "worker-b",
+      leaseGeneration: tenantBClaim.leaseGeneration,
+    });
+
+    expect(tenantBDispatch.tenantId).toBe("tenant-b");
+    expect(summarizeReleaseDispatchBacklog(ledger, "tenant-a")).toMatchObject({
+      pending: 1, claimed: 0, completed: 0, failed: 0, due: 1, expiredClaimed: 0,
+    });
+    expect(summarizeReleaseDispatchBacklog(ledger, "tenant-b")).toMatchObject({
+      pending: 0, claimed: 0, completed: 1, failed: 0, due: 0, expiredClaimed: 0,
+    });
+    expect(summarizeReleaseDispatchBacklog(ledger, "tenant-c")).toEqual({
+      tenantId: "tenant-c", asOf: NOW,
+      pending: 0, claimed: 0, completed: 0, failed: 0, due: 0, expiredClaimed: 0,
+    });
+    expect(() => summarizeReleaseDispatchBacklog(ledger, " ")).toThrow("release_tenant_id_invalid");
+    expect(() => summarizeReleaseDispatchBacklog(ledger, "x".repeat(257)))
+      .toThrow("release_tenant_id_invalid");
+  });
+
+  it("persists bounded retry and backoff state across restart", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-dispatch-retry-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    let clock = NOW;
+    let ledger = store(path, () => clock);
+    ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const claim = claimReleaseDispatch(ledger, {
+        tenantId: "tenant-a", workerId: `worker-${attempt}`, leaseDurationMs: 10_000,
+      })!;
+      expect(claim).toMatchObject({ attemptCount: attempt, maxAttempts: 5 });
+      const failed = failReleaseDispatch(ledger, {
+        tenantId: "tenant-a", dispatchId: claim.id, workerId: `worker-${attempt}`,
+        leaseGeneration: claim.leaseGeneration, failureCode: "provider_unavailable", retryable: true,
+      });
+      expect(failed).toMatchObject({
+        status: attempt < 5 ? "pending" : "failed",
+        attemptCount: attempt,
+        lastFailureAt: clock,
+        lastFailureCode: "provider_unavailable",
+      });
+      if (attempt === 1) {
+        ledger.close();
+        stores.splice(stores.indexOf(ledger), 1);
+        ledger = store(path, () => clock);
+        expect(listReleaseDispatches(ledger, "tenant-a")[0]).toMatchObject({
+          status: "pending", attemptCount: 1, availableAt: "2026-08-02T12:00:01.000Z",
+        });
+      }
+      if (attempt < 5) {
+        expect(claimReleaseDispatch(ledger, {
+          tenantId: "tenant-a", workerId: "worker-early", leaseDurationMs: 10_000,
+        })).toBeNull();
+        clock = failed.availableAt;
+      }
+    }
+    clock = "2026-08-03T12:00:00.000Z";
+    expect(claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-after-limit", leaseDurationMs: 10_000,
+    })).toBeNull();
+  });
+
+  it("preserves v4 claimed time, backlog, and lease takeover authority across restart", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-v4-lease-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    let clock = NOW;
+    let ledger = store(path, () => clock);
+    ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
+    const original = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-original", leaseDurationMs: 1_000,
+    })!;
+    expect(original).toMatchObject({
+      status: "claimed", claimedAt: NOW, leaseGeneration: 1,
+    });
+    ledger.close();
+    stores.splice(stores.indexOf(ledger), 1);
+
+    ledger = store(path, () => clock);
+    expect(summarizeReleaseDispatchBacklog(ledger, "tenant-a")).toMatchObject({
+      claimed: 1, expiredClaimed: 0,
+    });
+    expect(claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-early", leaseDurationMs: 1_000,
+    })).toBeNull();
+
+    clock = "2026-08-02T12:00:01.001Z";
+    expect(summarizeReleaseDispatchBacklog(ledger, "tenant-a")).toMatchObject({
+      claimed: 1, expiredClaimed: 1,
+    });
+    expect(() => completeReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: original.id, workerId: "worker-original",
+      leaseGeneration: original.leaseGeneration,
+    })).toThrow("release_dispatch_lease_lost");
+    const takeover = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-takeover", leaseDurationMs: 1_000,
+    })!;
+    expect(takeover).toMatchObject({ claimedAt: clock, leaseGeneration: 2 });
+    expect(completeReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: takeover.id, workerId: "worker-takeover",
+      leaseGeneration: takeover.leaseGeneration,
+    })).toMatchObject({ status: "completed", completedAt: clock });
+  });
+
+  it("keeps explicit terminal failures terminal", () => {
+    let clock = NOW;
+    const ledger = store(":memory:", () => clock);
+    ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
+    const claim = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-a", leaseDurationMs: 10_000,
+    })!;
+    expect(failReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: claim.id, workerId: "worker-a",
+      leaseGeneration: claim.leaseGeneration, failureCode: "invalid_payload", retryable: false,
+    })).toMatchObject({ status: "failed", failedAt: NOW, failureCode: "invalid_payload" });
+    clock = "2026-08-03T12:00:00.000Z";
+    expect(claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-b", leaseDurationMs: 10_000,
+    })).toBeNull();
+  });
+
+  it("reserves an expired final attempt for evidence recovery instead of terminalizing it", () => {
+    let clock = NOW;
+    const ledger = store(":memory:", () => clock);
+    ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      expect(claimReleaseDispatch(ledger, {
+        tenantId: "tenant-a", workerId: `worker-${attempt}`, leaseDurationMs: 1_000,
+      })).toMatchObject({ attemptCount: attempt, status: "claimed" });
+      clock = new Date(Date.parse(clock) + 1_000).toISOString();
+    }
+    expect(claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-after-limit", leaseDurationMs: 1_000,
+    })).toBeNull();
+    expect(listReleaseDispatches(ledger, "tenant-a")[0]).toMatchObject({
+      status: "claimed",
+      attemptCount: 5,
+      leaseOwner: "worker-5",
+      failedAt: null,
+      failureCode: null,
+    });
+    expect(claimExpiredFinalReleaseDispatchForRecovery(ledger, {
+      tenantId: "tenant-a", workerId: "recovery-worker", leaseDurationMs: 1_000,
+    })).toMatchObject({
+      status: "claimed",
+      attemptCount: 5,
+      leaseOwner: "recovery-worker",
+      leaseGeneration: 6,
+    });
+  });
+
+  it("uses only the store clock for lease takeover and completion authority", () => {
+    let clock = NOW;
+    const ledger = store(":memory:", () => clock);
+    ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
+    const original = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-a", leaseDurationMs: 1_000,
+    })!;
+    expect(claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-b", leaseDurationMs: 1_000,
+      now: "2099-01-01T00:00:00.000Z",
+    } as Parameters<typeof claimReleaseDispatch>[1])).toBeNull();
+
+    clock = "2026-08-02T12:00:02.000Z";
+    expect(() => completeReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: original.id, workerId: "worker-a",
+      leaseGeneration: original.leaseGeneration, completedAt: "2020-01-01T00:00:00.000Z",
+    } as Parameters<typeof completeReleaseDispatch>[1])).toThrow("release_dispatch_lease_lost");
+    expect(ledger.raw.prepare(
+      "SELECT watermark_at FROM release_ingestion_clock_authority WHERE singleton_id = 1",
+    ).get()).toEqual({ watermark_at: clock });
+    const takeover = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-b", leaseDurationMs: 1_000,
+    })!;
+    const completed = completeReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: takeover.id, workerId: "worker-b",
+      leaseGeneration: takeover.leaseGeneration, completedAt: "2020-01-01T00:00:00.000Z",
+    } as Parameters<typeof completeReleaseDispatch>[1]);
+    expect(completed).toMatchObject({ status: "completed", completedAt: clock });
+  });
+
+  it("fails closed on clock rollback across every lease transition and restart, then recovers", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-clock-watermark-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    let clock = NOW;
+    let ledger = store(path, () => clock);
+    ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
+    expect(ledger.raw.prepare("SELECT COUNT(*) AS count FROM release_ingestion_clock_authority").get())
+      .toEqual({ count: 0 });
+    const claim = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-a", leaseDurationMs: 1_000,
+    })!;
+    expect(claim).toMatchObject({ claimedAt: NOW, leaseGeneration: 1 });
+    expect(ledger.raw.prepare(
+      "SELECT watermark_at FROM release_ingestion_clock_authority WHERE singleton_id = 1",
+    ).get()).toEqual({ watermark_at: NOW });
+    expect(() => ledger.raw.prepare("DELETE FROM release_ingestion_clock_authority").run())
+      .toThrow("release_ingestion_clock_authority_required");
+
+    clock = "2026-08-02T11:59:59.000Z";
+    expect(() => completeReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: claim.id, workerId: "worker-a",
+      leaseGeneration: claim.leaseGeneration,
+    })).toThrow("release_store_clock_rollback");
+    expect(() => failReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: claim.id, workerId: "worker-a",
+      leaseGeneration: claim.leaseGeneration, failureCode: "provider_unavailable", retryable: true,
+    })).toThrow("release_store_clock_rollback");
+    expect(() => claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-b", leaseDurationMs: 1_000,
+    })).toThrow("release_store_clock_rollback");
+    expect(() => summarizeReleaseDispatchBacklog(ledger, "tenant-a"))
+      .toThrow("release_store_clock_rollback");
+    ledger.close();
+    stores.splice(stores.indexOf(ledger), 1);
+
+    ledger = store(path, () => clock);
+    expect(() => claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-restart", leaseDurationMs: 1_000,
+    })).toThrow("release_store_clock_rollback");
+    clock = NOW;
+    expect(claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-caught-up", leaseDurationMs: 1_000,
+    })).toBeNull();
+    clock = "2026-08-02T12:00:02.000Z";
+    const takeover = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-b", leaseDurationMs: 1_000,
+    })!;
+    expect(takeover).toMatchObject({ claimedAt: clock, leaseGeneration: 2 });
+    expect(completeReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: takeover.id, workerId: "worker-b",
+      leaseGeneration: takeover.leaseGeneration,
+    })).toMatchObject({ status: "completed", completedAt: clock });
+  });
+
+  it("requires finish time to reach the claim time bound to the lease generation", () => {
+    let clock = NOW;
+    const ledger = store(":memory:", () => clock);
+    ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
+    const claim = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-a", leaseDurationMs: 10_000,
+    })!;
+    ledger.raw.prepare("UPDATE release_ingestion_dispatches SET claimed_at = ? WHERE id = ?")
+      .run("2026-08-02T12:00:01.000Z", claim.id);
+    expect(() => completeReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: claim.id, workerId: "worker-a",
+      leaseGeneration: claim.leaseGeneration,
+    })).toThrow("release_dispatch_lease_lost");
+    clock = "2026-08-02T12:00:01.000Z";
+    expect(completeReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: claim.id, workerId: "worker-a",
+      leaseGeneration: claim.leaseGeneration,
+    })).toMatchObject({ status: "completed", claimedAt: clock, completedAt: clock });
+  });
+
+  it("serializes the clock watermark across processes", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-clock-process-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    const lockedPath = join(directory, "high-clock-locked");
+    const releasePath = join(directory, "release-high-clock");
+    const lowStartedPath = join(directory, "low-clock-started");
+    const initial = store(path);
+    ingestReleaseDocument(initial, input("rss", fixture("stripe-rss.xml")));
+    initial.close();
+    stores.splice(stores.indexOf(initial), 1);
+
+    const high = spawnClockClaimChild({
+      path, clock: "2026-08-02T12:00:10.000Z", workerId: "worker-high", lockedPath, releasePath,
+    });
+    const low = spawnClockClaimChild({
+      path, clock: "2026-08-02T12:00:05.000Z", workerId: "worker-low", startedPath: lowStartedPath,
+    });
+    try {
+      expect(await nextChildMessage(high)).toBe("ready");
+      const highResult = nextChildMessage(high);
+      high.send("claim");
+      await waitForFile(lockedPath);
+      expect(await nextChildMessage(low)).toBe("ready");
+      const lowResult = nextChildMessage(low);
+      low.send("claim");
+      await waitForFile(lowStartedPath);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      writeFileSync(releasePath, "release", "utf8");
+      expect(await highResult).toMatchObject({
+        status: "ok", claim: { leaseOwner: "worker-high", claimedAt: "2026-08-02T12:00:10.000Z" },
+      });
+      expect(await lowResult).toEqual({ status: "error", error: "release_store_clock_rollback" });
+      await Promise.all([waitForChildExit(high), waitForChildExit(low)]);
+    } finally {
+      for (const child of [high, low]) {
+        if (child.exitCode === null && child.connected) child.disconnect();
+      }
+    }
+    const reopened = store(path, () => "2026-08-02T12:00:10.000Z");
+    expect(reopened.raw.prepare(
+      "SELECT watermark_at FROM release_ingestion_clock_authority WHERE singleton_id = 1",
+    ).get()).toEqual({ watermark_at: "2026-08-02T12:00:10.000Z" });
+  }, 15_000);
+
+  it("migrates v1 artifacts and overrides without loss and converges across restart", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-v1-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    createV1Database(path);
+
+    const migrated = store(path);
+    const artifacts = listReleaseArtifacts(migrated, "tenant-v1");
+    const artifact = artifacts.find((candidate) => candidate.id === "rel_v1")!;
+    expect(artifacts).toHaveLength(2);
+    expect(artifacts.filter((candidate) => candidate.identityCanonical)).toHaveLength(1);
+    expect(artifact).toMatchObject({
+      id: "rel_v1",
+      contentSha256: "b".repeat(64),
+      normalizedClaimSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      reviewerOverride: { revision: 1, reviewerPrincipalId: "human:v1" },
+    });
+    expect(listReleaseObservations(migrated, "tenant-v1", "rel_v1")).toHaveLength(1);
+    expect(listReleaseObservations(migrated, "tenant-v1", "rel_v1_replay")).toHaveLength(1);
+    expect(listReleaseDispatches(migrated, "tenant-v1")).toHaveLength(1);
+    expect(migrated.raw.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations").get())
+      .toEqual({ version: 5 });
+    const replay = ingestReleaseDocument(migrated, {
+      tenantId: "tenant-v1",
+      providerSlug: "stripe",
+      adapter: "rss",
+      sourceUrl: durableSourceUrl("https://docs.stripe.com/changelog/feed"),
+      body: `<?xml version="1.0"?><rss><channel><item>
+        <guid>legacy</guid><title>Legacy release</title>
+        <link>https://docs.stripe.com/changelog/legacy</link>
+        <pubDate>Sat, 01 Aug 2026 00:00:00 GMT</pubDate>
+        <description>Legacy provider wording.</description></item></channel></rss>`,
+      observedAt: NOW,
+      now: NOW,
+    });
+    expect(replay.inserted).toBe(0);
+    expect(replay.artifacts.map((candidate) => candidate.id)).toEqual(["rel_v1"]);
+    expect(listReleaseArtifacts(migrated, "tenant-v1")).toHaveLength(2);
+    expect(listReleaseDispatches(migrated, "tenant-v1")).toHaveLength(1);
+    migrated.close();
+    stores.splice(stores.indexOf(migrated), 1);
+
+    const restarted = store(path);
+    expect(listReleaseArtifacts(restarted, "tenant-v1")).toEqual(artifacts);
+    expect(listReleaseObservations(restarted, "tenant-v1", "rel_v1")).toHaveLength(2);
+    expect(listReleaseDispatches(restarted, "tenant-v1")).toHaveLength(1);
+  });
+
+  it("rebuilds a constraint-drifted v5 reconciliation schema without losing evidence", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-v5-drift-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    let ledger = store(path);
+    ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
+    const claim = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-a", leaseDurationMs: 10_000,
+    })!;
+    const failure = failReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: claim.id, workerId: "worker-a",
+      leaseGeneration: claim.leaseGeneration, failureCode: "invalid_payload", retryable: false,
+    });
+    reconcileReleaseDispatchFailure(ledger, {
+      tenantId: "tenant-a", dispatchId: failure.id, action: "acknowledge",
+      actorPrincipalId: "operator-a", evidenceSha256: "d".repeat(64),
+      expectedLeaseGeneration: failure.leaseGeneration, expectedFailedAt: failure.failedAt!,
+      expectedFailureCode: failure.failureCode!, idempotencyKey: "ack:before-drift",
+    });
+    ledger.close();
+    stores.splice(stores.indexOf(ledger), 1);
+
+    const drifted = new DatabaseSync(path);
+    drifted.exec(`PRAGMA foreign_keys = OFF;
+      DROP INDEX release_ingestion_dispatches_identity_idx;
+      CREATE INDEX release_ingestion_dispatches_identity_idx
+        ON release_ingestion_dispatches(tenant_id, id);
+      DROP TRIGGER release_ingestion_dispatch_reconciliations_no_update;
+      DROP TRIGGER release_ingestion_dispatch_reconciliations_no_delete;
+      DROP INDEX release_ingestion_dispatch_reconciliations_lookup_idx;
+      ALTER TABLE release_ingestion_dispatch_reconciliations RENAME TO reconciliation_old;
+      CREATE TABLE release_ingestion_dispatch_reconciliations (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, dispatch_id TEXT NOT NULL,
+        action TEXT NOT NULL, actor_principal_id TEXT NOT NULL, evidence_sha256 TEXT NOT NULL,
+        expected_lease_generation INTEGER NOT NULL, expected_failed_at TEXT NOT NULL,
+        expected_failure_code TEXT NOT NULL, idempotency_key TEXT NOT NULL, created_at TEXT NOT NULL,
+        UNIQUE (tenant_id, idempotency_key),
+        FOREIGN KEY (dispatch_id) REFERENCES release_ingestion_dispatches(id)
+      );
+      INSERT INTO release_ingestion_dispatch_reconciliations SELECT * FROM reconciliation_old;
+      DROP TABLE reconciliation_old;`);
+    drifted.close();
+
+    ledger = store(path);
+    expect(listReleaseDispatchReconciliations(ledger, "tenant-a", failure.id)).toEqual([
+      expect.objectContaining({ idempotencyKey: "ack:before-drift", actorPrincipalId: "operator-a" }),
+    ]);
+    const foreignKeys = ledger.raw.prepare(
+      "PRAGMA foreign_key_list(release_ingestion_dispatch_reconciliations)",
+    ).all() as unknown as Array<{ from: string; to: string }>;
+    expect(foreignKeys).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: "dispatch_id", to: "id" }),
+      expect.objectContaining({ from: "tenant_id", to: "tenant_id" }),
+    ]));
+    expect(() => ledger.raw.prepare(`INSERT INTO release_ingestion_dispatch_reconciliations
+      (id, tenant_id, dispatch_id, action, actor_principal_id, evidence_sha256,
+       expected_lease_generation, expected_failed_at, expected_failure_code, idempotency_key, created_at)
+      VALUES ('bad', 'tenant-b', ?, 'invalid', 'operator-b', 'short', 0, ?, 'x', 'bad', ?)`)
+      .run(failure.id, NOW, NOW)).toThrow();
+  });
+
+  it("upgrades the exact immediate-parent v2 schema and safely recovers active leases", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-parent-v2-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    createImmediateParentV2Database(path);
+
+    let clock = "2026-08-02T12:00:05.000Z";
+    let migrated = store(path, () => clock);
+    expect(migrated.raw.prepare(
+      "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
+    ).get()).toEqual({ version: 5 });
+    expect(migrated.raw.prepare("PRAGMA table_info(release_ingestion_dispatches)").all())
+      .toEqual(expect.arrayContaining([expect.objectContaining({ name: "claimed_at" })]));
+    expect(migrated.raw.prepare(
+      "SELECT COUNT(*) AS count FROM release_ingestion_clock_authority",
+    ).get()).toEqual({ count: 0 });
+    expect(listReleaseDispatches(migrated, "tenant-a")[0]).toMatchObject({
+      status: "claimed",
+      leaseOwner: "worker-predecessor",
+      leaseGeneration: 1,
+      claimedAt: "2026-08-02T12:00:10.000Z",
+    });
+    expect(() => completeReleaseDispatch(migrated, {
+      tenantId: "tenant-a",
+      dispatchId: listReleaseDispatches(migrated, "tenant-a")[0]!.id,
+      workerId: "worker-predecessor",
+      leaseGeneration: 1,
+    })).toThrow("release_dispatch_lease_lost");
+
+    const pendingClaim = claimReleaseDispatch(migrated, {
+      tenantId: "tenant-b", workerId: "worker-pending", leaseDurationMs: 10_000,
+    })!;
+    migrated.close();
+    stores.splice(stores.indexOf(migrated), 1);
+    migrated = store(path, () => clock);
+    expect(completeReleaseDispatch(migrated, {
+      tenantId: "tenant-b", dispatchId: pendingClaim.id, workerId: "worker-pending",
+      leaseGeneration: pendingClaim.leaseGeneration,
+    })).toMatchObject({ status: "completed", completedAt: clock });
+
+    clock = "2026-08-02T12:00:11.000Z";
+    const reclaimed = claimReleaseDispatch(migrated, {
+      tenantId: "tenant-a", workerId: "worker-retry", leaseDurationMs: 10_000,
+    })!;
+    expect(reclaimed).toMatchObject({ leaseGeneration: 2, claimedAt: clock });
+    expect(failReleaseDispatch(migrated, {
+      tenantId: "tenant-a", dispatchId: reclaimed.id, workerId: "worker-retry",
+      leaseGeneration: reclaimed.leaseGeneration, failureCode: "provider_unavailable", retryable: true,
+    })).toMatchObject({ status: "pending", availableAt: "2026-08-02T12:00:13.000Z" });
+    migrated.close();
+    stores.splice(stores.indexOf(migrated), 1);
+
+    clock = "2026-08-02T12:00:13.000Z";
+    migrated = store(path, () => clock);
+    const retry = claimReleaseDispatch(migrated, {
+      tenantId: "tenant-a", workerId: "worker-complete", leaseDurationMs: 10_000,
+    })!;
+    expect(completeReleaseDispatch(migrated, {
+      tenantId: "tenant-a", dispatchId: retry.id, workerId: "worker-complete",
+      leaseGeneration: retry.leaseGeneration,
+    })).toMatchObject({ status: "completed", completedAt: clock, attemptCount: 3 });
+  });
+
+  it("records v3 for a v2 database that already contains the clock safety objects", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-expanded-v2-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    const expandedV2 = store(path);
+    ingestReleaseDocument(expandedV2, input("rss", fixture("stripe-rss.xml")));
+    expandedV2.raw.exec(`
+      DROP TRIGGER release_ingestion_identity_aliases_no_update;
+      DROP TRIGGER release_ingestion_identity_aliases_no_delete;
+      DROP TABLE release_ingestion_identity_aliases;
+      DELETE FROM release_ingestion_schema_migrations WHERE version >= 3;
+    `);
+    expandedV2.close();
+    stores.splice(stores.indexOf(expandedV2), 1);
+
+    const migrated = store(path);
+    expect(migrated.raw.prepare(
+      "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
+    ).get()).toEqual({ version: 5 });
+    expect(migrated.raw.prepare("PRAGMA table_info(release_ingestion_dispatches)").all())
+      .toEqual(expect.arrayContaining([expect.objectContaining({ name: "claimed_at" })]));
+    expect(migrated.raw.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'release_ingestion_clock_authority'",
+    ).get()).toEqual({ name: "release_ingestion_clock_authority" });
+  });
+
+  it("converges simultaneous first opens of a new database", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-first-open-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    const children = Array.from({ length: 4 }, () => spawnStoreOpener(path));
+    try {
+      expect(await Promise.all(children.map(nextChildMessage))).toEqual(Array(4).fill("ready"));
+      const starting = children.map(nextChildMessage);
+      for (const child of children) child.send("prepare");
+      expect(await Promise.all(starting)).toEqual(Array(4).fill("starting"));
+      const results = children.map(nextChildMessage);
+      for (const child of children) child.send("open");
+      expect(await Promise.all(results)).toEqual(Array(4).fill({ status: "ok" }));
+    } finally {
+      for (const child of children) {
+        if (child.exitCode === null && child.connected) child.disconnect();
+      }
+    }
+    const converged = store(path);
+    expect(converged.raw.prepare(
+      "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
+    ).get()).toEqual({ version: 5 });
+  }, 15_000);
+
+  it.each(["version-zero", "version-one"] as const)(
+    "serializes concurrent %s schema convergence under the SQLite write lock",
+    async (startingVersion) => {
+      const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-upgrade-race-"));
+      directories.push(directory);
+      const path = join(directory, "release.sqlite");
+      if (startingVersion === "version-zero") createVersionZeroDatabase(path);
+      else createV1Database(path);
+      const blocker = new DatabaseSync(path);
+      blocker.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE;");
+      const children = Array.from({ length: 4 }, () => spawnStoreOpener(path));
+      try {
+        expect(await Promise.all(children.map(nextChildMessage))).toEqual(Array(4).fill("ready"));
+        const starting = children.map(nextChildMessage);
+        for (const child of children) child.send("go");
+        expect(await Promise.all(starting)).toEqual(Array(4).fill("starting"));
+        const results = children.map(nextChildMessage);
+        for (const child of children) child.send("open");
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        blocker.exec("COMMIT");
+        expect(await Promise.all(results)).toEqual(Array(4).fill({ status: "ok" }));
+      } finally {
+        if (blocker.isTransaction) blocker.exec("ROLLBACK");
+        blocker.close();
+        for (const child of children) {
+          if (child.exitCode === null && child.connected) child.disconnect();
+        }
+      }
+      const converged = store(path);
+      expect(converged.raw.prepare(
+        "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
+      ).get()).toEqual({ version: 5 });
+    },
+    15_000,
+  );
+
   it.each([
     ["malformed RSS", "rss", "<rss><channel><item></rss>", /release_xml_malformed/],
     ["ambiguous XML", "rss", "<rss><feed><item></item><entry></entry></feed></rss>", /release_xml_adapter_ambiguous/],
@@ -185,6 +1591,14 @@ describe("release ingestion", () => {
     const ledger = store();
     expect(() => ingestReleaseDocument(ledger, input("rss", "x".repeat(1_048_577))))
       .toThrow("release_document_too_large");
+    expect(() => ingestReleaseDocument(ledger, {
+      ...input("rss", fixture("stripe-rss.xml")),
+      maxBytes: RELEASE_DOCUMENT_MAX_BYTES + 1,
+    })).toThrow("release_document_max_bytes_invalid");
+    expect(() => ingestReleaseDocument(ledger, {
+      ...input("rss", fixture("stripe-rss.xml")),
+      maxBytes: Number.POSITIVE_INFINITY,
+    })).toThrow("release_document_max_bytes_invalid");
     expect(() => ingestReleaseDocument(ledger, {
       ...input("rss", fixture("stripe-rss.xml")),
       observedAt: "2026-07-30T12:00:00.000Z",

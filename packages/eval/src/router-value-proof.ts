@@ -1,4 +1,6 @@
 export const ROUTER_VALUE_PROOF_VERSION = "2026-08-02.v1" as const;
+export const ROUTER_VALUE_MAX_OBSERVATIONS = 10_000;
+export const ROUTER_VALUE_MAX_EVIDENCE_REFS_PER_OBSERVATION = 20;
 
 export type RouterValueArm = "baseline" | "candidate";
 
@@ -39,9 +41,11 @@ export type RouterValueProofReport = {
   acceptance: { baseline: number; candidate: number };
   acceptanceRegressionTaskIds: string[];
   securityRegressionTaskIds: string[];
-  acceptedOutputCostUsd: { baseline: number; candidate: number };
+  acceptedOutputCostUsd: { baseline: number | null; candidate: number | null };
+  acceptedOutputCostRegressionTaskIds: string[];
   candidateLatencyP95Ms: number;
   latencyObjectiveMs: number;
+  latencyObjectiveExceededTaskIds: string[];
   evidenceRefs: string[];
 };
 
@@ -66,18 +70,21 @@ function rate(accepted: number, total: number): number {
   return total === 0 ? 0 : accepted / total;
 }
 
-function acceptedCost(observations: readonly RouterValueObservation[]): number {
+function acceptedCost(observations: readonly RouterValueObservation[]): number | null {
   const accepted = observations.filter((observation) => observation.accepted);
-  if (accepted.length === 0) return Number.POSITIVE_INFINITY;
-  return accepted.reduce((total, observation) => total + observation.costUsd, 0) /
-    accepted.length;
+  if (accepted.length === 0) return null;
+  const total = accepted.reduce((sum, observation) => sum + observation.costUsd, 0);
+  const average = total / accepted.length;
+  return Number.isFinite(average) ? average : null;
 }
 
 export function evaluateRouterValueProof(
   contract: RouterValueProofContract,
 ): RouterValueProofReport {
   if (contract.version !== ROUTER_VALUE_PROOF_VERSION) fail("router_value_version_invalid");
-  if (!contract.cohort.heldOut) fail("router_value_cohort_not_held_out");
+  if (typeof contract.cohort.heldOut !== "boolean" || contract.cohort.heldOut !== true) {
+    fail("router_value_cohort_not_held_out");
+  }
   if (!ID.test(contract.cohort.id)) fail("router_value_cohort_id_invalid");
   if (!REVISION.test(contract.cohort.revision)) fail("router_value_revision_invalid");
   if (!DIGEST.test(contract.cohort.digest)) fail("router_value_digest_invalid");
@@ -89,7 +96,11 @@ export function evaluateRouterValueProof(
   ) {
     fail("router_value_policy_incomplete");
   }
-  if (!Array.isArray(contract.observations) || contract.observations.length === 0) {
+  if (
+    !Array.isArray(contract.observations) ||
+    contract.observations.length === 0 ||
+    contract.observations.length > ROUTER_VALUE_MAX_OBSERVATIONS
+  ) {
     fail("router_value_observations_required");
   }
 
@@ -100,6 +111,7 @@ export function evaluateRouterValueProof(
     if (observation.arm !== "baseline" && observation.arm !== "candidate") {
       fail("router_value_arm_invalid");
     }
+    if (typeof observation.accepted !== "boolean") fail("router_value_acceptance_invalid");
     finiteNonnegative(observation.securityFindings, "router_value_security_invalid");
     if (!Number.isSafeInteger(observation.securityFindings)) fail("router_value_security_invalid");
     finiteNonnegative(observation.costUsd, "router_value_cost_invalid");
@@ -107,7 +119,11 @@ export function evaluateRouterValueProof(
     if (
       !Array.isArray(observation.evidenceRefs) ||
       observation.evidenceRefs.length === 0 ||
-      observation.evidenceRefs.some((reference) => !reference.trim())
+      observation.evidenceRefs.length > ROUTER_VALUE_MAX_EVIDENCE_REFS_PER_OBSERVATION ||
+      observation.evidenceRefs.some(
+        (reference) =>
+          typeof reference !== "string" || !reference.trim() || reference.length > 512,
+      )
     ) {
       fail("router_value_evidence_required");
     }
@@ -136,7 +152,29 @@ export function evaluateRouterValueProof(
     baseline: acceptedCost(baseline),
     candidate: acceptedCost(candidate),
   };
+  const acceptedOutputCostPolicyPassed =
+    acceptedOutputCostUsd.baseline !== null &&
+    acceptedOutputCostUsd.candidate !== null &&
+    Number.isFinite(acceptedOutputCostUsd.baseline) &&
+    Number.isFinite(acceptedOutputCostUsd.candidate) &&
+    acceptedOutputCostUsd.candidate < acceptedOutputCostUsd.baseline;
+  const baselineAcceptedOutputCostUsd = acceptedOutputCostUsd.baseline;
+  const acceptedOutputCostRegressionTaskIds =
+    acceptedOutputCostPolicyPassed
+      ? []
+      : baselineAcceptedOutputCostUsd === null || acceptedOutputCostUsd.candidate === null
+        ? taskIds
+        : acceptedOutputCostUsd.candidate >= baselineAcceptedOutputCostUsd
+        ? taskIds.filter((taskId) => {
+            const item = byTask.get(taskId)!.get("candidate")!;
+            return item.accepted && item.costUsd >= baselineAcceptedOutputCostUsd;
+          })
+        : taskIds;
   const candidateLatencyP95Ms = nearestRank(candidate.map((item) => item.latencyMs), 0.95);
+  const latencyObjectiveExceededTaskIds = taskIds.filter(
+    (taskId) =>
+      byTask.get(taskId)!.get("candidate")!.latencyMs > contract.policy.latencyP95Ms,
+  );
   const acceptance = {
     baseline: rate(baseline.filter((item) => item.accepted).length, baseline.length),
     candidate: rate(candidate.filter((item) => item.accepted).length, candidate.length),
@@ -145,9 +183,7 @@ export function evaluateRouterValueProof(
     acceptanceRegressionTaskIds.length === 0 &&
     securityRegressionTaskIds.length === 0 &&
     acceptance.candidate >= acceptance.baseline &&
-    Number.isFinite(acceptedOutputCostUsd.baseline) &&
-    Number.isFinite(acceptedOutputCostUsd.candidate) &&
-    acceptedOutputCostUsd.candidate < acceptedOutputCostUsd.baseline &&
+    acceptedOutputCostPolicyPassed &&
     candidateLatencyP95Ms <= contract.policy.latencyP95Ms;
 
   return Object.freeze({
@@ -161,8 +197,10 @@ export function evaluateRouterValueProof(
     acceptanceRegressionTaskIds,
     securityRegressionTaskIds,
     acceptedOutputCostUsd,
+    acceptedOutputCostRegressionTaskIds,
     candidateLatencyP95Ms,
     latencyObjectiveMs: contract.policy.latencyP95Ms,
+    latencyObjectiveExceededTaskIds,
     evidenceRefs: [...evidenceRefs].sort(),
   });
 }

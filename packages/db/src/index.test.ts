@@ -12,6 +12,7 @@ import {
   listAudit,
   createApiKey,
   createApiKeyFromToken,
+  insertPrincipal,
   listApiKeys,
   findApiKeyByToken,
   revokeApiKey,
@@ -938,6 +939,38 @@ describe("db", () => {
     expect(JSON.stringify(listApiKeys(db))).not.toContain(token);
   });
 
+  it("returns durable API-key authority bindings without exposing key hashes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-key-authority-list-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "authority.sqlite"));
+    dbs.push(db);
+    const authority = insertPrincipal(db, {
+      id: "principal-owner",
+      tenantId: "tenant_default",
+      kind: "human",
+      subject: "https://issuer.example|owner",
+      displayName: "Owner",
+      audience: "https://issuer.example",
+      createdAt: nowIso(),
+    });
+    createApiKey(db, {
+      id: "key-owner-bound",
+      name: "owner-bound",
+      tenantId: "tenant_default",
+      scopes: ["tenant:admin"],
+      authorityPrincipalId: authority.id,
+      authorityRole: "owner",
+      createdAt: nowIso(),
+    });
+
+    expect(listApiKeys(db, "tenant_default")).toContainEqual(expect.objectContaining({
+      id: "key-owner-bound",
+      authority_principal_id: authority.id,
+      authority_role: "owner",
+    }));
+    expect(listApiKeys(db, "tenant_default")[0]).not.toHaveProperty("key_hash");
+  });
+
   it("feed poll ledger", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-feed-"));
     dirs.push(dir);
@@ -1085,6 +1118,60 @@ describe("db", () => {
       "failed",
       "succeeded",
     ]);
+  });
+
+  it("reclaims an expired schedule window and fences stale completion generations", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-feed-schedule-lease-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "schedule.sqlite"));
+    dbs.push(db);
+    const schedule = upsertFeedSchedule(db, {
+      id: "schedule-lease",
+      tenantId: "tenant_default",
+      providerSlug: "release-provider",
+      intervalMs: 60_000,
+      staleAfterMs: 120_000,
+      createdAt: "2026-08-02T12:00:00.000Z",
+    });
+    const first = {
+      id: "window-lease",
+      scheduleId: schedule.id,
+      windowStartedAt: "2026-08-02T12:00:00.000Z",
+      windowEndsAt: "2026-08-02T12:01:00.000Z",
+      attemptedAt: "2026-08-02T12:00:01.000Z",
+      leaseDurationMs: 1_000,
+    };
+
+    expect(claimFeedScheduleWindow(db, first)).toBe(true);
+    expect(claimFeedScheduleWindow(db, {
+      ...first,
+      id: "window-unexpired-replay",
+      attemptedAt: "2026-08-02T12:00:01.999Z",
+    })).toBe(false);
+    expect(claimFeedScheduleWindow(db, {
+      ...first,
+      id: "window-expiry-takeover",
+      attemptedAt: "2026-08-02T12:00:02.001Z",
+    })).toBe(true);
+    expect(listFeedScheduleWindows(db, schedule.id)).toMatchObject([{
+      status: "running",
+      lease_generation: 2,
+      lease_expires_at: "2026-08-02T12:00:03.001Z",
+    }]);
+    expect(completeFeedScheduleWindow(db, {
+      scheduleId: schedule.id,
+      windowStartedAt: first.windowStartedAt,
+      leaseGeneration: 1,
+      succeeded: true,
+      completedAt: "2026-08-02T12:00:02.100Z",
+    })).toBe(false);
+    expect(completeFeedScheduleWindow(db, {
+      scheduleId: schedule.id,
+      windowStartedAt: first.windowStartedAt,
+      leaseGeneration: 2,
+      succeeded: true,
+      completedAt: "2026-08-02T12:00:02.100Z",
+    })).toBe(true);
   });
 
   it("tenants and github installations", () => {

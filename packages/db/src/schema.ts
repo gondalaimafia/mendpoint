@@ -1,5 +1,34 @@
 /** Table name constants + row types (node:sqlite, no ORM). */
 
+export type SecretLifecycleVersionRow = {
+  tenant_id: string;
+  credential_id: string;
+  source_ref: string;
+  generation: number;
+  state: "active" | "retired" | "revoked";
+  audiences_json: string;
+  expires_at: string | null;
+  issued_at: string;
+  rotate_after: string | null;
+  retired_at: string | null;
+  revoked_at: string | null;
+  revocation_reason: string | null;
+  key_provider: string;
+  key_id: string;
+  key_version: string;
+  customer_managed: number;
+  key_attestation_sha256: string | null;
+  material_lineage_id: string | null;
+  material_lineage_key_id: string | null;
+  envelope_schema_version: number;
+  algorithm: "AES-256-GCM";
+  wrapped_data_key: string;
+  iv: string;
+  auth_tag: string;
+  ciphertext: string;
+  created_at: string;
+};
+
 export type Provider = {
   id: string;
   slug: string;
@@ -22,7 +51,10 @@ export type ApiKeyRow = {
   key_hash: string;
   key_prefix: string;
   tenant_id: string;
+  principal_id: string | null;
   scopes_json: string;
+  authority_principal_id: string | null;
+  authority_role: "owner" | "admin" | "engineer" | "viewer" | "fde" | "agent" | null;
   created_at: string;
   last_used_at: string | null;
   revoked_at: string | null;
@@ -78,6 +110,7 @@ export type FeedScheduleRow = {
   enabled: number;
   last_attempt_at: string | null;
   last_success_at: string | null;
+  release_last_success_at: string | null;
   consecutive_failures: number;
   alert_state: "healthy" | "stale" | "failed";
   last_error: string | null;
@@ -93,6 +126,8 @@ export type FeedScheduleWindowRow = {
   status: "running" | "succeeded" | "failed";
   error: string | null;
   attempted_at: string;
+  lease_expires_at: string | null;
+  lease_generation: number;
   completed_at: string | null;
 };
 
@@ -360,6 +395,24 @@ export type PrincipalRow = {
   audience: string | null;
   expires_at: string | null;
   revoked_at: string | null;
+  created_at: string;
+};
+
+export type IdentitySessionRow = {
+  id: string;
+  tenant_id: string;
+  principal_id: string;
+  issuer: string;
+  subject: string;
+  membership_updated_at: string;
+  auth_strength: string;
+  token_sha256: string;
+  issued_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  revoked_by_principal_id: string | null;
+  revoke_reason: string | null;
+  last_seen_at: string;
   created_at: string;
 };
 

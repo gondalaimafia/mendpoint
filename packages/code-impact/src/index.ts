@@ -6,10 +6,13 @@
 import {
   buildIndex,
   buildIndexIncremental,
+  materializeCodebaseIndex,
   type CodebaseIndex,
+  type CodebaseIndexAuthority,
+  type CodebaseIndexLimits,
+  type CodebaseIndexRepositoryIdentity,
+  type CodebaseIndexReuseEvidence,
   type SdkDetectionContext,
-  writeIndex,
-  defaultIndexPath,
 } from "@mendpoint/codebase-index";
 import { createHash } from "node:crypto";
 import {
@@ -17,6 +20,7 @@ import {
   getSoftwareGraphHead,
   publishSoftwareGraphVersion,
   queryFettlerEndpointImpact,
+  type FettlerEndpointImpactResult,
   type GraphLearnDb,
 } from "@mendpoint/graph-learn";
 import type {
@@ -54,6 +58,8 @@ import {
   type FettlerSoftwareGraphMaterializationInput,
 } from "./software-graph-materializer.js";
 
+const compareCodeUnits = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
+
 export { detectGeneratedFiles, isGeneratedFile } from "./generated.js";
 export { detectVendoredFiles } from "./vendored.js";
 export {
@@ -79,14 +85,25 @@ export {
   consumerUsesCapability,
   type CapabilityConsumerInput,
 } from "./capability-adoption.js";
+export * from "./raw-retrieval-fallback.js";
 
 export type AnalyzeOptions = {
   minConfidence?: Confidence;
   index?: CodebaseIndex;
   persistIndex?: boolean;
+  /** Mendpoint-owned tenant storage root; required when persisted reuse is enabled. */
+  indexStorageRoot?: string;
   useLlm?: boolean;
   surfaces?: ImpactableSurface[];
   sdkHints?: string[];
+  /** Hard repository-discovery bounds for this analysis. */
+  indexLimits?: Partial<CodebaseIndexLimits>;
+  /** Hard cap applied before candidate expansion and confirmation. */
+  maxCandidates?: number;
+  /** Tenant and stable repository identity required before persisted reuse. */
+  indexAuthority?: CodebaseIndexAuthority;
+  /** Receives digest-only evidence for each persisted index decision. */
+  onIndexMaterialized?: (evidence: CodebaseIndexReuseEvidence) => void;
   /**
    * Observer for each successful live model call made during confirmation.
    * Only fires when `useLlm` is true and the confirm mode resolves to live.
@@ -94,6 +111,98 @@ export type AnalyzeOptions = {
    */
   onLlmCall?: LlmConfirmObserver;
 };
+
+function analysisIndex(
+  repoRoot: string,
+  surfaces: ImpactableSurface[],
+  options: AnalyzeOptions,
+  authorityOverride?: CodebaseIndexAuthority,
+): { index: CodebaseIndex; evidence?: CodebaseIndexReuseEvidence } {
+  if (options.index) return { index: options.index };
+  const sdkContext = sdkContextFromSurfaces(surfaces, options.sdkHints);
+  if (!options.persistIndex) {
+    return {
+      index: buildIndexIncremental(repoRoot, null, {
+        sdkContext,
+        limits: options.indexLimits,
+      }),
+    };
+  }
+  const authority = authorityOverride ?? options.indexAuthority;
+  if (!authority) throw new Error("codebase_index_authority_required");
+  const storageRoot = options.indexStorageRoot?.trim();
+  if (!storageRoot) throw new Error("codebase_index_storage_root_required");
+  const materialized = materializeCodebaseIndex(repoRoot, {
+    authority,
+    storageRoot,
+    sdkContext,
+    limits: options.indexLimits,
+    persist: true,
+  });
+  options.onIndexMaterialized?.(materialized.evidence);
+  return materialized;
+}
+
+function assertCandidateBudget(
+  candidateCount: number,
+  maxCandidates?: number,
+  repositoryIdentity?: CodebaseIndexRepositoryIdentity,
+): void {
+  if (maxCandidates === undefined) return;
+  if (!Number.isSafeInteger(maxCandidates) || maxCandidates < 1 || maxCandidates > 50_000) {
+    throw new Error("raw_retrieval_candidate_budget_invalid");
+  }
+  if (candidateCount > maxCandidates) {
+    throw new RawRetrievalBudgetError(
+      "raw_retrieval_candidate_budget_exceeded",
+      maxCandidates,
+      candidateCount,
+      repositoryIdentity,
+    );
+  }
+}
+
+export class RawRetrievalBudgetError extends Error {
+  constructor(
+    readonly code: "raw_retrieval_candidate_budget_exceeded",
+    readonly limit: number,
+    readonly actual: number,
+    readonly repositoryIdentity?: CodebaseIndexRepositoryIdentity,
+  ) {
+    super(code);
+    this.name = "RawRetrievalBudgetError";
+  }
+}
+
+function rawRetrievalUsage(index: CodebaseIndex): {
+  filesInspected: number;
+  bytesInspected: number;
+} {
+  if (!index.repositoryIdentity) throw new Error("codebase_index_repository_identity_required");
+  return {
+    filesInspected: index.repositoryIdentity.filesInspected,
+    bytesInspected: index.repositoryIdentity.bytesInspected,
+  };
+}
+
+export function rawRetrievalRepositoryIdentityFromError(
+  error: unknown,
+): CodebaseIndexRepositoryIdentity | undefined {
+  const value = error && typeof error === "object"
+    ? (error as { repositoryIdentity?: unknown }).repositoryIdentity
+    : undefined;
+  if (!value || typeof value !== "object") return undefined;
+  const identity = value as Partial<CodebaseIndexRepositoryIdentity>;
+  if (
+    identity.schemaVersion !== "mendpoint.codebase-index-repository-identity.v1" ||
+    typeof identity.repositorySnapshotId !== "string" ||
+    typeof identity.repositoryRevision !== "string" ||
+    typeof identity.repositoryContentDigest !== "string" ||
+    !Number.isSafeInteger(identity.filesInspected) || Number(identity.filesInspected) < 0 ||
+    !Number.isSafeInteger(identity.bytesInspected) || Number(identity.bytesInspected) < 0
+  ) return undefined;
+  return identity as CodebaseIndexRepositoryIdentity;
+}
 
 /**
  * Derive provider-driven SDK-detection signals from the change under analysis.
@@ -513,17 +622,11 @@ export async function analyzeImpact(
   surfaces: ImpactableSurface[],
   options: AnalyzeOptions = {},
 ): Promise<ImpactReport> {
-  const index =
-    options.index ??
-    buildIndexIncremental(repoRoot, null, {
-      sdkContext: sdkContextFromSurfaces(surfaces, options.sdkHints),
-    });
-  if (options.persistIndex) {
-    writeIndex(index, defaultIndexPath(repoRoot));
-  }
+  const { index } = analysisIndex(repoRoot, surfaces, options);
 
   const provider: ProviderReachability = computeProviderReachability(index, surfaces);
   const candidates = discoverCandidates(index, surfaces, provider);
+  assertCandidateBudget(candidates.length, options.maxCandidates, index.repositoryIdentity);
   const expanded = expandContexts(index, candidates);
   const confirmed = await confirmImpacts(expanded, surfaces, {
     useLlm: options.useLlm,
@@ -553,9 +656,13 @@ export function analyzeRepo(
   const surfaces = options.surfaces ?? surfacesFromDiff(change, options.sdkHints);
   const index =
     options.index ??
-    buildIndex(repoRoot, { sdkContext: sdkContextFromSurfaces(surfaces, options.sdkHints) });
+    buildIndex(repoRoot, {
+      sdkContext: sdkContextFromSurfaces(surfaces, options.sdkHints),
+      limits: options.indexLimits,
+    });
   const provider: ProviderReachability = computeProviderReachability(index, surfaces);
   const candidates = discoverCandidates(index, surfaces, provider);
+  assertCandidateBudget(candidates.length, options.maxCandidates, index.repositoryIdentity);
   const expanded = expandContexts(index, candidates);
   const confirmed = staticConfirmAll(expanded, surfaces);
   const report = buildReport(
@@ -608,26 +715,31 @@ export async function analyzeImpactWithSoftwareGraph(
   options: AnalyzeImpactWithSoftwareGraphOptions,
 ) {
   const endpointSurfaces = surfaces.filter((surface) => surface.path);
+  const endpointKeys = new Set(endpointSurfaces.map(
+    (surface) => `${(surface.method ?? "ANY").toUpperCase()} ${surface.path}`,
+  ));
+  if (endpointKeys.size !== 1 || endpointSurfaces.length !== surfaces.length) {
+    throw new Error("software_graph_single_endpoint_required");
+  }
   const endpointSurface = endpointSurfaces[0];
   if (!endpointSurface?.path) throw new Error("software_graph_endpoint_surface_required");
   const sdkContext = sdkContextFromSurfaces(surfaces, options.impact?.sdkHints);
-  const index = buildIndexIncremental(repoRoot, null, { sdkContext });
-  if (options.impact?.persistIndex) writeIndex(index, defaultIndexPath(repoRoot));
-  const impactReport = await analyzeImpact(repoRoot, surfaces, {
-    ...options.impact,
-    index,
-    persistIndex: false,
+  const materialized = analysisIndex(repoRoot, surfaces, options.impact ?? {}, {
+    tenantId: options.tenantId,
+    repositoryId: options.repositoryId,
   });
-  const repositoryRevision = options.repositoryRevision ?? createHash("sha256")
-    .update(
-      index.files
-        .map((file) => `${file.path}\0${file.contentHash}`)
-        .sort()
-        .join("\n"),
-      "utf8",
-    )
-    .digest("hex");
-  const repositorySnapshotId = options.repositorySnapshotId ?? `repository-snapshot:${repositoryRevision}`;
+  const { index } = materialized;
+  const derivedIdentity = index.repositoryIdentity;
+  if (!derivedIdentity) throw new Error("codebase_index_repository_identity_required");
+  if (
+    (options.repositoryRevision && options.repositoryRevision !== derivedIdentity.repositoryRevision) ||
+    (options.repositorySnapshotId &&
+      options.repositorySnapshotId !== derivedIdentity.repositorySnapshotId)
+  ) {
+    throw new Error("software_graph_repository_identity_mismatch");
+  }
+  const repositoryRevision = derivedIdentity.repositoryRevision;
+  const repositorySnapshotId = derivedIdentity.repositorySnapshotId;
   const head = getSoftwareGraphHead(
     options.graphDb,
     options.tenantId,
@@ -662,8 +774,97 @@ export async function analyzeImpactWithSoftwareGraph(
     maxEntities: 500,
     maxRelationships: 1_000,
   });
+  // The graph query is the authority gate. A complete projection already
+  // answers the impact question, so running the raw candidate analyzer first
+  // would spend budget and then falsely report zero fallback usage. Only an
+  // incomplete graph is allowed to invoke bounded raw retrieval.
+  const graphComplete = graphImpact.coverage.basis === "complete" &&
+    !graphImpact.coverage.truncated;
+  const graphProjectionFaithful = surfaces.every((surface) =>
+    ["http_path", "http_method", "sdk_method"].includes(surface.kind) &&
+    ["path_removed", "path_added", "method_removed", "method_added", "method_changed"].includes(surface.op) &&
+    !surface.field && !surface.fromField && !surface.toField
+  );
+  const rawRetrievalReasonCodes = graphComplete && !graphProjectionFaithful
+    ? ["graph_projection_change_class_unrepresented"]
+    : [];
+  const useGraphOnly = graphComplete && graphProjectionFaithful;
+  const impactReport = useGraphOnly
+    ? impactReportFromCompleteGraph(surfaces, graphImpact)
+    : await analyzeImpact(repoRoot, surfaces, {
+        ...options.impact,
+        index,
+        persistIndex: false,
+      });
   const context = compileFettlerImpactContext(graphImpact, { maxBytes: options.maxContextBytes });
-  return { impactReport, graphVersion, graphImpact, context };
+  return {
+    impactReport,
+    graphVersion,
+    repositorySnapshotId,
+    repositoryRevision,
+    repositoryContentDigest: derivedIdentity.repositoryContentDigest,
+    graphImpact,
+    context,
+    rawRetrievalReasonCodes,
+    rawRetrievalUsage: useGraphOnly
+      ? { filesInspected: 0, bytesInspected: 0 }
+      : rawRetrievalUsage(index),
+    ...(materialized.evidence ? { indexReuse: materialized.evidence } : {}),
+  };
+}
+
+function impactReportFromCompleteGraph(
+  surfaces: ImpactableSurface[],
+  graphImpact: FettlerEndpointImpactResult,
+): ImpactReport {
+  const sites: ConfirmedImpact[] = [];
+  const seen = new Set<string>();
+  for (const entity of graphImpact.entities) {
+    if (
+      entity.scope !== "repository" ||
+      !["internal_sdk_method", "function", "test"].includes(entity.kind)
+    ) continue;
+    for (const evidence of entity.evidenceRefs) {
+      const match = /^source:(.+):(\d+)$/.exec(evidence);
+      if (!match) continue;
+      const filePath = match[1]!;
+      const line = Number(match[2]);
+      const impactType = entity.kind === "test"
+        ? "test_only" as const
+        : entity.kind === "function"
+          ? "wrapper" as const
+          : "direct_call" as const;
+      const key = `${filePath}\0${line}\0${entity.label}\0${impactType}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      sites.push({
+        filePath,
+        lineStart: line,
+        lineEnd: line,
+        symbol: entity.label,
+        confidence: entity.confidenceBasis === "static_analysis_low"
+          ? "low"
+          : entity.confidenceBasis === "static_analysis_medium"
+            ? "medium"
+            : "high",
+        evidence,
+        impactType,
+        surfaceIds: surfaces.map((surface) => surface.id),
+        relatedOps: [...new Set(surfaces.map((surface) => surface.op))],
+        confirmationPath: "static",
+      });
+    }
+  }
+  return buildReport(
+    surfaces,
+    sites.length,
+    sites,
+    "medium",
+    {
+      basis: "analyzed",
+      gaps: [],
+    },
+  );
 }
 
 export * from "./software-graph-materializer.js";

@@ -74,21 +74,82 @@ describe("Transformer service CLI", () => {
   it("reports 503 after a failed authenticated probe and 200 only after coordinator and artifact probes succeed", async () => {
     const root = mkdtempSync(join(tmpdir(), "transformer-cli-")); roots.push(root);
     const port = await freePort();
+    const logs: string[] = [];
+    vi.spyOn(console, "info").mockImplementation((line) => { logs.push(String(line)); });
     let calls = 0;
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     vi.stubGlobal("fetch", vi.fn(async () => {
       calls += 1;
-      if (calls === 1) throw new Error("offline");
+      if (calls === 1) throw new Error("https://coordinator.example/?token=top-secret");
       if (calls === 2) await held;
       const result = calls >= 4 ? null : { ready: true };
       return new Response(JSON.stringify({ result, serverTime: new Date().toISOString() }), { status: 200, headers: { "content-type": "application/json" } });
     }));
     const running = await runTransformerServiceCli(environment(root, port));
-    expect((await readReady(running.readinessUrl)).status).toBe(503);
+    const failed = await readReady(running.readinessUrl);
+    expect(failed.status).toBe(503);
+    expect(failed.body).toMatchObject({ lastError: "transformer_multinode_coordinator_probe_failed" });
+    expect(logs.findIndex((line) => line.includes("regauge_worker_readiness_listener_bound"))).toBeLessThan(
+      logs.findIndex((line) => line.includes("regauge_worker_readiness_failed")),
+    );
+    expect(logs.join("\n")).toContain('"stage":"coordinator"');
+    expect(logs.join("\n")).toContain('"code":"transformer_multinode_coordinator_probe_failed"');
+    expect(logs.join("\n")).not.toContain("top-secret");
+    expect(logs.join("\n")).not.toContain("coordinator.example");
     release();
     await vi.waitFor(async () => expect((await readReady(running.readinessUrl)).status).toBe(200));
+    expect(logs.join("\n")).toContain("regauge_worker_readiness_recovered");
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect((await readReady(running.readinessUrl)).status).toBe(200);
     await running.close();
+  });
+
+  it("keeps readiness reachable and sanitizes artifact probe failures", async () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-s3-probe-")); roots.push(root);
+    const logs: string[] = [];
+    vi.spyOn(console, "info").mockImplementation((line) => { logs.push(String(line)); });
+    vi.stubGlobal("fetch", vi.fn(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://coordinator.example/")) return new Response(JSON.stringify({ result: null, serverTime: new Date().toISOString() }), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response("provider-body-top-secret", { status: 500 });
+    }));
+    const env = environment(root, await freePort());
+    Object.assign(env, {
+      MENDPOINT_REGAUGE_ARTIFACT_BACKEND: "s3",
+      MENDPOINT_REGAUGE_S3_ENDPOINT: "https://s3.example/",
+      MENDPOINT_REGAUGE_S3_REGION: "sjc",
+      MENDPOINT_REGAUGE_S3_BUCKET: "regauge-private",
+      MENDPOINT_REGAUGE_S3_PREFIX: "readiness",
+      MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID: "access-top-secret",
+      MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY: "secret-top-secret",
+    });
+    const running = await runTransformerServiceCli(env);
+    const failed = await readReady(running.readinessUrl);
+    expect(failed.status).toBe(503);
+    expect(failed.body).toMatchObject({ lastError: "s3_artifact_backend_unavailable" });
+    const output = logs.join("\n");
+    expect(output).toContain('"stage":"artifact"');
+    expect(output).toContain('"code":"s3_artifact_backend_unavailable"');
+    expect(output).not.toContain("top-secret");
+    expect(output).not.toContain("s3.example");
+    await running.close();
+  });
+
+  it("reuses an authenticated artifact sentinel after a worker restart", async () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-restart-")); roots.push(root);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      result: null,
+      serverTime: new Date().toISOString(),
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+
+    const first = await runTransformerServiceCli(environment(root, await freePort()));
+    await vi.waitFor(async () => expect((await readReady(first.readinessUrl)).status).toBe(200));
+    await first.close();
+
+    const restarted = await runTransformerServiceCli(environment(root, await freePort()));
+    await vi.waitFor(async () => expect((await readReady(restarted.readinessUrl)).status).toBe(200));
+    await restarted.close();
   });
 });
 

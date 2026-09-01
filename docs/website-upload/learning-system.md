@@ -5,6 +5,9 @@ Capture reviewed outcomes as consented, redacted, lineage-bound evidence for eva
 Status: Governed learning preview
 Availability: Capture and corpus export implemented; downstream training requires separate authorization
 Last verified: 2026-08-14
+Publication evidence: not live; no deployed revision or live evidence digest recorded
+Requirements: ME-FND-009, ME-RTR-006, ME-RTR-007
+Public claims: None
 
 ## Start here
 
@@ -17,7 +20,7 @@ Record one approved outcome with explicit tenant consent, residency, retention, 
 
 ## What it does
 
-- Human-reviewed Fettler and Regauge outcome capture
+- Human-reviewed Fettler and ReGauge outcome capture
 - Consent, residency, temporal cutoff, redaction, and lineage gates
 - Deterministic sealed corpus exports
 - Suppression and rejection evidence
@@ -52,7 +55,13 @@ Record one approved outcome with explicit tenant consent, residency, retention, 
 
 - Learning capture: `packages/db/src/learning.test.ts`
 - Corpus eligibility: `packages/db/src/learning-corpus.test.ts`
-- Regauge learning loop: `apps/worker/src/transformer-learning.test.ts`
+- ReGauge learning loop: `apps/worker/src/transformer-learning.test.ts`
+
+## Contract sources
+
+- `packages/db/src/learning.ts`
+- `packages/db/src/organization-memory.ts`
+- `apps/api/src/learning-consent-routes.ts`
 
 ## Safety model
 

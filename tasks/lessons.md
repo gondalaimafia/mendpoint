@@ -1,3 +1,21 @@
+### 2026-08-30 — Key version labels are not cryptographic identity
+
+**Mistake:** Material lineage trusted a configured key ID without durably binding that label to the original key bytes, so a restarted process could reuse the ID with different material and compute a new lineage identity for revoked plaintext.
+**Correction:** Persist an immutable, domain-separated fingerprint for every lineage key ID before lifecycle work and reject same-ID/different-key configuration at startup.
+**Rule:** Any durable record that names cryptographic authority by key ID must also have protected, authenticated continuity of that ID-to-key binding. Rotation changes the active ID; it never redefines an existing ID.
+
+### 2026-08-30 — Operation commitments are not material lineage
+
+**Mistake:** Credential material lineage reused the complete operation commitment, so rotating A to B to A assigned the second A a different identity and let compromised material escape lineage revocation.
+**Correction:** Derive lineage from a domain-separated keyed fingerprint of tenant, credential, and plaintext, then revoke every matching generation and reject later resurrection.
+**Rule:** Idempotency answers whether one operation is an exact replay. Material lineage answers whether two generations contain the same credential. Keep those identities separate and make revocation follow the material across every generation.
+
+### 2026-08-30 — Plaintext release authority commits inside the transaction
+
+**Mistake:** Break glass revalidated owner authority after decrypt but before opening the completion transaction, leaving one final time-of-check to time-of-use window before the grant audit and operation row committed.
+**Correction:** Revalidate live owner authority under the same transaction immediately before the grant audit and operation insert, including exact replay.
+**Rule:** Every plaintext-release path places its final mutable authority check inside the durable commit boundary. An outside-transaction check is preparation, never release authority.
+
 ### 2026-08-02 — Classify partial requirements precisely
 **Mistake:** I described all partial requirements as waiting on external acceptance evidence before checking the registry categories.
 **Correction:** Talal asked why 61 requirements were partial instead of fully done.
@@ -201,3 +219,338 @@
 **Mistake:** The takeover path treated two related authority rows as independent transitions, and the first proposed boundary focused only on making future writes atomic.
 **Correction:** The full failure chain includes historical rows already persisted between those writes; exact reconciliation must recover them without weakening tenant, aggregate, or intent binding.
 **Rule:** When replacing a split durable transition with one transaction, enumerate every partially committed state that an older revision could have left behind. Prove both atomic rollback for new writes and bounded reconciliation for each historical split before declaring the state machine repaired.
+### 2026-08-27 — Test unpinned multi-tenant scheduler entry points
+**Mistake:** I proved release-only scheduling only with a global tenant pin, while the production worker intentionally permits canonical configurations for multiple tenants without that pin.
+**Correction:** Spec review found that a fresh unpinned database could report a healthy scheduler run while silently executing zero configured releases.
+**Rule:** When a runtime accepts tenant-bound configuration independently of a global tenant selector, test the production call shape with that selector unset, multiple tenants, a fresh durable store, and replay before claiming the configuration is reachable.
+
+### 2026-08-27 — Separate release plumbing from product progress
+**Mistake:** I treated shipping gates, plumbing, and documentation as significant Mendpoint 101 engineering progress without closing a live product capability.
+**Correction:** Talal required infrastructure motion to be reported separately from end-to-end production capability progress.
+**Rule:** Report release plumbing separately and prioritize closing an end-to-end production capability; never inflate infrastructure motion as requirement progress.
+
+### 2026-08-27 — Execute the authoritative plan directly
+**Mistake:** I proposed creating or importing another GSD roadmap even though an authoritative plan already existed.
+**Correction:** Talal required GSD execution, verification, and shipping mechanics to apply directly to the existing plan.
+**Rule:** Do not duplicate an authoritative plan; planning duplication is delay, not progress.
+
+### 2026-08-27 — Fence durable scheduler work across crashes
+**Mistake:** A running schedule window had no expiring authority, and readiness treated creation time as evidence of release success.
+**Correction:** Quality review reproduced a crash that left configured release polling permanently unclaimable while the worker reported healthy.
+**Rule:** Long-running durable claims need expiry and generation fencing, and configured readiness must require a distinct durable success fact.
+
+### 2026-08-27 — Redact identifier shape, not an allowed scheme list
+**Mistake:** Source item redaction hashed HTTPS identifiers but returned other hierarchical URI schemes verbatim.
+**Correction:** Quality review showed FTP and custom identifiers could expose credentials and private paths.
+**Rule:** Digest every hierarchical `scheme://` identifier with domain separation; preserve only explicitly safe opaque identifier forms.
+
+### 2026-08-27 — Verify line endings as a file contract
+**Mistake:** A CRLF source file became mixed-EOL after localized edits.
+**Correction:** Quality review required the worker entrypoint restored to its baseline CRLF convention without broad formatting.
+**Rule:** For line-ending-sensitive files, inspect index and working-tree EOL before and after edits, normalize only the target file, and review the semantic diff separately.
+
+### 2026-08-27 — Preserve durable identity formulas during redaction
+**Mistake:** Expanding URI redaction also changed the established HTTPS digest formula, so an upgrade could create duplicate artifacts and dispatches for the same release.
+**Correction:** Quality re-review required exact legacy HTTPS identity compatibility while applying the new domain-separated digest only to other hierarchical URI schemes.
+**Rule:** Treat persisted identity formulas as versioned compatibility contracts; extend safety behavior around them without changing existing canonical inputs or digests.
+### 2026-08-28 — Inventory deployed identities before declaring a production surface absent
+**Mistake:** I treated the empty `mendpoint-regauge-production` app as evidence that ReGauge had no deployed production surface and failed to distinguish it from the live legacy `mendpoint-transformer-pilot` coordinator.
+**Correction:** Talal pointed out that an app was already in production and required all app identities to be named correctly, production configured, and current.
+**Rule:** Before any topology or readiness claim, enumerate every app, its role, state, deployed revision, profile, processes, hostname, and attached volumes. Distinguish created, deployed, running, production configured, and production proven; never infer one from another.
+
+### 2026-08-29 — Update every authority layer as one compatibility set
+**Mistake:** I initially followed the repository's stale sandbox image pin without reconciling it against the newer firewall policy, protected environment bindings, and last successful receipt.
+**Correction:** Talal required every canonical app and its dependencies to be up to date, not merely renamed or deployed from current source.
+**Rule:** For production authority, verify and update the image digest, executable policy digest, signed receipt scope, protected environment variables, consumer manifest, and deployed secret override as one compatibility set before retrying activation.
+
+### 2026-08-29 — Treat deployed labels as claims, not source proof
+**Mistake:** I initially treated the image's `GH_SHA` label as sufficient proof that its executable source matched current main.
+**Correction:** The live container emitted an error contract absent from current source even though its label named current main.
+**Rule:** Production freshness requires a newly built immutable digest from the exact reviewed commit plus behavioral probes. Never infer executable source identity from a mutable tag or image label alone.
+
+### 2026-08-29 — Make recovery evidence durable before deletion
+**Mistake:** Stale-marker recovery deleted the marker before appending its audit record, so an audit permission failure could erase the only recoverable evidence.
+**Correction:** A production recovery attempt reproduced that ordering failure and required restoration from the exact captured marker bytes.
+**Rule:** Move recoverable state to a transaction hold, persist and verify its audit evidence, then delete the hold. On any audit failure, restore the original state byte for byte and fail closed.
+
+### 2026-08-29 — Enumerate the complete failure chain before retrying
+**Mistake:** Earlier production closure work peeled one failing layer per CI cycle and treated each newly exposed failure as a separate surprise.
+**Correction:** Talal required Codex to learn from that delay: after a second hidden layer or a retry that adds no evidence, stop retrying and enumerate every authority, identity, state, deployment, health, and evidence predicate locally.
+**Rule:** A second hidden failure triggers a full-chain audit before the next mutation. Close every discoverable layer in one reviewed increment, then retry once with explicit evidence for each predicate.
+
+### 2026-08-29 — Make multi-Machine authority rotation transactional
+**Mistake:** The first sandbox authority fix updated Machines sequentially without preserving an immutable image identity or proving rollback and containment for a partial failure.
+**Correction:** Exact-head review required digest-pinned updates, exact configuration restoration, and fail-closed containment evidence before rotating protected secrets.
+**Rule:** For a stateful multi-Machine mutation, capture exact identities and configurations first, mutate only immutable targets, restore every attempted target on pre-commit failure, and repeatedly re-inventory plus stop the complete current set whenever rollback or post-commit authority cannot be proven. The original inventory is rollback evidence, not a safe containment boundary after capacity may have changed.
+
+### 2026-08-29 — Rotation receipts belong only to the proposal that creates them
+**Mistake:** A completed authority rotation receipt from PR #539 was copied into PR #537's current pull request bootstrap even though #537 did not change the authority policy or ledger.
+**Correction:** The protected proposal verifier correctly treated that bootstrap binding as a new rotation request, then failed because no new append-only receipt existed; GitHub authority failed closed downstream.
+**Rule:** Never carry an earlier pull request's rotation tuple into a new current-PR bootstrap. An ordinary successor proposal omits `authorityRotation`; only the exact proposal that changes policy or the rotation ledger may bind its newly appended receipt, issue time, and digests.
+
+### 2026-08-29 — Rebuild subprocess authority after dropping privileges
+**Mistake:** The customer backup transport captured root's `HOME` before dropping to UID 1000, so rclone tried to read `/root/.rclone.conf` even though object-store credentials and backup inputs were valid.
+**Correction:** The subprocess environment must be valid for the identity that executes it and must not inherit implicit authority from the constructing identity.
+**Rule:** When work crosses a privilege boundary, explicitly reconstruct every subprocess environment, filesystem path, and credential source for the post-drop identity. Omit privileged home directories and force tools to a deterministic empty configuration when all required authority is already provided explicitly.
+
+### 2026-08-29 — Verify the complete privilege boundary and execution seam
+**Mistake:** The first backup fix changed UID and GID without clearing supplementary groups, and its regression asserted configuration construction without observing the spawned rclone process.
+**Correction:** Exact-head review showed that privileged group authority could survive and that deleting the runtime argument wiring would leave the test green.
+**Rule:** A privilege drop must clear supplementary groups before changing GID and UID, then read back all three identity dimensions. A subprocess regression must observe the real spawn boundary, including final argv and environment, so removing the production wiring makes the test fail.
+
+### 2026-08-29 — Validate each hypothesis against the called contract
+**Mistake:** I initially blamed the repeated readiness sentinel because it used `createOnly`, without checking that the backend contract explicitly returns `exists` as a successful idempotent outcome.
+**Correction:** Live status-only probes showed the real chain: listener bound, coordinator passed, Tigris returned `NoSuchBucket`, then 403 after the bucket name was corrected because the failed create attempt had also replaced credentials.
+**Rule:** Before changing code, inspect every called contract and test the complete live failure chain. A plausible explanation is not a root cause. On the second hidden layer, enumerate configuration, authentication, transport, provider status, and containment evidence before another retry.
+
+### 2026-08-29 — Prove the runtime state transition after deployment
+**Mistake:** The protected workflow treated a successful worker deployment as if it started an existing stopped non-service Machine.
+**Correction:** The exact live evidence showed the worker image and revision updated successfully while the Machine remained stopped and its only check reported that it had not started.
+**Rule:** Deployment success proves configuration publication, not runtime state. For every required process, select the exact intended Machine, perform any required start transition explicitly, and wait for its named health check before declaring deployment healthy or advancing the release.
+
+### 2026-08-30 — Bind production proof to the current run authority
+
+**Mistake:** The ReGauge draft proof established exact remote PR state but accepted any nonempty durable authorization references, so an older run's draft could satisfy a new activation.
+**Correction:** Require the current protected run's independently derived approval and evidence references on the durable delivery before remote state can count.
+**Rule:** Every production proof must bind both the live object and its durable lineage to the exact current authority. Remote state alone cannot promote stale authorization.
+
+### 2026-08-30 — Enumerate the entire activation failure chain before retrying
+
+**Mistake:** The first stopped-worker repair focused on the observed state transition but left later containment ordering, pre-mutation topology, process restart continuity, and feature-state proof as separate hidden layers.
+**Correction:** Review every mutation, proof, failure edge, and terminal step as one state machine before sending another protected run.
+**Rule:** After a second activation defect appears, stop patching individual symptoms. Model preconditions, allowed transitions, continuous identity, all late failures, evidence publication, and containment together, then test adversarial fixtures for each edge.
+
+### 2026-08-30 — Persist approval lineage separately from execution evidence
+
+**Mistake:** The production gate validated the current delivery approval, but the durable draft record retained only execution and acceptance evidence, so a later proof could not establish which protected run authorized the existing draft.
+**Correction:** Carry the configured approval allowlist through the gate decision, persist the exact matched approval on the draft, and append later-run authority without changing or redelivering the live pull request.
+**Rule:** Authorization evidence is its own durable contract. Keep it distinct from execution and SCM evidence, update it idempotently on replay, and make the production proof consume the exact stored field rather than inferring authority from adjacent evidence.
+
+### 2026-08-30 — Rotate idempotency with trusted authority epochs
+
+**Mistake:** The worker reused one campaign-stable authorization idempotency key even when a later protected run supplied a new production approval and acceptance evidence, causing the durable store to reject legitimate reauthorization as a conflict.
+**Correction:** Derive the effective mutation key at the trusted coordinator from the client operation key plus the exact server-validated approval and acceptance evidence.
+**Rule:** Idempotency must be stable within one authority epoch and distinct across authority epochs. Never let an untrusted client select the authority component of a privileged mutation key.
+
+### 2026-08-30 — Put production rollback outside the mutation job
+
+**Mistake:** ReGauge activation relied on late steps in the same timeout-bounded job to contain failure, without an immutable pre-mutation snapshot or exact run ownership.
+**Correction:** Snapshot and revalidate topology before mutation, quiesce the prior worker, mark every committed process with the exact activation run, and run rollback or containment in a separate always-evaluated job.
+**Rule:** A production mutation job cannot be its own only watchdog. Preserve an exact rollback boundary before mutation, make the commit boundary machine-readable, and independently prove either exact restoration or run-scoped containment after failure or cancellation.
+
+### 2026-08-30 — Hold one lease through cleanup and prove mutation ownership
+
+**Mistake:** The activation serialized only its deploy job, so a later run could start while the earlier cleanup still held a stale snapshot; cleanup also restored that snapshot without proving the failed run had mutated the worker.
+**Correction:** Move concurrency to the complete workflow lifecycle and make an exact run-and-attempt Machine marker the first owned mutation before quiescence.
+**Rule:** A production lease covers preflight through terminal cleanup. Roll back only state carrying the current mutation marker; if no marker exists, report drift without overwriting it.
+
+### 2026-08-30 — Containment proves safe terminal state globally
+
+**Mistake:** Containment counted only current-run workers in the `started` state, so an untagged or `starting` worker could remain capable of becoming active after cleanup passed.
+**Correction:** After coordinator commit, enumerate every worker regardless of tag, repeatedly stop every nonterminal worker, and pass only when all workers are `stopped` or destroyed.
+**Rule:** Failure containment is global after the commit boundary and state based, not tag based. A failed stop can be retried, but success requires a fresh terminal-state inventory.
+
+### 2026-08-30 — Keep activation evidence inside its proven availability boundary
+
+**Mistake:** The final artifact called an internal experimental ReGauge canary continuous production even though the release contract had not passed GA acceptance.
+**Correction:** Label the artifact as continuous internal activation and preserve the exact internal availability and experimental feature tier.
+**Rule:** Deployment location does not determine product availability. Evidence and public claims must use the narrowest state actually proven; promote to GA only in a later evidence-bound change.
+
+### 2026-08-30 — Fit recovery loops inside their independent watchdog
+
+**Mistake:** Sequential worker stops and unbounded inventory calls let the nominally bounded containment loop exceed the cleanup job's own timeout at maximum cardinality.
+**Correction:** Bound every external call, stop independent workers in parallel, wait for every result, and prove worst-case retry arithmetic stays below the watchdog with headroom.
+**Rule:** A retry count is not a time bound. For every recovery loop, calculate inventory, mutation, delay, and final-proof time under maximum cardinality and reject any design that cannot complete before its independent watchdog.
+
+### 2026-08-30 — Restore the whole topology or contain it
+
+**Mistake:** Rollback verified the prior coordinator and target worker records but did not compare the complete Machine set, so an extra active worker could escape restoration proof.
+**Correction:** Require exact full-snapshot equality across cardinality, Machine IDs, states, configurations, and images; record and health-check the new process incarnation when rollback legitimately restarts a worker; switch any incompatible drift to global worker containment.
+**Rule:** Production rollback is a topology assertion, not a pair of object checks. Restoration passes only when the entire configurable topology and expected state are exact and any restarted process is healthy; otherwise fail closed and contain every unsafe worker.
+
+### 2026-08-30 — Make control-plane state transitions explicit
+
+**Mistake:** A configuration-only Fly Machine update relied on default start behavior, so marking or restoring a stopped worker could briefly execute it before the workflow issued a stop.
+**Correction:** Use `--skip-start` for every configuration mutation and issue a separate start only when the recorded transition contract requires it.
+**Rule:** Never assume a deployment or configuration command preserves runtime state. Suppress implicit starts, then perform and verify the exact intended state transition as a separate operation.
+
+### 2026-08-30 — A failed rollback operation must enter containment
+
+**Mistake:** The first exact-restore path ran under `set -e`, so a failed update, inventory, start, or stop could terminate cleanup before global containment ran.
+**Correction:** Check every restore operation explicitly, preserve a transition result, and switch any failure to the bounded global containment path.
+**Rule:** Rollback failure is an expected safety transition, not an unhandled shell error. Every rollback operation must have a bounded failure edge that reaches containment and terminal-state proof.
+
+### 2026-08-30 — Scope workflow artifacts to the exact attempt
+
+**Mistake:** ReGauge preflight and production evidence artifact names used only the commit SHA, so a GitHub rerun could collide with attempt-one artifacts or consume stale topology.
+**Correction:** Bind every upload and matching download to commit SHA, workflow run ID, and run attempt.
+**Rule:** Any artifact that carries production authority or rollback state must be uniquely named by the exact execution attempt. A rerun may reuse source, but it must never reuse mutable control evidence.
+
+### 2026-08-30 — Expiry permits exact replay, never new authority
+
+**Mistake:** The coordinator treated any already-authorized draft state as replayable after expiry, even when a later request introduced a previously unseen approval and acceptance set.
+**Correction:** After expiry, require the exact current approval and every current acceptance reference to already be durable on every draft before calling the idempotent store path.
+**Rule:** Expiry freezes authority. A post-expiry request may read or repeat an exact durable result, but it may not add, replace, or widen authorization evidence.
+
+### 2026-08-30 — Budget the executable timeout, including kill grace
+
+**Mistake:** Workflow timing arithmetic counted nominal command timeouts and sleeps but omitted `--kill-after` grace, proof-command latency, and a final terminal inventory.
+**Correction:** Give live evaluation and each proof poll a whole-step hard bound, include those bounds in the authority guard, and calculate cleanup from timeout plus kill grace for every external call and retry round.
+**Rule:** Production budget proofs use executable worst-case time, not optimistic latency. Include kill grace, retry delay, final proof, and fixed transition costs, then retain explicit watchdog headroom.
+
+### 2026-08-30 — Compatibility namespaces must work as exact targets
+
+**Mistake:** The remote proof counted legacy ReGauge branches for cardinality but required the exact expected branch to use only the new canonical prefix.
+**Correction:** Accept the expected branch from either the canonical prefix or an explicitly validated compatibility prefix, while continuing to count every compatible namespace as one shared campaign boundary.
+**Rule:** A compatibility alias cannot be observation-only. If durable state may legally retain the old identifier, every exact read, replay, proof, and cardinality check must accept that identifier without creating new work.
+
+### 2026-08-30 — Park one lane without pausing the next wave
+
+**Mistake:** I kept the skipped ReGauge activation lane in the active execution path instead of immediately advancing the next dependency-ready wave.
+**Correction:** Talal told me to skip that lane and start from the next wave.
+**Rule:** When a lane is explicitly parked, preserve it unchanged, remove it from the active critical path, and immediately move build and review capacity to the next dependency-ready engineering plan.
+### 2026-08-30 — Optional boolean fields still require strict present-value validation
+
+**Mistake:** SCIM POST and PUT treated every `active` value except boolean `false` as active, collapsing malformed strings, nulls, and numbers into the omitted-field default.
+**Correction:** Preserve the existing default only when the attribute is absent. Reject every present non-boolean value before membership, audit, or version mutation.
+**Rule:** For optional typed fields, distinguish absence from invalid presence with one shared parser, and regression-test both acceptance and byte-for-byte non-mutation on every write path.
+
+### 2026-08-30 — Revalidate authority at the mutation boundary
+
+**Mistake:** SCIM and service-principal handlers trusted authority captured before an awaited body read, so revocation during upload could survive into a later write transaction.
+**Correction:** Revalidate the live credential, trust principal, and human manager membership after parsing and inside the exact transaction that performs the mutation.
+**Rule:** Authentication before an await is only an initial observation. Every security-sensitive write must prove the complete current authority again under the same transaction as its state change.
+
+### 2026-08-30 — Close every mutation sink in an authority repair
+
+**Mistake:** The first live-authority repair covered body-bearing SCIM and service-principal writes but left synchronous DELETE, revoke, and tenant-membership sinks trusting request-time identity.
+**Correction:** Enumerate every mutation sink, share one complete human-manager revalidator, and prove stale authority cannot mutate target state at each boundary.
+**Rule:** An authority fix is complete only when every sink revalidates the full credential, principal, membership, session, and scope chain inside the same transaction as its write.
+
+### 2026-08-30 — Presence is not configuration validity
+
+**Mistake:** The customer profile required the SCIM binding variable by name but accepted empty or malformed JSON and did not bind its tenants to the production allowlist.
+**Correction:** Parse required structured configuration with the runtime parser and validate its semantic identity set at startup.
+**Rule:** Required JSON configuration must be parsed by the same contract as its consumer and must prove nonempty, semantically valid, exact-scope bindings before boot.
+
+### 2026-08-30 — Request ceilings must apply during reads
+
+**Mistake:** SCIM and service-principal handlers read the entire body before checking actual bytes and treated invalid negative content lengths as if no useful declaration existed.
+**Correction:** Validate content length syntax first, count bytes incrementally, cancel the stream when it crosses the ceiling, and reject invalid UTF-8 before JSON parsing.
+**Rule:** A payload limit that runs after full buffering is not a memory boundary; enforce it while streaming and test producer cancellation.
+
+### 2026-08-30 — Prove optional integrations are absent-safe before deployment
+
+**Mistake:** An externally gated SCIM integration became an unconditional customer-profile requirement without proving that production could boot while the binding was absent.
+**Correction:** Keep the integration optional until its protected bindings exist, and test the SCIM-free customer launcher path before release.
+**Rule:** Every optional external integration needs an absent-binding customer-profile deployment regression, and qualification must inventory every newly required runtime binding before merge.
+
+### 2026-08-30 — Compare canonical authority paths, not locator strings
+
+**Mistake:** The qualification loader compared raw artifact locator strings, so Windows slash aliases could assign two authority roles to the same file.
+**Correction:** Resolve every protected artifact through the safe path boundary first, then reject duplicate canonical filesystem paths before reading or hashing bytes.
+**Rule:** Security-sensitive file identity checks must compare canonical filesystem identities and include platform-specific alias regressions; raw path-string uniqueness is not an authority boundary.
+
+### 2026-08-30 — Persist authority evidence at the encrypted boundary
+
+**Mistake:** The secret envelope trusted current provider classification but discarded the provider attestation after audit, so provider-authority drift was not cryptographically bound to durable ciphertext.
+**Correction:** Persist the exact attestation digest in both the envelope and lifecycle row, include it in outer AAD, and require an exact current provider-attestation match before unwrap.
+**Rule:** Provider authority evidence must survive restart and be verified at every ciphertext consumption point; an audit-only digest is not a durable cryptographic binding.
+
+### 2026-08-30 — Audit attempted secret access by actual outcome
+
+**Mistake:** Break-glass emitted only a granted audit after successful unwrap, while unwrap denials could be unaudited or mislabeled through a granted-only callback. Rotation also staged source unwrap with a no-op audit.
+**Correction:** Persist both granted and denied access outcomes, and place rotation source-access evidence inside the same fail-closed publication boundary as the replacement generation.
+**Rule:** Secret-access audit callbacks carry the actual outcome. Never name an attempted access granted until the operation succeeds, and never suppress denied or staging access evidence.
+
+### 2026-08-30 — Tenant references cannot select deployment-global secrets
+
+**Mistake:** A tenant-created SCM connection could choose `env://GITHUB_TOKEN`, causing the request-scoped credential broker to fall back to one deployment-global token.
+**Correction:** Require tenant-created connections to resolve a tenant-scoped durable lifecycle record unless an immutable server-owned tenant binding exists.
+**Rule:** A tenant-controlled credential locator may never address process-global secret material. Compatibility fallback must be server-owned, tenant-specific, and impossible to select through request data.
+
+### 2026-08-30 — New break-glass authority needs a new identity
+
+**Mistake:** Break-glass audit IDs were derived from credential, generation, and reason, collapsing a later authorized attempt into an earlier event.
+**Correction:** Bind the operation to an explicit request or attempt identity and use exact replay comparison for deliberate retries.
+**Rule:** Security-sensitive idempotency identities distinguish exact replay from new authority. Similar payloads do not make separate access attempts the same event.
+
+### 2026-08-30 — Transport request IDs are context, not replay authority
+
+**Mistake:** Stable lifecycle audit IDs were compared against per-request transport IDs, so a legitimate retry with the same idempotency key conflicted after a partial failure.
+**Correction:** Persist replay authority from the semantic request and keep transport request IDs only on attempt-specific evidence.
+**Rule:** Idempotency identity must survive HTTP retries. Never include an ephemeral request ID in the exact comparison for a committed operation or resumable staged step.
+
+### 2026-08-30 — Audit denials before every break-glass exit
+
+**Mistake:** Break-glass validation returned before the audit callback for role, feature flag, reason, idempotency, and tenant failures.
+**Correction:** Funnel every denial through one truthful attempt audit carrying the actual principal and request context, and replace the denial with a fail-closed audit error if persistence fails.
+**Rule:** A secret access boundary has no unaudited rejection branch. Validation, authorization, policy, lookup, and decrypt failures all persist denied evidence before returning.
+
+### 2026-08-30 — Secret-bearing replay digests require keyed commitments
+
+**Mistake:** The lifecycle operation table stored a deterministic SHA-256 request digest whose plaintext component could be tested offline against a small candidate dictionary.
+**Correction:** Compute a versioned HMAC commitment with an external key, persist its key ID, bind every semantic request field, and reject legacy or wrong-key replay.
+**Rule:** Durable idempotency evidence for secret-bearing requests must be a domain-separated keyed commitment. An unkeyed digest is an offline oracle even when raw plaintext is absent.
+
+### 2026-08-30 — Cryptographic purposes need distinct key material
+
+**Mistake:** The envelope KEK catalog and request-commitment authority were validated independently, so identical 256-bit material could be configured for encryption and HMAC purposes.
+**Correction:** Compare one-way key fingerprints at construction time and reject any commitment key that equals a configured envelope KEK without logging either value.
+**Rule:** Separate cryptographic purposes at the configuration boundary. Distinct algorithms or domain strings do not make reused root key material safe.
+
+### 2026-08-30 — Replay actors outlive credentials
+
+**Mistake:** Lifecycle replay bound the semantic actor to an API-key-specific trust principal, so rotating the credential changed the replay identity even when the same owner or service remained authorized.
+**Correction:** Bind replay to a stable human or service authority and record the current API key and credential principal separately on every audit event.
+**Rule:** Credentials authenticate an actor but are not the actor. Durable replay identities follow stable authority; request evidence retains the exact credential used.
+
+### 2026-08-30 — Security audit begins before route dispatch
+
+**Mistake:** Break-glass denial auditing lived inside the route, so authentication and RBAC middleware could return 401 or 403 before the audit boundary ran.
+**Correction:** Wrap the exact break-glass path before authentication and RBAC, audit unresolved or resolved denial context without changing successful dispatch, and return a fail-closed service error if audit persistence fails.
+**Rule:** If middleware can deny a security-sensitive operation, its durable denial audit must wrap that middleware rather than depend on the route handler.
+
+### 2026-08-30 — Credential minting cannot amplify authority
+
+**Mistake:** The tenant-admin key route accepted arbitrary scopes, while wildcard scope was interpreted as owner authority.
+**Correction:** Bound newly minted key permissions to the authenticated caller's effective role and scopes, and require current stable owner authority for break glass.
+**Rule:** Credential issuance may preserve or attenuate current authority. It may never manufacture a stronger role or broader scope than the authenticated authority holds.
+
+### 2026-08-30 — Rewrap and secret rotation are different operations
+
+**Mistake:** Lifecycle rotation changed only the KEK envelope while retaining the same credential plaintext, then presented the result as credential rotation.
+**Correction:** Require new resolver-bound credential material for a real rotation and retain material lineage so incident revocation reaches every successor that contains compromised material.
+**Rule:** Changing cryptographic wrapping does not rotate a credential. Rotation means new secret material with explicit provenance; rewrap is named and authorized separately.
+
+### 2026-08-30 — Break-glass release needs a final current-state fence
+
+**Mistake:** Break glass checked active state before asynchronous provider decrypt, allowing a concurrent revocation to complete before plaintext returned.
+**Correction:** Revalidate the exact generation, key binding, provider attestation, and active state transactionally immediately before completing authorization and returning plaintext.
+**Rule:** Authorization for plaintext release is a commit-time decision. Any asynchronous work before release invalidates earlier mutable-state checks.
+
+### 2026-08-30 — Revocation replay is still an authenticated operation
+
+**Mistake:** An already-revoked generation returned early before actor, reason, idempotency, and audit comparison.
+**Correction:** Persist a keyed semantic commitment and exact replay evidence for revoke, audit valid replay, and reject every drifted retry.
+**Rule:** Terminal state does not erase replay authority. Idempotent security mutations compare the full authenticated request before returning their prior result.
+
+### 2026-08-30 — Custody claims require provider evidence
+
+**Mistake:** Locally supplied JSON could label an application-held KEK customer-managed without an external provider proving customer custody.
+**Correction:** Describe locally imported key material as Mendpoint-custodied and reserve customer-managed claims for provider-authenticated evidence.
+**Rule:** Custody is an attested property, not a caller label. Never infer customer control from configuration text or a boolean supplied alongside key bytes.
+### 2026-08-30 — Retain cryptographic history by purpose
+
+**Mistake:** One active HMAC key controlled both operation replay and material lineage, so rotating it broke exact replay and changed the identity of already revoked material.
+**Correction:** Keep independent versioned keyrings, verify durable evidence with its stored key ID, and give pre-split rows an explicit fail-closed compatibility path.
+**Rule:** Cryptographic key rotation never changes historical identity. Persist the purpose-specific key ID, retain verification keys for every live record, and reject the operation when required historical authority is unavailable.
+### 2026-08-30 — Schema presence does not prove migration completion
+
+**Mistake:** The lineage-key backfill ran only inside the column-add branch, so a crash after ALTER but before UPDATE made the partial migration permanent.
+**Correction:** Run authoritative NULL-row backfill independently and idempotently on every startup, preserving NULL when historical identity cannot be proven.
+**Rule:** Every multi-step migration must resume from each durable intermediate state. A newly present column is not evidence that its data migration completed.
+### 2026-08-31 — Prove the customer-visible path before calling a pipeline capable
+**Mistake:** I described Fettler's implemented components without first proving that a real production input had crossed every durable stage and produced the promised reviewable draft.
+**Correction:** Talal said to make the complete provider-change-to-reviewable-PR path real.
+**Rule:** A production capability exists only after one exact live input traverses every producer, claim, persistence, verification, authorization, and delivery boundary. Code presence, enabled flags, synthetic tests, and healthy processes are prerequisites, not capability proof.

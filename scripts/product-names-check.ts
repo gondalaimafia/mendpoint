@@ -45,7 +45,7 @@ export const PRODUCT_NAME_COMPATIBILITY_EXCEPTIONS = Object.freeze([
   {
     path: "apps/web/app/nav.tsx",
     sourceText: "/transformer",
-    reason: "The existing Regauge workspace URL remains a compatibility route.",
+    reason: "The existing ReGauge workspace URL remains a compatibility route.",
   },
   {
     path: "apps/web/app/docs/catalog.ts",
@@ -60,27 +60,27 @@ export const PRODUCT_NAME_COMPATIBILITY_EXCEPTIONS = Object.freeze([
   {
     path: "apps/web/app/docs/catalog.ts",
     sourceText: "Submit a migration objective to POST /transformer/missions.",
-    reason: "The existing Regauge mission API remains a compatibility route.",
+    reason: "The existing ReGauge mission API remains a compatibility route.",
   },
   {
     path: "apps/web/app/docs/catalog.ts",
     sourceText: "POST /transformer/missions",
-    reason: "The existing Regauge mission API remains a compatibility route.",
+    reason: "The existing ReGauge mission API remains a compatibility route.",
   },
   {
     path: "apps/web/app/docs/catalog.ts",
     sourceText: "POST /transformer/control-plane/campaigns/:campaignId/review",
-    reason: "The existing Regauge review API remains a compatibility route.",
+    reason: "The existing ReGauge review API remains a compatibility route.",
   },
   {
     path: "apps/web/app/docs/catalog.ts",
-    sourceText: "GET /transformer/executions/:campaignId",
-    reason: "The existing Regauge execution API remains a compatibility route.",
+    sourceText: "GET /transformer/control-plane/campaigns/:campaignId",
+    reason: "The existing ReGauge campaign API remains a compatibility route.",
   },
   {
     path: "apps/web/app/docs/catalog.ts",
     sourceText: "npm run eval:transformer:canary",
-    reason: "eval:transformer:canary is the existing Regauge benchmark command.",
+    reason: "eval:transformer:canary is the existing ReGauge benchmark command.",
   },
   {
     path: "apps/web/app/docs/catalog.ts",
@@ -144,7 +144,7 @@ export const PRODUCT_NAME_COMPATIBILITY_EXCEPTIONS = Object.freeze([
   },
   {
     path: "apps/worker/src/cli.ts",
-    sourceText: "Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|run-transformer-service|sdk-signals|reconcile-installations|learning-corpus]\n  poll-once [--local] [--no-pipeline] [--slug acme-payments]\n  poll [--local] [--interval 60000]\n  process-jobs\n  run-jobs [--interval 5000]\n  run-service [--interval 5000]\n  run-transformer-service\n  sdk-signals [--local]\n  reconcile-installations [--tenant tenant_default] [--installation 151614362]\n  learning-corpus --tenant <id> --purpose <purpose> --cutoff <iso> --actor <principal-id> --idempotency-key <key> [--created-at <iso>]",
+    sourceText: "Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|run-transformer-service|sdk-signals|reconcile-installations|reconcile-release-dispatch|learning-corpus]\n  poll-once [--local] [--no-pipeline] [--slug acme-payments]\n  poll [--local] [--interval 60000]\n  process-jobs\n  run-jobs [--interval 5000]\n  run-service [--interval 5000]\n  run-transformer-service\n  sdk-signals [--local]\n  reconcile-installations [--tenant tenant_default] [--installation 151614362]\n  reconcile-release-dispatch --tenant <id> --dispatch <id> --action <acknowledge|requeue> --evidence-sha256 <sha256> --expected-lease-generation <n> --expected-failed-at <iso> --expected-failure-code <code> --idempotency-key <key> --actor-principal-id <id>\n  learning-corpus --tenant <id> --purpose <purpose> --cutoff <iso> --actor <principal-id> --idempotency-key <key> [--created-at <iso>]",
     reason: "run-transformer-service is the existing CLI compatibility command.",
   },
 ] satisfies readonly ProductNameCompatibilityException[]);

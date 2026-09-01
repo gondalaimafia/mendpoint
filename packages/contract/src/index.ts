@@ -161,6 +161,15 @@ export {
 } from "./audit-governance.js";
 
 export {
+  PUBLIC_DOCS_API_ROUTE_SCHEMA_VERSION,
+  PUBLIC_DOCS_API_ROUTES,
+  assertPublicDocsApiRoute,
+  assertPublicDocsApiRoutesMounted,
+  isPublicDocsApiRoute,
+  type PublicDocsApiRoute,
+} from "./public-api-routes.js";
+
+export {
   DSSE_IN_TOTO_PAYLOAD_TYPE,
   IN_TOTO_STATEMENT_V1,
   MENDPOINT_SOFTWARE_ATTESTATION_PREDICATE_V1,

@@ -202,7 +202,11 @@ export interface ProductionClosureMatrix {
     observedMainRevision: string;
     observationDigest: string;
     ownershipAuthority: "provisional_branch_prefix_only";
-    currentPullRequestBootstrap: CurrentPullRequestBootstrap;
+    // Optional under the event-sourced design: the pull request under judgement is
+    // resolved from the CI event or the merged commit by the protected GitHub
+    // authority, not from this field. When present it is validated for shape below
+    // and, for an authority rotation, binds the reviewed rotation receipt.
+    currentPullRequestBootstrap?: CurrentPullRequestBootstrap;
     pullRequests: ReleaseTrainPullRequest[];
   };
 }
@@ -427,13 +431,15 @@ export function releaseTrainObservationIssues(
     revisionIsAncestor?: (revision: string, descendant: string) => boolean;
     readArtifact?: (locator: string) => Buffer | null;
     // Whether `revisionExists` can authoritatively decide reachability of OTHER
-    // open PRs' head revisions. A live GitHub API oracle can (a force-pushed head
-    // still resolves via /git/commits); a local object database CANNOT, because it
-    // only holds the current checkout's objects. When false, absence of an open
-    // PR head locally is treated as "unknown", not "unreachable", so the strict
-    // reachability report is skipped for open-PR heads. Defaults to true so an
-    // omitted flag keeps the strict behavior. Merge/deploy revisions are never
-    // gated by this flag: those must be on main and are correctly checked locally.
+    // open PRs' head revisions. A local object database CANNOT, because it only
+    // holds the current checkout's objects. When false, absence of an open PR head
+    // locally is treated as "unknown", not "unreachable", so the strict reachability
+    // report is skipped for open-PR heads. Defaults to true so an omitted flag keeps
+    // the strict behavior. Merge/deploy revisions are never gated by this flag: those
+    // must be on main and are correctly checked locally. Note (#530): the github-
+    // authority live mirror that once re-verified open-PR heads/state was removed as
+    // unsatisfiable, so no caller re-verifies open-PR heads live any more; do not
+    // reintroduce that expectation here.
     openPullRequestHeadsVerifiable?: boolean;
     now: Date;
   },
@@ -1500,11 +1506,11 @@ export function validateProductionClosureMatrix(
   }
   for (const requirementId of currentBootstrap?.requirementIds ?? []) {
     const row = rowsById.get(requirementId);
-    if (row && !row.pullRequests.includes(currentBootstrap.number)) {
+    if (row && !row.pullRequests.includes(currentBootstrap!.number)) {
       add(
         issues,
         "PR_REQUIREMENT_MISMATCH",
-        String(currentBootstrap.number),
+        String(currentBootstrap!.number),
         `requirement ${requirementId} does not map back to the current pull request`,
       );
     }
@@ -1515,7 +1521,7 @@ export function validateProductionClosureMatrix(
       add(
         issues,
         "CURRENT_PR_REMEDIATION_INVALID",
-        String(currentBootstrap.number),
+        String(currentBootstrap!.number),
         `remediated pull request ${remediatedNumber} must be a tracked merged pull request`,
       );
     }
@@ -1589,8 +1595,11 @@ function main() {
       // so "absent locally" is NOT "absent on GitHub". Treating it as absence
       // is the third-state collapse documented in docs/agents/FAILURE_MODES.md
       // ("didn't look" masquerading as "looks bad"), and it fails ga:check on
-      // every branch whenever any open PR is force-pushed. Live-PR-head
-      // reachability is owned by the API-oracle callers (proposal authority).
+      // every branch whenever any open PR is force-pushed. Open-PR head/state
+      // is deliberately NOT re-verified live either (#530): the github-authority
+      // open-sibling mirror was removed as unsatisfiable. Open-PR head reachability
+      // is therefore not owned by any check; what remains live-guarded is the
+      // merged-record binding and REQUIREMENT_CLOSURE_PATH_PR_NOT_LIVE_OPEN.
       openPullRequestHeadsVerifiable: false,
       now: new Date(),
     }),

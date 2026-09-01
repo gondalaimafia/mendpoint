@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -95,25 +94,12 @@ function writeScenario(root: string, files: Readonly<Record<string, string>>): v
   }
 }
 
-function revision(files: Readonly<Record<string, string>>): string {
-  return createHash("sha256")
-    .update(
-      Object.entries(files)
-        .sort(([left], [right]) => codeUnitCompare(left, right))
-        .map(([path, content]) => `${path}\0${content}`)
-        .join("\n"),
-      "utf8",
-    )
-    .digest("hex");
-}
-
 async function buildScenario(descriptor: SyntheticDescriptor): Promise<ChangeGraphBenchmarkScenario> {
   const root = mkdtempSync(join(tmpdir(), `mendpoint-change-graph-${descriptor.id}-`));
   const graphDb = openGraphLearnMemory();
   try {
     const files = scenarioFiles(descriptor);
     writeScenario(root, files);
-    const repositoryRevision = revision(files);
     const method = "POST";
     const path = `/v1/${descriptor.resource}`;
     const surface: ImpactableSurface = {
@@ -135,8 +121,6 @@ async function buildScenario(descriptor: SyntheticDescriptor): Promise<ChangeGra
       graphDb,
       tenantId: "tenant-change-graph-benchmark",
       repositoryId: `repository-${descriptor.id}`,
-      repositorySnapshotId: `snapshot-${descriptor.id}-${repositoryRevision}`,
-      repositoryRevision,
       providerId: "twilio",
       providerSnapshotId: `provider-snapshot-${descriptor.id}`,
       providerRevision: "2026-08-18",

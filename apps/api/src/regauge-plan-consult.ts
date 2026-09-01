@@ -14,6 +14,7 @@ import {
 } from "@mendpoint/graph-learn";
 import {
   organizationMemoryPrecedenceLayer,
+  organizationMemoryScopeApplies,
   resolveOrganizationDecision,
   type PrecedenceResult,
 } from "@mendpoint/pipeline";
@@ -21,7 +22,7 @@ import type { OrganizationMemoryRecord } from "@mendpoint/db";
 
 type MemoryHead = Pick<
   OrganizationMemoryRecord,
-  "tenantId" | "memoryId" | "recordId" | "status" | "statement"
+  "tenantId" | "memoryId" | "recordId" | "status" | "statement" | "scope"
 >;
 
 export type RegaugeGraphPlanConsult = Readonly<{
@@ -125,6 +126,8 @@ function memoryReference(record: MemoryHead) {
 
 export function consultRegaugeOrganizationMemory(input: {
   tenantId: string;
+  /** The repositories this plan is about. Bounds which repository-scoped memory applies. */
+  repositoryIds: readonly string[];
   records: readonly MemoryHead[] | null;
   hardPolicy: Readonly<{ tenantId: string; id: string; directive: string }>;
 }): RegaugeOrgMemoryConsult {
@@ -141,10 +144,19 @@ export function consultRegaugeOrganizationMemory(input: {
   // Deterministic, layer-ordered selection so the resolver names a stable memory
   // and every participating record is carried, not just the first per layer.
   const byRecordId = (a: MemoryHead, b: MemoryHead) => a.recordId.localeCompare(b.recordId);
-  const confirmed = input.records
+  // The memory provider is tenant-wide, so drop memory scoped to a repository this
+  // plan is not about BEFORE the per-layer representative is chosen. Without this,
+  // `inferred[0]` is decided by a sha256 sort across every repository in the tenant,
+  // so which repository's reviewer preference governs this plan is arbitrary — and
+  // the governed-outcome projection now mints one such candidate per reviewed
+  // outcome, where previously a repository-scoped candidate existed only when an
+  // operator hand-made one.
+  const inScope = input.records
+    .filter((record) => organizationMemoryScopeApplies(record.scope, input.repositoryIds));
+  const confirmed = inScope
     .filter((record) => organizationMemoryPrecedenceLayer(record) === "confirmed_org_memory")
     .sort(byRecordId);
-  const inferred = input.records
+  const inferred = inScope
     .filter((record) => organizationMemoryPrecedenceLayer(record) === "inferred_candidate")
     .sort(byRecordId);
   const resolved = resolveOrganizationDecision({

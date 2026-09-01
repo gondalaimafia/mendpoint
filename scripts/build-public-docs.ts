@@ -1,6 +1,6 @@
-import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, realpath, unlink, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   buildDocsManifest,
   docsByCategory,
@@ -11,6 +11,7 @@ import {
 } from "../apps/web/app/docs/catalog.js";
 
 const OUTPUT = resolve(process.cwd(), "docs", "website-upload");
+const OUTPUT_BOUNDARY = resolve(process.cwd(), "docs");
 const OUTPUT_OWNER = ".mendpoint-public-docs-owner";
 const OUTPUT_OWNER_TOKEN = "Mendpoint public documentation bundle";
 const OUTPUT_OWNER_CONTENT = `${OUTPUT_OWNER_TOKEN}\n`;
@@ -30,11 +31,18 @@ export function buildPublicDocsBundle(): ReadonlyMap<string, string> {
 export async function writePublicDocsBundle(
   check = false,
   output = OUTPUT,
+  outputBoundary = output === OUTPUT ? OUTPUT_BOUNDARY : resolve(output, ".."),
 ): Promise<void> {
+  const root = resolve(output);
+  const boundary = resolve(outputBoundary);
+  await requireSafeOutputRoot(root, boundary);
   const files = buildPublicDocsBundle();
-  if (!check) await mkdir(output, { recursive: true });
-  const entries = await readOutputEntries(output);
-  await requireOutputOwnership(output, entries, check);
+  if (!check) {
+    await mkdir(root, { recursive: true });
+    await requireSafeOutputRoot(root, boundary);
+  }
+  const entries = await readOutputEntries(root);
+  await requireOutputOwnership(root, boundary, entries, check);
   const expected = new Set([...files.keys(), OUTPUT_OWNER]);
   const unexpectedFiles = entries
     .filter((entry) => entry.isFile() && !expected.has(entry.name))
@@ -51,16 +59,20 @@ export async function writePublicDocsBundle(
     throw new Error(`public_docs_bundle_unexpected_files:${unexpectedFiles.join(",")}`);
   }
   if (!check) {
-    for (const name of unexpectedFiles) await unlink(outputPath(output, name));
+    for (const name of unexpectedFiles) {
+      await requireSafeOutputRoot(root, boundary);
+      await unlink(outputPath(root, name));
+    }
   }
   const mismatches: string[] = [];
   for (const [name, content] of files) {
-    const target = outputPath(output, name);
+    const target = outputPath(root, name);
     if (check) {
       try {
         if (await readFile(target, "utf8") !== content) mismatches.push(name);
       } catch { mismatches.push(name); }
     } else {
+      await requireSafeOutputRoot(root, boundary);
       await writeFile(target, content, "utf8");
     }
   }
@@ -69,6 +81,7 @@ export async function writePublicDocsBundle(
 
 async function requireOutputOwnership(
   output: string,
+  outputBoundary: string,
   entries: Awaited<ReturnType<typeof readOutputEntries>>,
   check: boolean,
 ): Promise<void> {
@@ -84,7 +97,78 @@ async function requireOutputOwnership(
   if (entries.length > 0 || check) {
     throw new Error(`public_docs_bundle_owner_missing:${output}`);
   }
+  await requireSafeOutputRoot(output, outputBoundary);
   await writeFile(outputPath(output, OUTPUT_OWNER), OUTPUT_OWNER_CONTENT, "utf8");
+}
+
+async function requireSafeOutputRoot(output: string, outputBoundary: string): Promise<void> {
+  const boundary = resolve(outputBoundary);
+  const root = resolve(output);
+  requireContainedPath(boundary, root, `public_docs_bundle_path_escape:${output}`);
+
+  let boundaryStats;
+  try {
+    boundaryStats = await lstat(boundary);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`public_docs_bundle_boundary_missing:${boundary}`);
+    }
+    throw error;
+  }
+  if (boundaryStats.isSymbolicLink()) {
+    throw new Error(`public_docs_bundle_reparse_point:${boundary}`);
+  }
+  if (!boundaryStats.isDirectory()) {
+    throw new Error(`public_docs_bundle_boundary_invalid:${boundary}`);
+  }
+
+  const resolvedBoundary = await realpath(boundary);
+  if (!sameFilesystemPath(resolvedBoundary, boundary)) {
+    throw new Error(`public_docs_bundle_reparse_point:${boundary}`);
+  }
+
+  const locator = relative(boundary, root);
+  const segments = locator === "" ? [] : locator.split(sep);
+  let current = boundary;
+  for (const segment of segments) {
+    current = join(current, segment);
+    let stats;
+    try {
+      stats = await lstat(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+      throw error;
+    }
+    if (stats.isSymbolicLink()) {
+      throw new Error(`public_docs_bundle_reparse_point:${current}`);
+    }
+    if (!stats.isDirectory()) {
+      throw new Error(`public_docs_bundle_output_ancestor_invalid:${current}`);
+    }
+    const resolvedCurrent = await realpath(current);
+    requireContainedPath(
+      resolvedBoundary,
+      resolvedCurrent,
+      `public_docs_bundle_realpath_escape:${current}`,
+    );
+    if (!sameFilesystemPath(resolvedCurrent, current)) {
+      throw new Error(`public_docs_bundle_reparse_point:${current}`);
+    }
+  }
+}
+
+function requireContainedPath(boundary: string, target: string, error: string): void {
+  const locator = relative(boundary, target);
+  if (locator.startsWith("..") || isAbsolute(locator)) throw new Error(error);
+}
+
+function sameFilesystemPath(left: string, right: string): boolean {
+  const normalize = (value: string) => {
+    const withoutExtendedPrefix = value.startsWith("\\\\?\\") ? value.slice(4) : value;
+    const normalized = resolve(withoutExtendedPrefix);
+    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  };
+  return normalize(left) === normalize(right);
 }
 
 async function readOutputEntries(output: string) {
@@ -123,7 +207,7 @@ function renderIndex(): string {
       <p class="kicker">Mendpoint documentation</p>
       <h1>Build safe software migration workflows</h1>
       <p>Understand change, produce bounded candidates, verify the result, and deliver it for human review.</p>
-      <pre><code>npm install\nnpm run demo</code></pre>
+      <pre aria-label="Quickstart command" tabindex="0"><code>npm install\nnpm run demo</code></pre>
     </header>
 ${groups}
     <section><h2>Machine-readable resources</h2><p>Every component is included beside this page as Markdown. Use <a href="manifest.json">manifest.json</a> to enumerate the bundle.</p></section>`);
@@ -140,14 +224,15 @@ function renderPage(page: ProductDoc): string {
       <p class="kicker">${html(page.category)}</p>
       <h1>${html(page.title)}</h1>
       <p>${html(page.summary)}</p>
-      <dl><dt>Status</dt><dd>${html(page.statusLabel)}</dd><dt>Availability</dt><dd>${html(page.availability)}</dd><dt>Last verified</dt><dd>${html(page.lastVerified)}</dd></dl>
+      <dl><dt>Status</dt><dd>${html(page.statusLabel)}</dd><dt>Availability</dt><dd>${html(page.availability)}</dd><dt>Last verified</dt><dd>${html(page.lastVerified)}</dd><dt>Publication evidence</dt><dd>${html(page.publicationEvidence.state === "live" ? `Live at ${page.publicationEvidence.deployedRevision}, evidence ${page.publicationEvidence.evidenceDigest}` : "Not live; no deployed revision or live evidence digest recorded")}</dd><dt>Requirements</dt><dd>${html(page.requirementIds.join(", "))}</dd><dt>Public claims</dt><dd>${html(page.claimIds.length > 0 ? page.claimIds.join(", ") : "None")}</dd></dl>
     </header>
-    ${section("Start here", `<p>${html(page.startHere.intro)}</p>${ordered(page.startHere.steps)}${page.startHere.command ? `<pre><code>${html(page.startHere.command)}</code></pre>` : ""}`)}
+    ${section("Start here", `<p>${html(page.startHere.intro)}</p>${ordered(page.startHere.steps)}${page.startHere.command ? `<pre aria-label="${attribute(`${page.title} quickstart command`)}" tabindex="0"><code>${html(page.startHere.command)}</code></pre>` : ""}`)}
     ${section("What it does", unordered(page.capabilities))}
     ${section("When to use it", unordered(page.useWhen))}
     ${section("How it works", ordered(page.howItWorks))}
     ${section("Interfaces", `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead><tbody>${page.interfaces.map((item) => `<tr><td><code>${html(item.name)}</code></td><td>${html(item.kind)}</td><td>${html(item.detail)}</td></tr>`).join("")}</tbody></table></div>`)}
     ${section("Evidence and verification", `<ul>${page.evidence.map((item) => `<li><strong>${html(item.label)}</strong><br><code>${html(item.locator)}</code></li>`).join("")}</ul>`)}
+    ${section("Contract sources", `<ul>${page.sourceContracts.map((locator) => `<li><code>${html(locator)}</code></li>`).join("")}</ul>`)}
     ${section("Safety model", unordered(page.guardrails, "guardrails"))}
     ${section("Limitations", unordered(page.limitations))}
     ${section("See also", `<ul>${related}</ul>`)}

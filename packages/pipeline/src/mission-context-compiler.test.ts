@@ -149,6 +149,11 @@ function graphImpact(tenantId = "t1"): FettlerEndpointImpactResult {
     schemaVersion: "mendpoint.fettler-impact-context.v1",
     tenantId,
     repositoryId: "repo1",
+    repositorySnapshotId: "snap1",
+    repositoryRevision: "a".repeat(40),
+    providerId: "provider1",
+    providerSnapshotId: "provider-snap1",
+    providerRevision: "2026-08-30",
     graphVersionId: "gv-1",
     graphContentDigest: "gcd",
     target: { status: "absent", reason: "absent" } as unknown as FettlerEndpointImpactResult["target"],
@@ -181,6 +186,7 @@ function baseInput(overrides: Partial<MissionContextInput> = {}): MissionContext
     history: { consulted: true, records: [] },
     verification: { consulted: true, records: [] },
     exceptions: { consulted: true, records: [] },
+    artifacts: { consulted: true, records: [] },
     evidenceRefs: [],
     ...overrides,
   };
@@ -381,6 +387,222 @@ describe("mission context compiler", () => {
     const body = renderMissionContext(envelope).injection.promptBody;
     expect(body).toContain("no_mission_bound");
     expect(body).toContain("task not part of a formal mission");
+  });
+
+  it("explicit store_not_available is distinct from a bound empty read", () => {
+    const omitted = compileMissionContext(baseInput({ artifacts: { consulted: false, reason: "store_not_available" } }));
+    expect(omitted.missionArtifacts.status).toBe("not_consulted");
+    if (omitted.missionArtifacts.status !== "not_consulted") throw new Error("unreachable");
+    expect(omitted.missionArtifacts.reason).toBe("store_not_available");
+
+    const emptyBound = compileMissionContext(baseInput({ artifacts: { consulted: true, records: [] } }));
+    expect(emptyBound.missionArtifacts.status).toBe("consulted");
+    if (emptyBound.missionArtifacts.status !== "consulted") throw new Error("unreachable");
+    expect(emptyBound.missionArtifacts.entries).toEqual([]);
+    const emptyBody = renderMissionContext(emptyBound).injection.promptBody;
+    expect(emptyBody).toContain("Mission artifacts [consulted]");
+    expect(emptyBody).toContain("(none registered for this mission)");
+  });
+
+  it("consulted artifacts carry refs/roles/sha256/label only, never bodies", () => {
+    const envelope = compileMissionContext(
+      baseInput({
+        artifacts: {
+          consulted: true,
+          records: [{
+            tenantId: "t1",
+            id: "ma-1",
+            role: "candidate_patch",
+            artifactId: "art-patch",
+            artifactSha256: "a".repeat(64),
+            label: "payments patch",
+            createdAt: T0,
+            taskId: "task1",
+          }],
+        },
+      }),
+    );
+    expect(envelope.missionArtifacts.status).toBe("consulted");
+    if (envelope.missionArtifacts.status !== "consulted") throw new Error("unreachable");
+    expect(envelope.missionArtifacts.entries).toEqual([{
+      id: "ma-1",
+      role: "candidate_patch",
+      artifactId: "art-patch",
+      artifactSha256: "a".repeat(64),
+      label: "payments patch",
+      createdAt: T0,
+      taskId: "task1",
+    }]);
+    const compiled = renderMissionContext(envelope);
+    expect(compiled.injection.promptBody).toContain("[candidate_patch] art-patch");
+    expect(compiled.injection.promptBody).toContain("newest-in-role");
+    expect(compiled.injection.promptBody).toContain(`sha256=${"a".repeat(64)}`);
+    expect(compiled.injection.promptBody).toContain("payments patch");
+    expect(compiled.injection.promptBody).not.toContain("PATCH BODY");
+    expect(compiled.refs).toContainEqual({
+      kind: "mission_artifact",
+      id: "ma-1",
+      role: "candidate_patch",
+      artifactId: "art-patch",
+      sha256: "a".repeat(64),
+    });
+  });
+
+  it("unbound artifacts report no_mission_bound, not store_not_available", () => {
+    const envelope = compileMissionContext(
+      baseInput({
+        mission: { missionId: null, product: "fettler", objective: "repair a failing test", repositoryId: "repo1", snapshotId: null, graphVersionId: null },
+        artifacts: { consulted: false, reason: "no_mission_bound" },
+      }),
+    );
+    expect(envelope.missionArtifacts.status).toBe("not_consulted");
+    if (envelope.missionArtifacts.status !== "not_consulted") throw new Error("unreachable");
+    expect(envelope.missionArtifacts.reason).toBe("no_mission_bound");
+    expect(renderMissionContext(envelope).injection.promptBody).toContain("Mission artifacts [not consulted]");
+  });
+
+  it("CONTROL: same-role artifacts mark the newest; older ones are superseded-in-role", () => {
+    const envelope = compileMissionContext(
+      baseInput({
+        artifacts: {
+          consulted: true,
+          records: [
+            {
+              tenantId: "t1",
+              id: "ma-new",
+              role: "candidate_patch",
+              artifactId: "art-new",
+              artifactSha256: "c".repeat(64),
+              label: "latest",
+              createdAt: "2026-01-02T00:00:00.000Z",
+              taskId: "task-new",
+            },
+            {
+              tenantId: "t1",
+              id: "ma-old",
+              role: "candidate_patch",
+              artifactId: "art-old",
+              artifactSha256: "d".repeat(64),
+              label: "previous",
+              createdAt: T0,
+              taskId: "task-old",
+            },
+          ],
+        },
+      }),
+    );
+    const body = renderMissionContext(envelope).injection.promptBody;
+    expect(body).toContain("art-new");
+    expect(body).toContain("newest-in-role");
+    expect(body).toContain("art-old");
+    expect(body).toContain("superseded-in-role");
+    expect(body.indexOf("art-new")).toBeLessThan(body.indexOf("art-old"));
+  });
+
+  it("derives newest-in-role from createdAt, not the caller's array order (records supplied oldest-first)", () => {
+    const envelope = compileMissionContext(
+      baseInput({
+        artifacts: {
+          consulted: true,
+          records: [
+            {
+              tenantId: "t1",
+              id: "ma-old",
+              role: "candidate_patch",
+              artifactId: "art-old",
+              artifactSha256: "d".repeat(64),
+              label: "previous",
+              createdAt: T0,
+              taskId: "task-old",
+            },
+            {
+              tenantId: "t1",
+              id: "ma-new",
+              role: "candidate_patch",
+              artifactId: "art-new",
+              artifactSha256: "c".repeat(64),
+              label: "latest",
+              createdAt: "2026-01-02T00:00:00.000Z",
+              taskId: "task-new",
+            },
+          ],
+        },
+      }),
+    );
+    // The newer artifact is supplied LAST. Currency must be derived from createdAt,
+    // so the envelope entries are canonically newest-first regardless of input order.
+    if (envelope.missionArtifacts.status !== "consulted") throw new Error("unreachable");
+    expect(envelope.missionArtifacts.entries.map((e) => e.artifactId)).toEqual(["art-new", "art-old"]);
+    // And the render labels the newer one newest-in-role, the older superseded-in-role —
+    // not the other way round, which is what caller-order labelling would produce here.
+    const body = renderMissionContext(envelope).injection.promptBody;
+    const newLine = body.split("\n").find((l) => l.includes("art-new"))!;
+    const oldLine = body.split("\n").find((l) => l.includes("art-old"))!;
+    expect(newLine).toContain("newest-in-role");
+    expect(oldLine).toContain("superseded-in-role");
+    expect(body.indexOf("art-new")).toBeLessThan(body.indexOf("art-old"));
+  });
+
+  it("CONTROL: artifact section drops before verification under truncation", () => {
+    const envelope = compileMissionContext(
+      baseInput({
+        artifacts: {
+          consulted: true,
+          records: [{
+            tenantId: "t1",
+            id: "ma-1",
+            role: "candidate_patch",
+            artifactId: "art-patch",
+            artifactSha256: "a".repeat(64),
+            label: "payments patch",
+            createdAt: T0,
+            taskId: null,
+          }],
+        },
+      }),
+    );
+    const body = renderMissionContext(envelope).injection.promptBody;
+    expect(body.indexOf("## Verification state")).toBeGreaterThan(-1);
+    expect(body.indexOf("## Mission artifacts")).toBeGreaterThan(-1);
+    expect(body.indexOf("## Verification state")).toBeLessThan(body.indexOf("## Mission artifacts"));
+  });
+
+  it("CONTROL: a foreign-tenant row after the 32-item cap is still rejected", () => {
+    const records = Array.from({ length: 33 }, (_, i) => ({
+      tenantId: i === 32 ? "t2" : "t1",
+      id: `ma-${i}`,
+      role: "candidate_patch",
+      artifactId: `art-${i}`,
+      artifactSha256: "a".repeat(64),
+      label: `patch ${i}`,
+      createdAt: T0,
+      taskId: null as string | null,
+    }));
+    expect(() => compileMissionContext(baseInput({ artifacts: { consulted: true, records } }))).toThrow(
+      "mission_context_tenant_mismatch",
+    );
+  });
+
+  it("a foreign-tenant artifact is rejected rather than leaking into the prompt", () => {
+    expect(() =>
+      compileMissionContext(
+        baseInput({
+          artifacts: {
+            consulted: true,
+            records: [{
+              tenantId: "t2",
+              id: "ma-x",
+              role: "candidate_patch",
+              artifactId: "art-x",
+              artifactSha256: "b".repeat(64),
+              label: "foreign",
+              createdAt: T0,
+              taskId: null,
+            }],
+          },
+        }),
+      ),
+    ).toThrow("mission_context_tenant_mismatch");
   });
 
   it("an active memory with no higher layer applies and is named", () => {

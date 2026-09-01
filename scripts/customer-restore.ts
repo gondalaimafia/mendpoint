@@ -14,6 +14,7 @@ import {
   loadCustomerObjectStoreConfig,
   resolveCustomerRestoreStagingPath,
 } from "./customer-object-store.js";
+import { dropRootIdentity } from "./drop-root-identity.js";
 
 async function main(): Promise<void> {
 if (process.env.MENDPOINT_DEPLOYMENT_PROFILE !== "customer") {
@@ -54,12 +55,7 @@ await downloadCommittedCustomerBackup({
 }, transport);
 const restoreParent = safePaths.targetParent;
 mkdirSync(restoreParent, { recursive: true, mode: 0o700 });
-if (
-  typeof process.getuid === "function" &&
-  typeof process.setgid === "function" &&
-  typeof process.setuid === "function" &&
-  process.getuid() === 0
-) {
+if (typeof process.getuid === "function" && process.getuid() === 0) {
   const chownTree = (path: string): void => {
     const stat = lstatSync(path);
     if (stat.isSymbolicLink()) throw new Error("customer_restore_staging_symlink_rejected");
@@ -71,8 +67,7 @@ if (
   chownTree(safePaths.backupRoot);
   chownSync(restoreParent, 1000, 1000);
   chmodSync(restoreParent, 0o700);
-  process.setgid(1000);
-  process.setuid(1000);
+  dropRootIdentity();
 }
   const manifest = loadAuthenticatedBackupManifest(safePaths.backupRoot, key);
   if (manifest.integrity.keyId !== expectedKeyId) throw new Error("customer_restore_key_id_mismatch");

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -14,6 +14,10 @@ import {
   writeProposalAuthorityFailureObservation,
   type ProposalAuthorityClient,
 } from "./production-closure-proposal-authority.js";
+import type {
+  PublicClaimLiveEvidence,
+  PublicClaimRegistry,
+} from "../packages/contract/src/public-claims.js";
 
 const root = resolve(import.meta.dirname, "..");
 const HEAD = "a".repeat(40);
@@ -38,6 +42,43 @@ function policy() {
   );
 }
 
+/**
+ * The claims registry these tests judge, decoupled from the live one.
+ *
+ * `verifyProductionClosureProposal` validates the proposed claims registry at
+ * the instant it is handed (`asOf: new Date(observedAt)`), and these tests hand
+ * it the frozen OBSERVED_AT. `docs/PUBLIC_CLAIMS.json` is a live document whose
+ * `type: "live"` evidence is re-probed and re-stamped on a real wall clock, so
+ * judging it against a literal from months ago reports LIVE_EVIDENCE_FUTURE on
+ * every refresh that lands after that literal — a failure about the calendar,
+ * not about the authority. This fixture is production-shaped (same schema, same
+ * claims, same auditedRevision, real surface paths and requirement IDs) with
+ * its live evidence pinned around OBSERVED_AT: observed before it, fresh past
+ * it. The frozen clock is therefore still exercised — see the future and stale
+ * cases below — while a genuine re-probe of production cannot break this suite.
+ */
+function claimsFixture(): PublicClaimRegistry {
+  return JSON.parse(
+    readFileSync(
+      resolve(root, "scripts", "fixtures", "production-closure-public-claims-v1.json"),
+      "utf8",
+    ),
+  ) as PublicClaimRegistry;
+}
+
+/**
+ * Throws rather than returning undefined so a fixture that lost its live
+ * evidence fails the frozen-clock tests instead of passing them vacuously.
+ */
+function liveEvidence(registry: PublicClaimRegistry, evidenceId: string): PublicClaimLiveEvidence {
+  for (const claim of registry.claims ?? []) {
+    for (const evidence of claim.evidence ?? []) {
+      if (evidence.id === evidenceId && evidence.type === "live") return evidence;
+    }
+  }
+  throw new Error(`claims fixture is missing live evidence ${evidenceId}`);
+}
+
 function baseAuthority() {
   return {
     revision: BASE,
@@ -45,6 +86,67 @@ function baseAuthority() {
     rotationLedgerBytes: readFileSync(
       resolve(root, "config", "production-closure-authority-rotation.json"),
     ),
+  };
+}
+
+function createDivergedRepository(): {
+  directory: string;
+  baseRevision: string;
+  headRevision: string;
+  mainRevision: string;
+  localOnlyRevision: string;
+  headBlobSha: string;
+  headBlobBytes: Buffer;
+} {
+  const directory = mkdtempSync(join(tmpdir(), "mendpoint-proposal-local-git-"));
+  const git = (...args: string[]) => execFileSync("git", args, {
+    cwd: directory,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+  git("init", "-b", "main");
+  git("config", "user.email", "proposal-authority@example.invalid");
+  git("config", "user.name", "Proposal Authority Test");
+  writeFileSync(join(directory, "base.txt"), "base\n");
+  git("add", "base.txt");
+  git("commit", "-m", "base");
+  const baseRevision = git("rev-parse", "HEAD");
+
+  git("switch", "-c", "feature");
+  mkdirSync(join(directory, "nested"));
+  const headBlobBytes = Buffer.from("exact proposal bytes\n");
+  const proposalPath = join(directory, "nested", "proposal.txt");
+  writeFileSync(proposalPath, headBlobBytes);
+  chmodSync(proposalPath, 0o755);
+  writeFileSync(join(directory, "literal#name.txt"), "literal Git path\n");
+  git("add", "nested/proposal.txt");
+  git("add", "literal#name.txt");
+  git("update-index", "--chmod=+x", "nested/proposal.txt");
+  git("commit", "-m", "proposal");
+  const headRevision = git("rev-parse", "HEAD");
+  const headBlobSha = git("rev-parse", "HEAD:nested/proposal.txt");
+
+  git("switch", "main");
+  writeFileSync(join(directory, "main.txt"), "main\n");
+  git("add", "main.txt");
+  git("commit", "-m", "main");
+  const mainRevision = git("rev-parse", "HEAD");
+  git("switch", "-c", "local-only", "feature");
+  writeFileSync(join(directory, "local-only.txt"), "not published to origin\n");
+  git("add", "local-only.txt");
+  git("commit", "-m", "local only");
+  const localOnlyRevision = git("rev-parse", "HEAD");
+  git("switch", "main");
+  git("update-ref", "refs/remotes/origin/main", mainRevision);
+  git("update-ref", "refs/remotes/origin/feature", headRevision);
+  return {
+    directory,
+    baseRevision,
+    headRevision,
+    mainRevision,
+    localOnlyRevision,
+    headBlobSha,
+    headBlobBytes,
   };
 }
 
@@ -99,6 +201,7 @@ class FixtureClient implements ProposalAuthorityClient {
       matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
       this.replace("docs/PRODUCTION_CLOSURE_MATRIX.json", matrix);
     }
+    this.replace("docs/PUBLIC_CLAIMS.json", claimsFixture());
     for (const [path, blobSha] of this.pathToSha) this.basePathToSha.set(path, blobSha);
   }
 
@@ -126,6 +229,9 @@ class FixtureClient implements ProposalAuthorityClient {
   }
   async getRepositoryId(): Promise<number> {
     return 1309389373;
+  }
+  async proposalHeadIsSameRepository(): Promise<boolean> {
+    return true;
   }
   /**
    * Move the base tip ahead of the branch point, leaving the proposal alone.
@@ -198,6 +304,84 @@ describe("production closure proposal authority", () => {
         expect.objectContaining({ path: "docs/PUBLIC_CLAIMS.json" }),
       ]),
     );
+  });
+
+  it("rejects a live claim observation stamped after the proposal instant", async () => {
+    const client = new FixtureClient();
+    const claims = claimsFixture();
+    const evidence = liveEvidence(claims, "CLM-001-EV01");
+    evidence.observedAt = "2026-08-25T12:00:00.001Z";
+    evidence.freshUntil = "2026-09-01T12:00:00.001Z";
+    client.replace("docs/PUBLIC_CLAIMS.json", claims);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(
+      result.issues
+        .filter((issue) => issue.code === "LIVE_EVIDENCE_FUTURE")
+        .map((issue) => issue.subject),
+      JSON.stringify(result.issues, null, 2),
+    ).toEqual(["CLM-001-EV01"]);
+  });
+
+  it("rejects a live claim whose freshness window closed before the proposal instant", async () => {
+    const client = new FixtureClient();
+    const claims = claimsFixture();
+    liveEvidence(claims, "CLM-013-EV02").freshUntil = "2026-08-25T11:59:59.999Z";
+    client.replace("docs/PUBLIC_CLAIMS.json", claims);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(
+      result.issues
+        .filter((issue) => issue.code === "LIVE_EVIDENCE_STALE")
+        .map((issue) => issue.subject),
+      JSON.stringify(result.issues, null, 2),
+    ).toEqual(["CLM-013-EV02"]);
+  });
+
+  it("does not report an open pull request head the local object database cannot resolve, but still flags an unreachable merge revision", async () => {
+    // #490 re-armed via #486's local-git oracle: closure:proposal:check resolves
+    // revisions against the checked-out object database, which cannot see OTHER open
+    // PRs' force-pushed heads. "Absent locally" must not read as "unreachable on
+    // GitHub" for open-PR heads (openPullRequestHeadsVerifiable: false at the proposal
+    // call site). Merge revisions are on main and stay locally checked (ungated).
+    // Note (#530): open-PR heads/state are no longer re-verified live by github-
+    // authority either; this remains a local reporting relaxation, not a delegation.
+    const openHead = "63711d9aac1a2d9e89a50bd9b4a6b8f3b2ea3c3f"; // fixture open PR #284 head
+    const mergeRevision = "b3279db5157a2a33c8684f1cf595356953ff2a96"; // fixture merged PR #333 merge revision
+    class LocalObjectDatabaseClient extends FixtureClient {
+      async revisionExists(revision?: string): Promise<boolean> {
+        return revision !== openHead && revision !== mergeRevision;
+      }
+    }
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      new LocalObjectDatabaseClient(),
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    const codes = result.issues.map((issue) => issue.code);
+    expect(codes, JSON.stringify(result.issues, null, 2)).not.toContain("PR_HEAD_REVISION_UNREACHABLE");
+    expect(codes, JSON.stringify(result.issues, null, 2)).toContain("PR_MERGE_REVISION_UNREACHABLE");
   });
 
   it("fails closed when GitHub truncates the exact proposal tree", async () => {
@@ -318,6 +502,86 @@ describe("production closure proposal authority", () => {
     const codes = result.issues.map((issue) => issue.code);
     expect(codes).not.toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");
     expect(codes.filter((code) => code.startsWith("AUTHORITY_ROTATION_"))).toEqual([]);
+  });
+
+  it("does not charge an ordinary proposal for an inherited rotation bootstrap", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    matrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = {
+      rotationId: "rotation-20260827-008",
+      kind: "runtime",
+      issuedAt: "2026-08-27T08:29:00.000Z",
+      expiresAt: "2026-08-29T08:29:00.000Z",
+      basePolicySha256: `sha256:${"1".repeat(64)}`,
+      proposedPolicySha256: `sha256:${"2".repeat(64)}`,
+    };
+    matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
+    const inheritedBytes = Buffer.from(JSON.stringify(matrix));
+    const inheritedSha = sha(inheritedBytes);
+    client.blobs.set(inheritedSha, inheritedBytes);
+    client.pathToSha.set(matrixPath, inheritedSha);
+    client.basePathToSha.set(matrixPath, inheritedSha);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    const rotationIssues = result.issues.filter((issue) =>
+      issue.code.startsWith("AUTHORITY_ROTATION_"),
+    );
+    expect(rotationIssues, JSON.stringify(result.issues, null, 2)).toEqual([]);
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+  });
+
+  it("does not let an inherited bootstrap hide provider record removal", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const baseMatrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    const removed = baseMatrix.releaseTrain.pullRequests[0]!;
+    baseMatrix.releaseTrain.currentPullRequestBootstrap!.number = removed.number;
+    baseMatrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = {
+      rotationId: "rotation-20260827-008",
+      kind: "runtime",
+      issuedAt: "2026-08-27T08:29:00.000Z",
+      expiresAt: "2026-08-29T08:29:00.000Z",
+      basePolicySha256: `sha256:${"1".repeat(64)}`,
+      proposedPolicySha256: `sha256:${"2".repeat(64)}`,
+    };
+    baseMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(baseMatrix);
+    const baseBytes = Buffer.from(JSON.stringify(baseMatrix));
+    const baseSha = sha(baseBytes);
+    client.blobs.set(baseSha, baseBytes);
+    client.basePathToSha.set(matrixPath, baseSha);
+
+    const proposedMatrix = structuredClone(baseMatrix);
+    proposedMatrix.releaseTrain.pullRequests = proposedMatrix.releaseTrain.pullRequests
+      .filter((record) => record.number !== removed.number);
+    proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
+    client.replace(matrixPath, proposedMatrix);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: "PROPOSAL_PROVIDER_RECORD_REMOVAL_UNVERIFIED",
+      subject: String(removed.number),
+    }));
   });
 
   it("still demands a rotation when the proposal itself edits the policy on a stale base", async () => {
@@ -520,6 +784,48 @@ describe("production closure proposal authority", () => {
     );
   });
 
+  it("keys the self-removal exemption on the CI-supplied number, not a forged bootstrap number", async () => {
+    // Constraint: event-sourced identity is strictly stronger. The matrix forges a
+    // different bootstrap number; the exemption must follow the CI-attested number
+    // passed by the workflow (promoted.number), so the forged declaration grants no
+    // exemption of its own and cannot influence which removal is allowed.
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    // Remove the CI-attested PR's own record AND a second tracked record. Exactly one
+    // exemption is allowed, and it must follow the CI number, not the forged bootstrap.
+    const promoted = matrix.releaseTrain.pullRequests.shift()!;
+    const alsoRemoved = matrix.releaseTrain.pullRequests.shift()!;
+    matrix.releaseTrain.currentPullRequestBootstrap!.number = 999999; // forged, not the real PR
+    matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
+    client.replace(matrixPath, matrix);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+      promoted.number, // CI-attested current pull request number
+    );
+
+    const removalSubjects = result.issues
+      .filter((issue) => issue.code === "PROPOSAL_PROVIDER_RECORD_REMOVAL_UNVERIFIED")
+      .map((issue) => issue.subject);
+    // The CI-attested PR's own removal is exempt. Had the exemption keyed on the forged
+    // bootstrap number (999999) instead, promoted.number would have been flagged too.
+    expect(removalSubjects, JSON.stringify(result.issues, null, 2)).not.toContain(
+      String(promoted.number),
+    );
+    // The exemption is exactly one number: any OTHER removed record still flags.
+    expect(removalSubjects, JSON.stringify(result.issues, null, 2)).toContain(
+      String(alsoRemoved.number),
+    );
+  });
+
   it("accepts an exhaustive authority-only rotation interpreted by the base revision", async () => {
     const client = new FixtureClient();
     const authority = baseAuthority();
@@ -567,6 +873,7 @@ describe("production closure proposal authority", () => {
       proposedPolicySha256: sha256(proposedPolicyBytes),
     };
     proposedMatrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = rotation;
+    proposedMatrix.releaseTrain.observedAt = rotationObservedAt;
     proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
     const proposedMatrixBytes = Buffer.from(JSON.stringify(proposedMatrix));
     client.replace(matrixPath, proposedMatrixBytes);
@@ -622,6 +929,28 @@ describe("production closure proposal authority", () => {
     expect(result.providerValidationPullRequests).toEqual([]);
     expect(result.providerValidationIssues).toEqual([]);
 
+    proposedMatrix.releaseTrain.observedAt = new Date(
+      Date.parse(rotationObservedAt) + 1_000,
+    ).toISOString();
+    proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
+    const mistimedMatrixBytes = Buffer.from(JSON.stringify(proposedMatrix));
+    client.replace(matrixPath, mistimedMatrixBytes);
+    changes.find((change) => change.path === matrixPath)!.toSha256 = sha256(mistimedMatrixBytes);
+    client.replace("config/production-closure-authority-rotation.json", proposedLedger);
+
+    const mistimed = await verifyProductionClosureProposal(
+      basePolicy,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      rotationObservedAt,
+      authority,
+    );
+    expect(mistimed.issues.map((issue) => issue.code)).toContain(
+      "AUTHORITY_ROTATION_OBSERVATION_TIME_MISMATCH",
+    );
+
+    proposedMatrix.releaseTrain.observedAt = rotationObservedAt;
     proposedMatrix.issueAuthority.issues[0].title = "Rewritten authority evidence";
     proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
     const rewrittenMatrixBytes = Buffer.from(JSON.stringify(proposedMatrix));
@@ -722,7 +1051,7 @@ describe("production closure proposal authority", () => {
 
   it("accepts a normal product proposal after successor activation removed the predecessor", async () => {
     const client = new FixtureClient();
-    const predecessorPath = ".github/workflows/closure-authority.yml";
+    const predecessorPath = ".github/workflows/closure-authority-quiet-sweep.yml";
     const successorPath = ".github/workflows/closure-authority-v2.yml";
     const workflowBytes = client.blobs.get(client.pathToSha.get(predecessorPath)!)!;
     const activePolicy = policy();
@@ -782,29 +1111,27 @@ describe("production closure proposal authority", () => {
 
   it("exempts the newly-active successor from the controller-surface collision while an unrelated extra controller workflow still collides", async () => {
     const client = new FixtureClient();
-    const predecessorPath = ".github/workflows/closure-authority.yml";
-    const successorPath = ".github/workflows/closure-authority-quiet-sweep.yml";
+    const activePath = ".github/workflows/closure-authority-quiet-sweep.yml";
+    const successorPath = ".github/workflows/closure-authority-v3.yml";
     const roguePath = ".github/workflows/closure-authority-rogue.yml";
     // Controller-surface bytes: statuses: write + environment: production-closure-authority.
-    const controllerBytes = client.blobs.get(client.pathToSha.get(predecessorPath)!)!;
-    // Base policy: the predecessor is still the active controller (activation has not
-    // landed on the base yet), so proposedPolicy.workflowPath !== policy.workflowPath and
-    // ONLY the proposedPolicy.workflowPath exemption can spare the newly-active workflow.
+    const controllerBytes = client.blobs.get(client.pathToSha.get(activePath)!)!;
+    // Base policy: the quiet-sweep controller is the active controller on the base; this
+    // proposal activates a further successor, so proposedPolicy.workflowPath !== policy.workflowPath
+    // and ONLY the proposedPolicy.workflowPath exemption can spare the newly-active workflow.
     const basePolicy = policy();
     // Proposed policy: the activate_successor transition flips the active controller to
     // the successor and clears the staged slot.
     const proposedPolicy = policy();
     proposedPolicy.workflowPath = successorPath;
-    proposedPolicy.externalCheckName = "mendpoint-production-closure-authority-quiet-sweep";
-    proposedPolicy.controllerCheckName = "mendpoint-production-closure-controller-quiet-sweep";
+    proposedPolicy.externalCheckName = "mendpoint-production-closure-authority-v3";
+    proposedPolicy.controllerCheckName = "mendpoint-production-closure-controller-v3";
     proposedPolicy.successor = null;
-    delete proposedPolicy.protectedFiles[predecessorPath];
     proposedPolicy.protectedFiles[successorPath] = sha256(controllerBytes);
     const proposedPolicyBytes = Buffer.from(JSON.stringify(proposedPolicy));
-    // Proposed tree: predecessor removed, the newly-active successor present, plus an
-    // unrelated extra controller workflow that is neither the active path nor a staged
-    // successor slot and so must still be treated as a spoof.
-    client.remove(predecessorPath);
+    // Proposed tree: the newly-active successor present, plus an unrelated extra controller
+    // workflow that is neither the active path nor a staged successor slot and so must still
+    // be treated as a spoof.
     client.add(successorPath, controllerBytes, false);
     client.add(roguePath, controllerBytes, false);
     client.replace("config/production-closure-authority.json", proposedPolicyBytes);
@@ -871,21 +1198,105 @@ describe("production closure proposal authority", () => {
     expect(JSON.stringify({ attempts, waits })).not.toContain("sensitive-token");
   });
 
-  it("keeps an allowed missing revision as a single non-retried read", async () => {
-    let attempts = 0;
+  it("reads immutable proposal objects locally and performs one cached provider identity read", async () => {
+    const repository = createDivergedRepository();
+    const requests: string[] = [];
     const client = new GitHubProposalAuthorityClient(
       "gondalaimafia/mendpoint",
       "sensitive-token",
-      async () => {
-        attempts += 1;
-        return new Response(null, { status: 404 });
+      async (input) => {
+        requests.push(String(input));
+        return new Response(JSON.stringify({ id: 1309389373 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
       },
       async () => {
         throw new Error("unexpected retry");
       },
+      repository.directory,
     );
 
-    await expect(client.revisionExists(HEAD)).resolves.toBe(false);
-    expect(attempts).toBe(1);
+    try {
+      const tree = await client.getRecursiveTree(repository.headRevision);
+      expect(tree.truncated).toBe(false);
+      expect(tree.tree).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: "literal#name.txt", mode: "100644", type: "blob" }),
+        expect.objectContaining({
+          path: "nested/proposal.txt",
+          mode: "100755",
+          type: "blob",
+          sha: repository.headBlobSha,
+          size: repository.headBlobBytes.length,
+        }),
+      ]));
+      await expect(client.getBlob(repository.headBlobSha)).resolves.toEqual(repository.headBlobBytes);
+      await expect(client.proposalHeadIsSameRepository(repository.headRevision)).resolves.toBe(true);
+      await expect(client.proposalHeadIsSameRepository(repository.localOnlyRevision)).resolves.toBe(false);
+      await expect(client.revisionExists(repository.headRevision)).resolves.toBe(true);
+      await expect(client.revisionIsAncestor(repository.baseRevision, repository.headRevision)).resolves.toBe(true);
+      await expect(client.revisionIsAncestor(repository.mainRevision, repository.headRevision)).resolves.toBe(false);
+      await expect(client.getMergeBase(repository.mainRevision, repository.headRevision)).resolves.toBe(
+        repository.baseRevision,
+      );
+      await expect(client.getRepositoryId()).resolves.toBe(1309389373);
+      await expect(client.getRepositoryId()).resolves.toBe(1309389373);
+      expect(requests).toEqual(["https://api.github.com/repos/gondalaimafia/mendpoint"]);
+    } finally {
+      rmSync(repository.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on absent local objects without falling back to GitHub", async () => {
+    const repository = createDivergedRepository();
+    let requests = 0;
+    const client = new GitHubProposalAuthorityClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      async () => {
+        requests += 1;
+        return new Response(JSON.stringify({ id: 1309389373 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      async () => {
+        throw new Error("unexpected retry");
+      },
+      repository.directory,
+    );
+    const absentRevision = "f".repeat(40);
+
+    try {
+      await expect(client.getRecursiveTree(absentRevision)).rejects.toThrow();
+      await expect(client.getBlob(absentRevision)).rejects.toThrow();
+      await expect(client.revisionExists(absentRevision)).resolves.toBe(false);
+      await expect(client.revisionIsAncestor(absentRevision, repository.headRevision)).rejects.toThrow();
+      await expect(client.getMergeBase(absentRevision, repository.headRevision)).rejects.toThrow();
+      await expect(client.getBlob("HEAD")).rejects.toThrow("exact Git object SHA");
+      expect(requests).toBe(0);
+    } finally {
+      rmSync(repository.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a proposal head that is not reachable from the protected repository", async () => {
+    const client = new FixtureClient();
+    client.proposalHeadIsSameRepository = async () => false;
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.verdict).toBe("fail");
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: "PROPOSAL_HEAD_NOT_SAME_REPOSITORY",
+      subject: HEAD,
+    }));
   });
 });

@@ -423,7 +423,7 @@ function dedupeExact(items: readonly KnowledgeItem[]): KnowledgeItem[] {
  * reach (`availableItems`). Stale directive items are dropped (directives carry
  * no status in the compiler); stale memory items are carried with STALE status so
  * the compiler excludes them itself. Sections the cohort has no data for
- * (graph/history/verification/exceptions) are honestly not_consulted.
+ * (graph/history/verification/exceptions/artifacts) are honestly not_consulted.
  */
 export function missionContextInputForTaskArm(
   scenario: BenchmarkScenario,
@@ -482,6 +482,7 @@ export function missionContextInputForTaskArm(
     history: { consulted: false, reason: "store_not_available" },
     verification: { consulted: false, reason: "store_not_available" },
     exceptions: { consulted: false, reason: "store_not_available" },
+    artifacts: { consulted: false, reason: "store_not_available" },
   };
 }
 

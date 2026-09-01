@@ -1,143 +1,94 @@
 # Mendpoint
 
-**Fettler — the first AI API Engineer** is Mendpoint’s API integration teammate — **GA 1.0**. Its companion, **Regauge — the first AI Legacy Engineer**, takes on legacy and multi-repo migration campaigns. **Graph engineering** is the go-to agentic approach: specialized loop-nodes (change intel → call-graph expand → generate → verify → human review), not one overloaded agent. Never auto-merges by default.
+**Fettler — the first AI API Engineer** is Mendpoint's API integration teammate, available as a **Private Design Partner Preview** for approved pilot teams. Its companion **ReGauge — the first AI Legacy Engineer** takes on legacy and multi-repo migration campaigns as an experimental planning preview. Mendpoint follows a **graph engineering** approach: specialized loop-nodes (change intel → call-graph expand → generate → verify → human review), not one overloaded agent. **It never auto-merges by default** — any delivered change lands as a reviewable pull request that a person approves and merges.
 
-When an API provider ships a breaking change or a high-value capability, Mendpoint (with explicit customer permission) can scan the relevant codebase and open a **reviewable** PR. Customers review and merge.
+For submitted OpenAPI changes, Mendpoint can analyze configured repository snapshots and generate evidence-backed migration pull request candidates for supported GitHub repositories. Customers review and merge.
 
-> Platform: **Mendpoint**. Product: **Fettler GA 1.0**. Production: [`docs/PRODUCTION_GA.md`](./docs/PRODUCTION_GA.md). Claims: [`docs/WARDEN_CLAIMS.md`](./docs/WARDEN_CLAIMS.md). Doctrine: [`docs/GRAPH_ENGINEERING.md`](./docs/GRAPH_ENGINEERING.md).
+> Platform: **Mendpoint**. Products: **Fettler (Private Design Partner Preview)** and **ReGauge (experimental planning preview)**. Production runbook: [`docs/PRODUCTION_GA.md`](./docs/PRODUCTION_GA.md). Claim-safe language: [`docs/WARDEN_CLAIMS.md`](./docs/WARDEN_CLAIMS.md). Doctrine: [`docs/GRAPH_ENGINEERING.md`](./docs/GRAPH_ENGINEERING.md).
 
-## Quickstart
+## How it works
+
+Mendpoint runs a migration as a graph of specialized nodes, each with a narrow job, rather than one prompt doing everything:
+
+1. **Change intel** — normalize a submitted OpenAPI change into impactable surfaces (diff, severity, migration strategy).
+2. **Call-graph impact** — expand from candidate call sites through the hybrid call graph to enclosing functions and callers, using static, graph-backed, and heuristic evidence.
+3. **Generate** — produce a proposed patch and PR body for supported migration patterns, with the evidence and confidence attached.
+4. **Verify** — run the configured verification checks before a draft PR is eligible for delivery. Low-confidence impacts are marked explicitly, not forced into confident-looking PRs.
+5. **Human review** — deliver a reviewable pull request. **Mendpoint does not merge it.** Review and merge stay in the customer's source control.
+
+See [`docs/GRAPH_ENGINEERING.md`](./docs/GRAPH_ENGINEERING.md) for the doctrine and [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full impact-analysis design.
+
+## Pilot quickstart (self-hosted)
+
+The Fettler preview supports approved pilot evaluation on a single-node self-hosted control plane.
 
 ```bash
 git clone https://github.com/gondalaimafia/mendpoint.git
 cd mendpoint
 npm install
 npm run db:seed
-npm run ga:check      # production GA preflight
-npm run demo          # OpenAPI diff → impact → PR candidate, halted at delivery gates (Acme fixture, fail-closed)
-npm run examples      # Stripe, OpenAI, AWS S3, fintech, multi-lang
-npm run agent:demo    # Fettler on-demand debug loop
-npm test
-npm run dev:api       # http://localhost:3001/status
-npm run dev:web       # http://localhost:3000
+
+export NODE_ENV=production API_AUTH=required
+npm run ga:check                 # production GA preflight
+docker compose up --build        # API on :3001, web on :3000
+# or run the API directly:
+npm run start:api
 ```
 
-### Production (self-hosted)
+In production (`NODE_ENV=production`) the API requires authentication, enforces rate limits, and exposes readiness and liveness probes for orchestration. See [`docs/PRODUCTION_GA.md`](./docs/PRODUCTION_GA.md) for the full runbook.
+
+## Products
+
+### Fettler — AI API Engineer (Private Design Partner Preview)
+
+Fettler turns submitted OpenAPI changes into graph-backed impact analysis and proposed patches for supported migration patterns on configured GitHub repositories. It also runs an on-demand API debug loop — a goal-driven, bounded multi-step tool loop for protocol, serialization, semantic, network, and rate-limit failures. Access is limited to approved private pilot teams.
+
+### ReGauge — AI Legacy Engineer (preview)
+
+ReGauge extends the same graph-engineering approach to legacy and multi-repo migration campaigns, planning dependency-aware staged work across repositories. It is an experimental planning preview: repository execution and staged pull-request campaigns are not customer-ready yet.
+
+## Try it offline
+
+The bundled demo and examples run fully offline against fixtures — no GitHub credentials and no network. Delivery halts at the same policy gates as production (fail-closed).
 
 ```bash
-export NODE_ENV=production API_AUTH=required
-npm run ga:check
-docker compose up --build   # API :3001 + web :3000
-# or: npm run start:api
+npm run demo         # Acme OpenAPI v1 to v2 diff → impact → PR candidate (mock GitHub)
+npm run examples     # Stripe, OpenAI, AWS S3, fintech, multi-language fixtures
+npm run agent:demo   # Fettler on-demand API debug loop
+npm test             # full test suite
+npm run dev:api      # local API at http://localhost:3001/status
+npm run dev:web      # local dashboards at http://localhost:3000
 ```
 
-
-
-
-## What the demo does
-
-1. Loads **Acme Payments** OpenAPI v1 → v2 (field rename, path removal, new balance endpoint).
-2. Scans **shop-app** fixture (TypeScript + Python) for impacted call sites.
-3. Generates a migration patch + PR body (risk, confidence, evidence).
-4. Delivers via **mock GitHub** under `.mendpoint/mock-github/` (no network).
-5. Persists change, findings, PRs, and audit events in SQLite (`data/mendpoint.sqlite`).
-
-## Impact analysis architecture
-
-Hybrid multi-stage (not whole-repo LLM, not pure static only):
-
-1. **Change normalizer** → Impactable Surfaces (OpenAPI diff + severity + migration strategy)
-2. **Codebase index** → imports, functions, API usages, approx. call graph (incremental)
-3. **Candidate discovery** → high-recall deterministic filter (SDK / path / field / import)
-4. **Context expansion** → enclosing function + callers + compact slice
-5. **Deep confirmation** → static first, optional targeted LLM on slices
-6. **Impact report** → brief for PR generation (sites, confidence, fix hints)
-
-See `docs/ARCHITECTURE.md` for the full design and `docs/EXAMPLES.md` for concrete vendor migrations.
-
-
-## Monorepo layout
-
-| Path | Role |
-|------|------|
-| `packages/shared` | Domain types (surfaces, candidates, ImpactReport) |
-| `packages/db` | SQLite control-plane schema/repos |
-| `packages/change-intel` | OpenAPI diff → Impactable Surfaces |
-| `packages/call-graph` | Hybrid call-graph, reverse reachability, **reset-recompute**, **persistent multi-version store** |
-| `packages/egraph` | **E-graphs** / equality saturation for migration rewrite search |
-| `packages/codebase-index` | Pre-computed code index (embeds call graph) |
-| `packages/code-impact` | Candidates → graph expand → confirm → ImpactReport |
-| `packages/generation` | Migration PR from impact brief + e-graph exploration notes |
-| `packages/github` | Mock + real Octokit PR delivery |
-| `packages/policy` | Path denylist, no auto-merge, auth review labels |
-| `packages/catalog` | Vendor catalog + lockfile/import auto-detect + **feed poll** |
-| `packages/pipeline` | Executes product stages (aligned to agent graph nodes) + policy + audit |
-| `packages/orchestrator` | **Graph engineering**: topology, routing, shared state (`wardenProductGraph`) |
-| `packages/graph` | Domain product graphs (change / impact / API surface) |
-| `packages/agent` | **Fettler** — verify loop-node (API debug) |
-| `packages/contract` | Contract suite, oas-breaking gates, API design critic |
-| `packages/transformer` | **Regauge** — BSG, DAG campaigns, multi-repo agent plan |
-| `packages/platform` | Shared sandbox, 4-layer memory, knowledge, canary hooks |
-| `packages/graph-learn` | **Dim 6** durable KG + graph-RAG + PR outcome labels · **Schema v0** (`schema/v0.md`) |
-| `packages/phase-a` | Real PR ship + TS/Python/Go quality harnesses |
-| `apps/api` | Hono JSON API (webhooks, keys, feeds) |
-| `apps/web` | Next.js provider/consumer/**feeds** dashboards |
-| `apps/worker` | CLI `demo` / `watch` / **`poll`** |
-| `fixtures/` | Acme + shop-app + **6 vendor examples** (incl. Go) |
-| `packages/examples` | Runner for Stripe / OpenAI / AWS / fintech / adoption demos |
-
-
+The demo loads an Acme Payments OpenAPI v1 to v2 change (field rename, path removal, new endpoint), scans a TypeScript + Python fixture for impacted call sites, generates a migration patch and PR body, and delivers it through a mock GitHub under `.mendpoint/mock-github/` — no network. See [`docs/EXAMPLES.md`](./docs/EXAMPLES.md) for concrete vendor migrations.
 
 ## Trust defaults
 
-- `GITHUB_MODE=mock` by default — never requires GitHub credentials for local demos
-- PR-only policy language in every generated PR body
-- Human review required — never auto-merges by default
-- Low-confidence impacts are marked explicitly, not forced into “confident” PRs
-- Audit log for every pipeline step
-- Customer code is not used to train foundation models without explicit opt-in
+- **Never auto-merges by default** — human review is required; there is no auto-merge without an explicit, experimental policy.
+- `GITHUB_MODE=mock` by default — local demos never require GitHub credentials.
+- PR-only policy language is stamped into every generated PR body.
+- Low-confidence impacts are marked explicitly, not presented as confident.
+- Every pipeline step is written to an audit log.
+- Customer code is not used to train foundation models without explicit opt-in.
 
-Customer deployments use `GITHUB_MODE=real`, `MENDPOINT_DEPLOYMENT_CLASS=customer`, and GitHub App credentials. A fine-grained PAT is accepted only by an explicitly configured disposable private canary pinned to one tenant and one connected repository.
+Customer deployments use `GITHUB_MODE=real` with GitHub App credentials scoped to approved repositories.
 
-## API surface (local)
+## Repository layout
 
-- `GET /health`
-- `GET /providers` · `POST /providers` · `GET /providers/:slug` · `PATCH /providers/:slug/feed`
-- `POST /providers/:slug/versions` · `POST /providers/:slug/publish` · `publish-version`
-- `GET /feeds` · `POST /feeds/poll`
-- `POST /webhooks/github`
-- `GET/POST /keys` · `POST /keys/:id/revoke`
-- `GET /changes` · `GET /changes/:id`
-- `GET /consumers` · `POST /consumers` · `POST /consumers/:id/monitor` · `detect`
-- `GET /prs` · `GET /prs/:id` · `POST /prs/:id/feedback` · `POST /prs/:id/ci-check`
-- `GET /audit` · `GET /metrics` · `GET /catalog`
-- `GET /graph/changes/:id` · `GET /graph/product` · `GET /graph/api/:slug` · UI `/graph`
+| Path | Role |
+|------|------|
+| `packages/change-intel` | OpenAPI diff → impactable surfaces |
+| `packages/call-graph` | Hybrid call graph, reverse reachability, persistent multi-version store |
+| `packages/code-impact` | Candidates → graph expand → confirm → impact report |
+| `packages/generation` | Migration PR from the impact brief |
+| `packages/agent` | **Fettler** — on-demand API debug loop-node |
+| `packages/transformer` | **ReGauge** — campaign planning types (preview) |
+| `packages/orchestrator` · `packages/graph` | Graph-engineering topology, routing, shared state |
+| `packages/pipeline` · `packages/policy` | Product stages + audit; path denylist, no-auto-merge, review labels |
+| `packages/github` | Mock + real Octokit PR delivery |
+| `apps/api` · `apps/web` · `apps/worker` | JSON API, dashboards, and the demo / watch / poll CLI |
 
-## Roadmap mapping (Months 0–3)
-
-This scaffold is a **thin, working slice** of every major layer from the Months 0–3 plan:
-
-- [x] GitHub delivery interface (mock + **real Octokit PR path**)
-- [x] TypeScript + Python impact analysis
-- [x] OpenAPI-driven breaking change detection
-- [x] Basic PR generation
-- [x] Dual dashboards + feedback loop fields
-- [x] **Phase A:** harness ≥70% + real PR ship (`docs/PHASE_A.md`)
-- [x] **Phase B:** LLM confirm (budgeted), TS compiler index, policy engine, metrics (`docs/PHASE_B.md`)
-- [x] **Phase C:** provider publish UI, lockfile auto-detect, feedback learning, Python bar (`docs/PHASE_C.md`)
-- [x] **Phase D:** OpenAPI feed poll, GitHub webhooks, API keys, Go harness, CI check (`docs/PHASE_D.md`)
-- [x] **Phase E:** GitHub App install wizard, tenants/plans stub, Java/Ruby bars, brand packs (`docs/PHASE_E.md`)
-- [x] **Phase F:** Graph-native explorer + APIs (`docs/GRAPH_NATIVE.md`, `/graph`)
-- [x] **Gap closure:** design-partner eval, GitHub App runtime, SDK feeds, severity, queue, notify-only, audit export (`docs/GAP_CLOSURE_PLAN.md`)
-- [x] **Agentic repair layer:** diagnose → plan → apply → verify (`docs/AGENTIC_REPAIR.md`, `/repair`, `AGENTIC_REPAIR=1`)
-- [x] **Fettler** (on-demand API debug agent): trained on protocol/serialization/semantic/network/cascading/async/rate-limit failures (`docs/WARDEN_TRAINING.md`, `/agent`, `@mendpoint/agent`)
-- [ ] Continuous multi-repo watch + changelog RSS intelligence (design-partner track)
-- [ ] Public Fettler/API benchmark pack
-- [ ] Real payment processor invoices (plan flip is stubbed)
-- [ ] Enterprise SSO (SAML/OIDC)
-- [ ] GitLab / Bitbucket / FedRAMP
-
-See `docs/PRODUCT_SPEC.md`, `docs/ARCHITECTURE.md`, and `docs/WARDEN_CLAIMS.md`.
+See [`docs/PRODUCT_SPEC.md`](./docs/PRODUCT_SPEC.md), [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md), and [`docs/WARDEN_CLAIMS.md`](./docs/WARDEN_CLAIMS.md) for the full design and claim-safe public language.
 
 ## License
 

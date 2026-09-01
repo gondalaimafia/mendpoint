@@ -174,4 +174,21 @@ describe("configuration completeness gate", () => {
   it("passes the repository's real workflows and manifest", () => {
     expect(staticIssues(loadManifest())).toEqual([]);
   });
+
+  it("registers every secret-lifecycle authority binding in its protected activation scope", () => {
+    const runtimeEntries = loadManifest().runtimeEntries ?? [];
+    const secretLifecycle = runtimeEntries.filter(
+      (entry) => entry.activatedBy === "MENDPOINT_SECRET_LIFECYCLE_ENABLED=1",
+    );
+    expect(secretLifecycle.map((entry) => entry.name).sort()).toEqual([
+      "MENDPOINT_ENVELOPE_KEY_CATALOG_JSON",
+      "MENDPOINT_SECRET_BREAK_GLASS",
+      "MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON",
+      "MENDPOINT_SECRET_LINEAGE_KEYRING_JSON",
+    ]);
+    expect(secretLifecycle.every(
+      (entry) => entry.scope === "protected_application_environment" &&
+        entry.status === "required_when_active",
+    )).toBe(true);
+  });
 });

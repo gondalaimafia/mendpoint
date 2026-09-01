@@ -131,6 +131,21 @@ describe("Organization Memory governance", () => {
     });
   });
 
+  it("retains governed source references without making an observation active", () => {
+    const db = fixture();
+    const candidate = recordOrganizationMemoryObservation(db, {
+      tenantId: "tenant-a",
+      ...OBS,
+      observerPrincipalId: "human-tenant-a",
+      sourceRefs: ["learning:event-a", "snapshot:sha256:abc"],
+      at: T1,
+    });
+
+    expect(candidate.status).toBe("MEMORY_CANDIDATE");
+    expect(candidate.sourceRefs).toEqual(["learning:event-a", "snapshot:sha256:abc"]);
+    expect(candidate.trainingEligible).toBe(false);
+  });
+
   it("re-submitting the SAME observation cannot inflate corroboration", () => {
     const db = fixture();
     const first = observe(db, {

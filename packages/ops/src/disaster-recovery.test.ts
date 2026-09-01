@@ -798,6 +798,38 @@ describe("disaster recovery", () => {
     expect(inspectMutationFence(fenceRoot).writers).toEqual([]);
   });
 
+  it("restores an exact stale marker when the recovery audit cannot be persisted", () => {
+    const secure = secureFixture();
+    const fenceRoot = join(secure.root, "fence-audit-failure");
+    const writers = join(fenceRoot, "writers");
+    mkdirSync(writers, { recursive: true });
+    const marker = {
+      schemaVersion: 1,
+      kind: "writer",
+      id: "stale-writer-audit-failure",
+      ownerToken: "owner-token-stale-writer-audit-failure",
+      hostname: "retired-customer-instance",
+      pid: 424243,
+      processStartedAt: "2026-08-01T00:00:00.000Z",
+      acquiredAt: "2026-08-02T00:00:00.000Z",
+    };
+    const markerPath = join(writers, `${marker.id}.json`);
+    const markerText = `${JSON.stringify(marker)}\n`;
+    writeFileSync(markerPath, markerText);
+    const inspected = inspectMutationFence(fenceRoot).writers[0]!;
+    mkdirSync(join(fenceRoot, "recovery-audit.jsonl"));
+
+    expect(() => recoverStaleMutationMarker({
+      fenceRoot,
+      kind: "writer",
+      markerId: marker.id,
+      expectedMarkerSha256: inspected.markerSha256,
+      ownerTerminationEvidence: "orchestrator-event-audit-unavailable",
+    })).toThrow();
+    expect(readFileSync(markerPath, "utf8")).toBe(markerText);
+    expect(inspectMutationFence(fenceRoot).writers).toHaveLength(1);
+  });
+
   it("refuses to reap live owners and recovers an exact stale exclusive marker without using age", () => {
     const secure = secureFixture();
     const live = tryAcquireMutationLease(join(secure.root, "live-fence"));

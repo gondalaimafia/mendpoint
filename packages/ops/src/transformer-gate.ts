@@ -41,6 +41,7 @@ export type TransformerGateDecision = Readonly<{
   boundary: TransformerGateBoundary;
   reasons: readonly string[];
   acceptanceEvidenceRefs: readonly string[];
+  productionDeliveryApprovalRefs: readonly string[];
 }>;
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
@@ -134,6 +135,7 @@ function denied(input: TransformerGateInput, reasons: string[]): TransformerGate
     boundary: input.boundary,
     reasons: Object.freeze([...new Set(reasons)].sort()),
     acceptanceEvidenceRefs: Object.freeze([]),
+    productionDeliveryApprovalRefs: Object.freeze([]),
   });
 }
 
@@ -178,6 +180,7 @@ export function assessTransformerGate(
     boundary: input.boundary,
     reasons: Object.freeze([]),
     acceptanceEvidenceRefs: Object.freeze([...grant.acceptanceEvidenceRefs]),
+    productionDeliveryApprovalRefs: Object.freeze([...grant.productionDeliveryApprovalRefs]),
   });
 }
 

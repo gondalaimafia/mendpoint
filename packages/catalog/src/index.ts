@@ -14,12 +14,15 @@ export {
 export {
   contentHash,
   resolveFeedUrl,
+  fetchFeedDocument,
   fetchOpenApiDocument,
   buildOpenApiValidationEvidence,
   extractVersionLabel,
   listCatalogFeeds,
   catalogFeedForSlug,
   type FetchOpenApiResult,
+  type FetchFeedOptions,
+  type FetchFeedResult,
   type OpenApiValidationEvidence,
   type PollableFeed,
 } from "./poll.js";
@@ -38,7 +41,24 @@ export {
   runFeedSchedules,
   type FeedScheduleExecution,
   type FeedScheduleRunOptions,
+  type FeedScheduleSourceOutcome,
 } from "./schedule-runner.js";
+
+export {
+  RELEASE_POLL_CONTRACT_VERSION,
+  RELEASE_POLL_ERROR_CODES,
+  RELEASE_POLL_MAX_REFERENCES,
+  isReleasePollErrorCode,
+  parseReleasePollConfiguration,
+  pollReleaseSource,
+  type ParsedReleasePollConfiguration,
+  type ReleaseArtifactReference,
+  type ReleaseDispatchReference,
+  type ReleasePollConfigurationV1,
+  type ReleasePollErrorCode,
+  type ReleasePollOptions,
+  type ReleasePollResult,
+} from "./release-poll.js";
 
 export {
   probeNpmPackage,
@@ -53,15 +73,35 @@ export {
 } from "./changelog-parse.js";
 
 export {
+  claimReleaseDispatch,
+  claimExpiredFinalReleaseDispatchForRecovery,
+  completeReleaseDispatch,
+  failReleaseDispatch,
   ingestReleaseDocument,
   listReleaseArtifacts,
+  listReleaseDispatches,
+  listReleaseDispatchReconciliations,
+  listReleaseObservations,
   openReleaseIngestionStore,
   recordReleaseReviewerOverride,
+  recordReleaseReviewerOverrideCas,
+  rehydrateReleaseArtifact,
+  ReleaseCatalogError,
+  reconcileReleaseDispatchFailure,
+  summarizeReleaseDispatchBacklog,
   type ReleaseAdapter,
   type ReleaseArtifact,
+  type ReleaseDispatch,
+  type ReleaseDispatchBacklogSummary,
+  type ReleaseDispatchReconciliation,
+  type ReleaseDispatchReconciliationAction,
+  type ReleaseDispatchStatus,
   type ReleaseDocumentInput,
   type ReleaseIngestionStore,
+  type ReleaseIngestionStoreOptions,
+  type ReleaseObservation,
   type ReleaseReviewerOverride,
+  type ReleaseReviewerOverrideResult,
   type SdkReleaseChange,
   type SdkReleaseEvidence,
 } from "./release-ingestion.js";

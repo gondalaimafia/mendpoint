@@ -14,21 +14,14 @@ import {
   publishCustomerBackup,
   publishCustomerBackupRecoveryReceipt,
 } from "./customer-object-store.js";
+import { dropRootIdentity } from "./drop-root-identity.js";
 
 async function main(): Promise<void> {
   const input = customerBackupInputFromEnv();
   const objectStore = loadCustomerObjectStoreConfig(process.env);
   const transport = createRcloneCustomerObjectStoreTransport(objectStore, process.env);
   prepareCustomerBackupDirectories(input);
-  if (
-    typeof process.getuid === "function" &&
-    typeof process.setgid === "function" &&
-    typeof process.setuid === "function" &&
-    process.getuid() === 0
-  ) {
-    process.setgid(1000);
-    process.setuid(1000);
-  }
+  dropRootIdentity();
   try {
     const manifest = await createApplicationConsistentBackup(input);
     const verification = verifyBackupBundle(input.backupRoot, manifest, input.key);
