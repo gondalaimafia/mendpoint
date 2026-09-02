@@ -62,6 +62,7 @@
     "trajectory:view": "tsx scripts/trajectory-view.ts",
     "spec:check": "tsx scripts/product-spec-check.ts",
     "closure:check": "vitest run scripts/production-closure-matrix.test.ts && tsx scripts/production-closure-matrix.ts",
+    "fettler:closure:check": "tsx scripts/fettler-production-closure.ts",
     "ledger:generate": "tsx scripts/generate-production-closure-execution-ledger.ts",
     "ledger:check": "vitest run scripts/production-closure-execution-ledger.test.ts && tsx scripts/production-closure-execution-ledger.ts",
     "closure:github:check": "tsx scripts/production-closure-github-authority.ts",
