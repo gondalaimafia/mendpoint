@@ -666,6 +666,52 @@ describe("Fettler/Regauge logical database names", () => {
     },
   );
 
+  it("seals the discovered row set against later scope insertion", () => {
+    const path = join(newDir("tenant-scope-sealed"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    const database = new DatabaseSync(path);
+    expect(() => database.prepare(
+      `INSERT INTO legacy_tenant_ownership_reconciliation_scope
+         (table_name, row_id, tenant_id, discovered_at)
+       VALUES ('jobs', 'late-row', 'tenant_default', ?)`,
+    ).run(TS)).toThrow("legacy_tenant_ownership_reconciliation_scope_sealed");
+    database.close();
+  });
+
+  it("makes an attested source row tenant immutable", () => {
+    const path = join(newDir("tenant-attested-source-immutable"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    attestExactReconciliationScope(path);
+
+    const authorized = boot(path);
+    expect(() => authorized.raw.prepare(
+      "UPDATE jobs SET tenant_id = 'tenant_other' WHERE id = 'jobs-empty'",
+    ).run()).toThrow("legacy_tenant_ownership_source_immutable");
+  });
+
+  it("rejects a source-row tenant mismatch at every restart", () => {
+    const path = join(newDir("tenant-attested-source-revalidated"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    attestExactReconciliationScope(path);
+
+    const authorized = boot(path);
+    authorized.raw.exec("DROP TRIGGER IF EXISTS jobs_legacy_tenant_ownership_update");
+    authorized.raw.exec("DROP TRIGGER IF EXISTS jobs_legacy_tenant_ownership_delete");
+    authorized.raw.prepare(
+      "UPDATE jobs SET tenant_id = 'tenant_other' WHERE id = 'jobs-empty'",
+    ).run();
+    closeTracked(authorized);
+
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+  });
+
   it("fails closed when a prior released boot already laundered unknown ownership", () => {
     const path = join(newDir("tenant-two-step-laundering"), "legacy.sqlite");
     buildLegacyOwnershipVolume(path);
