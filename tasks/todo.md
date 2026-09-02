@@ -4147,6 +4147,21 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The repository index captures one exact source set, validates file identity and the complete directory-entry set against same-size metadata mutation, late files, and late links, then passes only those captured bytes into full or incremental call-graph extraction. The call graph never falls back to a mutable disk read when snapshot sources are supplied.
 - The public retrieval contract now accepts and enforces `maxFiles`, `maxBytes`, `maxFileBytes`, `maxTraversalDepth`, and `maxCandidates` on graph and non-graph paths. Traversal-depth exhaustion produces an idempotent abstention artifact, evidence record, audit event, and domain event bound to the exact repository snapshot, revision, content digest, limits, and usage.
 - Full affected verification passes: call graph 25 tests, codebase index 34 tests, code impact 123 tests, and pipeline 256 tests, for 438 tests total. All four affected workspace typechecks and diff integrity pass. No requirement, availability, or public claim is promoted.
+## 2026-08-30 GSD Plan 08-04 adapter lifecycle proof review repair
+
+- [x] Centralize exact lifecycle-proof validation for file and exported programmatic execution, including version, timeout, idempotency, rollback reason, nested arrays, credential names, and recomputed semantic input digest.
+- [x] Replace inferred pre-rollback eligibility with a durable tenant-bound domain-event checkpoint that binds the exact input, eligibility request and observation, and rollback request before rollback.
+- [x] Require exact authenticated checkpoint replay when registration already reports `rolled_back`; fail closed when the checkpoint is absent, substituted, or the tenant event chain is invalid.
+- [x] Expose the checkpoint through the authenticated tenant-admin API and cover the production request path.
+- [x] Register the proof signing key, key identifier, and exact API origin in the canonical protected runtime configuration manifest.
+- [x] Run hostile and complete affected tests, affected typechecks, configuration completeness, full build, and diff integrity.
+
+### Review
+
+- A resumed lifecycle can claim `eligibleBeforeRollback` only from the exact hash-chain checkpoint created while the adapter was eligible. The checkpoint binds the recomputed canonical input digest, canonical eligibility request, observed eligible response digest, and the artifact, reason, and idempotency key of the rollback request.
+- Direct callers now traverse the same validator as file callers before proof authority or API credentials are read. Bare `token` and `secret`, normalized compound credential names, invalid nested array members, malformed versions, timeouts, idempotency keys, rollback reasons, and substituted input digests all fail before network access.
+- The affected proof, configuration, Pipeline, and API matrix passes 80 of 80 focused tests. Complete Pipeline coverage passes 250 of 250 tests; complete API coverage passes. Pipeline, API, and scripts typechecks pass; `npm run config:check`, the optimized workspace build, and `git diff --check` pass.
+- This repair does not promote a requirement, change a public claim, deploy, or assert live adapter qualification. Exact-head review, current-base protected CI, protected merge, and exact-revision production evidence remain required.
 ## 2026-08-31 GSD Plan 06-05/06-06: Fettler real provider change to exact draft
 
 - [x] Audit the complete production producer-to-consumer chain from feed revision through exact draft delivery, including every durable transition and claim predicate.
