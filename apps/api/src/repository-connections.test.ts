@@ -353,6 +353,11 @@ afterAll(() => {
 
 describe("repository connection service", () => {
   it("materializes, discovers, persists, and binds an exact tenant snapshot", async () => {
+    // `materializeConnectedRepository` stamps the snapshot `createdAt`/`expiresAt`
+    // from the wall clock, and the purge below asserts against a fixed `at`; pin
+    // the clock the way the sibling expiry test does so the disposition is stable.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-01T00:00:00.000Z"));
     const { db, root, sha } = fixture();
     const connection = registerScmConnection(db, {
       tenantId: "tenant-a",

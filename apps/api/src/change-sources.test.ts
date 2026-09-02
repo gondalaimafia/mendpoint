@@ -63,7 +63,7 @@ function fixture() {
 function appFor(db: AppDb, store: ChangeSourceStore, now = NOW) {
   const app = new Hono<ApiEnv>();
   app.use("*", requestIdMiddleware());
-  app.use("*", createAuthMiddleware(db));
+  app.use("*", createAuthMiddleware(db, { now: () => new Date(now) }));
   app.route("/change-sources", createChangeSourceRoutes({ store, now: () => now }));
   return app;
 }

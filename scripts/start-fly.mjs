@@ -22,6 +22,9 @@ import {
   loadCustomerObjectStoreConfig,
   probeCustomerObjectStore,
 } from "./customer-object-store.ts";
+import { reapStaleExclusiveFenceAtBoot } from "./customer-backup-scheduler.ts";
+import { createChildSupervisor } from "./child-supervisor.ts";
+import { runCustomerBootSequence } from "./customer-boot-sequence.ts";
 
 const dataRoot = resolve(process.env.MENDPOINT_VOLUME_ROOT ?? "/data");
 const tenantId = process.env.MENDPOINT_TENANT_ID ?? "tenant_default";
@@ -95,54 +98,12 @@ function environmentForRole(role) {
   return customerWardenChildEnvironment(role, childEnv);
 }
 
-const children = new Map();
-let stopping = false;
-
-function shutdown(exitCode = 0) {
-  if (stopping) return;
-  stopping = true;
-  const active = [...children.values()].filter((child) => child.exitCode === null);
-  for (const child of active) child.kill("SIGTERM");
-  if (active.length === 0) {
-    process.exit(exitCode);
-    return;
-  }
-  const timer = setTimeout(() => {
-    for (const child of active) {
-      if (child.exitCode === null) child.kill("SIGKILL");
-    }
-    process.exit(exitCode);
-  }, 25_000);
-  timer.unref();
-  Promise.all(
-    active.map(
-      (child) => new Promise((resolveChild) => child.once("exit", resolveChild)),
-    ),
-  ).finally(() => process.exit(exitCode));
-}
-
-function startProcess(
-  name,
-  command,
-  args,
-  cwd = appRoot,
-  identity = childIdentity,
-  env = childEnv,
-) {
-  const child = spawn(command, args, {
-    cwd,
-    env,
-    stdio: "inherit",
-    ...identity,
-  });
-  children.set(name, child);
-  child.on("exit", (code, signal) => {
-    if (stopping) return;
-    console.error(`${name} exited code=${code ?? "none"} signal=${signal ?? "none"}`);
-    shutdown(code ?? 1);
-  });
-  return child;
-}
+// Supervision policy lives in scripts/child-supervisor.ts so it can be executed
+// by tests rather than asserted by scanning this file. See that module for why
+// the backup scheduler is the one non-critical child.
+const supervisor = createChildSupervisor();
+const { children, startProcess } = supervisor;
+const shutdown = (exitCode = 0) => supervisor.shutdown(exitCode);
 
 process.on("SIGTERM", () => shutdown(0));
 process.on("SIGINT", () => shutdown(0));
@@ -188,7 +149,27 @@ if (preflight.status !== 0) {
   throw new Error("Runtime environment validation failed before startup");
 }
 
-initializeWithMutationLease(() => {
+// The boot ORDER -- profile gate, dead-owner fence reap, mutation lease, children
+// -- lives in scripts/customer-boot-sequence.ts so it can be executed by tests
+// rather than asserted by scanning this file. A comment satisfies a regex exactly
+// as well as running code does, which is how a deleted call once passed a scan.
+runCustomerBootSequence({
+  profile: deploymentProfile,
+  fenceRoot: customerBackupPaths ? customerBackupPaths.fenceRoot : null,
+  reapAtBoot: reapStaleExclusiveFenceAtBoot,
+  withMutationLease: (run) => initializeWithMutationLease(run, childEnv),
+  appRoot,
+  webRoot: "/web",
+  pollIntervalMs: process.env.POLL_INTERVAL_MS ?? "5000",
+  startChild: (child) => {
+    startProcess(child.name, process.execPath, child.args, {
+      cwd: child.cwd,
+      identity: childIdentity,
+      env: environmentForRole(child.role),
+      critical: child.critical,
+    });
+  },
+  prepareInsideLease: () => {
 const customerOwnedPaths = customerBackupPaths
   ? [
       customerBackupPaths.outputRoot,
@@ -261,18 +242,6 @@ if (process.env.MENDPOINT_PILOT_SEED === "1") {
   });
 }
 
-function start(name, args, cwd = appRoot) {
-  startProcess(name, process.execPath, args, cwd, childIdentity, environmentForRole(name));
-}
+  },
+});
 
-start("api", ["--import", "tsx", "apps/api/src/server.ts"]);
-start("worker", [
-  "--import",
-  "tsx",
-  "apps/worker/src/cli.ts",
-  "run-service",
-  "--interval",
-  process.env.POLL_INTERVAL_MS ?? "5000",
-]);
-start("web", ["start-production.mjs"], "/web");
-}, childEnv);

@@ -10,6 +10,7 @@ import { createGraphQLSchemaIngestionRoutes, graphqlSchemaIngestionEnabled } fro
 const dirs: string[] = [];
 const dbs: AppDb[] = [];
 const originalAuth = process.env.API_AUTH;
+const NOW = "2026-08-12T12:00:00.000Z";
 
 afterEach(() => {
   if (originalAuth === undefined) delete process.env.API_AUTH;
@@ -24,11 +25,11 @@ function fixture(enabled = true) {
   dirs.push(dir);
   const db = createDb(join(dir, "app.sqlite"));
   dbs.push(db);
-  const tenantA = createApiKey(db, { id: `key-a-${dirs.length}`, name: "A", tenantId: "tenant-a", scopes: ["*"], createdAt: "2026-08-12T12:00:00.000Z" });
-  const tenantB = createApiKey(db, { id: `key-b-${dirs.length}`, name: "B", tenantId: "tenant-b", scopes: ["*"], createdAt: "2026-08-12T12:00:00.000Z" });
-  const viewer = createApiKey(db, { id: `key-viewer-${dirs.length}`, name: "Viewer", tenantId: "tenant-a", scopes: ["graph:read"], createdAt: "2026-08-12T12:00:00.000Z" });
+  const tenantA = createApiKey(db, { id: `key-a-${dirs.length}`, name: "A", tenantId: "tenant-a", scopes: ["*"], createdAt: NOW });
+  const tenantB = createApiKey(db, { id: `key-b-${dirs.length}`, name: "B", tenantId: "tenant-b", scopes: ["*"], createdAt: NOW });
+  const viewer = createApiKey(db, { id: `key-viewer-${dirs.length}`, name: "Viewer", tenantId: "tenant-a", scopes: ["graph:read"], createdAt: NOW });
   const app = new Hono<ApiEnv>();
-  app.use("*", createAuthMiddleware(db));
+  app.use("*", createAuthMiddleware(db, { now: () => new Date(NOW) }));
   app.route("/graphql/schemas", createGraphQLSchemaIngestionRoutes({ db, enabled, now: (() => { let n = 0; return () => `2026-08-12T12:0${n++}:00.000Z`; })() }));
   return { app, db, tenantA: tenantA.token, tenantB: tenantB.token, viewer: viewer.token };
 }

@@ -70,16 +70,17 @@ function fixture(options: { now?: () => Date; retentionMs?: number } = {}) {
     createdAt: NOW.toISOString(),
   });
   let sequence = 0;
+  const now = options.now ?? (() => new Date(NOW));
   const store = createDesignPartnerApplicationStore({
     db,
     key: KEY,
-    now: options.now ?? (() => new Date(NOW)),
+    now,
     createId: () => `application-api-${++sequence}`,
     retentionMs: options.retentionMs,
   });
   const app = new Hono<ApiEnv>();
   app.use("*", requestIdMiddleware());
-  app.use("*", createAuthMiddleware(db));
+  app.use("*", createAuthMiddleware(db, { now }));
   app.route("/design-partner-applications", createDesignPartnerApplicationRoutes({ db, store }));
   return { app, store, tenantA: tenantA.token, tenantB: tenantB.token, viewer: viewer.token };
 }
