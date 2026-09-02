@@ -9,7 +9,8 @@ tags:
   - hostile-tests
 dependency_graph:
   requires:
-    - pull request 625 implementation head b23b8d21b3e808e8051151b70d9699a674dc6a7c
+    - pull request 625 rebased review base ddd3954d316d4844e7e715fd04e77d47949ceb45
+    - verified omitted-tenant repair head 164b9627a6c8f355b092e66307376eb43448d278
     - issue 624 tenant ownership quarantine contract
   provides:
     - immutable attested source identity and ownership
@@ -39,8 +40,8 @@ decisions:
   - Hold one immediate write transaction from recovery guard installation through validation and attestation sealing.
 metrics:
   review_blockers_reproduced: 4
-  hostile_tests: 38
-  database_tests: 558
+  hostile_tests: 40
+  database_tests: 560
   completed: 2026-09-02
 ---
 
@@ -53,6 +54,8 @@ Pull request 625 now binds the complete legacy ownership chain: scope membership
 - Every source row in the attested reconciliation scope rejects primary-key changes, tenant changes, and deletion across all five migration-touched tables.
 - Source guards are installed in the same immediate transaction that seals discovery, so a failed pre-attestation boot does not leave scoped rows mutable.
 - Future-write, source-immutability, and ledger append-only guards are installed in that same transaction, so a failed pre-attestation boot cannot admit a late null, empty, or trim-blank ownership row.
+- Released-predecessor tables with an inherited `tenant_default` column default reject both omitted and explicit default ownership unless the inserted identity already belongs to the sealed reconciliation scope and has a matching durable attestation.
+- Fresh schemas retain normal explicit `tenant_default` writes because they do not carry the inherited synthetic column default.
 - An already-sealed state from the vulnerable binary is repaired under one immediate transaction held through ledger, source, and attestation validation and final attestation sealing. No other connection can observe a partial guard family.
 - Unattributable null, empty, and whitespace-only ownership is recorded in a separate sealed quarantine ledger.
 - The durable source triggers reference both ledgers. The exact base backfill statement therefore aborts instead of converting unknown ownership to `tenant_default`.
@@ -79,6 +82,11 @@ failing. Immediately after the nonblank-trigger commit, a second connection
 observed 22 missing source and ledger guards, reassigned a scoped job to
 `tenant_other`, and forced the recovering boot to fail validation.
 
+The omitted-tenant regression then accepted every attempted insert across jobs,
+repair sessions, agent runs, audit events, and suppressed patterns under both
+the repaired and rollback connections. The atomic recovery regression observed
+all five default-attribution guards missing from the published trigger family.
+
 ### Green
 
 The repair adds the smallest shared boundary for the review findings:
@@ -88,19 +96,25 @@ The repair adds the smallest shared boundary for the review findings:
 - `UPDATE OF id, tenant_id` and delete protection for every scoped or quarantined source row;
 - startup validation for both attested and unattributable source rows.
 - one atomic recovery boundary that publishes every guard family only after validation and attestation sealing complete.
+- a released-fallback-only insert boundary that requires a preexisting sealed identity and matching durable attestation before `tenant_default` ownership may be materialized.
 
 ## Verification
 
-- Focused tenant migration suite: 38 of 38 tests passed.
-- Full database suite: 60 files and 558 tests passed.
+- Current verified repair head: `164b9627a6c8f355b092e66307376eb43448d278`.
+- Focused tenant migration suite: 40 of 40 tests passed.
+- Full database suite: 60 files and 560 tests passed.
 - Database TypeScript typecheck passed.
-- Optimized production build passed with 64 generated pages.
-- General-availability preflight passed, including specification, closure, configuration, claims, action pins, architecture, model, naming, architecture decision record, third-state, evidence reachability, revert obligation, and readiness checks.
 - Diff integrity passed before commit.
+
+The optimized production build and general-availability preflight belong to the
+rebased review base `ddd3954d316d4844e7e715fd04e77d47949ceb45`.
+They are inherited base evidence, not current-head proof for the omitted-tenant
+repair.
 
 ## Compatibility and Rollback
 
 - Existing reconciliation state upgrades additively. The new ledger and triggers remain understandable to SQLite when the prior binary runs because that binary neither drops unknown tables nor removes unknown triggers.
+- The default-attribution triggers survive an older-binary rollback and are reinstalled as one atomic family when the repair restarts.
 - A literal rollback may fail closed when its heuristic backfill touches a quarantined row. It cannot launder that row into valid default ownership.
 - Reapplying the repair preserves the original null ownership, accepts startup, and leaves the job unclaimable globally and by `tenant_default`.
 
