@@ -59,6 +59,7 @@ for (const [address, prefix] of [
 export type PerformanceMetricMeasurement = Readonly<{
   durationMs: number;
   success: boolean;
+  eventSource: string;
 }>;
 
 export type PerformanceProbeMeasurement = Readonly<{
@@ -70,6 +71,10 @@ export type PerformanceProbeMeasurement = Readonly<{
     fixtureDigest: string;
     correlationId: string;
     probeSource: string;
+    invocationId: string;
+    invocationNonce: string;
+    sequence: number;
+    observedAt: string;
     repository: PerformanceEvidenceBinding["repository"];
   }>;
   metrics: Readonly<Record<PerformanceMetric, PerformanceMetricMeasurement>>;
@@ -77,6 +82,8 @@ export type PerformanceProbeMeasurement = Readonly<{
 
 export type PerformanceProbeContext = Readonly<{
   invocationId: string;
+  invocationNonce: string;
+  invokedAt: string;
   sequence: number;
   mode: PerformanceMode;
   tier: PerformanceTier;
@@ -88,6 +95,7 @@ export type PerformanceProbeContext = Readonly<{
   correlationId: string;
   source: string;
   repository: PerformanceEvidenceBinding["repository"];
+  metricEventSources: Readonly<Record<PerformanceMetric, string>>;
   signal: AbortSignal;
 }>;
 
@@ -236,8 +244,10 @@ function canonicalRepositoryShape(value: unknown): string | null {
 function validateMeasurement(
   measurement: PerformanceProbeMeasurement,
   expected: Pick<PerformanceProbeContext,
+    "invocationId" | "invocationNonce" | "invokedAt" | "sequence" |
     "tenantId" | "repositoryId" | "repositoryRevision" | "deploymentRevision" |
-    "fixtureDigest" | "correlationId" | "source" | "repository">,
+    "fixtureDigest" | "correlationId" | "source" | "repository" | "metricEventSources">,
+  receivedAtMs: number,
 ): PerformanceEvidenceBinding["repository"] {
   if (!measurement || typeof measurement !== "object" || !measurement.metrics || !measurement.observed) {
     invalid("performance_probe_measurement_invalid");
@@ -251,8 +261,21 @@ function validateMeasurement(
     ["fixture", normalizeFixtureDigest(observed.fixtureDigest), normalizeFixtureDigest(expected.fixtureDigest)],
     ["correlation", observed.correlationId, expected.correlationId],
     ["source", observed.probeSource, expected.source],
+    ["invocation", observed.invocationId, expected.invocationId],
+    ["invocation_nonce", observed.invocationNonce, expected.invocationNonce],
+    ["sequence", observed.sequence, expected.sequence],
   ] as const) {
     if (actual !== wanted) invalid(`performance_probe_${field}_mismatch`);
+  }
+  const producerObservedAtMs = Date.parse(observed.observedAt);
+  const invokedAtMs = Date.parse(expected.invokedAt);
+  if (
+    !Number.isFinite(producerObservedAtMs) ||
+    !Number.isFinite(invokedAtMs) ||
+    producerObservedAtMs < invokedAtMs - 30_000 ||
+    producerObservedAtMs > receivedAtMs + 30_000
+  ) {
+    invalid("performance_probe_observed_at_invalid");
   }
   if (
     canonicalRepositoryShape(observed.repository) === null ||
@@ -274,6 +297,9 @@ function validateMeasurement(
     ) {
       invalid("performance_probe_metric_invalid");
     }
+    if (value.eventSource !== expected.metricEventSources[metric]) {
+      invalid("performance_probe_metric_event_source_mismatch");
+    }
   }
   return observed.repository;
 }
@@ -292,7 +318,6 @@ function recordInvocation(
   evidence: Pick<PerformanceEvidenceBinding,
     "tenantId" | "repositoryId" | "repositoryRevision" | "deploymentRevision" |
     "fixtureDigest" | "correlationId" | "source">,
-  eventSources: ReadonlyMap<PerformanceMetric, string>,
   bindingSource: "probe_observed" | "request_context",
 ): boolean {
   if (observations.length + METRICS.length > PERFORMANCE_OBSERVATION_LIMIT) return false;
@@ -313,18 +338,21 @@ function recordInvocation(
       fixtureDigest: evidence.fixtureDigest,
       correlationId: evidence.correlationId,
       source: evidence.source,
-      eventSource: eventSources.get(metric),
+      eventSource: value.eventSource,
       bindingSource,
     });
   }
   return true;
 }
 
-function failedMeasurement(durationMs: number): Pick<PerformanceProbeMeasurement, "metrics"> {
+function failedMeasurement(
+  durationMs: number,
+  metricEventSources: Readonly<Record<PerformanceMetric, string>>,
+): Pick<PerformanceProbeMeasurement, "metrics"> {
   return {
     metrics: Object.fromEntries(METRICS.map((metric) => [
       metric,
-      { durationMs, success: false },
+      { durationMs, success: false, eventSource: metricEventSources[metric] },
     ])) as PerformanceProbeMeasurement["metrics"],
   };
 }
@@ -389,16 +417,23 @@ export async function runPerformanceProbe(
       (definition) => [definition.metric, definition.eventSource],
     ),
   );
+  const metricEventSources = Object.fromEntries(
+    METRICS.map((metric) => [metric, eventSources.get(metric)]),
+  ) as Readonly<Record<PerformanceMetric, string>>;
   const worker = async (): Promise<void> => {
     while (!controller.signal.aborted && now() < deadlineMs) {
       const invocationSequence = sequence++;
       const invocationId = `${tier.id}.${options.mode}.${String(invocationSequence).padStart(8, "0")}`;
       const invocationStarted = now();
+      const invokedAt = observedAt(now);
+      const invocationNonce = randomUUID();
       activeInvocationCount += 1;
       measuredConcurrency = Math.max(measuredConcurrency, activeInvocationCount);
       try {
         const measurement = await options.probe({
           invocationId,
+          invocationNonce,
+          invokedAt,
           sequence: invocationSequence,
           mode: options.mode,
           tier,
@@ -410,9 +445,14 @@ export async function runPerformanceProbe(
           correlationId: options.correlationId,
           source: options.source,
           repository: options.repository,
+          metricEventSources,
           signal: controller.signal,
         });
         const producerRepository = validateMeasurement(measurement, {
+          invocationId,
+          invocationNonce,
+          invokedAt,
+          sequence: invocationSequence,
           tenantId: options.tenantId,
           repositoryId: options.repositoryId,
           repositoryRevision: options.repositoryRevision,
@@ -421,7 +461,8 @@ export async function runPerformanceProbe(
           correlationId: options.correlationId,
           source: options.source,
           repository: options.repository,
-        });
+          metricEventSources,
+        }, now());
         observedRepository ??= producerRepository;
         const recorded = recordInvocation(
           observations,
@@ -429,9 +470,8 @@ export async function runPerformanceProbe(
           options.mode,
           invocationSequence,
           measurement,
-          observedAt(now),
+          measurement.observed.observedAt,
           evidenceIdentity,
-          eventSources,
           "probe_observed",
         );
         if (!recorded) {
@@ -450,10 +490,9 @@ export async function runPerformanceProbe(
           tier.id,
           options.mode,
           invocationSequence,
-          failedMeasurement(Math.max(1, now() - invocationStarted)),
+          failedMeasurement(Math.max(1, now() - invocationStarted), metricEventSources),
           observedAt(now),
           evidenceIdentity,
-          eventSources,
           "request_context",
         );
         if (!recorded) {
@@ -681,6 +720,9 @@ export function createHttpPerformanceProbe(options: Readonly<{
       body: JSON.stringify({
         schemaVersion: 2,
         invocationId: context.invocationId,
+        invocationNonce: context.invocationNonce,
+        invokedAt: context.invokedAt,
+        sequence: context.sequence,
         tenantId: context.tenantId,
         repositoryId: context.repositoryId,
         correlationId: context.correlationId,
@@ -691,6 +733,7 @@ export function createHttpPerformanceProbe(options: Readonly<{
         repositoryRevision: context.repositoryRevision,
         deploymentRevision: context.deploymentRevision,
         fixtureDigest: context.fixtureDigest,
+        metricEventSources: context.metricEventSources,
       }),
       redirect: "error",
       signal: context.signal,
@@ -716,7 +759,7 @@ export function createHttpPerformanceProbe(options: Readonly<{
       throw new Error("performance_probe_response_invalid");
     }
     const measurement = { observed: payload.observed, metrics: payload.metrics } as PerformanceProbeMeasurement;
-    validateMeasurement(measurement, context);
+    validateMeasurement(measurement, context, Date.now());
     return measurement;
   };
 }
