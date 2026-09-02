@@ -436,6 +436,27 @@ describe("performance runner", () => {
     });
   });
 
+  it("allows only byte-identical report replay and rejects different evidence at the same path", async () => {
+    let now = 0;
+    const report = await runPerformanceProbe({
+      contract: contract(), tierId: "test-tier", mode: "load", ...metadata(), now: () => now,
+      probe: async () => { now += 500; return measurement(); },
+    });
+    const directory = mkdtempSync(join(tmpdir(), "performance-immutable-"));
+    temporaryDirectories.push(directory);
+    const output = join(directory, "reports", "load.json");
+
+    expect(persistPerformanceProbeReport(output, report)).toBe(output);
+    expect(persistPerformanceProbeReport(output, report)).toBe(output);
+    expect(() => persistPerformanceProbeReport(output, {
+      ...report,
+      deploymentRevision: "d".repeat(40),
+    })).toThrow("performance_report_conflict");
+    expect(JSON.parse(readFileSync(output, "utf8"))).toMatchObject({
+      deploymentRevision: "b".repeat(40),
+    });
+  });
+
   it("rejects mutable revisions before doing work", async () => {
     let invoked = false;
     await expect(runPerformanceProbe({
@@ -484,6 +505,53 @@ describe("performance runner", () => {
     });
 
     expect(result).toEqual(measurement(10, true, { correlationId: "corr-http-probe" }));
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects remote plaintext endpoints when a bearer token is configured", () => {
+    expect(() => createHttpPerformanceProbe({
+      endpoint: "http://probe.example/performance",
+      bearerToken: "do-not-expose",
+    })).toThrow("performance_probe_https_required");
+  });
+
+  it("allows plaintext only for explicit loopback development without credentials", () => {
+    expect(() => createHttpPerformanceProbe({ endpoint: "http://127.0.0.1:3000/probe" })).not.toThrow();
+    expect(() => createHttpPerformanceProbe({ endpoint: "http://localhost:3000/probe" })).not.toThrow();
+    expect(() => createHttpPerformanceProbe({
+      endpoint: "http://127.0.0.1:3000/probe",
+      bearerToken: "do-not-expose",
+    })).toThrow("performance_probe_https_required");
+    expect(() => createHttpPerformanceProbe({ endpoint: "http://probe.example/probe" }))
+      .toThrow("performance_probe_https_required");
+  });
+
+  it("rejects endpoint URLs containing embedded credentials", () => {
+    expect(() => createHttpPerformanceProbe({
+      endpoint: "https://user:password@probe.example/performance",
+    })).toThrow("performance_probe_url_credentials_forbidden");
+  });
+
+  it("disables redirects so bearer authority cannot be forwarded", async () => {
+    const request = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      expect(init?.redirect).toBe("error");
+      expect(init?.headers).toMatchObject({ authorization: "Bearer secret-value" });
+      return new Response(null, { status: 302, headers: { location: "https://attacker.example/" } });
+    });
+    const probe = createHttpPerformanceProbe({
+      endpoint: "https://probe.example/performance",
+      bearerToken: "secret-value",
+      fetch: request,
+    });
+
+    await expect(probe({
+      invocationId: "test-tier.load.00000000", sequence: 0, mode: "load",
+      tier: contract().tiers[0]!, repositoryRevision: "a".repeat(40),
+      deploymentRevision: "b".repeat(40), fixtureDigest: "c".repeat(64),
+      tenantId: "tenant-fettler-production", repositoryId: "github-1319732323",
+      correlationId: "corr-fettler-performance", source: "fettler-production-probe",
+      repository: metadata().repository, signal: new AbortController().signal,
+    })).rejects.toThrow("performance_probe_http_302");
     expect(request).toHaveBeenCalledTimes(1);
   });
 

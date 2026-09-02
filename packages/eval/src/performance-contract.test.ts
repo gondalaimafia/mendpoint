@@ -251,6 +251,39 @@ describe("Fettler performance contract", () => {
       .toThrow("performance_observation_stale");
   });
 
+  it("rejects a stale observation even when the same metric has a fresh observation", () => {
+    const mixed = completeObservations().map((observation) => ({
+      ...observation,
+      observedAt: "2026-09-02T00:09:59.000Z",
+    }));
+    mixed[0] = { ...mixed[0]!, observedAt: "2026-09-02T00:00:00.000Z" };
+
+    expect(() => evaluatePerformanceRun(contract(), mixed, binding({
+      startedAt: "2026-09-02T00:00:00.000Z",
+      endedAt: "2026-09-02T00:10:00.000Z",
+    }), "load", "2026-09-02T00:10:00.000Z"))
+      .toThrow("performance_observation_stale");
+  });
+
+  it.each([
+    ["string", "false"],
+    ["number", 1],
+    ["null", null],
+    ["missing", undefined],
+  ])("rejects a %s observation success value", (_label, success) => {
+    const malformed = completeObservations() as unknown as Array<Record<string, unknown>>;
+    if (success === undefined) delete malformed[0]!.success;
+    else malformed[0]!.success = success;
+
+    expect(() => evaluatePerformanceRun(
+      contract(),
+      malformed as unknown as Parameters<typeof evaluatePerformanceRun>[1],
+      binding(),
+      "load",
+      EVALUATED_AT,
+    )).toThrow("performance_observation_success_invalid");
+  });
+
   it("fails closed when production evidence is unbound or not actually measured", () => {
     const base = completeObservations();
     const unbound = base.map((observation) => ({ ...observation, tenantId: "" }));
