@@ -289,6 +289,31 @@ describe("migration compute units", () => {
       .toThrow("mcu_credit_exceeds_invoice_consumption");
   });
 
+  it("rejects reuse of one finance authorization for a second credit entry", () => {
+    const evidence = lifecycle();
+    const approvedCredit = evidence.entries.at(-1)!;
+    const replay = createMcuLedgerEntry({
+      tenantId: approvedCredit.tenantId,
+      entryType: "credit",
+      entitlementId: approvedCredit.entitlementId,
+      idempotencyKey: "credit-authorization-replay",
+      taskId: approvedCredit.taskId,
+      campaignId: approvedCredit.campaignId,
+      reservationId: null,
+      reservedMcuMicrosDelta: 0,
+      consumedMcuMicrosDelta: approvedCredit.consumedMcuMicrosDelta,
+      invoiceReference: approvedCredit.invoiceReference,
+      actorId: approvedCredit.actorId,
+      reasonCode: approvedCredit.reasonCode,
+      occurredAt: approvedCredit.occurredAt,
+      financeAuthorization: approvedCredit.financeAuthorization,
+    }, approvedCredit);
+    evidence.entries.push(replay);
+
+    expect(() => reconcileMcuLedgerLifecycle(evidence))
+      .toThrow("mcu_finance_authority_reused");
+  });
+
   it("rejects settlement above the reservation units released by that entry", () => {
     const overSettled = lifecycle();
     overSettled.entries[1] = {

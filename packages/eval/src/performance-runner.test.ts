@@ -693,6 +693,22 @@ describe("performance runner", () => {
     expect(pinnedRequest).not.toHaveBeenCalled();
   });
 
+  it("blocks loopback-equivalent IPv4 addresses embedded in IPv6 before opening a connection", async () => {
+    for (const address of ["64:ff9b::7f00:1", "::127.0.0.1"]) {
+      const pinnedRequest = vi.fn();
+      const probe = createHttpPerformanceProbe({
+        endpoint: "https://probe.example/performance",
+        approvedDestination: "https://probe.example/performance",
+        bearerToken: "secret-value",
+        resolveHostname: async () => [address],
+        pinnedRequest,
+      });
+
+      await expect(probe(probeContext())).rejects.toThrow("performance_probe_destination_blocked");
+      expect(pinnedRequest).not.toHaveBeenCalled();
+    }
+  });
+
   it("resolves again before every invocation and blocks DNS rebinding", async () => {
     const resolveHostname = vi.fn()
       .mockResolvedValueOnce(["93.184.216.34"])
