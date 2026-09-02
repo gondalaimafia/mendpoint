@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { claimNextJob, createDb, enqueueJob } from "./index.js";
+import {
+  claimNextJob,
+  computeLegacyTenantOwnershipAttestationDigest,
+  createDb,
+  enqueueJob,
+  getJob,
+} from "./index.js";
 
 // Release A makes the destructive old-to-new rename tolerant of a future
 // compatibility release without changing today's new-only physical schema.
@@ -547,6 +553,43 @@ function persistLegacyOwnershipAttestations(
   legacy.close();
 }
 
+function attestExactReconciliationScope(path: string): void {
+  const database = new DatabaseSync(path);
+  const rows = database.prepare(
+    `SELECT table_name, row_id, tenant_id
+     FROM legacy_tenant_ownership_reconciliation_scope
+     ORDER BY table_name, row_id`,
+  ).all() as Array<{ table_name: string; row_id: string; tenant_id: string }>;
+  const evidenceDigest = "b".repeat(64);
+  const attestedBy = "operator:exact-predecessor-review";
+  const attestedAt = "2026-09-02T00:05:00.000Z";
+  for (const row of rows) {
+    const attestationDigest = computeLegacyTenantOwnershipAttestationDigest({
+      tableName: row.table_name as (typeof LEGACY_OWNERSHIP_TABLES)[number],
+      rowId: row.row_id,
+      tenantId: row.tenant_id,
+      evidenceDigest,
+      attestedBy,
+      attestedAt,
+    });
+    database.prepare(
+      `INSERT INTO legacy_tenant_ownership_attestations
+         (table_name, row_id, tenant_id, evidence_digest, attested_by,
+          attested_at, attestation_digest)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      row.table_name,
+      row.row_id,
+      row.tenant_id,
+      evidenceDigest,
+      attestedBy,
+      attestedAt,
+      attestationDigest,
+    );
+  }
+  database.close();
+}
+
 describe("Fettler/Regauge logical database names", () => {
   it.each([false, true])(
     "quarantines the exact released-predecessor default across restart (sealed empty state: %s)",
@@ -591,6 +634,23 @@ describe("Fettler/Regauge logical database names", () => {
       } finally {
         preserved.close();
       }
+
+      attestExactReconciliationScope(path);
+      const authorized = boot(path);
+      expect(getJob(authorized, "jobs-empty", "tenant_default")).toMatchObject({
+        id: "jobs-empty",
+        tenant_id: "tenant_default",
+        status: "pending",
+      });
+      expect(claimNextJob(authorized, ["repair"], {
+        tenantId: "tenant_default",
+        workerId: "authorized-review-worker",
+        now: "2026-09-02T00:10:00.000Z",
+      })).toMatchObject({
+        id: "jobs-empty",
+        tenant_id: "tenant_default",
+        status: "running",
+      });
     },
   );
 

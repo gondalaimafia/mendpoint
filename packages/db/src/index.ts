@@ -349,6 +349,12 @@ CREATE TABLE IF NOT EXISTS legacy_tenant_ownership_reconciliation_state (
   schema_version INTEGER NOT NULL CHECK (schema_version = 1),
   sealed_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS legacy_tenant_ownership_reconciliation_discovery_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  schema_version INTEGER NOT NULL CHECK (schema_version = 2),
+  source_schema_digest TEXT NOT NULL,
+  sealed_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS legacy_tenant_ownership_attestations (
   table_name TEXT NOT NULL,
   row_id TEXT NOT NULL,
@@ -3114,13 +3120,24 @@ function migrateRepositorySnapshotIdentity(db: AppDb): void {
 /** Additive columns for Phase D feed URLs + Phase E tenant on consumers. */
 function migrateProvidersFeedColumns(db: AppDb) {
   const nullableLegacyTenantTables = new Set<string>();
+  const releasedFallbackTenantTables = new Set<string>();
   for (const table of LEGACY_TENANT_OWNERSHIP_TABLES) {
-    const tenantColumn = all<{ name: string; notnull: number }>(
+    const tenantColumn = all<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>(
       db,
       `PRAGMA table_info(${table})`,
     ).find((column) => column.name === "tenant_id");
     if (!tenantColumn || tenantColumn.notnull !== 1) {
       nullableLegacyTenantTables.add(table);
+    } else if (
+      tenantColumn.type.trim().toUpperCase() === "TEXT" &&
+      tenantColumn.dflt_value?.trim() === "'tenant_default'"
+    ) {
+      releasedFallbackTenantTables.add(table);
     }
   }
   const pcols = all<{ name: string }>(db, `PRAGMA table_info(providers)`).map((c) => c.name);
@@ -3445,7 +3462,11 @@ function migrateProvidersFeedColumns(db: AppDb) {
       addedColumns.add(`${column.table}.${column.name}`);
     }
   }
-  reconcileLegacyTenantOwnership(db, nullableLegacyTenantTables);
+  reconcileLegacyTenantOwnership(
+    db,
+    nullableLegacyTenantTables,
+    releasedFallbackTenantTables,
+  );
   run(
     db,
     `UPDATE feed_schedule_windows
@@ -3843,17 +3864,51 @@ export function computeLegacyTenantOwnershipAttestationDigest(
 function reconcileLegacyTenantOwnership(
   db: AppDb,
   nullableLegacyTenantTables: ReadonlySet<string>,
+  releasedFallbackTenantTables: ReadonlySet<string>,
 ): void {
   const state = get<{ schema_version: number }>(
     db,
     "SELECT schema_version FROM legacy_tenant_ownership_reconciliation_state WHERE id = 1",
   );
-  if (!state) {
+  const discoveryDigest = createHash("sha256")
+    .update(JSON.stringify({
+      schemaVersion: 2,
+      releasedFallbackTenantTables: [...releasedFallbackTenantTables].sort(),
+    }))
+    .digest("hex");
+  const discoveryState = get<{
+    schema_version: number;
+    source_schema_digest: string;
+  }>(
+    db,
+    `SELECT schema_version, source_schema_digest
+     FROM legacy_tenant_ownership_reconciliation_discovery_state
+     WHERE id = 1`,
+  );
+  if (state && state.schema_version !== 1) {
+    throw new Error("legacy_tenant_ownership_reconciliation_schema_unsupported");
+  }
+  if (
+    discoveryState && (
+      discoveryState.schema_version !== 2 ||
+      discoveryState.source_schema_digest !== discoveryDigest
+    )
+  ) {
+    throw new Error("legacy_tenant_ownership_reconciliation_schema_unsupported");
+  }
+  if (!state && discoveryState) {
+    throw new Error("legacy_tenant_ownership_reconciliation_schema_unsupported");
+  }
+  if (!state || !discoveryState) {
     db.raw.exec("BEGIN IMMEDIATE");
     try {
       const discoveredAt = new Date().toISOString();
+      const tablesToDiscover = new Set<string>([
+        ...(!state ? nullableLegacyTenantTables : []),
+        ...(!discoveryState ? releasedFallbackTenantTables : []),
+      ]);
       for (const table of LEGACY_TENANT_OWNERSHIP_TABLES) {
-        if (!nullableLegacyTenantTables.has(table)) continue;
+        if (!tablesToDiscover.has(table)) continue;
         run(
           db,
           `INSERT OR IGNORE INTO legacy_tenant_ownership_reconciliation_scope
@@ -3864,24 +3919,34 @@ function reconcileLegacyTenantOwnership(
           [table, discoveredAt],
         );
       }
-      run(
-        db,
-        `INSERT INTO legacy_tenant_ownership_reconciliation_state
-           (id, schema_version, sealed_at) VALUES (1, 1, ?)`,
-        [discoveredAt],
-      );
+      if (!state) {
+        run(
+          db,
+          `INSERT INTO legacy_tenant_ownership_reconciliation_state
+             (id, schema_version, sealed_at) VALUES (1, 1, ?)`,
+          [discoveredAt],
+        );
+      }
+      if (!discoveryState) {
+        run(
+          db,
+          `INSERT INTO legacy_tenant_ownership_reconciliation_discovery_state
+             (id, schema_version, source_schema_digest, sealed_at)
+           VALUES (1, 2, ?, ?)`,
+          [discoveryDigest, discoveredAt],
+        );
+      }
       db.raw.exec("COMMIT");
     } catch (error) {
       if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
       throw error;
     }
-  } else if (state.schema_version !== 1) {
-    throw new Error("legacy_tenant_ownership_reconciliation_schema_unsupported");
   }
 
   installLegacyTenantOwnershipAppendOnlyTriggers(db, [
     "legacy_tenant_ownership_reconciliation_scope",
     "legacy_tenant_ownership_reconciliation_state",
+    "legacy_tenant_ownership_reconciliation_discovery_state",
   ]);
 
   const scopedRows = all<{
