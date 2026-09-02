@@ -45,7 +45,8 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 
 ## Commits
 
-- `36e25360`: implementation and tests.
+- `0f4d7cbc`: implementation and tests after current-base rebase.
+- `649d0ae2`: exact destination authority and DNS-rebinding review repair.
 
 ## Remaining Release Work
 
