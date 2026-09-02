@@ -234,15 +234,11 @@ describe("Regauge production bootstrap runtime", () => {
     // materialization, recipe planning (evidence freshness against `evaluatedAt`,
     // maxEvidenceAgeMs 1h), and the verifier-consent check. Pin the whole process
     // Date to a fixed point inside the verifier-consent validity window (effective
-    // 2026-08-24, expires 2026-11-20 per the environment above); shouldAdvanceTime
-    // keeps reads monotonic like the real clock so hash-chained events stay well
-    // ordered. The real wall clock both drifts past the consent expiry and
-    // future-dates the recipe evidence, either of which fails this test.
-    vi.useFakeTimers({
-      toFake: ["Date"],
-      now: new Date("2026-08-24T17:02:00.000Z"),
-      shouldAdvanceTime: true,
-    });
+    // 2026-08-24, expires 2026-11-20 per the environment above). A frozen clock is
+    // enough: nothing here orders on created_at (audit chains key on event_sequence),
+    // so the clock is not advanced. The real wall clock both drifts past the consent
+    // expiry and future-dates the recipe evidence, either of which fails this test.
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-08-24T17:02:00.000Z") });
     const root = mkdtempSync(join(tmpdir(), "mendpoint-regauge-bootstrap-"));
     roots.push(root);
     process.env.MENDPOINT_REPOS_DIR = join(root, "repos");
