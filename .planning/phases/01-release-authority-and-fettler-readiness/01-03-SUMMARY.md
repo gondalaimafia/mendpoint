@@ -47,15 +47,16 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 
 ## Commits and range-diff identity
 
-- `9af8fad2`: external customer-managed key adapter, patch-identical to pre-rebase `0f4d7cbc`.
-- `4caa5a70`: verification evidence, patch-identical to pre-rebase `a244286f`.
-- `a5d8d387`: destination authority and DNS-rebinding repair, patch-identical to pre-rebase `649d0ae2`.
-- `24a35019`: refreshed exact-head evidence after rebase.
-- `775d80d7`: native all-address lookup compatibility repair.
-- `e25bf527`: validated socket isolation repair.
-- `31f04f9e`: oversized declared-response listener ordering and single-settlement repair.
+- `464eb6ff`: external customer-managed key adapter, patch-identical to pre-rebase `9af8fad2`.
+- `ae478afb`: verification evidence, patch-identical to pre-rebase `4caa5a70`.
+- `ac56609c`: destination authority and DNS-rebinding repair, patch-identical to pre-rebase `a5d8d387`.
+- `7115bd04`: refreshed exact-head evidence after rebase, patch-identical to pre-rebase `24a35019`.
+- `99257b81`: native all-address lookup compatibility repair, patch-identical to pre-rebase `775d80d7`.
+- `5dfe79fe`: validated socket isolation repair, patch-identical to pre-rebase `e25bf527`.
+- `4b808f24`: oversized declared-response listener ordering and single-settlement repair, patch-identical to pre-rebase `31f04f9e`.
+- `f7481e39`: evidence-only exact-head binding, patch-identical to pre-rebase `3b1a50a9`.
 
-The independent range-diff verified the first three old-to-new pairs as exact patch identities. The final four implementation commits are additive repairs on the rebased series. The exact base for this series is `b21503356259fb0b4e5f7f6599a2f45d0bbd1cfb`; the commands above verify the current repaired tree.
+The exact base for this series is `e69d997b7eef88ffcc7786a3e51da46eb1e677d4`; the commands above verify the current repaired tree. The independent review of pre-rebase head `3b1a50a9bff1ac4928e160602d6618bc37c1e0e0` is superseded by this history rewrite. A different reviewer must inspect and approve the new exact head before merge.
 
 ## Remaining Release Work
 
