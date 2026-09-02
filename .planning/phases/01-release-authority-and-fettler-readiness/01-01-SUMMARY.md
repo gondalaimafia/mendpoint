@@ -16,7 +16,7 @@ affects: [01-02-readiness, 05-economics, 06-final-qualification]
 actuals:
   tokens: 24071
   tasks: 3
-  commits: 29
+  commits: 30
 
 tech-stack:
   added: []
@@ -190,7 +190,7 @@ status: complete
 - Protected `npm run ga:check`: passed.
 - Strict evidence reachability: passed; migration compute runtime is reachable.
 - `git diff --check`: passed.
-- Current base: `origin/main` at `e69d997b7eef88ffcc7786a3e51da46eb1e677d4`.
+- Current base: `origin/main` at `f8d09056f713925baf585d99fc35aca79242108c`.
 - Release-update tested implementation head: `c27fe751b06796d394579d999537fafb8998d55e`.
 - Release-update evaluator matrix: 23 of 23 passed; migration compute and closure matrix: 13 of 13 passed, for 36 of 36 focused tests.
 - Release-update affected typechecks: evaluator, platform, and scripts passed.
@@ -205,6 +205,8 @@ status: complete
 - Long-run repair GREEN proof: evaluator 38 of 38; evaluator, migration compute, and closure matrix 51 of 51; evaluator, platform, and scripts typechecks passed.
 - Long-run repair optimized production build: passed, 64 pages generated.
 - Long-run repair protected `npm run ga:check`: passed, including strict evidence reachability and revert obligations.
+- Current-base range diff: all 29 pre-refresh patches are patch-identical after rebasing from `e69d997b7eef88ffcc7786a3e51da46eb1e677d4` to `f8d09056f713925baf585d99fc35aca79242108c`.
+- Current-base rerun: focused and broader matrix 51 of 51, all three affected typechecks, optimized 64-page build, protected `npm run ga:check`, and diff integrity passed.
 
 ## TDD Gate Compliance
 
@@ -226,7 +228,7 @@ None.
 ## Self-Check: PASSED
 
 - All 14 changed implementation, test, export, gate, and artifact files exist.
-- All 28 implementation, test, and prior evidence commits are present on `codex/601-fettler-operating-contracts`; this repair adds one summary-only successor rather than amending history.
+- All 29 rebased implementation, test, and prior evidence commits are present on `codex/601-fettler-operating-contracts`; this current-base refresh adds one summary-only successor rather than amending history.
 - The tested implementation head is based on current `origin/main`; the returned release-update head is its summary-only successor.
 
 ---
