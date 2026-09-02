@@ -3812,6 +3812,14 @@ const LEGACY_TENANT_OWNERSHIP_TABLES = [
   "suppressed_patterns",
 ] as const;
 
+const LEGACY_TENANT_OWNERSHIP_LEDGER_TABLES = [
+  "legacy_tenant_ownership_reconciliation_scope",
+  "legacy_tenant_ownership_reconciliation_state",
+  "legacy_tenant_ownership_reconciliation_discovery_state",
+  "legacy_tenant_ownership_quarantine_scope",
+  "legacy_tenant_ownership_quarantine_state",
+] as const;
+
 export type LegacyTenantOwnershipAttestation = {
   tableName: (typeof LEGACY_TENANT_OWNERSHIP_TABLES)[number];
   rowId: string;
@@ -3951,8 +3959,7 @@ function reconcileLegacyTenantOwnership(
           [legacyTenantOwnershipQuarantineScopeDigest(db), discoveredAt],
         );
       }
-      installTenantNonblankGuards(db, LEGACY_TENANT_OWNERSHIP_TABLES);
-      installLegacyTenantOwnershipSourceGuards(db);
+      installLegacyTenantOwnershipRecoveryGuards(db);
       db.raw.exec("COMMIT");
     } catch (error) {
       if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
@@ -3960,32 +3967,13 @@ function reconcileLegacyTenantOwnership(
     }
   }
 
-  // A prior binary can have committed the sealed discovery boundary and then
-  // failed for missing attestations before reaching the general write guards.
-  // Repair that durable intermediate state before revalidating attestations.
-  installTenantNonblankGuards(db, LEGACY_TENANT_OWNERSHIP_TABLES);
-
-  installLegacyTenantOwnershipAppendOnlyTriggers(db, [
-    "legacy_tenant_ownership_reconciliation_scope",
-    "legacy_tenant_ownership_reconciliation_state",
-    "legacy_tenant_ownership_reconciliation_discovery_state",
-    "legacy_tenant_ownership_quarantine_scope",
-    "legacy_tenant_ownership_quarantine_state",
-  ]);
-  run(
-    db,
-    `CREATE TRIGGER IF NOT EXISTS legacy_tenant_ownership_reconciliation_scope_append_only_insert
-     BEFORE INSERT ON legacy_tenant_ownership_reconciliation_scope
-     BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_reconciliation_scope_sealed'); END`,
-  );
-  run(
-    db,
-    `CREATE TRIGGER IF NOT EXISTS legacy_tenant_ownership_quarantine_scope_append_only_insert
-     BEFORE INSERT ON legacy_tenant_ownership_quarantine_scope
-     BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_quarantine_scope_sealed'); END`,
-  );
-
-  installLegacyTenantOwnershipSourceGuards(db);
+  // Recovery guard installation, ledger/source validation, and final
+  // attestation sealing are one write-locked transition. No other connection
+  // can observe or exploit a subset of the required guard families.
+  const ownsRecoveryTransaction = !db.raw.isTransaction;
+  if (ownsRecoveryTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    installLegacyTenantOwnershipRecoveryGuards(db);
 
   const sealedDiscoveryState = get<{ scope_digest: string }>(
     db,
@@ -4093,6 +4081,11 @@ function reconcileLegacyTenantOwnership(
   installLegacyTenantOwnershipAppendOnlyTriggers(db, [
     "legacy_tenant_ownership_attestations",
   ]);
+    if (ownsRecoveryTransaction) db.raw.exec("COMMIT");
+  } catch (error) {
+    if (ownsRecoveryTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function legacyTenantOwnershipScopeDigest(db: AppDb): string {
@@ -4168,6 +4161,35 @@ function installTenantNonblankGuards(db: AppDb, tables: readonly string[]): void
          END`,
       );
     }
+    if (ownsTransaction) db.raw.exec("COMMIT");
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function installLegacyTenantOwnershipRecoveryGuards(db: AppDb): void {
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    installTenantNonblankGuards(db, LEGACY_TENANT_OWNERSHIP_TABLES);
+    installLegacyTenantOwnershipAppendOnlyTriggers(
+      db,
+      LEGACY_TENANT_OWNERSHIP_LEDGER_TABLES,
+    );
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS legacy_tenant_ownership_reconciliation_scope_append_only_insert
+       BEFORE INSERT ON legacy_tenant_ownership_reconciliation_scope
+       BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_reconciliation_scope_sealed'); END`,
+    );
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS legacy_tenant_ownership_quarantine_scope_append_only_insert
+       BEFORE INSERT ON legacy_tenant_ownership_quarantine_scope
+       BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_quarantine_scope_sealed'); END`,
+    );
+    installLegacyTenantOwnershipSourceGuards(db);
     if (ownsTransaction) db.raw.exec("COMMIT");
   } catch (error) {
     if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
