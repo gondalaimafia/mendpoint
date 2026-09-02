@@ -37,6 +37,11 @@ import { classifyFailures, FAILURE_CATEGORIES, FAILURE_MODES } from "./knowledge
 import { proposeWardenFix } from "./fixes.js";
 import { discoverVerifyCommand } from "./discover-verify.js";
 import type { AgentPlanner, AgentTask, InheritedContextInjection } from "./types.js";
+import type {
+  ModelDependencyOutageOperation,
+  ModelDependencyOutagePort,
+  ModelDependencyOutageResult,
+} from "./model-providers.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const dirs: string[] = [];
@@ -817,6 +822,121 @@ describe("Warden (API debug agent)", () => {
     expect(planner).toHaveBeenCalledTimes(1);
     expect(reserve).toHaveBeenCalledTimes(1);
     expect(settle).toHaveBeenCalledTimes(1);
+    expect(result.metrics.model).toMatchObject({ calls: 1, successfulCalls: 1 });
+  });
+
+  it("routes the real runtime planner effect through the tenant outage port with checkpoint identity", async () => {
+    const dir = intentFixture();
+    const planner = vi.fn(async () => ({
+      call: { tool: "finish" as const, args: { ok: false, message: "review required" } },
+      usage: TEST_MODEL_USAGE,
+    }));
+    const binding: WardenCheckpointBinding = Object.freeze({
+      schemaVersion: 1,
+      tenantId: TEST_MODEL_SOURCE.tenantId,
+      jobId: "job-runtime-outage",
+      attemptId: "attempt-runtime-outage",
+      repositoryId: "repository-runtime-outage",
+      snapshotId: "snapshot-runtime-outage",
+      revision: "revision-runtime-outage",
+      sourceManifestSha256: `sha256:${"1".repeat(64)}`,
+      allowedPathsDigest: `sha256:${"2".repeat(64)}`,
+      verificationProfileDigest: `sha256:${"3".repeat(64)}`,
+      modelPolicyDigest: createWardenRuntimeModelAuthorityDigest({
+        goal: "Repair the API path typo.",
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        errorLog: "HTTP 404 for /v1/chargess",
+        useLlm: true,
+        ...TEST_MODEL_SOURCE,
+        maxSteps: 3,
+        planner,
+      }),
+    });
+    const effectId = `sha256:${"7".repeat(64)}`;
+    const requestDigest = `sha256:${"8".repeat(64)}`;
+    const run = vi.fn(async <T>(operation: ModelDependencyOutageOperation<T>) => {
+      expect(operation).toMatchObject({
+        tenantId: TEST_MODEL_SOURCE.tenantId,
+        dependencyKind: "model",
+        providerId: TEST_MODEL_SOURCE.modelSourcePolicy.provider,
+        operationId: `${binding.jobId}:${effectId}`,
+        operationDigest: "8".repeat(64),
+        authorityVersion: binding.modelPolicyDigest,
+      });
+      const completed = await operation.execute();
+      return {
+        status: "completed" as const,
+        value: completed.value,
+      } satisfies ModelDependencyOutageResult<T>;
+    });
+    const outage = {
+      run,
+      get: vi.fn(() => null),
+    } as unknown as ModelDependencyOutagePort;
+    const execution = {
+      state: () => ({ binding, pendingEffect: { kind: "none" } }),
+      effectRequest: () => null,
+      assertCurrent: async () => undefined,
+      runEffect: async (raw: unknown) => {
+        const effect = raw as {
+          executor: {
+            reconcile: (input: {
+              effectId: string;
+              requestDigest: string;
+              signal: AbortSignal;
+            }) => Promise<{ status: string }>;
+            executeIdempotent: (input: {
+              effectId: string;
+              requestDigest: string;
+              writerLeaseGeneration: number;
+              signal: AbortSignal;
+              assertFence: () => Promise<void>;
+            }) => Promise<WardenRuntimeJson>;
+          };
+          validateResult: (value: WardenRuntimeJson) => WardenRuntimeJson;
+        };
+        const signal = new AbortController().signal;
+        expect(await effect.executor.reconcile({ effectId, requestDigest, signal }))
+          .toEqual({ status: "not_started" });
+        const value = await effect.executor.executeIdempotent({
+          effectId,
+          requestDigest,
+          writerLeaseGeneration: 1,
+          signal,
+          assertFence: async () => undefined,
+        });
+        return { value: effect.validateResult(value), replayed: false };
+      },
+    } as unknown as WardenRuntimeExecution;
+
+    const result = await runWardenWithRuntime({
+      goal: "Repair the API path typo.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "HTTP 404 for /v1/chargess",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 3,
+      planner,
+    }, {
+      execution,
+      binding,
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      modelOutage: {
+        outage,
+        decide: () => {
+          throw new Error("decision_not_expected");
+        },
+        workerId: "worker-1",
+        retryBudget: 3,
+        expiresAt: "2026-09-02T14:00:00.000Z",
+        leaseMs: 30_000,
+      },
+    } as never);
+
+    expect(run).toHaveBeenCalledTimes(1);
     expect(result.metrics.model).toMatchObject({ calls: 1, successfulCalls: 1 });
   });
 
@@ -3953,4 +4073,3 @@ describe("discoverVerifyCommand", () => {
     expect(discoverVerifyCommand(empty)).toBeUndefined();
   });
 });
-

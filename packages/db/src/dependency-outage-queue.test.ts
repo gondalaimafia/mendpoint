@@ -33,6 +33,79 @@ function retryDecision(nextAttemptAt = "2026-09-01T12:00:01.000Z"): DependencyOu
 }
 
 describe("durable dependency outage queue", () => {
+  it("projects a bounded tenant-only degraded health view without operation identifiers", () => {
+    const db = new DatabaseSync(":memory:");
+    let now = "2026-09-02T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    const base = { ...SCOPE, tenantId: "tenant-a", operationId: "model-call-a" };
+    queue.enqueue({
+      ...base,
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      nextAttemptAt: now,
+      standing: "degraded_retrying",
+      authorityVersion: "authority-v1",
+    });
+    queue.enqueue({
+      ...SCOPE,
+      tenantId: "tenant-a",
+      operationId: "model-call-b",
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      nextAttemptAt: now,
+      standing: "degraded_retrying",
+      authorityVersion: "authority-v1",
+    });
+    queue.enqueue({
+      ...SCOPE,
+      tenantId: "tenant-b",
+      operationId: "private-model-call",
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      nextAttemptAt: now,
+      standing: "degraded_retrying",
+      authorityVersion: "authority-v1",
+    });
+
+    now = "2026-09-02T12:10:00.000Z";
+    const health = queue.tenantHealth({
+      tenantId: "tenant-a",
+      limit: 1,
+      staleAfterMs: 60_000,
+      now,
+    });
+
+    expect(health).toMatchObject({
+      tenantId: "tenant-a",
+      standing: "degraded_retrying",
+      total: 2,
+      returned: 1,
+      truncated: true,
+      stale: 2,
+    });
+    expect(health.operations).toHaveLength(1);
+    expect(health.operations[0]).toEqual(expect.objectContaining({
+      dependencyKind: "model",
+      providerId: "muse-spark",
+      standing: "degraded_retrying",
+      stale: true,
+      lastTransition: expect.objectContaining({ kind: "enqueued" }),
+      operationIdentityDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    }));
+    expect(JSON.stringify(health)).not.toContain("model-call-a");
+    expect(JSON.stringify(health)).not.toContain("model-call-b");
+    expect(JSON.stringify(health)).not.toContain("private-model-call");
+  });
+
+  it("rejects unbounded or malformed tenant health queries", () => {
+    const queue = createDependencyOutageQueue(new DatabaseSync(":memory:"));
+    expect(() => queue.tenantHealth({ tenantId: "tenant-a", limit: 0 }))
+      .toThrow("dependency_outage_list_limit_invalid");
+    expect(() => queue.tenantHealth({ tenantId: "tenant-a", limit: 101 }))
+      .toThrow("dependency_outage_list_limit_invalid");
+    expect(() => queue.tenantHealth({ tenantId: "../tenant-b", limit: 10 }))
+      .toThrow("dependency_outage_tenant_invalid");
+  });
   it("survives restart, fences stale claims, and acknowledges completion exactly once", () => {
     const root = mkdtempSync(join(tmpdir(), "mendpoint-outage-"));
     const path = join(root, "outage.sqlite");
