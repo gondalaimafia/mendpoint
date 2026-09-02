@@ -190,6 +190,15 @@ function invalid(code: string): never {
   throw new Error(code);
 }
 
+class PerformanceProbeProducerResponseError extends Error {
+  readonly producerResponseReceived = true;
+
+  constructor(error: unknown) {
+    super(error instanceof Error ? error.message : "performance_probe_response_invalid");
+    this.name = "PerformanceProbeProducerResponseError";
+  }
+}
+
 function abortReason(reason: unknown): string {
   if (typeof reason === "string" && reason.trim()) return reason.trim();
   if (reason instanceof Error && reason.message) return reason.message;
@@ -589,7 +598,10 @@ export async function runPerformanceProbe(
           evidenceIdentity,
           "probe_observed",
         );
-      } catch {
+      } catch (error) {
+        if (error instanceof PerformanceProbeProducerResponseError) {
+          producerResponseReceived = error.producerResponseReceived;
+        }
         if (!producerResponseReceived && (controller.signal.aborted || now() >= deadlineMs)) {
           cancelledInvocationCount += 1;
           continue;
@@ -890,20 +902,24 @@ export function createHttpPerformanceProbe(options: Readonly<{
       const approvedAddresses = resolved.map(normalizeDestinationAddress);
       response = await pinnedRequest(parsedEndpoint, approvedAddresses[0]!, init);
     }
-    if (!response.ok) throw new Error(`performance_probe_http_${response.status}`);
-    const responseBytes = await readBoundedPerformanceResponse(response);
-    let payload: { observed?: unknown; metrics?: unknown };
     try {
-      payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(responseBytes)) as {
-        observed?: unknown;
-        metrics?: unknown;
-      };
-    } catch {
-      throw new Error("performance_probe_response_invalid");
+      if (!response.ok) throw new Error(`performance_probe_http_${response.status}`);
+      const responseBytes = await readBoundedPerformanceResponse(response);
+      let payload: { observed?: unknown; metrics?: unknown };
+      try {
+        payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(responseBytes)) as {
+          observed?: unknown;
+          metrics?: unknown;
+        };
+      } catch {
+        throw new Error("performance_probe_response_invalid");
+      }
+      const measurement = { observed: payload.observed, metrics: payload.metrics } as PerformanceProbeMeasurement;
+      validateMeasurement(measurement, context, Date.now());
+      return measurement;
+    } catch (error) {
+      throw new PerformanceProbeProducerResponseError(error);
     }
-    const measurement = { observed: payload.observed, metrics: payload.metrics } as PerformanceProbeMeasurement;
-    validateMeasurement(measurement, context, Date.now());
-    return measurement;
   };
 }
 

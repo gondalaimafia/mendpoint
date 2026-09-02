@@ -560,6 +560,66 @@ describe("performance runner", () => {
     )).toBe(true);
   });
 
+  it.each([
+    ["malformed response shape at the deadline", "deadline", (valid: PerformanceProbeMeasurement) => ({})],
+    ["invalid nonce at the deadline", "deadline", (valid: PerformanceProbeMeasurement) => ({
+      ...valid,
+      observed: { ...valid.observed, invocationNonce: "forged-nonce" },
+    })],
+    ["unresolved required metrics at the deadline", "deadline", (valid: PerformanceProbeMeasurement) => ({
+      ...valid,
+      metrics: { ...valid.metrics, verification: undefined },
+    })],
+    ["invalid nonce when abort fires after response", "abort", (valid: PerformanceProbeMeasurement) => ({
+      ...valid,
+      observed: { ...valid.observed, invocationNonce: "forged-nonce" },
+    })],
+  ])("fails closed for a built-in HTTP probe with %s", async (_name, race, mutate) => {
+    let now = 0;
+    let calls = 0;
+    const external = new AbortController();
+    const singleWorkerContract = contract();
+    singleWorkerContract.tiers[0] = {
+      ...singleWorkerContract.tiers[0]!,
+      concurrency: 1,
+      minimumSamples: 1,
+    };
+    const probe = createHttpPerformanceProbe({
+      endpoint: "https://probe.example/performance",
+      ...testPerformanceTransport(async (_input, init) => {
+        calls += 1;
+        const request = JSON.parse(String(init?.body)) as Pick<PerformanceProbeContext,
+          "invocationId" | "invocationNonce" | "invokedAt" | "sequence">;
+        const valid = measurementFor(request);
+        if (calls === 1) return new Response(JSON.stringify(valid), { status: 200 });
+        const payload = mutate(valid);
+        if (race === "deadline") now = 1_000;
+        else external.abort("response_validation_race");
+        return new Response(JSON.stringify(payload), { status: 200 });
+      }),
+    });
+
+    const report = await runPerformanceProbe({
+      contract: singleWorkerContract,
+      tierId: "test-tier",
+      mode: "load",
+      ...metadata(),
+      signal: external.signal,
+      now: () => now,
+      probe,
+    });
+
+    expect(calls).toBe(2);
+    expect(report.status).not.toBe("completed");
+    expect(report.ok).toBe(false);
+    expect(report.cancelledInvocationCount).toBe(0);
+    expect(report.aggregation.totalInvocationCount).toBe(2);
+    expect(report.observations).toHaveLength(10);
+    expect(report.observations.slice(-5).every((item) =>
+      !item.success && item.bindingSource === "request_context"
+    )).toBe(true);
+  });
+
   it("rejects a producer-observed repository shape that differs from the requested fixture", async () => {
     const report = await runPerformanceProbe({
       contract: contract(),

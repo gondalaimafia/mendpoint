@@ -776,6 +776,31 @@ describe("usage ledger", () => {
       financeAuthorizationDigest: authorizationRecord.authorizationDigest,
     } as const;
 
+    db.raw.exec(`
+      CREATE TRIGGER test_usage_credit_allocation_mid_write_failure
+      BEFORE INSERT ON usage_ledger_entries
+      WHEN NEW.idempotency_key LIKE 'credit-allocation:%'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected_credit_allocation_mid_write_failure');
+      END;
+    `);
+    expect(() => creditUsage(db, { ...creditInput, ...authorization }))
+      .toThrow("injected_credit_allocation_mid_write_failure");
+    expect(listUsageLedger(db, "tenant_default").filter((entry) =>
+      entry.financeAuthorizationId === authorization.financeAuthorizationId
+    )).toEqual([]);
+    expect(db.raw.prepare(
+      "SELECT consumed_at, consumed_entry_id FROM usage_finance_authorizations WHERE id = ?",
+    ).get(authorization.financeAuthorizationId)).toEqual({
+      consumed_at: null,
+      consumed_entry_id: null,
+    });
+    expect(reconcileUsageLedger(db, "tenant_default")).toMatchObject({
+      ok: true,
+      invoices: { "invoice-split": 100 },
+    });
+    db.raw.exec("DROP TRIGGER test_usage_credit_allocation_mid_write_failure");
+
     expect(() => creditUsage(db, { ...creditInput, ...authorization })).not.toThrow();
     expect(reconcileUsageLedger(db, "tenant_default")).toMatchObject({
       ok: true,

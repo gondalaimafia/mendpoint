@@ -58,11 +58,8 @@ import {
   getFeedScheduleHealth,
   updateProviderFeedUrls,
   BILLING_PLANS,
-  adjustUsage,
   createUsageEntitlement,
-  createUsageFinanceAuthorization,
   createUsagePriceVersion,
-  creditUsage,
   getUsageSummary,
   listUsageLedger,
   reconcileUsageLedger,
@@ -108,7 +105,7 @@ import {
   registrySummaryMarkdown,
 } from "@mendpoint/db";
 import { parseAuditExportLimit } from "./audit-export.js";
-import { parseUsageFinanceEntryType } from "./billing-usage-input.js";
+import { createBillingUsageFinanceRoutes } from "./billing-usage-routes.js";
 import { changeDetailBody } from "./change-detail.js";
 import {
   detectVendors,
@@ -3658,111 +3655,11 @@ app.post("/billing/usage/reservations/:id/release", async (c) => {
   }
 });
 
-app.post("/billing/usage/finance-authorizations", async (c) => {
-  const principal = c.get("principal");
-  if (!principal) return c.json({ error: "unauthorized" }, 401);
-  if (principal.role !== "owner") return c.json({ error: "forbidden" }, 403);
-  const body = await c.req.json<{
-    entryType?: unknown;
-    invoiceReference?: string;
-    idempotencyKey?: string;
-    mcuMicrosDelta?: number;
-    reason?: string;
-  }>().catch(() => ({} as {
-    entryType?: unknown;
-    invoiceReference?: string;
-    idempotencyKey?: string;
-    mcuMicrosDelta?: number;
-    reason?: string;
-  }));
-  const approvedAt = nowIso();
-  const approvedAtMs = Date.parse(approvedAt);
-  try {
-    const actorPrincipalId = c.get("trustPrincipalId");
-    if (!actorPrincipalId) return c.json({ error: "forbidden" }, 403);
-    const entryType = parseUsageFinanceEntryType(body.entryType);
-    const authorization = createUsageFinanceAuthorization(db, {
-      id: newId(),
-      tenantId: requestTenantId(c),
-      approvedByPrincipalId: actorPrincipalId,
-      actorPrincipalId,
-      entryType,
-      invoiceReference: body.invoiceReference ?? "",
-      entryIdempotencyKey: body.idempotencyKey ?? "",
-      mcuMicrosDelta: body.mcuMicrosDelta ?? 0,
-      reason: body.reason ?? "",
-      approvedAt,
-      expiresAt: new Date(approvedAtMs + 5 * 60_000).toISOString(),
-    });
-    requestAudit(c, {
-      actor: principal.id,
-      action: "billing.usage_finance_authorized",
-      resourceType: "usage_finance_authorization",
-      resourceId: authorization.id,
-      metadata: {
-        entryType: authorization.entryType,
-        invoiceReference: authorization.invoiceReference,
-        entryIdempotencyKey: authorization.entryIdempotencyKey,
-      },
-    });
-    return c.json(authorization, 201);
-  } catch (error) {
-    return mappedErrorResponse(c, error, USAGE_ERRORS);
-  }
-});
-
-app.post("/billing/usage/:kind", async (c) => {
-  const kind = c.req.param("kind");
-  if (kind !== "adjustments" && kind !== "credits") {
-    return c.json({ error: "usage_entry_kind_invalid" }, 404);
-  }
-  const body = await c.req.json<{
-    idempotencyKey?: string;
-    taskId?: string;
-    campaignId?: string | null;
-    mcuMicrosDelta?: number;
-    invoiceReference?: string | null;
-    reason?: string;
-    financeAuthorizationId?: string;
-    financeAuthorizationDigest?: string;
-  }>().catch(() => ({} as {
-    idempotencyKey?: string;
-    taskId?: string;
-    campaignId?: string | null;
-    mcuMicrosDelta?: number;
-    invoiceReference?: string | null;
-    reason?: string;
-    financeAuthorizationId?: string;
-    financeAuthorizationDigest?: string;
-  }));
-  try {
-    const operation = kind === "credits" ? creditUsage : adjustUsage;
-    const entry = operation(db, {
-      id: newId(),
-      tenantId: requestTenantId(c),
-      idempotencyKey: body.idempotencyKey ?? "",
-      taskId: body.taskId ?? "",
-      campaignId: body.campaignId,
-      mcuMicrosDelta: body.mcuMicrosDelta ?? 0,
-      invoiceReference: body.invoiceReference,
-      reason: body.reason ?? "",
-      financeAuthorizationId: body.financeAuthorizationId,
-      financeAuthorizationDigest: body.financeAuthorizationDigest,
-      actorPrincipalId: c.get("trustPrincipalId"),
-      createdAt: nowIso(),
-    });
-    requestAudit(c, {
-      actor: c.get("principal")!.id,
-      action: `billing.usage_${entry.entryType}`,
-      resourceType: "usage_ledger_entry",
-      resourceId: entry.id,
-      metadata: { taskId: entry.taskId, mcuMicros: entry.consumedMcuMicrosDelta },
-    });
-    return c.json(entry, 201);
-  } catch (error) {
-    return mappedErrorResponse(c, error, USAGE_ERRORS);
-  }
-});
+app.route("/billing/usage", createBillingUsageFinanceRoutes({
+  db,
+  errors: USAGE_ERRORS,
+  audit: requestAudit,
+}));
 
 app.get("/tenants", (c) => {
   const principal = c.get("principal");
