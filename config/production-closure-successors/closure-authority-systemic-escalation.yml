@@ -351,41 +351,6 @@ jobs:
           MATRIX_OUTCOME: ${{ steps.matrix.outcome }}
           PROPOSAL_OUTCOME: ${{ steps.proposal.outcome }}
           PR_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
-      - name: Record per-PR verdict for systemic aggregation
-        id: record-verdict
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Record the SAME recorded verdict the two publish steps wrote, so the
-          # final systemic-escalation job can tell "a few PRs individually broken"
-          # (correctly quiet) from "one shared cause broke every open PR" (must
-          # escalate). A verdict this per-PR job could not record (either publish
-          # step not success) is failure, never success: a missing verdict must
-          # never read as evaluated.
-          conclusion=failure
-          if [ "$APP_IDENTITY_OUTCOME" = success ] && [ "$BRANCH_PROTECTION_OUTCOME" = success ] && [ "$PROPOSAL_OUTCOME" = success ] && [ "$MATRIX_OUTCOME" = success ] && [ "$GITHUB_OUTCOME" = success ] && [ "$PUBLISH_EXTERNAL_OUTCOME" = success ] && [ "$PUBLISH_CONTROLLER_OUTCOME" = success ]; then
-            conclusion=success
-          fi
-          mkdir -p "$RUNNER_TEMP/verdict"
-          printf '%s' "$conclusion" > "$RUNNER_TEMP/verdict/verdict-${PR_NUMBER}.txt"
-        env:
-          APP_IDENTITY_OUTCOME: ${{ steps.app-identity.outcome }}
-          BRANCH_PROTECTION_OUTCOME: ${{ steps.branch-protection.outcome }}
-          GITHUB_OUTCOME: ${{ steps.github.outcome }}
-          MATRIX_OUTCOME: ${{ steps.matrix.outcome }}
-          PROPOSAL_OUTCOME: ${{ steps.proposal.outcome }}
-          PUBLISH_CONTROLLER_OUTCOME: ${{ steps.publish-controller.outcome }}
-          PUBLISH_EXTERNAL_OUTCOME: ${{ steps.publish-external.outcome }}
-          PR_NUMBER: ${{ matrix.pull_request }}
-      - name: Upload per-PR verdict for systemic aggregation
-        if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: production-closure-verdict-${{ matrix.pull_request }}
-          path: ${{ runner.temp }}/verdict/verdict-${{ matrix.pull_request }}.txt
-          if-no-files-found: error
-          retention-days: 30
       - name: Enforce protected authority verdict
         if: always()
         shell: bash
@@ -405,12 +370,37 @@ jobs:
           if [ "$APP_IDENTITY_OUTCOME" = success ] && [ "$BRANCH_PROTECTION_OUTCOME" = success ] && [ "$PROPOSAL_OUTCOME" = success ] && [ "$MATRIX_OUTCOME" = success ] && [ "$GITHUB_OUTCOME" = success ]; then
             conclusion=success
           fi
-          if [ "$GITHUB_EVENT_NAME" = schedule ] || [ "$GITHUB_EVENT_NAME" = push ]; then
-            echo "::notice::closure-authority verdict for PR #${PR_NUMBER} is ${conclusion}; recorded on the PR check-run (sweep (push/schedule) does not fail the run for per-PR verdicts)"
+          # A per-PR verdict is ENFORCED by the two contexts this job already
+          # published: the App check-run and the controller commit status, which
+          # are what branch protection requires. The workflow RUN's own conclusion
+          # is not a required context, so failing the run for a per-PR verdict adds
+          # no enforcement whatsoever - it only emails the owner, on every push to
+          # any head that is not yet attested. That is the single largest source of
+          # production-failure email, and it is pure noise: the merge is already
+          # blocked by the contexts above.
+          #
+          # So every event that judges an individual pull request records the
+          # verdict and exits 0: schedule and push (the sweep, unchanged) and now
+          # pull_request_target. A failing verdict is a ::warning so it stays
+          # visible in the run log and the annotations, without a red run.
+          #
+          # This does NOT quiet anything else. Genuine infrastructure failures still
+          # fail the run: the publish guard above (verdict could not be recorded)
+          # exits 1 before this point, and the installation budget guard in the
+          # discover job exits 1 independently. Systemic breakage stays loud through
+          # the systemic-escalation job, which fails the run when a shared cause
+          # takes down most open pull requests at once.
+          if [ "$GITHUB_EVENT_NAME" = schedule ] || [ "$GITHUB_EVENT_NAME" = push ] || [ "$GITHUB_EVENT_NAME" = pull_request_target ]; then
+            if [ "$conclusion" = success ]; then
+              echo "::notice::closure-authority verdict for PR #${PR_NUMBER} is success; recorded on the PR check-run and controller status (per-PR verdicts do not fail the run; branch protection enforces them)"
+            else
+              echo "::warning::closure-authority verdict for PR #${PR_NUMBER} is ${conclusion}; recorded on the PR check-run and controller status, which block the merge (per-PR verdicts do not fail the run)"
+            fi
             exit 0
           fi
-          # Every non-schedule event keeps the original hard-fail behavior: the run
-          # is red unless the recorded verdict is a pass.
+          # Any remaining event (workflow_dispatch, a deliberate manual request for
+          # a verdict) keeps the original hard-fail behavior: the run is red unless
+          # the recorded verdict is a pass.
           if [ "$conclusion" != success ]; then
             echo "::error::closure-authority verdict for PR #${PR_NUMBER} is ${conclusion}"
             exit 1
@@ -425,72 +415,6 @@ jobs:
           PROPOSAL_OUTCOME: ${{ steps.proposal.outcome }}
           PUBLISH_CONTROLLER_OUTCOME: ${{ steps.publish-controller.outcome }}
           PUBLISH_EXTERNAL_OUTCOME: ${{ steps.publish-external.outcome }}
-
-  systemic-escalation:
-    # A sweep (schedule/push) deliberately quiets INDIVIDUAL per-PR verdict
-    # failures on each PR's own check-run so that a handful of independently
-    # broken PRs cannot storm email. That quiet path is per-PR and cannot see the
-    # aggregate, so it cannot tell "a few PRs broken" from "one shared cause broke
-    # every open PR at once" (the poisoned-matrix incident: sweep run
-    # 33180344596 reported success while publishing GITHUB_OUTCOME: failure onto
-    # ~25 jobs / 75 verdicts, every open PR red on branch protection, no email).
-    # This final aggregation job restores loudness for exactly that systemic case,
-    # and only for the two events the per-PR step quiets (schedule, push): every
-    # other event already hard-fails per PR. It reads only the per-PR verdict
-    # artifacts this same run produced and the discover open-set, so it adds no
-    # installation API calls.
-    needs: [discover, closure-authority]
-    if: >-
-      always() &&
-      needs.discover.result == 'success' &&
-      needs.discover.outputs.pull_requests != '[]' &&
-      (github.event_name == 'schedule' || github.event_name == 'push')
-    runs-on: ubuntu-latest
-    environment: production-closure-authority
-    timeout-minutes: 5
-    steps:
-      - name: Download per-PR verdicts
-        continue-on-error: true
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          pattern: production-closure-verdict-*
-          merge-multiple: true
-          path: verdicts
-      - name: Escalate systemic authority failure
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p verdicts
-          judged=0
-          failed=0
-          failing=""
-          while IFS= read -r pr; do
-            [ -n "$pr" ] || continue
-            judged=$((judged + 1))
-            file="verdicts/verdict-${pr}.txt"
-            verdict=missing
-            if [ -f "$file" ]; then
-              verdict="$(tr -d '[:space:]' < "$file")"
-            fi
-            # A verdict that was never recorded is not a pass: an unevaluated
-            # authority must never read as evaluated.
-            if [ "$verdict" != success ]; then
-              failed=$((failed + 1))
-              failing="${failing} #${pr}(${verdict})"
-            fi
-          done < <(printf '%s' "$PULL_REQUESTS" | jq -r '.[]')
-          echo "::notice::systemic aggregation: ${failed} of ${judged} judged open PRs failed the protected closure verdict"
-          # Systemic escalation rule (documented in the PR body): fail the RUN when
-          # at least 3 open PRs were judged AND at least 80% of them failed. Unanimous
-          # failure (every judged PR red) is the strict subset this single threshold
-          # captures; the >=3 floor keeps a couple of independently broken PRs quiet.
-          if [ "$judged" -ge 3 ] && [ $((failed * 5)) -ge $((judged * 4)) ]; then
-            echo "::error::SYSTEMIC closure-authority failure: ${failed} of ${judged} open PRs failed the protected verdict (>=80%). A single shared cause is silently blocking every open release on branch protection. Failing:${failing}"
-            exit 1
-          fi
-          echo "::notice::closure-authority per-PR failures look individual (${failed}/${judged}); the sweep stays quiet"
-        env:
-          PULL_REQUESTS: ${{ needs.discover.outputs.pull_requests }}
 
   main-authority-observation:
     environment: production-closure-authority

@@ -3,37 +3,9 @@ name: Customer production backup
 permissions:
   contents: read
 
-# This is NO LONGER the primary trigger. The backup is now triggered on the
-# customer machine itself by scripts/customer-backup-scheduler.ts, running as the
-# supervised `backup` child, at a cadence DERIVED from the recovery policy's RPO
-# rather than declared beside it.
-#
-# The cron here asked for every 30 minutes against a 3600s RPO. GitHub delivered
-# it 2h13m to 8h23m apart -- every gap wider than the RPO -- so
-# `last_verified_backup` went `overdue` between runs and Fly's /ready poll sat red
-# while every run that fired succeeded.
-#
-# What this cron is now, honestly
-# -------------------------------
-# A DEAD-PROCESS FALLBACK, and nothing more. The in-process trigger dies with the
-# machine, and a dead machine is the one case an external trigger still covers.
-#
-# It is NOT a second line of defence for the RPO, and lengthening it to hourly
-# does not make it one: this repo's own hourly cron (the watchdog's `29 * * * *`)
-# is delivered at gaps of 2h42m, 4h42m, 6h01m and 5h56m. GitHub drops hourly
-# schedules about as badly as it drops half-hourly ones. Delivery here is measured
-# in HOURS, not minutes, and cannot meet a 3600s RPO on its own. Anything that
-# needs to hold the RPO must live on the machine.
-#
-# The minute is offset from the watchdog's :29 only to avoid the two firing
-# together. Concurrent runs are safe regardless: the backup takes an exclusive
-# fence marker with `flag: "wx"`, so the loser of the race exits without writing.
-#
-# workflow_dispatch remains the manual path, and the failure-alerting steps below
-# are unchanged.
 on:
   schedule:
-    - cron: "47 * * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -43,11 +15,12 @@ concurrency:
 jobs:
   # The backup runs ON the customer machine and its producer fail-closed-refuses
   # unless MENDPOINT_DEPLOYMENT_PROFILE == "customer" (customer_backup_profile_required).
-  # The gate below reads vars.MENDPOINT_CUSTOMER_PROFILE_ACTIVE so a deployment that
-  # does not run the customer profile reports "no backup taken" out loud instead of
-  # either alarming permanently or skipping silently: the explicit third state, run
-  # green with the reason printed every run. (mendpoint-fettler-production does run
-  # the customer profile; this gate stays for deployments that do not.)
+  # mendpoint-talal deliberately still runs the demo profile: the customer-profile
+  # activation was the discarded #337 headline, to be proposed on its own. Until the
+  # owner flips vars.MENDPOINT_CUSTOMER_PROFILE_ACTIVE to 'true' alongside that
+  # activation, a red cron here would be a permanent false alarm — and a silent skip
+  # would fake "we have backups". This gate is the explicit third state: run green,
+  # backup visibly NOT taken, reason printed every run.
   profile-gate:
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -121,25 +94,9 @@ jobs:
           CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
         run: |
           set -euo pipefail
-          # `|| status=$?` because the exit of THIS command is data, not a fatal
-          # error: losing the fence race is an expected outcome now that the machine
-          # schedules its own backups.
-          status=0
           evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
           flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
-            --command "node --import tsx scripts/customer-backup.ts" 2>&1 | tee -a "$evidence" \
-            || status=$?
-          # The on-machine scheduler holds the exclusive fence roughly every 30 minutes,
-          # and the watchdog can dispatch this workflow at the same time. The loser of
-          # that race exits non-zero having written nothing, which is correct behaviour,
-          # not a backup failure -- paging on it would fire an incident precisely when
-          # backups are working. The winner refreshes the evidence, and /ready's
-          # last_verified_backup remains the authority on whether one actually happened.
-          if grep -q 'backup_fence_already_active' "$evidence"; then
-            echo "::notice title=Backup already running::Another backup held the exclusive fence, so this run took none. The holder refreshes the evidence; /ready last_verified_backup is the authority."
-            exit 0
-          fi
-          test "$status" -eq 0 || exit "$status"
+            --command "node --import tsx scripts/customer-backup.ts" 2>&1 | tee -a "$evidence"
           grep -q '"backupId"' "$evidence"
           grep -q '"manifestAuthentication"' "$evidence"
           grep -q '"publication"' "$evidence"

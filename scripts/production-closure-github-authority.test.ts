@@ -297,7 +297,7 @@ describe("GitHub production closure authority", () => {
   it("runs per-PR authority from default-branch code and publishes an App-bound verdict", () => {
     const workflow = parse(
       readFileSync(
-        new URL("../.github/workflows/closure-authority-quiet-sweep.yml", import.meta.url),
+        new URL("../.github/workflows/closure-authority-systemic-escalation.yml", import.meta.url),
         "utf8",
       ),
     ) as {
@@ -334,7 +334,7 @@ describe("GitHub production closure authority", () => {
     // PR-scoped events collapse per PR. Added by #453, deliberately.
     expect(workflow.concurrency).toEqual({
       group:
-        "closure-authority-${{ github.event_name == 'pull_request_target' && format('pr-{0}', github.event.pull_request.number) || 'sweep' }}",
+        "closure-authority-systemic-escalation-${{ github.event_name == 'pull_request_target' && format('pr-{0}', github.event.pull_request.number) || 'sweep' }}",
       "cancel-in-progress": true,
     });
     expect(workflow.permissions).toEqual({
@@ -354,7 +354,7 @@ describe("GitHub production closure authority", () => {
       "max-parallel": 4,
     });
     expect(job.concurrency).toEqual({
-      group: "production-closure-authority-${{ matrix.pull_request }}",
+      group: "production-closure-authority-systemic-escalation-${{ matrix.pull_request }}",
       "cancel-in-progress": false,
     });
     expect(job.steps).toContainEqual(
@@ -508,7 +508,7 @@ describe("GitHub production closure authority", () => {
     const ACTIONS_TOKEN = "${{ secrets.GITHUB_TOKEN }}";
     const workflow = parse(
       readFileSync(
-        new URL("../.github/workflows/closure-authority-quiet-sweep.yml", import.meta.url),
+        new URL("../.github/workflows/closure-authority-systemic-escalation.yml", import.meta.url),
         "utf8",
       ),
     ) as {

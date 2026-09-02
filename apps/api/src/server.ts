@@ -98,7 +98,6 @@ import {
   insertAgentRun,
   listAgentRuns,
   getAgentRun,
-  getMission,
   getWardenCandidateDeliveryByRun,
   agentRunToApi,
   buildExposureReport,
@@ -3190,7 +3189,7 @@ registerLegacyBehaviorRoutes(app, db, {
 
 /**
  * Run Warden — Mendpoint API debug agent (tool loop).
- * Body: { mode?, goal, consumerId, allowedChangedPaths, verifyCommand?, errorLog?, maxSteps?, useLlm?, missionId? }
+ * Body: { mode?, goal, consumerId, allowedChangedPaths, verifyCommand?, errorLog?, maxSteps?, useLlm? }
  * Every run is queued so the worker can enforce the snapshot and lease boundaries.
  */
 app.post("/agent/runs", async (c) => {
@@ -3202,9 +3201,6 @@ app.post("/agent/runs", async (c) => {
     const tenantId = requestTenantId(c);
     const owned = tenantConsumerRepo(body.consumerId, tenantId);
     if (!owned) return c.json({ error: "consumer not found" }, 404);
-    if (body.missionId && !getMission(db, tenantId, body.missionId)) {
-      return c.json({ error: "mission not found" }, 404);
-    }
     const { consumer, repo } = owned;
     const repoPath = repo.local_path;
 
@@ -3229,7 +3225,6 @@ app.post("/agent/runs", async (c) => {
       useLlm: resolveWardenUseLlm(body),
       allowNetwork: false,
       sessionId,
-      ...(body.missionId ? { missionId: body.missionId } : {}),
     };
     const payloadJson = JSON.stringify(payload);
     const createdAt = nowIso();
