@@ -4257,6 +4257,30 @@ Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, ba
 - NOT CONTINUOUS, deliberately: no workflow runs `recovery:proof`, so the RPO check does not fire on a schedule and cannot catch backups that silently stop. Wiring it into `customer-backup.yml` was considered and rejected on two grounds. That workflow executes on the customer machine through `flyctl ssh console`, where the proof would contend for the same mutation fence as the backup it is meant to verify; and it would need a full restore plus a rollback copy of production data on the production host. The proof stays operator-run, and continuous RPO monitoring remains owed work under `ME-ENT-007`.
 - Twenty-one heavy tests ran real AES-GCM, SQLite, and whole-tree copies under the 5000ms default; twelve failed on timeout on a Windows host while CI stayed green. The genuinely heavy cases carry per-test budgets in the existing repository idiom rather than a suite-wide override, so a real hang in a fast test still fails fast.
 - Not changed: `tenantId` was reported as bound only into `requestDigest`. It is a top-level field of both the passing and failed envelopes, covered by the HMAC that `signEvidence` computes over the whole unsigned object, and re-checked against the caller on replay, so editing it in a retained file already fails authentication. No cryptographic binding can stop an operator from labelling their own single-tenant run, so nothing was added.
+## 2026-08-30 GSD Plan 10-02: tenant isolation and governed audit runtime
+
+- [x] RED: prove the production launch gate rejects a missing or unscoped tenant boundary across API, database, graph, workspace, artifact, cache, queue, mission, learning, backup, export, and observability.
+- [x] GREEN: mount the complete boundary registry in API startup and bind every registration to an attributable adversarial test contract.
+- [x] RED: specify durable tenant-owned legal-hold transitions, export destinations, redaction, source-chain anchoring, replay verification, and cross-tenant denial.
+- [x] GREEN: add append-only legal-hold and export-manifest persistence and authenticated owner/admin API routes over the existing audit hash chain.
+- [x] Verify fresh and upgrade database convergence, mutation and replay failures, focused DB/API/contract tests, affected typechecks, optimized build, GA checks, dependency audit, and diff integrity.
+- [ ] Obtain independent exact-head review, current-base protected CI, protected merge, exact-revision deployment, and live health proof.
+
+### Threats and rollback
+
+- A governed export must first verify the exact tenant audit source chain, must never accept another tenant's destination or records, and must persist only immutable destination and manifest evidence rather than transport credentials.
+- Legal holds are append-only transitions. Releasing a hold does not rewrite its creation evidence, and retention evaluation never deletes audit history in this slice.
+- Production launch fails closed if a required boundary is missing, optional but enabled without tenant scope, or lacks its named adversarial proof contract.
+- Rollback removes the new routes and startup caller while leaving existing append-only audit events untouched. New governance rows are additive and inert on an older binary.
+
+### Review
+
+- API startup now verifies all twelve required tenant boundary registrations and rejects missing, duplicate, unscoped, or unattributed registrations before serving traffic.
+- Legal holds, export destinations, and export manifests are tenant scoped, append only, hash bound, idempotent, source-chain verified, redacted, and replay verifiable. The legacy raw audit export endpoint now returns 410 and points callers to the governed flow.
+- The worker verifies both the source audit chain and governance chains for every tenant and emits a critical alert for tampering. Hostile tests cover cross-tenant access, revoked destinations, append-only trigger defeat, source and manifest tampering, governance tampering, exact replay, and fresh/reopen database convergence.
+- Verification passed: 13 focused DB/API/worker tests, 176 contract tests, 103 shared tests, the full workspace test matrix including 475 root-script assertions, full workspace typecheck, optimized 50-route production build, GA checks, production dependency audit with zero vulnerabilities, and diff integrity.
+- Independent exact-head review, protected CI, protected merge, exact-revision deployment, and live health proof remain pending. No requirement or public claim was promoted by this slice.
+- After rebasing onto current main `d232a27c`, the combined database initializer preserves both the current secrets lifecycle migrations and the governed audit schema. The exact 31-test API, worker, contract, and database matrix, full workspace typecheck, optimized 64-route production build, every GA gate, zero-vulnerability production audit, and diff integrity pass on the rebased tree.
 ## 2026-09-02 Issue authority refresh for #433
 
 - [x] Bind issue-authority record #433 to its exact live GitHub state and `updatedAt` value without changing requirement status, availability, or claims.
