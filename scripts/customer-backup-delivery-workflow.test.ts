@@ -259,10 +259,13 @@ describe("customer backup delivery controller workflow", () => {
       / 2;
     const combinedRpoEnvelope = Number(maintain.env.DELIVERY_MAX_AGE_SECONDS)
       + Number(maintain.env.DELIVERY_MAX_ACTIVE_AGE_SECONDS)
+      + (2 * Number(maintain.env.DELIVERY_SLEEP_SECONDS))
       + backupObserveWindow
       + handoffObserveWindow
       + handoffBackoffWindow
       + Number(maintain.env.DELIVERY_OBSERVATION_MARGIN_SECONDS);
+    expect(combinedRpoEnvelope).toBe(3_510);
+    expect(deliverySource).toContain("= 3510.");
     expect(combinedRpoEnvelope).toBeLessThan(CORE_DISASTER_RECOVERY_POLICY.rpoSeconds);
     expect(Number(maintain.env.DELIVERY_RPO_SECONDS)).toBe(
       CORE_DISASTER_RECOVERY_POLICY.rpoSeconds,
