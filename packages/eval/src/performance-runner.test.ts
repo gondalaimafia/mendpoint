@@ -23,6 +23,7 @@ const METRICS: readonly PerformanceMetric[] = [
   "queue_wait",
   "campaign_fanout",
 ];
+const EXPECTED_OBSERVATION_LIMIT = 10_000;
 
 const temporaryDirectories: string[] = [];
 
@@ -268,6 +269,31 @@ describe("performance runner", () => {
     expect(new Set(report.observations.map((item) => item.metric))).toEqual(new Set(METRICS));
     expect(report.evaluation?.results.every((result) => result.sampleCount === 4)).toBe(true);
     expect(report.ok).toBe(true);
+  });
+
+  it("fails closed at the evidence budget instead of retaining unbounded high-throughput samples", async () => {
+    let invocations = 0;
+    const guard = new AbortController();
+    const report = await runPerformanceProbe({
+      contract: contract(),
+      tierId: "test-tier",
+      mode: "load",
+      ...metadata(),
+      signal: guard.signal,
+      now: () => 0,
+      probe: async () => {
+        invocations += 1;
+        if (invocations > EXPECTED_OBSERVATION_LIMIT / METRICS.length + 2) guard.abort("test_guard");
+        return measurement();
+      },
+    });
+
+    expect(report.status).toBe("incomplete");
+    expect(report.ok).toBe(false);
+    expect(report.abortReason).toBe("evidence_budget_exceeded");
+    expect(report.evaluation).toBeNull();
+    expect(report.observations).toHaveLength(EXPECTED_OBSERVATION_LIMIT);
+    expect(invocations).toBeLessThanOrEqual(EXPECTED_OBSERVATION_LIMIT / METRICS.length + 2);
   });
 
   it("evaluates only the explicitly selected workload tier", async () => {

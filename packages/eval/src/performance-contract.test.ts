@@ -133,6 +133,57 @@ function completeObservations(): PerformanceObservation[] {
   ];
 }
 
+function canonicalRunEvidence(tierId: "medium" | "large", mode: "load" | "soak") {
+  const tier = FETTLER_PERFORMANCE_CONTRACT.tiers.find((candidate) => candidate.id === tierId)!;
+  const durationSeconds = mode === "load" ? tier.loadDurationSeconds : tier.soakDurationSeconds;
+  const startedAt = "2026-09-02T00:00:00.000Z";
+  const startedAtMs = Date.parse(startedAt);
+  const endedAt = new Date(startedAtMs + durationSeconds * 1_000).toISOString();
+  const languageSourceLines = Object.fromEntries(
+    tier.repository.languages.map((language, index) => [
+      language,
+      index === 0
+        ? tier.repository.sourceLines - Math.floor(tier.repository.sourceLines / tier.repository.languages.length) * (tier.repository.languages.length - 1)
+        : Math.floor(tier.repository.sourceLines / tier.repository.languages.length),
+    ]),
+  );
+  const evidence: PerformanceEvidenceBinding = {
+    ...binding(),
+    tierId,
+    measuredConcurrency: tier.concurrency,
+    repository: {
+      files: tier.repository.files,
+      sourceLines: tier.repository.sourceLines,
+      bytes: tier.repository.bytes,
+      languages: [...tier.repository.languages],
+      languageSourceLines,
+    },
+    startedAt,
+    endedAt,
+  };
+  const samples = FETTLER_PERFORMANCE_CONTRACT.metricDictionary!.flatMap((definition) =>
+    Array.from({ length: tier.minimumSamples }, (_, index): PerformanceObservation => ({
+      id: `${tierId}-${mode}-${definition.metric}-${index}`,
+      tierId,
+      metric: definition.metric,
+      mode,
+      durationMs: 1,
+      success: true,
+      observedAt: new Date(startedAtMs + Math.round(durationSeconds * 1_000 * index / (tier.minimumSamples - 1))).toISOString(),
+      tenantId: evidence.tenantId,
+      repositoryId: evidence.repositoryId,
+      repositoryRevision: evidence.repositoryRevision,
+      deploymentRevision: evidence.deploymentRevision,
+      fixtureDigest: evidence.fixtureDigest,
+      correlationId: evidence.correlationId,
+      source: evidence.source,
+      eventSource: definition.eventSource,
+      bindingSource: "probe_observed",
+    })),
+  );
+  return { evidence, samples, endedAt };
+}
+
 describe("Fettler performance contract", () => {
   it("keeps every documented objective equal to the executable authority", () => {
     const documentation = readFileSync(
@@ -263,6 +314,22 @@ describe("Fettler performance contract", () => {
       endedAt: "2026-09-02T00:10:00.000Z",
     }), "load", "2026-09-02T00:10:00.000Z"))
       .toThrow("performance_observation_stale");
+  });
+
+  it.each([
+    ["medium", "load"],
+    ["large", "load"],
+    ["medium", "soak"],
+    ["large", "soak"],
+  ] as const)("accepts a full-duration %s %s run whose observations span its declared window", (tierId, mode) => {
+    const { evidence, samples, endedAt } = canonicalRunEvidence(tierId, mode);
+    expect(evaluatePerformanceRun(
+      FETTLER_PERFORMANCE_CONTRACT,
+      samples,
+      evidence,
+      mode,
+      endedAt,
+    ).ok).toBe(true);
   });
 
   it.each([
