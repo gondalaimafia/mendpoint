@@ -4216,3 +4216,26 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The projection mints a `repository:`-scoped `REVIEW_PREFERENCE` candidate per reviewed outcome, and both live consumers of Organization Memory read it tenant-wide with no scope filter. The ReGauge plan consult picked one inferred candidate per layer by sorting on a sha256, so which repository's reviewer preference governed a plan was arbitrary; the Mission Context Compiler caps each section, so unrelated repositories could crowd out relevant memory. A single shared predicate now bounds repository-scoped memory to the repositories a consult is actually about, applied at both sites.
 - `subjectKey` components are escaped so a colon inside one component cannot collide with a different component split. Both values are enum-ish today, so this is a structural guard, not a live defect.
 - Not changed here, and routed to the schema owner instead: revoking governed-learning consent is forward-looking and does not retract already-projected candidates. That matches the append-only learning-corpus model and is a consent-policy decision, not a defect in this plan.
+
+## 2026-09-02 Issue authority refresh for #433
+
+- [x] Bind issue-authority record #433 to its exact live GitHub state and `updatedAt` value without changing requirement status, availability, or claims.
+- [x] Recompute the issue-authority integrity digest from the complete proposed matrix; the release-train digest is untouched because no release-train record changed.
+- [x] Prove every other issue-authority record still matches live GitHub (14 of 15 matched before the change; only #433 had drifted).
+- [x] Run the closure, specification, ledger, and GA validators plus the focused authority suites and diff integrity.
+
+### Root cause
+
+- `docs/PRODUCTION_CLOSURE_MATRIX.json` pinned issue #433 at `updatedAt` `2026-08-30T23:49:27Z` (the reopen). A claim comment on the issue at `2026-08-31T18:03:50Z` advanced GitHub's `updated_at`, so `closure:github:check` on every push to `main` since `5501de99` failed with `ISSUE_METADATA_MISMATCH 433`, one failed workflow run per merge. The pull-request observation scope does not verify that record, which is why pull requests stayed green while `main` stayed red.
+
+### Scope and rollback
+
+- Owned files: `docs/PRODUCTION_CLOSURE_MATRIX.json` and this task record. No issue, requirement, public claim, workflow, policy, credential, or production runtime is mutated by this branch.
+- Rollback is a single commit revert. The main authority observer remains fail closed until a refreshed matrix is merged and a new exact-main observation passes.
+
+### Review
+
+- Live GitHub readback at `2026-09-02T00:05:21.467Z` confirmed issue #433 is open, titled `Production closure FC 04: Fettler customer proof`, assigned to `gondalaimafia`, with `updatedAt` `2026-08-31T18:03:50Z`; the record retains its owner, title, URL, and requirement mappings.
+- The complete matrix recomputation produced issue-authority digest `sha256:11036b890a56a523c87ee8de129fa6d95431abec949a92dc86cb356db1269fd9`. The release-train digest remains `sha256:55d1f00bbe1af30a9787d5a5468779b94d1cd7aecb2bc9952c9e833914645a96`.
+- `npm run closure:check`, `npm run spec:check`, `npm run ledger:check`, and `npm run ga:check` exit 0. The focused GitHub authority, closure-matrix, and proposal-authority suites pass all 129 tests; the proposal-authority process exited 1 twice on a vitest worker `Timeout calling "onTaskUpdate"` under host load with 33 of 33 tests passed, not on an assertion. `git diff --check` passes; the edited blob has 0 CR bytes.
+- The same drift will recur whenever anyone comments on any of the 15 authority issues, because the record pins a volatile timestamp; that is a design decision to revisit separately, not something this refresh changes.
