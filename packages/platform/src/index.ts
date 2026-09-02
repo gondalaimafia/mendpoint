@@ -257,6 +257,11 @@ export {
 export {
   HttpsExternalKeyTransport,
   createHttpsExternalKeyTransport,
+  type ExternalKeyAddressResolver,
+  type ExternalKeyDestinationPolicy,
+  type ExternalKeyHttpsRequest,
+  type ExternalKeyHttpsRequester,
+  type ExternalKeyHttpsResponse,
   type ExternalKeyTransport,
   type HttpsExternalKeyTransportConfig,
 } from "./external-kek-client.js";

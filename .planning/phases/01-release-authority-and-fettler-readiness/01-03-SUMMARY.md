@@ -11,28 +11,32 @@ requirements: [ME-ENT-003]
 
 ## Outcome
 
-Implemented a production-capable customer-managed key adapter without changing the merged envelope, lifecycle, rotation, revocation, access-audit, or break-glass contracts from pull request #578.
+Implemented a preparatory customer-managed key adapter without changing the merged envelope, lifecycle, rotation, revocation, access-audit, or break-glass contracts from pull request #578. This adapter is not production activation evidence on its own.
 
-The adapter keeps key-encryption-key material outside Mendpoint. It sends only the existing tenant, provider, key, version, wrapped-key, and data-key fields through an injected HTTPS transport. Every external response is bound to the configured tenant, provider, key identifier, key version, customer-managed classification, attestation, and key-material fingerprint.
+The adapter keeps key-encryption-key material outside Mendpoint. It sends only the existing tenant, provider, key, version, wrapped-key, and data-key fields through an injected HTTPS transport. Every external response is bound to the configured tenant, provider, key identifier, key version, customer-managed classification, attestation, and key-material fingerprint. Every request also requires an exact destination authority and fresh validation of every resolved address.
 
 ## Artifacts
 
-- `packages/platform/src/external-kek-client.ts`: bounded HTTPS transport with mandatory TLS, timeout, response-size, redirect, content-type, and redacted-error enforcement.
+- `packages/platform/src/external-kek-client.ts`: bounded HTTPS transport with mandatory TLS, exact destination authority, public-address validation by default, explicit exact private-address authorization, DNS-rebinding checks, timeout, response-size, redirect, content-type, and redacted-error enforcement.
 - `packages/platform/src/vault-envelope.ts`: `createExternalKeyEncryptionKeyProvider` factory and fail-closed external provider implementation using the unchanged `KeyEncryptionKeyProvider` interface.
 - `packages/platform/src/index.ts`: public factory, client, configuration, and transport exports.
-- `packages/platform/src/external-kek-client.test.ts`: denial, malformed-body, oversize-body, timeout, HTTPS, and request-shape coverage.
+- `packages/platform/src/external-kek-client.test.ts`: denial, malformed-body, oversize-body, timeout, HTTPS, request-shape, IPv4 and IPv6 address-class, private-authorization, and DNS-rebinding coverage.
 - `packages/platform/src/vault-envelope.test.ts`: authority mutation, stale attestation, invalid data-key length, redaction, and full envelope seal-and-open coverage.
 
 ## Verification
 
-- `npm test -w @mendpoint/platform -- src/vault-envelope.test.ts src/external-kek-client.test.ts`: 34 tests passed.
-- `npm test -w @mendpoint/platform`: 270 tests passed across 20 files.
+- `npm test -w @mendpoint/platform -- src/vault-envelope.test.ts src/external-kek-client.test.ts`: 59 tests passed.
+- `npm test -w @mendpoint/platform`: 295 tests passed across 20 files.
 - `npm run typecheck -w @mendpoint/platform`: passed.
 - `git diff --check`: passed.
 
 ## Security and Compatibility
 
 - HTTPS is mandatory; endpoint credentials, query strings, fragments, and redirects fail closed.
+- The endpoint must match an explicit host-and-port authority. A scheme alone grants no destination authority.
+- Public mode rejects loopback, unspecified, multicast, link-local, metadata, private, shared, documentation, benchmarking, and reserved IPv4 and IPv6 destinations.
+- Private mode requires explicit operator authorization bound to the exact authority and exact private addresses; it cannot authorize loopback, metadata, link-local, multicast, or unspecified destinations.
+- All resolved addresses are checked before every request, and the default HTTPS requester pins the socket lookup to a validated address so connection setup cannot perform a second, rebound DNS lookup.
 - Provider bodies, credentials, plaintext data keys, and wrapped bytes are never copied into errors.
 - Responses with the wrong provider, tenant, key identifier, key version, attestation, or key-material fingerprint are rejected.
 - Unwrapped data keys must decode canonically to exactly 32 bytes.
@@ -45,4 +49,4 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 
 ## Remaining Release Work
 
-This plan is implemented but not merged or deployed. The canonical branch still requires exact-head independent review, current-base checks, protected continuous integration, normal merge, and production verification by the release owner.
+This preparatory adapter is implemented but not merged or deployed. `ME-ENT-003` remains incomplete. Plan 01-19 must bind the exact runtime configuration, and Plan 01-20 must prove server-to-service reachability and production behavior before the requirement can be qualified. The canonical branch also requires renewed exact-head independent review, current-base checks, protected continuous integration, normal merge, and production verification by the release owner.
