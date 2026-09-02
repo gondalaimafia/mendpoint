@@ -253,6 +253,38 @@ describe("external customer-managed key provider", () => {
       .rejects.toThrow("external_kek_operation_failed");
   });
 
+  it.each([null, undefined])("rejects malformed runtime key %s before transport", async (key) => {
+    let transportCalls = 0;
+    const transport = externalTransport({
+      attestKey: async () => {
+        transportCalls += 1;
+        return externalResponse();
+      },
+      wrapDataKey: async () => {
+        transportCalls += 1;
+        return externalResponse({ wrappedDataKey: "d3JhcHBlZA==" });
+      },
+      unwrapDataKey: async () => {
+        transportCalls += 1;
+        return externalResponse({ dataKeyBase64: Buffer.alloc(32, 9).toString("base64") });
+      },
+    });
+    const provider = createExternalKeyEncryptionKeyProvider({
+      provider: "customer-kms",
+      keys: [externalBinding],
+    }, transport);
+
+    await expect(provider.keyMaterialFingerprint(key as never, "tenant-a"))
+      .rejects.toThrow("external_kek_operation_failed");
+    await expect(provider.attestKey(key as never, "tenant-a"))
+      .rejects.toThrow("external_kek_operation_failed");
+    await expect(provider.wrapDataKey(key as never, "tenant-a", Buffer.alloc(32, 1)))
+      .rejects.toThrow("external_kek_operation_failed");
+    await expect(provider.unwrapDataKey(key as never, "tenant-a", "d3JhcHBlZA=="))
+      .rejects.toThrow("external_kek_operation_failed");
+    expect(transportCalls).toBe(0);
+  });
+
   it("rejects invalid configuration and non-customer-managed use", async () => {
     expect(() => createExternalKeyEncryptionKeyProvider({
       provider: "customer-kms",
