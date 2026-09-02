@@ -121,7 +121,7 @@ function appFor(
 ) {
   const app = new Hono<ApiEnv>();
   app.use("*", requestIdMiddleware());
-  app.use("*", createAuthMiddleware(db));
+  app.use("*", createAuthMiddleware(db, { now: () => new Date(NOW) }));
   app.route("/billing", createBillingEconomicsRoutes({ db, now, invoiceSigner }));
   return app;
 }
