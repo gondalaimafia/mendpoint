@@ -33,7 +33,7 @@ describe("Fettler production closure operating contracts", () => {
       release: "production",
       operatingContracts: {
         performance: {
-          version: "2026-09-02.v2",
+          version: "2026-09-02.v3",
           digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
           metricDictionaryVersion: "2026-09-02.v1",
           metricDictionaryDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),

@@ -9,10 +9,10 @@
   ],
   "operatingContracts": {
     "performance": {
-      "version": "2026-09-02.v2",
-      "digest": "sha256:5411c80d8492660ce0b1e050b911bc91ef8a60f6d3adcebc8c504bc5aa8e27ac",
+      "version": "2026-09-02.v3",
+      "digest": "sha256:14ac27ff997a813dd06ab8f87e99da18d44c4f350c12ef846025789184d16096",
       "metricDictionaryVersion": "2026-09-02.v1",
-      "metricDictionaryDigest": "sha256:f1deec032fceea984c8073f7d8e57d8a5f602e20c7c339a5319927289d63eb9f",
+      "metricDictionaryDigest": "sha256:e62018076ede5a066504bdeb46a60a839af2ddc54322dd95150ba6f854d4ebbf",
       "evidence": {
         "status": "not_observed",
         "reason": "production_measurement_not_supplied"
@@ -20,7 +20,7 @@
     },
     "migrationCompute": {
       "version": "mcu-v1",
-      "digest": "sha256:2f3bb3161f2d8ffc9cf3d186cbf45f05ea90be9a6c9e38a586bc279af203bbe8",
+      "digest": "sha256:0a1d4b2110ebcbff1092995f411cd1680f4520386150dce08f867c19b89fa3d3",
       "ledgerEntryTypes": [
         "reservation",
         "settlement",
