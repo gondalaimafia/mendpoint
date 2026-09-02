@@ -135,6 +135,10 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 const KEY_MATERIAL_FINGERPRINT_DOMAIN = "mendpoint:cryptographic-key-material-fingerprint:v1\0";
 const CUSTOMER_MANAGED_ATTESTATION_BINDING_VERSION = 2 as const;
 
+function isIdentifier(value: unknown): value is string {
+  return typeof value === "string" && ID.test(value);
+}
+
 export function cryptographicKeyMaterialFingerprint(material: Uint8Array): string {
   return createHash("sha256")
     .update(KEY_MATERIAL_FINGERPRINT_DOMAIN, "utf8")
@@ -483,7 +487,7 @@ class ExternalKeyEncryptionKeyProvider implements KeyEncryptionKeyProvider {
     if (
       !config
       || typeof config !== "object"
-      || !ID.test(config.provider)
+      || !isIdentifier(config.provider)
       || !Array.isArray(config.keys)
       || config.keys.length === 0
       || !transport
@@ -499,9 +503,9 @@ class ExternalKeyEncryptionKeyProvider implements KeyEncryptionKeyProvider {
       if (
         !binding
         || typeof binding !== "object"
-        || !ID.test(binding.tenantId)
-        || !ID.test(binding.keyId)
-        || !ID.test(binding.version)
+        || !isIdentifier(binding.tenantId)
+        || !isIdentifier(binding.keyId)
+        || !isIdentifier(binding.version)
         || typeof binding.attestation !== "string"
         || binding.attestation.trim().length === 0
         || binding.attestation.length > 4_096
@@ -532,12 +536,11 @@ class ExternalKeyEncryptionKeyProvider implements KeyEncryptionKeyProvider {
     const keyId = keyRecord.keyId;
     const version = keyRecord.version;
     if (
-      !ID.test(tenantId)
+      !isIdentifier(tenantId)
+      || !isIdentifier(provider)
       || provider !== this.provider
-      || typeof keyId !== "string"
-      || !ID.test(keyId)
-      || typeof version !== "string"
-      || !ID.test(version)
+      || !isIdentifier(keyId)
+      || !isIdentifier(version)
       || ("customerManaged" in keyRecord && keyRecord.customerManaged !== true)
     ) {
       throw new Error("external_kek_operation_failed");
