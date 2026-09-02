@@ -17,6 +17,7 @@ import {
 } from "./warden-candidate-delivery.js";
 
 const NOW = "2026-08-06T12:00:00.000Z";
+const SEALED_PATH = "C:\\data\\warden-evidence\\tenant-a\\approvals\\seal.json";
 const opened: Array<{ db: AppDb; directory: string }> = [];
 
 function sealedProviderChange(repositoryId = "repo-1") {
@@ -144,6 +145,31 @@ afterEach(() => {
 });
 
 describe("Warden candidate delivery outbox", () => {
+  // A source job whose payload will not parse is UNKNOWN, not unbound. Reading
+  // it as "not Mission-bound" skips the binding check below it and enqueues a
+  // delivery with no authority. Both sibling readers already fail closed on this
+  // input; restore the swallowing catch here and this test dies.
+  it("fails closed when the source job payload does not parse", () => {
+    const db = fixture();
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1' AND tenant_id = 'tenant-a'")
+      .run("{not json");
+
+    expect(() => enqueueWardenCandidateDelivery(db, {
+      tenantId: "tenant-a",
+      runId: "warden-run-1",
+      repositoryId: "repo-1",
+      snapshotId: "snapshot-1",
+      baseBranch: "main",
+      expectedBaseRevision: "a".repeat(40),
+      sealedPath: SEALED_PATH,
+      sealedSha256: `sha256:${"b".repeat(64)}`,
+      requesterPrincipalId: "human:reviewer@example.com",
+      rationale: "The target and regression checks pass.",
+      now: NOW,
+    })).toThrow("warden_candidate_delivery_source_invalid");
+    expect(db.raw.prepare("SELECT COUNT(*) AS n FROM fettler_candidate_deliveries").get()).toEqual({ n: 0 });
+  });
+
   it("atomically enqueues one deterministic tenant-scoped draft delivery", () => {
     const db = fixture();
     const input = {

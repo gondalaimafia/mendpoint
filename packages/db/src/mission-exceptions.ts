@@ -322,7 +322,12 @@ export function raiseMissionException(db: AppDb, input: {
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
-    const existing = one<MissionExceptionRow>(db, `SELECT * FROM mission_exceptions WHERE id = ?`, [recordId]);
+    // Tenant-scoped by predicate, not by the shape of the id. `recordId` is a
+    // digest that happens to include the tenant today, so an unscoped lookup is
+    // safe only for as long as that stays true. Scope it here so the guarantee
+    // does not rest on a comment about how the digest is built.
+    const existing = one<MissionExceptionRow>(db,
+      `SELECT * FROM mission_exceptions WHERE id = ? AND tenant_id = ?`, [recordId, input.tenantId]);
     if (existing) {
       const value = hydrate(existing);
       if (owns) db.raw.exec("COMMIT");

@@ -442,6 +442,10 @@ function persistRejectedApproachDecisions(db: AppDb, input: {
   } catch {
     return;
   }
+  // Raw `payload.missionId`, deliberately, and the same read every authority
+  // reader now uses. This writes a reviewer directive for an already-bound
+  // Mission; it grants nothing and gates nothing, so an unbound read here can
+  // only mean "record no directive", never "allow a mutation".
   const missionId = typeof payload.missionId === "string" ? payload.missionId : null;
   if (!missionId || !getMission(db, input.tenantId, missionId)) return;
   const evidence = [

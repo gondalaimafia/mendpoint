@@ -223,6 +223,56 @@ describe("Warden exact candidate draft delivery", () => {
   // authorizeMissionMutationDispatch. Authorizing first leaves a `dispatching`
   // row behind for a remote call that never happens, and that row then fences
   // every other Mission writer with mission_mutation_dispatch_in_flight.
+  // GATE 1 ALONE. A malformed expiry is caught only by the pre-bind gate's
+  // !Number.isFinite arm. The second gate compares with Date.parse(...) <= x,
+  // and NaN <= x is false, so it lets a malformed expiry straight through:
+  // delete gate 1 and this delivers to GitHub.
+  it("refuses a malformed snapshot expiry that only the pre-bind gate can catch", async () => {
+    const value = bindMissionAuthority(fixture());
+    const deliverExactDraft = vi.fn();
+
+    await expect(runWardenCandidateDelivery({ db: value.db,
+      job: getJob(value.db, value.job.id, "tenant-a")!,
+      github: { deliverExactDraft } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main",
+        snapshotExpiresAt: "not-a-timestamp" }),
+      now: () => "2026-08-06T12:00:01.000Z" })).resolves.toMatchObject({ status: "delivery_failed" });
+
+    expect(deliverExactDraft).not.toHaveBeenCalled();
+    expect(getJob(value.db, value.job.id, "tenant-a")?.error)
+      .toContain("warden_candidate_delivery_snapshot_expired");
+    expect(value.db.raw.prepare(`SELECT COUNT(*) AS n FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ n: 0 });
+  });
+
+  // GATE 2 ALONE. The snapshot is still live when the first gate runs and has
+  // expired by the time the remote call is about to happen. Only the second gate
+  // sees that, so deleting it delivers an expired snapshot to GitHub. The clock
+  // advances between the two reads, which is exactly the window gate 2 exists for.
+  it("refuses a snapshot that expires between the pre-bind gate and the remote call", async () => {
+    const value = bindMissionAuthority(fixture());
+    const deliverExactDraft = vi.fn();
+    let reads = 0;
+    // 1st read = deliveryAttemptAt (before expiry); every later read = remoteAttemptAt (after).
+    const now = () => (reads++ === 0 ? "2026-08-06T12:00:00.000Z" : "2026-08-06T12:00:02.000Z");
+
+    await expect(runWardenCandidateDelivery({ db: value.db,
+      job: getJob(value.db, value.job.id, "tenant-a")!,
+      github: { deliverExactDraft } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main",
+        snapshotExpiresAt: "2026-08-06T12:00:01.000Z" }),
+      now })).resolves.toMatchObject({ status: "delivery_failed" });
+
+    expect(reads).toBeGreaterThan(1);
+    expect(deliverExactDraft).not.toHaveBeenCalled();
+    expect(getJob(value.db, value.job.id, "tenant-a")?.error)
+      .toContain("warden_candidate_delivery_snapshot_expired");
+    expect(value.db.raw.prepare(`SELECT COUNT(*) AS n FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ n: 0 });
+  });
+
   it("refuses an expired snapshot before arming any Mission dispatch row", async () => {
     const value = bindMissionAuthority(fixture());
     const deliverExactDraft = vi.fn();
