@@ -11,13 +11,24 @@
  * swallow — but a maintenance sweep must not crash the worker, so detection is
  * surfaced through the alert channel rather than by throwing.
  */
-import { listTenants, verifyAuditIntegrity, type AppDb } from "@mendpoint/db";
+import {
+  listTenants,
+  verifyAuditGovernanceIntegrity,
+  verifyAuditIntegrity,
+  type AppDb,
+} from "@mendpoint/db";
 import { emitAlert } from "@mendpoint/platform";
 
 export type AuditIntegrityBreak = {
   tenantId: string;
   error: string;
   checked: number;
+  /**
+   * Which chains were actually recomputed for this tenant. Both are always
+   * verified: "not looked at" must never be reported as a clean chain.
+   */
+  sourceChainOk: boolean;
+  governanceChainOk: boolean;
 };
 
 export type AuditIntegritySummary = {
@@ -35,12 +46,18 @@ export function checkAuditIntegrityForAllTenants(db: AppDb): AuditIntegritySumma
   const tenants = listTenants(db);
   const broken: AuditIntegrityBreak[] = [];
   for (const tenant of tenants) {
+    // Both chains are verified unconditionally. Skipping the governance sweep
+    // when the source chain is already broken would report the governance
+    // chain as intact on the strength of never having read it.
     const result = verifyAuditIntegrity(db, tenant.id);
-    if (!result.ok) {
+    const governance = verifyAuditGovernanceIntegrity(db, tenant.id);
+    if (!result.ok || !governance.ok) {
       broken.push({
         tenantId: tenant.id,
-        error: result.error ?? "audit_chain_unknown",
-        checked: result.checked,
+        error: result.error ?? governance.error ?? "audit_chain_unknown",
+        checked: result.checked + governance.checked,
+        sourceChainOk: result.ok,
+        governanceChainOk: governance.ok,
       });
     }
   }
@@ -48,12 +65,16 @@ export function checkAuditIntegrityForAllTenants(db: AppDb): AuditIntegritySumma
     emitAlert({
       severity: "critical",
       source: "audit-integrity",
-      message: `Audit chain broken for tenant ${failure.tenantId}: ${failure.error}`,
+      message: `Audit chain broken for tenant ${failure.tenantId}: ${failure.error} ` +
+        `(source=${failure.sourceChainOk ? "verified" : "broken"} ` +
+        `governance=${failure.governanceChainOk ? "verified" : "broken"})`,
       tenantId: failure.tenantId,
       data: failure,
     });
     console.error(
-      `audit_integrity_broken tenant=${failure.tenantId} error=${failure.error} checked=${failure.checked}`,
+      `audit_integrity_broken tenant=${failure.tenantId} error=${failure.error} ` +
+        `checked=${failure.checked} source_chain_ok=${failure.sourceChainOk} ` +
+        `governance_chain_ok=${failure.governanceChainOk}`,
     );
   }
   return { ok: broken.length === 0, tenantsChecked: tenants.length, broken };
