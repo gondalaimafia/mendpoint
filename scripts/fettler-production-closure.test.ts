@@ -17,6 +17,10 @@ describe("Fettler production closure operating contracts", () => {
       scripts: Record<string, string>;
     };
     const gaGate = readFileSync(join(import.meta.dirname, "ga-check.ts"), "utf8");
+    const platformIndex = readFileSync(
+      join(import.meta.dirname, "..", "packages", "platform", "src", "index.ts"),
+      "utf8",
+    );
     const closureSource = readFileSync(
       join(import.meta.dirname, "fettler-production-closure.ts"),
       "utf8",
@@ -30,6 +34,8 @@ describe("Fettler production closure operating contracts", () => {
     expect(closureSource).toContain("reserveUsage");
     expect(closureSource).toContain("reconcileUsageLedger");
     expect(closureSource).not.toContain("createMcuLedgerEntry");
+    expect(platformIndex).not.toContain("createMcuLedgerEntry");
+    expect(platformIndex).not.toContain("reconcileMcuLedgerLifecycle");
   });
 
   it("binds performance and metric definitions without claiming a measurement", () => {

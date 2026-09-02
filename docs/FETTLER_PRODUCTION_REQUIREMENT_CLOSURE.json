@@ -35,8 +35,10 @@
       "selfCheck": {
         "reconciled": true,
         "entryCount": 2,
+        "storageAuthority": "usage_ledger_entries",
+        "ledgerHeadHash": "eb5dae75597ea200f642c9ba62c73726cd754cee37e8431a75f4e3b307411580",
         "settledEntryIds": [
-          "mcu-entry-437267e7b985b021aec33c1ccce5cf0af6313d947ee32a93fa9d25bedb666701"
+          "settlement-fettler-closure"
         ]
       }
     }

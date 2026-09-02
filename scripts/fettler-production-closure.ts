@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   FETTLER_PERFORMANCE_CONTRACT,
@@ -8,13 +9,21 @@ import {
   validatePerformanceContract,
 } from "../packages/eval/src/performance-contract.js";
 import {
-  createMcuLedgerEntry,
   MCU_LEDGER_ENTRY_TYPES,
   MCU_MICROS,
   MCU_SCHEDULE_DIGEST,
+  MCU_SCHEDULE_V1,
   MCU_VERSION,
-  reconcileMcuLedgerLifecycle,
 } from "../packages/platform/src/mcu.js";
+import {
+  createDb,
+  createUsageEntitlement,
+  createUsagePriceVersion,
+  listUsageLedger,
+  reconcileUsageLedger,
+  reserveUsage,
+  settleUsageReservation,
+} from "../packages/db/src/index.js";
 
 export const FETTLER_PRODUCTION_CLOSURE_SCHEMA_VERSION =
   "fettler-production-requirement-closure/1" as const;
@@ -23,46 +32,70 @@ export const FETTLER_PRODUCTION_CLOSURE_ARTIFACT_PATH = fileURLToPath(
 );
 
 function validateMigrationComputeAuthority() {
-  const reservation = createMcuLedgerEntry({
-    tenantId: "tenant-fettler-closure",
-    entryType: "reservation",
-    entitlementId: "entitlement-fettler-production",
-    idempotencyKey: "fettler-closure-reservation",
-    taskId: "task-fettler-closure",
-    campaignId: null,
-    reservationId: null,
-    reservedMcuMicrosDelta: MCU_MICROS,
-    consumedMcuMicrosDelta: 0,
-    invoiceReference: null,
-    actorId: "release-owner",
-    reasonCode: "operating-contract-self-check",
-    occurredAt: "2026-09-01T00:00:00.000Z",
-  }, null);
-  const settlement = createMcuLedgerEntry({
-    tenantId: reservation.tenantId,
-    entryType: "settlement",
-    entitlementId: reservation.entitlementId,
-    idempotencyKey: "fettler-closure-settlement",
-    taskId: reservation.taskId,
-    campaignId: reservation.campaignId,
-    reservationId: reservation.id,
-    reservedMcuMicrosDelta: -MCU_MICROS,
-    consumedMcuMicrosDelta: MCU_MICROS,
-    invoiceReference: "invoice-fettler-closure",
-    actorId: "release-owner",
-    reasonCode: "operating-contract-self-check",
-    occurredAt: "2026-09-01T00:00:01.000Z",
-  }, reservation);
-  const reconciliation = reconcileMcuLedgerLifecycle({
-    scheduleVersion: MCU_VERSION,
-    scheduleDigest: MCU_SCHEDULE_DIGEST,
-    entries: [reservation, settlement],
-  });
-  return {
-    reconciled: reconciliation.reconciled,
-    entryCount: reconciliation.entryCount,
-    settledEntryIds: reconciliation.invoiceMappings.flatMap((mapping) => mapping.settledEntryIds),
-  };
+  const directory = mkdtempSync(join(tmpdir(), "mendpoint-fettler-closure-"));
+  const db = createDb(join(directory, "closure.sqlite"));
+  try {
+    createUsagePriceVersion(db, {
+      id: "price-fettler-closure",
+      tenantId: "tenant_default",
+      formulaVersion: MCU_SCHEDULE_V1.settlement.formulaVersion,
+      currency: "USD",
+      pricePerMcuMoneyMicros: 10_000,
+      effectiveAt: "2026-09-01T00:00:00.000Z",
+      expiresAt: "2026-10-01T00:00:00.000Z",
+      contractReference: MCU_SCHEDULE_DIGEST,
+      createdAt: "2026-09-01T00:00:00.000Z",
+    });
+    createUsageEntitlement(db, {
+      id: "entitlement-fettler-production",
+      tenantId: "tenant_default",
+      priceVersionId: "price-fettler-closure",
+      quotaMcuMicros: MCU_MICROS,
+      features: ["fettler"],
+      contractReference: MCU_SCHEDULE_DIGEST,
+      periodStart: "2026-09-01T00:00:00.000Z",
+      periodEnd: "2026-10-01T00:00:00.000Z",
+      createdAt: "2026-09-01T00:00:00.000Z",
+    });
+    const reservation = reserveUsage(db, {
+      id: "reservation-fettler-closure",
+      tenantId: "tenant_default",
+      idempotencyKey: "fettler-closure-reservation",
+      taskId: "task-fettler-closure",
+      campaignId: null,
+      mcuMicros: MCU_MICROS,
+      reason: "operating-contract-self-check",
+      createdAt: "2026-09-01T00:00:00.000Z",
+    });
+    const settlement = settleUsageReservation(db, {
+      id: "settlement-fettler-closure",
+      tenantId: reservation.tenantId,
+      idempotencyKey: "fettler-closure-settlement",
+      reservationId: reservation.id,
+      actualMcuMicros: MCU_MICROS,
+      invoiceReference: "invoice-fettler-closure",
+      reason: "operating-contract-self-check",
+      createdAt: "2026-09-01T00:00:01.000Z",
+    });
+    const reconciliation = reconcileUsageLedger(db, reservation.tenantId);
+    if (!reconciliation.ok) {
+      throw new Error(reconciliation.error ?? "fettler_mcu_self_check_failed");
+    }
+    const entries = listUsageLedger(db, reservation.tenantId);
+    return {
+      reconciled: true as const,
+      entryCount: reconciliation.checked,
+      storageAuthority: "usage_ledger_entries" as const,
+      ledgerHeadHash: settlement.entryHash,
+      settledEntryIds: entries
+        .filter((entry) => entry.entryType === "settlement")
+        .map((entry) => entry.id)
+        .sort(),
+    };
+  } finally {
+    db.raw.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 export function buildFettlerProductionClosure() {

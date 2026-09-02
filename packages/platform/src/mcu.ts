@@ -64,6 +64,12 @@ export const MCU_LEDGER_ENTRY_TYPES = [
 
 export type McuLedgerEntryType = typeof MCU_LEDGER_ENTRY_TYPES[number];
 
+// This executable lifecycle is an internal contract model, not a persistence
+// authority. Production storage, idempotency, reconciliation, and invoice
+// consumers use the append-only usage_ledger_entries implementation in
+// @mendpoint/db. Keep these symbols out of the public platform barrel so a
+// second production ledger cannot be selected accidentally.
+
 export type McuFinanceAuthorization = Readonly<{
   schemaVersion: typeof MCU_FINANCE_AUTHORIZATION_VERSION;
   approvalId: string;
