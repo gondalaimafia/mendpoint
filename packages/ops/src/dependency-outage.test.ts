@@ -84,6 +84,76 @@ describe("dependency outage decision", () => {
       retryable: true,
       circuitState: "half_open",
       reason: "half_open_probe",
+      circuit: {
+        state: "half_open",
+        openedAt: "2026-09-01T11:59:50.000Z",
+        cooldownMs: 30_000,
+        consecutiveFailures: 4,
+      },
+    });
+  });
+
+  it("carries the complete circuit snapshot through three failures and a half-open failure", () => {
+    const first = classifyDependencyOutage(failure({
+      retryBudget: 6,
+      circuit: { state: "closed", cooldownMs: 30_000, consecutiveFailures: 0 },
+    }));
+    expect(first.circuit).toEqual({
+      state: "closed",
+      cooldownMs: 30_000,
+      consecutiveFailures: 1,
+    });
+
+    const second = classifyDependencyOutage(failure({
+      attempt: 2,
+      retryBudget: 6,
+      now: "2026-09-01T12:00:02.000Z",
+      circuit: first.circuit,
+    }));
+    expect(second.circuit).toEqual({
+      state: "closed",
+      cooldownMs: 30_000,
+      consecutiveFailures: 2,
+    });
+
+    const third = classifyDependencyOutage(failure({
+      attempt: 3,
+      retryBudget: 6,
+      now: "2026-09-01T12:00:04.000Z",
+      circuit: second.circuit,
+    }));
+    expect(third).toMatchObject({ action: "wait", circuitState: "open" });
+    expect(third.circuit).toEqual({
+      state: "open",
+      openedAt: "2026-09-01T12:00:04.000Z",
+      cooldownMs: 30_000,
+      consecutiveFailures: 3,
+    });
+
+    const probe = classifyDependencyOutage(failure({
+      attempt: 4,
+      retryBudget: 6,
+      now: "2026-09-01T12:00:34.000Z",
+      circuit: third.circuit,
+    }));
+    expect(probe.circuit).toEqual({
+      state: "half_open",
+      openedAt: "2026-09-01T12:00:04.000Z",
+      cooldownMs: 30_000,
+      consecutiveFailures: 3,
+    });
+
+    const reopened = classifyDependencyOutage(failure({
+      attempt: 4,
+      retryBudget: 6,
+      now: "2026-09-01T12:00:34.000Z",
+      circuit: probe.circuit,
+    }));
+    expect(reopened.circuit).toEqual({
+      state: "open",
+      openedAt: "2026-09-01T12:00:34.000Z",
+      cooldownMs: 30_000,
+      consecutiveFailures: 4,
     });
   });
 

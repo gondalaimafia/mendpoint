@@ -8,6 +8,8 @@ import { Octokit } from "@octokit/rest";
 import type { FileEdit, GitHubDelivery, PullRequestResult } from "./index.js";
 import {
   deliverExactDraftWithOctokit,
+  ExactDraftRemoteSideEffectUncertainError,
+  validateExactDraftDeliveryInput,
   type ExactDraftDeliveryInput,
   type ExactDraftDeliveryResult,
 } from "./exact-draft.js";
@@ -33,6 +35,7 @@ import {
 const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
 const GITHUB_FILE_CONCURRENCY = 8;
 const OUTAGE_IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+const EXACT_DRAFT_SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 
 export type GitHubDependencyFailureKind =
   | "timeout"
@@ -56,7 +59,15 @@ export type GitHubDependencyOutageDecision = Readonly<{
   reason: string;
   nextAttemptAt: string | null;
   circuitState: "closed" | "open" | "half_open";
+  circuit: GitHubDependencyCircuitSnapshot;
   standing: "healthy" | "degraded_retrying" | "degraded_blocked" | "degraded_failed" | "recovering";
+}>;
+
+export type GitHubDependencyCircuitSnapshot = Readonly<{
+  state: "closed" | "open" | "half_open";
+  openedAt?: string;
+  cooldownMs: number;
+  consecutiveFailures: number;
 }>;
 
 export type GitHubDependencyOutageOperation<T> = Readonly<{
@@ -76,7 +87,12 @@ export type GitHubDependencyOutageOperation<T> = Readonly<{
   execute: () => Promise<Readonly<{ value: T; completionDigest: string }>>;
   classify: (
     error: unknown,
-    context: Readonly<{ attempt: number; retryBudget: number; now: string }>,
+    context: Readonly<{
+      attempt: number;
+      retryBudget: number;
+      now: string;
+      circuit: GitHubDependencyCircuitSnapshot;
+    }>,
   ) => GitHubDependencyOutageDecision;
 }>;
 
@@ -104,6 +120,7 @@ export type GitHubDependencyOutagePolicy = (
     now: string;
     expiresAt: string;
     retryAfterMs?: number;
+    circuit: GitHubDependencyCircuitSnapshot;
   }>,
 ) => GitHubDependencyOutageDecision;
 
@@ -187,6 +204,191 @@ export class GitHubDependencyOutageError extends Error {
   ) {
     super(`github_dependency_outage_${status}`);
     this.name = "GitHubDependencyOutageError";
+  }
+}
+
+type ExistingExactDraftState =
+  | Readonly<{ status: "missing" }>
+  | Readonly<{ status: "commit_ready"; commitSha: string }>
+  | Readonly<{ status: "completed"; value: ExactDraftDeliveryResult; completionDigest: string }>;
+
+function exactDraftResult(
+  pull: Readonly<{
+    number: number;
+    html_url: string;
+    state: string;
+    draft?: boolean | null;
+    title: string;
+    body?: string | null;
+    head: Readonly<{ ref: string; sha: string }>;
+    base: Readonly<{ ref: string; sha: string }>;
+  }>,
+  input: ExactDraftDeliveryInput,
+  commitSha: string,
+): ExactDraftDeliveryResult {
+  if (pull.state !== "open" || pull.draft !== true || pull.head.ref !== input.branch ||
+      pull.head.sha !== commitSha || pull.base.ref !== input.baseBranch ||
+      pull.title !== input.title || pull.body !== input.body) {
+    throw new Error("github_exact_draft_pull_request_diverged");
+  }
+  return Object.freeze({
+    number: pull.number,
+    url: pull.html_url,
+    branch: input.branch,
+    title: input.title,
+    draft: true,
+    baseBranch: input.baseBranch,
+    baseSha: input.expectedBaseSha,
+    commitSha,
+  });
+}
+
+async function exactDraftBranchHead(
+  octokit: Octokit,
+  input: ExactDraftDeliveryInput,
+): Promise<string | undefined> {
+  try {
+    const response = await octokit.git.getRef({
+      owner: input.owner,
+      repo: input.repo,
+      ref: `heads/${input.branch}`,
+    });
+    const sha = String(response.data.object.sha ?? "");
+    if (!EXACT_DRAFT_SHA.test(sha)) throw new Error("github_exact_draft_ref_invalid");
+    return sha;
+  } catch (error) {
+    if (isNotFoundError(error)) return undefined;
+    throw error;
+  }
+}
+
+async function inspectExistingExactDraft(
+  octokit: Octokit,
+  rawInput: ExactDraftDeliveryInput,
+): Promise<ExistingExactDraftState> {
+  const input = validateExactDraftDeliveryInput(rawInput);
+  const commitSha = await exactDraftBranchHead(octokit, input);
+  if (commitSha === undefined || commitSha === input.expectedBaseSha) {
+    return Object.freeze({ status: "missing" });
+  }
+
+  const commitResponse = await octokit.git.getCommit({
+    owner: input.owner,
+    repo: input.repo,
+    commit_sha: commitSha,
+  });
+  const commit = commitResponse.data;
+  const commitDate = Date.parse(input.commitDate);
+  const identityMatches = commit.message === input.commitMessage &&
+    commit.parents.length === 1 && commit.parents[0]?.sha === input.expectedBaseSha &&
+    commit.author?.name === "Mendpoint" && commit.author.email === "delivery@mendpoint.ai" &&
+    Date.parse(commit.author.date ?? "") === commitDate && commit.committer?.name === "Mendpoint" &&
+    commit.committer.email === "delivery@mendpoint.ai" &&
+    Date.parse(commit.committer.date ?? "") === commitDate;
+  if (commit.sha !== commitSha || !EXACT_DRAFT_SHA.test(String(commit.tree.sha ?? "")) || !identityMatches) {
+    throw new Error("github_exact_draft_branch_diverged");
+  }
+
+  const baseCommitResponse = await octokit.git.getCommit({
+    owner: input.owner,
+    repo: input.repo,
+    commit_sha: input.expectedBaseSha,
+  });
+  const baseTreeSha = String(baseCommitResponse.data.tree.sha ?? "");
+  if (!EXACT_DRAFT_SHA.test(baseTreeSha)) throw new Error("github_exact_draft_branch_diverged");
+  const [baseTreeResponse, treeResponse] = await Promise.all([
+    octokit.git.getTree({
+      owner: input.owner,
+      repo: input.repo,
+      tree_sha: baseTreeSha,
+      recursive: "true",
+    }),
+    octokit.git.getTree({
+      owner: input.owner,
+      repo: input.repo,
+      tree_sha: commit.tree.sha,
+      recursive: "true",
+    }),
+  ]);
+  if (baseTreeResponse.data.truncated === true || treeResponse.data.truncated === true) {
+    throw new Error("github_exact_draft_branch_diverged");
+  }
+  const leaves = (tree: typeof treeResponse.data.tree) => new Map(tree
+    .filter((item) => item.type !== "tree" && typeof item.path === "string")
+    .map((item) => [item.path!, `${item.mode}:${item.sha}`]));
+  const baseTreeByPath = leaves(baseTreeResponse.data.tree);
+  const treeByPath = new Map(treeResponse.data.tree.map((item) => [item.path, item]));
+  const headLeaves = leaves(treeResponse.data.tree);
+  const expectedPaths = new Set(input.files.map((file) => file.path));
+  for (const path of new Set([...baseTreeByPath.keys(), ...headLeaves.keys()])) {
+    if (baseTreeByPath.get(path) !== headLeaves.get(path) && !expectedPaths.has(path)) {
+      throw new Error("github_exact_draft_branch_diverged");
+    }
+  }
+  await mapWithConcurrency(input.files, GITHUB_FILE_CONCURRENCY, async (file) => {
+    const treeEntry = treeByPath.get(file.path);
+    if ("delete" in file) {
+      if (treeEntry !== undefined) {
+        throw new Error("github_exact_draft_branch_diverged");
+      }
+      return;
+    }
+    if (treeEntry?.type !== "blob" || treeEntry.mode !== file.mode) {
+      throw new Error("github_exact_draft_branch_diverged");
+    }
+    const contentResponse = await octokit.repos.getContent({
+      owner: input.owner,
+      repo: input.repo,
+      path: file.path,
+      ref: commitSha,
+    });
+    const content = contentResponse.data;
+    if (Array.isArray(content) || content.type !== "file" || content.encoding !== "base64" ||
+        Buffer.from(content.content, "base64").toString("utf8") !== file.content) {
+      throw new Error("github_exact_draft_branch_diverged");
+    }
+  });
+
+  const pulls = await octokit.pulls.list({
+    owner: input.owner,
+    repo: input.repo,
+    state: "all",
+    head: `${input.owner}:${input.branch}`,
+  });
+  if (pulls.data.length === 0) return Object.freeze({ status: "commit_ready", commitSha });
+  if (pulls.data.length !== 1) throw new Error("github_exact_draft_pull_request_diverged");
+  const value = exactDraftResult(pulls.data[0]!, input, commitSha);
+  return Object.freeze({ status: "completed", value, completionDigest: digest(value) });
+}
+
+async function deliverFromExistingExactCommit(
+  octokit: Octokit,
+  input: ExactDraftDeliveryInput,
+  commitSha: string,
+): Promise<ExactDraftDeliveryResult> {
+  try {
+    const created = await octokit.pulls.create({
+      owner: input.owner,
+      repo: input.repo,
+      title: input.title,
+      head: input.branch,
+      base: input.baseBranch,
+      body: input.body,
+      draft: true,
+    });
+    return exactDraftResult(created.data, input, commitSha);
+  } catch (error) {
+    try {
+      const recovered = await inspectExistingExactDraft(octokit, input);
+      if (recovered.status === "completed") return recovered.value;
+    } catch (recoveryError) {
+      if (recoveryError instanceof Error &&
+          recoveryError.message === "github_exact_draft_pull_request_diverged") {
+        throw recoveryError;
+      }
+      throw new ExactDraftRemoteSideEffectUncertainError(error);
+    }
+    throw new ExactDraftRemoteSideEffectUncertainError(error);
   }
 }
 
@@ -620,13 +822,21 @@ export class GitHubAppDelivery implements GitHubDelivery {
       expiresAt,
       leaseMs: options.leaseMs ?? 30_000,
       ...(options.authorityVersion === undefined ? {} : { authorityVersion: options.authorityVersion }),
-      // Exact-draft delivery itself reads the branch and pull request before
-      // every externally visible retry and reuses only exact matching state.
-      // There is no safe result to return without that exact-draft validation.
-      reconcile: async () => Object.freeze({ status: "missing" as const }),
+      reconcile: async () => this.withAuthRetry(async (octokit) => {
+        const observed = await inspectExistingExactDraft(octokit, input);
+        return observed.status === "completed"
+          ? observed
+          : Object.freeze({ status: "missing" as const });
+      }),
       execute: async () => {
-        const value = await this.withAuthRetry((octokit) =>
-          deliverExactDraftWithOctokit(octokit, input));
+        const value = await this.withAuthRetry(async (octokit) => {
+          const observed = await inspectExistingExactDraft(octokit, input);
+          if (observed.status === "completed") return observed.value;
+          if (observed.status === "commit_ready") {
+            return deliverFromExistingExactCommit(octokit, input, observed.commitSha);
+          }
+          return deliverExactDraftWithOctokit(octokit, input);
+        });
         return Object.freeze({ value, completionDigest: digest(value) });
       },
       classify: (error, context) => {
@@ -641,6 +851,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
           retryBudget: context.retryBudget,
           now: context.now,
           expiresAt,
+          circuit: context.circuit,
           ...(evidence.retryAfterMs === undefined ? {} : { retryAfterMs: evidence.retryAfterMs }),
         });
       },

@@ -87,6 +87,7 @@ export {
   type ResolvedModelBackend,
   type ModelProviderFailureKind,
   type ModelProviderFailureEvidence,
+  type ModelDependencyCircuitSnapshot,
   type ModelDependencyOutageDecision,
   type ModelDependencyOutageOperation,
   type ModelDependencyOutageResult,

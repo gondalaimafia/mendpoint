@@ -70,6 +70,7 @@ export type DependencyOutageDecision = Readonly<{
   nextAttemptAt: string | null;
   attemptsRemaining: number;
   circuitState: DependencyCircuitState;
+  circuit: DependencyCircuitSnapshot;
   standing: DependencyOutageStanding;
 }>;
 
@@ -101,11 +102,26 @@ function decision(
   input: DependencyOutageFailureInput,
   values: Omit<DependencyOutageDecision, "schemaVersion" | "failureKind" | "attemptsRemaining">,
 ): DependencyOutageDecision {
+  if (values.circuitState !== values.circuit.state) {
+    throw new Error("dependency_outage_circuit_decision_mismatch");
+  }
   return Object.freeze({
     schemaVersion: DEPENDENCY_OUTAGE_SCHEMA_VERSION,
     failureKind: input.failureKind,
     attemptsRemaining: Math.max(0, input.retryBudget - input.attempt),
     ...values,
+  });
+}
+
+function openedCircuit(
+  circuit: DependencyCircuitSnapshot,
+  openedAt: string,
+): DependencyCircuitSnapshot {
+  return Object.freeze({
+    state: "open",
+    openedAt,
+    cooldownMs: circuit.cooldownMs,
+    consecutiveFailures: circuit.consecutiveFailures + 1,
   });
 }
 
@@ -184,50 +200,59 @@ export function classifyDependencyOutage(
       reason: "completed_effect_requires_reconciliation",
       nextAttemptAt: null,
       circuitState: circuit.state,
+      circuit,
       standing: "recovering",
     });
   }
 
   if (input.failureKind === "expired" || now >= expiresAt) {
+    const nextCircuit = openedCircuit(circuit, input.now);
     return decision(input, {
       action: "fail",
       retryable: false,
       reason: "operation_expired",
       nextAttemptAt: null,
       circuitState: "open",
+      circuit: nextCircuit,
       standing: "degraded_failed",
     });
   }
 
   if (input.failureKind === "authentication" || input.failureKind === "permission") {
+    const nextCircuit = openedCircuit(circuit, input.now);
     return decision(input, {
       action: "await_authority",
       retryable: false,
       reason: "authority_change_required",
       nextAttemptAt: null,
       circuitState: "open",
+      circuit: nextCircuit,
       standing: "degraded_blocked",
     });
   }
 
   if (input.failureKind === "permanent") {
+    const nextCircuit = openedCircuit(circuit, input.now);
     return decision(input, {
       action: "fail",
       retryable: false,
       reason: "permanent_failure",
       nextAttemptAt: null,
       circuitState: "open",
+      circuit: nextCircuit,
       standing: "degraded_failed",
     });
   }
 
   if (input.attempt >= input.retryBudget) {
+    const nextCircuit = openedCircuit(circuit, input.now);
     return decision(input, {
       action: "fail",
       retryable: false,
       reason: "retry_budget_exhausted",
       nextAttemptAt: null,
       circuitState: "open",
+      circuit: nextCircuit,
       standing: "degraded_failed",
     });
   }
@@ -242,32 +267,45 @@ export function classifyDependencyOutage(
         reason: "circuit_open",
         nextAttemptAt: new Date(probeAt).toISOString(),
         circuitState: "open",
+        circuit,
         standing: "degraded_retrying",
       });
     }
+    const probeCircuit = Object.freeze({
+      ...circuit,
+      state: "half_open" as const,
+    });
     return decision(input, {
       action: "retry",
       retryable: true,
       reason: "half_open_probe",
       nextAttemptAt: input.now,
       circuitState: "half_open",
+      circuit: probeCircuit,
       standing: "recovering",
     });
   }
 
   if (circuit.state === "half_open" ||
       circuit.consecutiveFailures + 1 >= CIRCUIT_FAILURE_THRESHOLD) {
+    const nextCircuit = openedCircuit(circuit, input.now);
     return decision(input, {
       action: "wait",
       retryable: true,
       reason: "circuit_opened",
       nextAttemptAt: new Date(now + circuit.cooldownMs).toISOString(),
       circuitState: "open",
+      circuit: nextCircuit,
       standing: "degraded_retrying",
     });
   }
 
   const delayMs = deterministicRetryDelayMs(input);
+  const nextCircuit = Object.freeze({
+    state: "closed" as const,
+    cooldownMs: circuit.cooldownMs,
+    consecutiveFailures: circuit.consecutiveFailures + 1,
+  });
   return decision(input, {
     action: "retry",
     retryable: true,
@@ -276,6 +314,7 @@ export function classifyDependencyOutage(
         input.failureKind === "timeout" ? "provider_timeout" : "transient_failure",
     nextAttemptAt: new Date(now + delayMs).toISOString(),
     circuitState: "closed",
+    circuit: nextCircuit,
     standing: "degraded_retrying",
   });
 }

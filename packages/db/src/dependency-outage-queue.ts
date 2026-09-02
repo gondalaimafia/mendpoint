@@ -27,13 +27,24 @@ export type DependencyOutageFailureDecision = Readonly<{
   reason: string;
   nextAttemptAt: string | null;
   circuitState: DependencyOutageCircuitState;
+  circuit: DependencyOutageCircuitSnapshot;
   standing: DependencyOutageStanding;
+}>;
+
+export type DependencyOutageCircuitSnapshot = Readonly<{
+  state: DependencyOutageCircuitState;
+  openedAt?: string;
+  cooldownMs: number;
+  consecutiveFailures: number;
 }>;
 
 export type DependencyOutageRecord = DependencyOutageScope & Readonly<{
   status: DependencyOutageStatus;
   standing: DependencyOutageStanding;
   circuitState: DependencyOutageCircuitState;
+  circuitOpenedAt: string | null;
+  circuitCooldownMs: number;
+  consecutiveFailures: number;
   retryBudget: number;
   attemptsConsumed: number;
   nextAttemptAt: string;
@@ -79,7 +90,12 @@ export type DependencyOutageRunOperation<T> = DependencyOutageScope & Readonly<{
   execute: () => Promise<Readonly<{ value: T; completionDigest: string }>>;
   classify: (
     error: unknown,
-    context: Readonly<{ attempt: number; retryBudget: number; now: string }>,
+    context: Readonly<{
+      attempt: number;
+      retryBudget: number;
+      now: string;
+      circuit: DependencyOutageCircuitSnapshot;
+    }>,
   ) => DependencyOutageFailureDecision;
 }>;
 
@@ -101,6 +117,9 @@ type OutageRow = {
   status: DependencyOutageStatus;
   standing: DependencyOutageStanding;
   circuit_state: DependencyOutageCircuitState;
+  circuit_opened_at: string | null;
+  circuit_cooldown_ms: number;
+  consecutive_failures: number;
   retry_budget: number;
   attempts_consumed: number;
   next_attempt_at: string;
@@ -169,6 +188,9 @@ function fromRow(row: OutageRow): DependencyOutageRecord {
     status: row.status,
     standing: row.standing,
     circuitState: row.circuit_state,
+    circuitOpenedAt: row.circuit_opened_at,
+    circuitCooldownMs: row.circuit_cooldown_ms,
+    consecutiveFailures: row.consecutive_failures,
     retryBudget: row.retry_budget,
     attemptsConsumed: row.attempts_consumed,
     nextAttemptAt: row.next_attempt_at,
@@ -196,6 +218,9 @@ function ensureSchema(db: DatabaseSync): void {
       status TEXT NOT NULL CHECK (status IN ('queued','claimed','blocked','failed','completed')),
       standing TEXT NOT NULL CHECK (standing IN ('healthy','degraded_retrying','degraded_blocked','degraded_failed','recovering')),
       circuit_state TEXT NOT NULL CHECK (circuit_state IN ('closed','open','half_open')),
+      circuit_opened_at TEXT,
+      circuit_cooldown_ms INTEGER NOT NULL DEFAULT 30000 CHECK (circuit_cooldown_ms > 0),
+      consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
       retry_budget INTEGER NOT NULL CHECK (retry_budget > 0),
       attempts_consumed INTEGER NOT NULL DEFAULT 0 CHECK (attempts_consumed >= 0),
       next_attempt_at TEXT NOT NULL,
@@ -234,6 +259,36 @@ function ensureSchema(db: DatabaseSync): void {
         SELECT RAISE(ABORT, 'dependency_outage_history_immutable');
       END;
   `);
+  const columns = new Set((db.prepare("PRAGMA table_info(dependency_outage_operations)").all() as
+    Array<{ name: string }>).map((column) => column.name));
+  if (!columns.has("circuit_opened_at")) {
+    db.exec("ALTER TABLE dependency_outage_operations ADD COLUMN circuit_opened_at TEXT");
+  }
+  if (!columns.has("circuit_cooldown_ms")) {
+    db.exec("ALTER TABLE dependency_outage_operations ADD COLUMN circuit_cooldown_ms INTEGER NOT NULL DEFAULT 30000");
+  }
+  if (!columns.has("consecutive_failures")) {
+    db.exec("ALTER TABLE dependency_outage_operations ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
+function circuitFromRow(row: OutageRow): DependencyOutageCircuitSnapshot {
+  return Object.freeze({
+    state: row.circuit_state,
+    ...(row.circuit_opened_at === null ? {} : { openedAt: row.circuit_opened_at }),
+    cooldownMs: row.circuit_cooldown_ms,
+    consecutiveFailures: row.consecutive_failures,
+  });
+}
+
+function validateCircuit(circuit: DependencyOutageCircuitSnapshot): void {
+  if (!Number.isSafeInteger(circuit.cooldownMs) || circuit.cooldownMs < 1 ||
+      circuit.cooldownMs > 24 * 60 * 60 * 1_000 ||
+      !Number.isSafeInteger(circuit.consecutiveFailures) || circuit.consecutiveFailures < 0 ||
+      (circuit.state === "open" && circuit.openedAt === undefined)) {
+    throw new Error("dependency_outage_circuit_invalid");
+  }
+  if (circuit.openedAt !== undefined) iso(circuit.openedAt, "dependency_outage_circuit_invalid");
 }
 
 function withImmediateTransaction<T>(db: DatabaseSync, work: () => T): T {
@@ -314,6 +369,9 @@ export class DependencyOutageQueue {
       status?: "queued" | "blocked" | "failed";
       authorityVersion?: string;
       circuitState?: DependencyOutageCircuitState;
+      circuitOpenedAt?: string;
+      circuitCooldownMs?: number;
+      consecutiveFailures?: number;
     }>,
     observedAt = this.now(),
   ): DependencyOutageRecord {
@@ -326,6 +384,13 @@ export class DependencyOutageQueue {
       throw new Error("dependency_outage_expired");
     }
     const status = input.status ?? "queued";
+    const circuit: DependencyOutageCircuitSnapshot = Object.freeze({
+      state: input.circuitState ?? "closed",
+      ...(input.circuitOpenedAt === undefined ? {} : { openedAt: input.circuitOpenedAt }),
+      cooldownMs: input.circuitCooldownMs ?? 30_000,
+      consecutiveFailures: input.consecutiveFailures ?? 0,
+    });
+    validateCircuit(circuit);
     return withImmediateTransaction(this.db, () => {
       const existing = this.row(input);
       if (existing) {
@@ -336,13 +401,15 @@ export class DependencyOutageQueue {
       }
       this.db.prepare(`INSERT INTO dependency_outage_operations (
         tenant_id, dependency_kind, provider_id, operation_id, operation_digest,
-        status, standing, circuit_state, retry_budget, attempts_consumed,
+        status, standing, circuit_state, circuit_opened_at, circuit_cooldown_ms,
+        consecutive_failures, retry_budget, attempts_consumed,
         next_attempt_at, expires_at, authority_version, claim_generation,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?)`)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?)`)
         .run(input.tenantId, input.dependencyKind, input.providerId, input.operationId,
-          input.operationDigest, status, input.standing, input.circuitState ?? "closed",
-          input.retryBudget, input.nextAttemptAt, input.expiresAt,
+          input.operationDigest, status, input.standing, circuit.state, circuit.openedAt ?? null,
+          circuit.cooldownMs, circuit.consecutiveFailures, input.retryBudget,
+          input.nextAttemptAt, input.expiresAt,
           input.authorityVersion ?? null, observedAt, observedAt);
       this.append(input, "enqueued", observedAt, Object.freeze({
         status,
@@ -376,7 +443,9 @@ export class DependencyOutageQueue {
       const generation = current.claim_generation + 1;
       const expiresAt = new Date(Date.parse(input.now) + input.leaseMs).toISOString();
       this.db.prepare(`UPDATE dependency_outage_operations SET
-        status = 'claimed', standing = 'recovering', claim_owner = ?,
+        status = 'claimed', standing = 'recovering',
+        circuit_state = CASE WHEN circuit_state = 'open' THEN 'half_open' ELSE circuit_state END,
+        claim_owner = ?,
         claim_generation = ?, claim_expires_at = ?, attempts_consumed = attempts_consumed + 1,
         updated_at = ?
         WHERE tenant_id = ? AND dependency_kind = ? AND provider_id = ? AND operation_id = ?`)
@@ -413,6 +482,7 @@ export class DependencyOutageQueue {
       if (!active) return Object.freeze({ applied: false, record: fromRow(current) });
       this.db.prepare(`UPDATE dependency_outage_operations SET
         status = 'completed', standing = 'healthy', circuit_state = 'closed',
+        circuit_opened_at = NULL, consecutive_failures = 0,
         completion_digest = ?, claim_owner = NULL, claim_expires_at = NULL,
         last_failure_kind = NULL, last_failure_reason = NULL, updated_at = ?
         WHERE tenant_id = ? AND dependency_kind = ? AND provider_id = ? AND operation_id = ?`)
@@ -432,6 +502,13 @@ export class DependencyOutageQueue {
     validateScope(claim);
     iso(observedAt, "dependency_outage_timestamp_invalid");
     if (decision.schemaVersion !== 1) throw new Error("dependency_outage_decision_version_invalid");
+    validateCircuit(decision.circuit);
+    if (decision.circuitState !== decision.circuit.state) {
+      throw new Error("dependency_outage_circuit_decision_mismatch");
+    }
+    if (decision.nextAttemptAt !== null) {
+      iso(decision.nextAttemptAt, "dependency_outage_next_attempt_invalid");
+    }
     return withImmediateTransaction(this.db, () => {
       const current = this.row(claim);
       if (!current || current.operation_digest !== claim.operationDigest) {
@@ -450,11 +527,13 @@ export class DependencyOutageQueue {
         : status === "blocked" ? "degraded_blocked" : decision.standing;
       const nextAttemptAt = decision.nextAttemptAt ?? current.next_attempt_at;
       this.db.prepare(`UPDATE dependency_outage_operations SET
-        status = ?, standing = ?, circuit_state = ?, next_attempt_at = ?,
+        status = ?, standing = ?, circuit_state = ?, circuit_opened_at = ?,
+        circuit_cooldown_ms = ?, consecutive_failures = ?, next_attempt_at = ?,
         claim_owner = NULL, claim_expires_at = NULL,
         last_failure_kind = ?, last_failure_reason = ?, updated_at = ?
         WHERE tenant_id = ? AND dependency_kind = ? AND provider_id = ? AND operation_id = ?`)
-        .run(status, standing, decision.circuitState, nextAttemptAt,
+        .run(status, standing, decision.circuitState, decision.circuit.openedAt ?? null,
+          decision.circuit.cooldownMs, decision.circuit.consecutiveFailures, nextAttemptAt,
           decision.failureKind, budgetExhausted ? "retry_budget_exhausted" : decision.reason,
           observedAt, claim.tenantId, claim.dependencyKind, claim.providerId, claim.operationId);
       const event = status === "failed" ? "failed" :
@@ -464,6 +543,7 @@ export class DependencyOutageQueue {
         failureKind: decision.failureKind,
         reason: budgetExhausted ? "retry_budget_exhausted" : decision.reason,
         nextAttemptAt: status === "queued" ? nextAttemptAt : null,
+        circuit: decision.circuit,
       }));
       return fromRow(this.row(claim)!);
     });
@@ -586,6 +666,12 @@ export class DependencyOutageQueue {
         attempt: claim.attemptsConsumed,
         retryBudget: claim.retryBudget,
         now: failedAt,
+        circuit: Object.freeze({
+          state: claim.circuitState,
+          ...(claim.circuitOpenedAt === null ? {} : { openedAt: claim.circuitOpenedAt }),
+          cooldownMs: claim.circuitCooldownMs,
+          consecutiveFailures: claim.consecutiveFailures,
+        }),
       });
       const record = this.fail(claim, decision, failedAt);
       return Object.freeze({

@@ -223,6 +223,11 @@ describe("model provider outage recovery", () => {
       reason: "transient_failure",
       nextAttemptAt: "2026-09-01T12:00:01.000Z",
       circuitState: "closed" as const,
+      circuit: {
+        state: "closed" as const,
+        cooldownMs: 30_000,
+        consecutiveFailures: 1,
+      },
       standing: "degraded_retrying" as const,
     }));
     const outage: ModelDependencyOutagePort = {
@@ -231,7 +236,17 @@ describe("model provider outage recovery", () => {
       ): Promise<ModelDependencyOutageResult<T>> {
         const decision = operation.classify(
           Object.assign(new Error("upstream unavailable"), { status: 503 }),
-          { attempt: 1, retryBudget: 3, now: "2026-09-01T12:00:00.000Z" },
+          {
+            attempt: 1,
+            retryBudget: 3,
+            now: "2026-09-01T12:00:00.000Z",
+            circuit: {
+              state: "open",
+              openedAt: "2026-09-01T11:59:30.000Z",
+              cooldownMs: 30_000,
+              consecutiveFailures: 3,
+            },
+          },
         );
         return { status: "deferred", decision };
       },
@@ -258,6 +273,12 @@ describe("model provider outage recovery", () => {
       failureKind: "transient",
       attempt: 1,
       retryBudget: 3,
+      circuit: {
+        state: "open",
+        openedAt: "2026-09-01T11:59:30.000Z",
+        cooldownMs: 30_000,
+        consecutiveFailures: 3,
+      },
     }));
   });
 

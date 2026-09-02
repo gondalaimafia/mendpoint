@@ -715,6 +715,7 @@ export {
   type MockInstallationRepositoryInput,
   type GitHubDependencyFailureKind,
   type GitHubDependencyFailureEvidence,
+  type GitHubDependencyCircuitSnapshot,
   type GitHubDependencyOutageDecision,
   type GitHubDependencyOutageOperation,
   type GitHubDependencyOutageResult,

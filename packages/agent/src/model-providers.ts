@@ -343,7 +343,15 @@ export type ModelDependencyOutageDecision = Readonly<{
   reason: string;
   nextAttemptAt: string | null;
   circuitState: "closed" | "open" | "half_open";
+  circuit: ModelDependencyCircuitSnapshot;
   standing: "healthy" | "degraded_retrying" | "degraded_blocked" | "degraded_failed" | "recovering";
+}>;
+
+export type ModelDependencyCircuitSnapshot = Readonly<{
+  state: "closed" | "open" | "half_open";
+  openedAt?: string;
+  cooldownMs: number;
+  consecutiveFailures: number;
 }>;
 
 export type ModelDependencyOutageOperation<T> = Readonly<{
@@ -364,7 +372,12 @@ export type ModelDependencyOutageOperation<T> = Readonly<{
   execute: () => Promise<Readonly<{ value: T; completionDigest: string }>>;
   classify: (
     error: unknown,
-    context: Readonly<{ attempt: number; retryBudget: number; now: string }>,
+    context: Readonly<{
+      attempt: number;
+      retryBudget: number;
+      now: string;
+      circuit: ModelDependencyCircuitSnapshot;
+    }>,
   ) => ModelDependencyOutageDecision;
 }>;
 
@@ -392,6 +405,7 @@ export type ModelDependencyOutagePolicy = (
     now: string;
     expiresAt: string;
     retryAfterMs?: number;
+    circuit: ModelDependencyCircuitSnapshot;
   }>,
 ) => ModelDependencyOutageDecision;
 
@@ -503,6 +517,7 @@ export function runModelProviderOperation<T>(input: Readonly<{
         retryBudget: context.retryBudget,
         now: context.now,
         expiresAt: input.expiresAt,
+        circuit: context.circuit,
         ...(evidence.retryAfterMs === undefined ? {} : { retryAfterMs: evidence.retryAfterMs }),
       });
     },

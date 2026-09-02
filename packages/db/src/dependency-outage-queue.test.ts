@@ -27,6 +27,7 @@ function retryDecision(nextAttemptAt = "2026-09-01T12:00:01.000Z"): DependencyOu
     reason: "transient_failure",
     nextAttemptAt,
     circuitState: "closed",
+    circuit: { state: "closed", cooldownMs: 30_000, consecutiveFailures: 1 },
     standing: "degraded_retrying",
   };
 }
@@ -108,6 +109,105 @@ describe("durable dependency outage queue", () => {
     expect(execute).toHaveBeenCalledTimes(1);
     expect(queue.get(SCOPE)).toMatchObject({ status: "completed", completionDigest: COMPLETION });
     db.close();
+  });
+
+  it("persists three-failure circuit history across restarts and probes half-open once", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-outage-circuit-"));
+    const path = join(root, "outage.sqlite");
+    const times = [
+      "2026-09-01T12:00:00.000Z",
+      "2026-09-01T12:00:02.000Z",
+      "2026-09-01T12:00:04.000Z",
+      "2026-09-01T12:00:34.000Z",
+      "2026-09-01T12:01:04.000Z",
+    ];
+    const circuits: Array<Readonly<{
+      state: "closed" | "open" | "half_open";
+      openedAt?: string;
+      cooldownMs: number;
+      consecutiveFailures: number;
+    }>> = [];
+    let invocation = 0;
+
+    const runFailure = async (now: string) => {
+      const db = new DatabaseSync(path);
+      const queue = createDependencyOutageQueue(db, { now: () => now });
+      const result = await queue.run({
+        ...SCOPE,
+        workerId: `worker-${invocation + 1}`,
+        retryBudget: 6,
+        expiresAt: "2026-09-01T13:00:00.000Z",
+        leaseMs: 30_000,
+        reconcile: async () => ({ status: "missing" as const }),
+        execute: async () => { throw Object.assign(new Error("unavailable"), { status: 503 }); },
+        classify: (_error, context) => {
+          circuits.push(context.circuit);
+          const count = context.circuit.consecutiveFailures + 1;
+          const open = context.circuit.state === "half_open" || count >= 3;
+          return {
+            schemaVersion: 1,
+            action: open ? "wait" : "retry",
+            failureKind: "transient",
+            retryable: true,
+            reason: open ? "circuit_opened" : "transient_failure",
+            nextAttemptAt: new Date(Date.parse(context.now) + (open ? 30_000 : 1_000)).toISOString(),
+            circuitState: open ? "open" : "closed",
+            circuit: open
+              ? { state: "open", openedAt: context.now, cooldownMs: 30_000, consecutiveFailures: count }
+              : { state: "closed", cooldownMs: 30_000, consecutiveFailures: count },
+            standing: "degraded_retrying",
+          };
+        },
+      });
+      invocation += 1;
+      db.close();
+      return result;
+    };
+
+    await runFailure(times[0]!);
+    await runFailure(times[1]!);
+    const opened = await runFailure(times[2]!);
+    expect(opened.record).toMatchObject({
+      circuitState: "open",
+      circuitOpenedAt: times[2],
+      circuitCooldownMs: 30_000,
+      consecutiveFailures: 3,
+    });
+
+    const reopened = await runFailure(times[3]!);
+    expect(circuits).toEqual([
+      { state: "closed", cooldownMs: 30_000, consecutiveFailures: 0 },
+      { state: "closed", cooldownMs: 30_000, consecutiveFailures: 1 },
+      { state: "closed", cooldownMs: 30_000, consecutiveFailures: 2 },
+      { state: "half_open", openedAt: times[2], cooldownMs: 30_000, consecutiveFailures: 3 },
+    ]);
+    expect(reopened.record).toMatchObject({
+      circuitState: "open",
+      circuitOpenedAt: times[3],
+      consecutiveFailures: 4,
+    });
+
+    const finalDb = new DatabaseSync(path);
+    const finalQueue = createDependencyOutageQueue(finalDb, { now: () => times[4]! });
+    const recovered = await finalQueue.run({
+      ...SCOPE,
+      workerId: "worker-recovery",
+      retryBudget: 6,
+      expiresAt: "2026-09-01T13:00:00.000Z",
+      leaseMs: 30_000,
+      reconcile: async () => ({ status: "missing" as const }),
+      execute: async () => ({ value: "recovered", completionDigest: COMPLETION }),
+      classify: () => { throw new Error("classification_not_expected"); },
+    });
+    expect(recovered).toMatchObject({ status: "completed", value: "recovered" });
+    expect(finalQueue.get(SCOPE)).toMatchObject({
+      status: "completed",
+      standing: "healthy",
+      circuitState: "closed",
+      circuitOpenedAt: null,
+      consecutiveFailures: 0,
+    });
+    finalDb.close();
   });
 
   it("does not claim blocked, expired, over-budget, or cross-tenant operations", () => {
