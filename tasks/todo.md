@@ -4839,3 +4839,20 @@ Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, ba
   - `npm run closure:check` (49 tests; STRUCTURE PASS), `actions:check` (6; every external uses ref pinned to a SHA), `third-state:check` (17), `config:check` (18; 56 declared, 0 gated-absent), `docs:check` ("Public docs bundle is current"), `eol:check` (14; no CRLF text blobs in the git index): all exit 0.
 - 0 CR bytes in every changed blob (byte count over the `git diff origin/main HEAD` file set). No protected file touched (checked against the 16 in `config/production-closure-authority.json`).
 - Not verified here: CI on the GitHub runners; the customer-profile boot path itself, which by design has no test yet (see Before re-landing item 3); the Codex peer review requested on the pull request.
+
+## 2026-09-02 Pull request 625 tenant quarantine review repair
+
+- [x] Add hostile regression coverage for scoped primary-key mutation, identifier reuse, cross-tenant claiming, and restart validation across the ownership boundary.
+- [x] Add a literal base-backfill rollback and repair-reapplication regression proving unknown ownership remains quarantined and unclaimable.
+- [x] Make scoped source identifiers and ownership immutable from discovery onward, including before attestation permits boot.
+- [x] Persist a sealed quarantine ledger and guards that survive the older rollback binary.
+- [x] Run focused hostile tests, the full database suite, database typecheck, optimized build, general-availability checks, and diff integrity.
+- [x] Inspect and document the complete diff and the outward-action invariant: before the separate guarded push, verify pull request 625 remains at `d73c63ff3875d34dc6e76f55d32da2513e4fd166`; after push, read back all heads. Do not merge.
+
+### Review
+
+- The red run on the reviewed head produced the exact `cross_tenant_identifier_reuse:jobs-renamed` escape, four mutable scoped primary keys, and a successful literal rollback backfill. The focused suite reported 6 failures and 27 passes before the repair.
+- The repaired focused suite passes 34 of 34 tests. The full database suite passes 59 files and 513 tests. Database TypeScript typecheck exits 0.
+- The optimized production build exits 0 with 64 generated pages. `npm run ga:check` exits 0 and ends with `GA CHECK PASS`.
+- The implementation and rollback evidence are recorded in `.planning/phases/01-release-authority-and-fettler-readiness/01-04-SUMMARY.md`.
+- Pull requests 606 and 610, Plans 01-05 and 01-06, merge authority, and deployment authority are outside this repair and remain untouched.

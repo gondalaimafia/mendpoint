@@ -714,6 +714,96 @@ describe("Fettler/Regauge logical database names", () => {
     ).run()).toThrow("legacy_tenant_ownership_source_immutable");
   });
 
+  it("seals scoped source identity before attestation permits boot", () => {
+    const path = join(newDir("tenant-unattested-source-identity-immutable"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    const sealed = new DatabaseSync(path);
+    try {
+      expect(() => sealed.prepare(
+        "UPDATE jobs SET id = 'jobs-renamed' WHERE id = 'jobs-empty'",
+      ).run()).toThrow("legacy_tenant_ownership_source_immutable");
+      expect(sealed.prepare(
+        "SELECT id, tenant_id FROM jobs WHERE id = 'jobs-empty'",
+      ).get()).toEqual({ id: "jobs-empty", tenant_id: "tenant_default" });
+    } finally {
+      sealed.close();
+    }
+  });
+
+  it("prevents a scoped primary-key rename from escaping attestation through identifier reuse", () => {
+    const path = join(newDir("tenant-attested-source-identity-immutable"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    attestExactReconciliationScope(path);
+
+    const authorized = boot(path);
+    expect(() => {
+      authorized.raw.prepare(
+        "UPDATE jobs SET id = 'jobs-renamed' WHERE id = 'jobs-empty'",
+      ).run();
+      authorized.raw.prepare(
+        "UPDATE jobs SET tenant_id = 'tenant_other' WHERE id = 'jobs-renamed'",
+      ).run();
+      authorized.raw.prepare(
+        `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+         VALUES ('jobs-empty', 'tenant_default', 'repair', '{}', ?)`,
+      ).run(TS);
+      closeTracked(authorized);
+
+      const restarted = boot(path);
+      const escaped = claimNextJob(restarted, ["repair"], {
+        tenantId: "tenant_other",
+        workerId: "cross-tenant-worker",
+        now: "2026-09-02T00:10:00.000Z",
+      });
+      if (escaped) throw new Error(`cross_tenant_identifier_reuse:${escaped.id}`);
+    }).toThrow("legacy_tenant_ownership_source_immutable");
+
+    closeTracked(authorized);
+    const restarted = boot(path);
+    expect(claimNextJob(restarted, ["repair"], {
+      tenantId: "tenant_other",
+      workerId: "cross-tenant-worker",
+      now: "2026-09-02T00:10:00.000Z",
+    })).toBeUndefined();
+    expect(getJob(restarted, "jobs-empty", "tenant_default")).toMatchObject({
+      id: "jobs-empty",
+      tenant_id: "tenant_default",
+    });
+  });
+
+  it.each(LEGACY_OWNERSHIP_TABLES)(
+    "makes scoped %s source identifiers immutable",
+    (table) => {
+      const path = join(newDir(`tenant-scoped-${table}-identity-immutable`), "legacy.sqlite");
+      buildLegacyOwnershipVolume(path);
+      applyExactReleasedPredecessorTenantMigration(path);
+      expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+      attestExactReconciliationScope(path);
+
+      const authorized = boot(path);
+      expect(() => authorized.raw.prepare(
+        `UPDATE ${table} SET id = ? WHERE id = ?`,
+      ).run(`${table}-renamed`, `${table}-empty`)).toThrow();
+      expect(() => authorized.raw.prepare(
+        `UPDATE ${table} SET tenant_id = ? WHERE id = ?`,
+      ).run("tenant_other", `${table}-empty`)).toThrow();
+      expect(() => authorized.raw.prepare(
+        `DELETE FROM ${table} WHERE id = ?`,
+      ).run(`${table}-empty`)).toThrow();
+      expect(authorized.raw.prepare(
+        `SELECT id, tenant_id FROM ${table} WHERE id = ?`,
+      ).get(`${table}-empty`)).toEqual({
+        id: `${table}-empty`,
+        tenant_id: "tenant_default",
+      });
+    },
+  );
+
   it("rejects a source-row tenant mismatch at every restart", () => {
     const path = join(newDir("tenant-attested-source-revalidated"), "legacy.sqlite");
     buildLegacyOwnershipVolume(path);
@@ -970,6 +1060,45 @@ describe("Fettler/Regauge logical database names", () => {
          VALUES ('new-empty', '', 'repair', '{}', ?)`,
       ).run(TS),
     ).toThrow("tenant_id_required");
+  });
+
+  it("survives the literal base rollback backfill and repair reapplication", () => {
+    const path = join(newDir("tenant-literal-base-rollback"), "legacy.sqlite");
+    buildLegacyJobVolume(path, "missing", [{ id: "rollback-unknown", tenantId: null }]);
+
+    const repaired = boot(path);
+    expect(jobTenants(repaired)).toEqual([{ id: "rollback-unknown", tenant_id: null }]);
+    closeTracked(repaired);
+
+    const rollback = new DatabaseSync(path);
+    let rollbackError: unknown;
+    try {
+      rollback.prepare(
+        `UPDATE jobs
+         SET tenant_id = 'tenant_default'
+         WHERE tenant_id IS NULL OR tenant_id = ''`,
+      ).run();
+    } catch (error) {
+      rollbackError = error;
+    } finally {
+      rollback.close();
+    }
+
+    const reapplied = boot(path);
+    expect(rollbackError).toBeInstanceOf(Error);
+    expect((rollbackError as Error).message).toContain(
+      "legacy_tenant_ownership_source_immutable",
+    );
+    expect(jobTenants(reapplied)).toEqual([{ id: "rollback-unknown", tenant_id: null }]);
+    expect(claimNextJob(reapplied, ["repair"], {
+      tenantId: "tenant_default",
+      workerId: "rollback-worker",
+      now: "2026-09-02T00:10:00.000Z",
+    })).toBeUndefined();
+    expect(claimNextJob(reapplied, ["repair"], {
+      workerId: "rollback-worker",
+      now: "2026-09-02T00:10:00.000Z",
+    })).toBeUndefined();
   });
 
   it("boots a legacy volume, converges byte-for-byte with fresh, and preserves every row", () => {
