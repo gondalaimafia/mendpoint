@@ -477,6 +477,18 @@ function sealReleasedSuccessorEmptyReconciliationState(path: string): void {
     INSERT INTO legacy_tenant_ownership_reconciliation_state
       (id, schema_version, sealed_at)
     VALUES (1, 1, '2026-09-02T00:00:00.000Z');
+    CREATE TRIGGER legacy_tenant_ownership_reconciliation_scope_append_only_update
+      BEFORE UPDATE ON legacy_tenant_ownership_reconciliation_scope
+      BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_reconciliation_scope_append_only'); END;
+    CREATE TRIGGER legacy_tenant_ownership_reconciliation_scope_append_only_delete
+      BEFORE DELETE ON legacy_tenant_ownership_reconciliation_scope
+      BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_reconciliation_scope_append_only'); END;
+    CREATE TRIGGER legacy_tenant_ownership_reconciliation_state_append_only_update
+      BEFORE UPDATE ON legacy_tenant_ownership_reconciliation_state
+      BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_reconciliation_state_append_only'); END;
+    CREATE TRIGGER legacy_tenant_ownership_reconciliation_state_append_only_delete
+      BEFORE DELETE ON legacy_tenant_ownership_reconciliation_state
+      BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_reconciliation_state_append_only'); END;
   `);
   predecessor.close();
 }
