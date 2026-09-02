@@ -303,6 +303,10 @@ import { createDiagnosticsRoutes } from "./diagnostics-routes.js";
 import { createDashboardRoutes } from "./dashboard-routes.js";
 import { createLearningConsentRoutes } from "./learning-consent-routes.js";
 import { createOrganizationMemoryRoutes } from "./organization-memory-routes.js";
+import {
+  createAuditGovernanceDenialAuditMiddleware,
+  createAuditGovernanceRoutes,
+} from "./audit-governance-routes.js";
 import { createPlatformSandboxRoutes } from "./platform-sandbox.js";
 import { createPlatformStateRoutes } from "./platform-state-routes.js";
 import {
@@ -798,6 +802,7 @@ app.use("*", async (c, next) => {
 app.use("*", rateLimitMiddleware({ identity: "network" }));
 app.use("*", mutationAdmissionMiddleware());
 app.use("*", createSecretBreakGlassDenialAuditMiddleware({ db }));
+app.use("*", createAuditGovernanceDenialAuditMiddleware({ db }));
 app.use("*", createAuthMiddleware(db));
 app.use("*", rateLimitMiddleware({ identity: "principal" }));
 
@@ -933,6 +938,7 @@ app.route("/metrics/dashboard", createDashboardRoutes({ db }));
 app.route("/platform/sandbox", createPlatformSandboxRoutes());
 app.route("/learning", createLearningConsentRoutes({ db }));
 app.route("/organization-memory", createOrganizationMemoryRoutes({ db }));
+app.route("/audit-governance", createAuditGovernanceRoutes({ db }));
 
 // Persist alerts under data/
 try {

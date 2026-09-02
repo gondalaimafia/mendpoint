@@ -29,15 +29,17 @@ describe("tenant boundary launch contract", () => {
     ).toThrow("tenant_correlation_invalid");
   });
 
-  it("fails launch if API, DB, graph, workspace, artifact, or cache is unscoped", () => {
+  it("fails launch if any required tenant boundary is absent", () => {
     const registry = new TenantBoundaryRegistry();
     for (const boundary of REQUIRED_TENANT_BOUNDARIES.slice(0, -1)) {
       registry.register({ boundary, requiresTenant: true, rejectsCrossTenant: true });
     }
     expect(() => registry.assertProductionCoverage()).toThrow(
-      "tenant_boundary_coverage_missing:cache",
+      "tenant_boundary_coverage_missing:observability",
     );
-    registry.register({ boundary: "cache", requiresTenant: true, rejectsCrossTenant: true });
+    for (const boundary of REQUIRED_TENANT_BOUNDARIES.slice(-1)) {
+      registry.register({ boundary, requiresTenant: true, rejectsCrossTenant: true });
+    }
     expect(registry.assertProductionCoverage().map((entry) => entry.boundary)).toEqual(
       REQUIRED_TENANT_BOUNDARIES,
     );
@@ -64,7 +66,7 @@ describe("tenant boundary launch contract", () => {
       actorId: "actor-b",
       correlationId: "trace-b",
     });
-    expect(results).toHaveLength(6);
+    expect(results).toHaveLength(REQUIRED_TENANT_BOUNDARIES.length);
     expect(results.every((result) => result.denied)).toBe(true);
   });
 
