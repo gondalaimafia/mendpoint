@@ -6,17 +6,9 @@
  * `.github/workflows/customer-backup.yml` alerts with `if: failure()` INSIDE its
  * job, so it can only report "a run executed and failed". It cannot report "a
  * run never happened". GitHub's scheduler drops high-frequency crons, and the
- * backup's cron cadence was dropped badly enough that hours pass with no run at
- * all. Every run that DID execute reported success, so no failure fired, no issue
- * was opened, and the silence read as health.
- *
- * The primary trigger has since moved onto the machine
- * (scripts/customer-backup-scheduler.ts, at a cadence derived from the RPO), so
- * the cron here is a dead-machine fallback. That does not retire this watchdog:
- * it is now driven by the case the on-machine scheduler cannot cover, a machine
- * that is not running or a scheduler that is parked. This checker never assumed a
- * particular delivery interval -- it measures the AGE of the newest verified
- * backup against the RPO, so it reads the same whichever trigger last fired.
+ * backup's every-30-minutes cadence is dropped badly enough that hours pass with
+ * no run at all. Every run that DID execute reported success, so no failure
+ * fired, no issue was opened, and the silence read as health.
  *
  * That silence is not cosmetic. `assessCustomerBackupReadiness` turns the
  * `last_verified_backup` readiness check red once the newest backup is older
