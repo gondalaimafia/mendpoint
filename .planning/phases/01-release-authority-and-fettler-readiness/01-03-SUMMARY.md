@@ -53,8 +53,9 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 - `24a35019`: refreshed exact-head evidence after rebase.
 - `775d80d7`: native all-address lookup compatibility repair.
 - `e25bf527`: validated socket isolation repair.
+- `31f04f9e`: oversized declared-response listener ordering and single-settlement repair.
 
-The independent range-diff verified the first three old-to-new pairs as exact patch identities. The final three commits are additive repairs on the rebased series. The subsequent oversized-response settlement repair is the current review-fix commit and is verified by the commands above.
+The independent range-diff verified the first three old-to-new pairs as exact patch identities. The final four implementation commits are additive repairs on the rebased series. The exact base for this series is `b21503356259fb0b4e5f7f6599a2f45d0bbd1cfb`; the commands above verify the current repaired tree.
 
 ## Remaining Release Work
 
