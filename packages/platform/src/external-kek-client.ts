@@ -5,6 +5,7 @@ import type { EnvelopeKeyLocator, EnvelopeKeyReference } from "./vault-envelope.
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1_024;
+const MAX_REQUEST_BYTES = 128 * 1_024;
 const MAX_TIMEOUT_MS = 120_000;
 const MAX_RESPONSE_BYTES = 64 * 1_024 * 1_024;
 const MAX_RESOLVED_ADDRESSES = 64;
@@ -382,6 +383,10 @@ export class HttpsExternalKeyTransport implements ExternalKeyTransport {
 
   async #post(path: string, body: Readonly<Record<string, unknown>>): Promise<unknown> {
     try {
+      const serializedBody = JSON.stringify(body);
+      if (Buffer.byteLength(serializedBody, "utf8") > MAX_REQUEST_BYTES) {
+        throw new Error("external_kek_request_too_large");
+      }
       const response = await this.#withinTimeout(async (signal) => {
         const resolvedAddresses = await this.#assertDestination();
         if (signal.aborted) throw new Error("external_kek_timeout");
@@ -392,7 +397,7 @@ export class HttpsExternalKeyTransport implements ExternalKeyTransport {
             "content-type": "application/json",
             ...(this.#config.authorization ? { authorization: this.#config.authorization } : {}),
           }),
-          body: JSON.stringify(body),
+          body: serializedBody,
           resolvedAddresses,
           maxResponseBytes: this.#config.maxResponseBytes,
           signal,

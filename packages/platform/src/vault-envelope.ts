@@ -15,6 +15,7 @@ export type EnvelopeKeyLocator = Readonly<Omit<EnvelopeKeyReference, "customerMa
 
 export type EnvelopeKeyAttestation = Readonly<EnvelopeKeyReference & {
   attestation: string;
+  keyMaterialFingerprint?: string;
   attestationSha256: string;
 }>;
 
@@ -132,6 +133,7 @@ export type DurableEnvelopeSecretProviderOptions = Readonly<{
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 const KEY_MATERIAL_FINGERPRINT_DOMAIN = "mendpoint:cryptographic-key-material-fingerprint:v1\0";
+const CUSTOMER_MANAGED_ATTESTATION_BINDING_VERSION = 2 as const;
 
 export function cryptographicKeyMaterialFingerprint(material: Uint8Array): string {
   return createHash("sha256")
@@ -149,13 +151,29 @@ function locatorIdentity(tenantId: string, key: EnvelopeKeyLocator): string {
 }
 
 function attestationDigest(input: Omit<EnvelopeKeyAttestation, "attestationSha256">): string {
-  return createHash("sha256").update(JSON.stringify({
-    provider: input.provider,
-    keyId: input.keyId,
-    version: input.version,
-    customerManaged: input.customerManaged,
-    attestation: input.attestation,
-  })).digest("hex");
+  const authority = input.customerManaged
+    ? (() => {
+      if (!input.keyMaterialFingerprint || !/^[a-f0-9]{64}$/.test(input.keyMaterialFingerprint)) {
+        throw new Error("vault_key_attestation_mismatch");
+      }
+      return {
+        provider: input.provider,
+        keyId: input.keyId,
+        version: input.version,
+        customerManaged: input.customerManaged,
+        attestation: input.attestation,
+        authorityVersion: CUSTOMER_MANAGED_ATTESTATION_BINDING_VERSION,
+        keyMaterialFingerprint: input.keyMaterialFingerprint,
+      };
+    })()
+    : {
+      provider: input.provider,
+      keyId: input.keyId,
+      version: input.version,
+      customerManaged: input.customerManaged,
+      attestation: input.attestation,
+    };
+  return createHash("sha256").update(JSON.stringify(authority)).digest("hex");
 }
 
 async function assertProviderAttestation(
@@ -552,6 +570,7 @@ class ExternalKeyEncryptionKeyProvider implements KeyEncryptionKeyProvider {
       version: binding.version,
       customerManaged: true,
       attestation: binding.attestation,
+      keyMaterialFingerprint: binding.keyMaterialFingerprint,
     } as const;
     return Object.freeze({ ...base, attestationSha256: attestationDigest(base) });
   }
