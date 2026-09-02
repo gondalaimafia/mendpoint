@@ -4769,3 +4769,44 @@ Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, ba
 - Every fact was verified against current `main`. Production deploy job is `deploy-customer-production` (`.github/workflows/ci.yml:358`). The `release-owner` label to trusted-reviewer mechanism lives in `scripts/production-closure-github-authority.ts`: `resolveReleaseOwner` requires exactly one `release-owner:<actor>` label, `trustedReviewerIdentities` skips the owner's actor, and `config/production-closure-authority.json` binds identities under only the `Claude` actor, so `release-owner:claude` yields an empty trusted set. Live required contexts from `gh api repos/gondalaimafia/mendpoint/branches/main/protection` are `test`, `release-gates`, `container-builds`, `deployment-e2e`, `mendpoint-production-closure-authority-quiet-sweep`, and `mendpoint-production-closure-controller-quiet-sweep`; the docs name the closure contexts by that source of truth rather than hardcoding the rotating `-quiet-sweep` strings.
 - `npm run eol:check` exit 0 (14 tests; no CRLF text blobs in the index). `npm run docs:check` reports "Public docs bundle is current" (a no-regression check; the bundle, sourced from `apps/web/app/docs/catalog.ts`, does not include these files). `git diff --cached --check` clean; 0 CR bytes in the worktree and the index blob of every changed file.
 - Not verified here: CI on the GitHub runners; the Codex peer review requested on the pull request.
+## 2026-09-02 Revert #602: in-process backup scheduler blocks the worker startup lease at boot
+
+- [x] Revert `fix(ops): trigger the customer backup on-machine at a cadence derived from the RPO (#602)` (`b2150335`, squash-merged), restoring all 15 files it touched to their pre-#602 (v62 `92e6f426`) content.
+- [x] Confirm `git diff b2150335~1 HEAD` is empty for each of the 15 files; the only branch change beyond the revert is this task record. #611 (`e69d997b`, docs) touched none of the 15.
+- [x] Restore `.github/workflows/customer-backup.yml` to the `*/30 * * * *` external cron; the in-process scheduler, child supervisor, and boot-sequence modules #602 added are removed.
+- [x] Run the scripts, worker, and ops suites, the scripts/worker/ops tsc projects, and the closure/actions/third-state/config/docs/eol checks; confirm 0 CR bytes in every changed blob and no protected file touched.
+
+### Root cause
+
+- #602 crash-looped the customer production machine `mendpoint-fettler-production` on every boot. The new in-process backup scheduler child (`scripts/customer-backup-scheduler.ts`) started and immediately ran its boot-time catch-up backup (the S-3 change makes a catch-up fire whenever the last backup is older than the 30-minute interval, i.e. almost always after a deploy), taking the exclusive mutation fence. About 4 s later the worker child's startup lease found the fence held and threw `customer_startup_blocked_by_backup` (`apps/worker` startup). The worker is a critical child, so the supervisor shut everything down and the machine rebooted; after 10 restarts Fly stopped it.
+- Boot log order: `customer_backup_scheduler_started intervalMs=1800000 ...`, then `Error: customer_startup_blocked_by_backup`, then `worker exited code=1`, then reboot.
+- Fly release v63 (this commit) failed health checks at ~04:25Z and Fly left the machine on the new config, so production was down from ~04:25Z until ~05:40Z, when the operator booted the last good image (v62, `92e6f426`) by hand. No fence marker was left on the volume: the block was a live backup at each boot, not a stale marker.
+- CI's `deployment-e2e` did not catch it because it boots the demo profile only; the customer profile boot sequence (reap, lease, children including the backup child) was never executed by any test.
+
+### Scope and rollback
+
+- Single `git revert` of `b2150335` on top of `origin/main` (`e69d997b`). Restores 15 files to their pre-#602 content and adds this task record only. No product redesign, no protected file (checked against the 16 in `config/production-closure-authority.json`), no credential, and no other runtime is touched.
+- Rollback is a single revert of this branch.
+
+### Why revert rather than hotfix
+
+- The worker's startup-lease semantics versus an always-on in-machine scheduler is a design decision, not a 05:00Z one-liner: the worker must either wait for a local scheduler's fence with bounded backoff, or the scheduler must not run while the worker is not up. A worker restart during a backup would reproduce the outage. That needs a design pass and a customer-profile boot test in CI.
+
+### Before re-landing
+
+- (1) Sequence the backup child after the worker holds its startup lease, and pause the scheduler while the worker is not running.
+- (2) Make the worker startup tolerate a fence held by the local scheduler (wait with bounded backoff) instead of exiting 1.
+- (3) Add a CI job that boots the customer profile shape end to end (reap, lease, all four children, one scheduler tick); the demo-profile `deployment-e2e` is not evidence for this path.
+- (4) The deploy job must fail closed and roll back when the machine health checks fail, rather than leaving the new config in place.
+
+### Review
+
+- Clean `git revert` of `b2150335` (no conflicts). `git diff b2150335~1 HEAD` is empty for all 15 files #602 touched; the only other change on this branch is this task record. #611 (`e69d997b`, docs) modified none of the 15. `.github/workflows/customer-backup.yml` is back to `cron: "*/30 * * * *"`.
+- Gates on the reverted tree (real exit codes). The scripts/worker/ops suites were run with `--testTimeout=60000` because this host times out git-spawning suites at the 5 s default; that changes no coverage. CI on the Linux runners is the real check.
+  - `npx vitest run scripts`: 42 files / 630 tests passed, exit 0.
+  - `npx vitest run apps/worker`: 71 files / 745 passed + 1 skipped, exit 0.
+  - `npx vitest run packages/ops`: 17 files / 173 passed, exit 0.
+  - `tsc -p scripts/tsconfig.json --noEmit`, `tsc -p apps/worker/tsconfig.json --noEmit`, `tsc -p packages/ops/tsconfig.json --noEmit`: all exit 0.
+  - `npm run closure:check` (49 tests; STRUCTURE PASS), `actions:check` (6; every external uses ref pinned to a SHA), `third-state:check` (17), `config:check` (18; 56 declared, 0 gated-absent), `docs:check` ("Public docs bundle is current"), `eol:check` (14; no CRLF text blobs in the git index): all exit 0.
+- 0 CR bytes in every changed blob (byte count over the `git diff origin/main HEAD` file set). No protected file touched (checked against the 16 in `config/production-closure-authority.json`).
+- Not verified here: CI on the GitHub runners; the customer-profile boot path itself, which by design has no test yet (see Before re-landing item 3); the Codex peer review requested on the pull request.
