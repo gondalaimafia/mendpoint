@@ -294,6 +294,48 @@ describe("Warden exact candidate draft delivery", () => {
       WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ n: 0 });
   });
 
+  // sourceMissionId() is new in this PR and both of its guards were unfalsified:
+  // mutating them to `return null` (an unparseable source payload read as
+  // unbound) left the whole worker suite green. An UNKNOWN binding must never be
+  // read as "not Mission-bound" on the path that decides whether the dispatch
+  // fence runs. The db twin asserts the same thing at enqueue.
+  it("fails closed when the source job payload does not parse", async () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1' AND tenant_id = 'tenant-a'")
+      .run("{not json");
+    const deliverExactDraft = vi.fn();
+
+    await expect(runWardenCandidateDelivery({ db: value.db,
+      job: getJob(value.db, value.job.id, "tenant-a")!,
+      github: { deliverExactDraft } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
+      now: () => NOW })).resolves.toMatchObject({ status: "delivery_failed" });
+
+    expect(getJob(value.db, value.job.id, "tenant-a")?.error)
+      .toContain("warden_candidate_delivery_source_invalid");
+    expect(deliverExactDraft).not.toHaveBeenCalled();
+  });
+
+  // The same guard's second arm: valid JSON that is not a plain object.
+  it("fails closed when the source job payload is not a plain object", async () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1' AND tenant_id = 'tenant-a'")
+      .run("[]");
+    const deliverExactDraft = vi.fn();
+
+    await expect(runWardenCandidateDelivery({ db: value.db,
+      job: getJob(value.db, value.job.id, "tenant-a")!,
+      github: { deliverExactDraft } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
+      now: () => NOW })).resolves.toMatchObject({ status: "delivery_failed" });
+
+    expect(getJob(value.db, value.job.id, "tenant-a")?.error)
+      .toContain("warden_candidate_delivery_source_invalid");
+    expect(deliverExactDraft).not.toHaveBeenCalled();
+  });
+
   // §12 UPGRADE PATH. A delivery enqueued BEFORE the authority contract existed:
   // the source run carries `payload.missionId` (POST /agent/runs has always
   // written it), the delivery payload carries no authority, and the delivery row
@@ -351,6 +393,10 @@ describe("Warden exact candidate draft delivery", () => {
       resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
       now: () => NOW })).resolves.toMatchObject({ status: "delivery_failed" });
     expect(deliverExactDraft).not.toHaveBeenCalled();
+    // classifyFailure surfaces this exact code rather than the generic terminal
+    // one. The branch used to name `..._upgrade_required`, which nothing throws.
+    expect(getJob(value.db, value.job.id, "tenant-a")?.error_code)
+      .toBe("warden_candidate_delivery_mission_authority_required");
   });
 
   it("claims an approved delivery through the real job loop and resumes the exact reviewed Mission task", async () => {

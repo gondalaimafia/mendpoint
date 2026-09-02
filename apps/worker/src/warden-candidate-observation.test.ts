@@ -553,6 +553,39 @@ describe("Warden candidate CI observation", () => {
     expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("complete");
   });
 
+  // DEFERRED-set membership for mission_mutation_dispatch_in_flight was
+  // unfalsified: every `deferred:` assertion in this file asserts 0, so removing
+  // the code from DEFERRED_MISSION_OUTCOME_SETTLEMENT_ERRORS changed nothing.
+  // A fence collision is transient - another writer holds the Mission mid-flight -
+  // so the replay must DEFER it, not count it as a settlement failure, which
+  // reads as data loss for an outcome GitHub already applied.
+  it("defers, not fails, a merged outcome whose Mission task is fenced mid-dispatch", () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'awaiting_review'
+      WHERE id = ? AND tenant_id = 'tenant-a'`).run(value.cycle.id);
+    // A remote mutation bound to the SAME task is mid-flight BEFORE the webhook
+    // lands, so the first settlement attempt defers and the row stays pending.
+    value.db.raw.prepare(`INSERT INTO mission_mutation_dispatches
+      (id, tenant_id, mission_id, job_id, mutation_kind, aggregate_id, authority_json,
+       intent_digest, state, lease_owner, lease_generation, authorized_at, dispatching_at, updated_at)
+      VALUES ('d-fenced', 'tenant-a', 'mission-a', 'job-fenced', 'fettler_candidate_delivery',
+        'agg-fenced', ?, ?, 'dispatching', 'worker-a', 1, ?, ?, ?)`)
+      .run(JSON.stringify(value.authority), `sha256:${"c".repeat(64)}`,
+        "2026-08-13T12:06:00.000Z", "2026-08-13T12:06:00.000Z", "2026-08-13T12:06:00.000Z");
+    recordWardenCandidateDeliveryOutcome(value.db, {
+      tenantId: "tenant-a", deliveryId: "delivery-a", outcome: "merged",
+      source: "github_webhook", observedAt: "2026-08-13T12:06:30.000Z",
+    });
+
+    expect(replayPendingWardenCandidateDeliveryMergedOutcomes(value.db, {
+      tenantId: "tenant-a", observedAt: "2026-08-13T12:10:00.000Z", limit: 5,
+    })).toMatchObject({ deferred: 1, failed: 0, malformed: 0 });
+    // The merged fact and the task both survive untouched for the next attempt.
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("agent_working");
+    expect(value.db.raw.prepare("SELECT state FROM mission_mutation_dispatches WHERE id = 'd-fenced'")
+      .get()).toEqual({ state: "dispatching" });
+  });
+
   it("retains a factual merged outcome when Mission authority is stale before settlement", () => {
     const value = bindMissionAuthority(fixture());
     value.db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'awaiting_review'

@@ -249,6 +249,47 @@ describe("Warden CI repair dispatch", () => {
       WHERE action = 'fettler.ci_repair.mission_authority_absent'`).get()).toBeTruthy();
   });
 
+  // The case the guard actually exists for, and which the fixture above could not
+  // reach: the SOURCE PAYLOAD carries authority while the cycle has none. The
+  // successor must take the cycle's (absent) authority, never the payload's stale
+  // one - that authority names the PRE-DELIVERY task revision, superseded by the
+  // handoff that produced this cycle. Mutating the guard to fall back to
+  // `originalPayload.missionAuthority` survived until this test existed.
+  it("never falls back to the source payload's stale authority when the cycle has none", async () => {
+    const staleAuthority = {
+      schemaVersion: 1 as const,
+      missionId: "mission-claimed-a",
+      missionRevision: 2,
+      missionState: "executing" as const,
+      taskId: "task-pre-delivery",
+      taskRevision: 4,
+      taskStatus: "agent_working" as const,
+      repositoryId: "repo-a",
+      snapshotId: "snapshot-stale",
+      resolvedSha: "a".repeat(40),
+    };
+    const { db, evidence, job, root } = fixture(
+      { failures: [{ name: "unit", text: "expected 1 received 2" }] },
+      { missionId: "mission-claimed-a", missionAuthority: staleAuthority },
+    );
+    await runWardenCiRepairDispatch({
+      db, job,
+      materializeHead: async () => ({ repositoryId: "repo-a", snapshotId: "snapshot-repair-a",
+        revision: sha("d"), manifestSha256: "e".repeat(64), root }),
+      readEvidence: async () => evidence, now: () => "2026-08-13T12:03:00.000Z",
+    });
+
+    const repairJob = listJobs(db, 50, "tenant-a").find((candidate) => candidate.type === "agent.run" &&
+      candidate.id !== "initial-agent-job")!;
+    const payload = JSON.parse(repairJob.payload_json);
+    // The claimed Mission is carried so policy still applies...
+    expect(payload).toMatchObject({ missionId: "mission-claimed-a" });
+    // ...but the stale pre-delivery authority is NOT revived.
+    expect(payload).not.toHaveProperty("missionAuthority");
+    expect(db.raw.prepare(`SELECT resource_id FROM audit_events
+      WHERE action = 'fettler.ci_repair.mission_authority_absent'`).get()).toBeTruthy();
+  });
+
   it("omits padded or empty missionId rather than inventing a Mission", async () => {
     const { db, evidence, job, root } = fixture(
       { failures: [{ name: "unit", text: "expected 1 received 2" }] },

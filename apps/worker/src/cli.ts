@@ -1091,11 +1091,18 @@ export function classifyJobFailure(error: unknown): {
   // reconciliation still runs. It never overrides the authorization exclusion:
   // a credential refused now is refused on every retry, so letting uncertainty
   // win there would spin a permanently failing job past max_attempts.
+  // A Mission/CI mutation fence collision is TRANSIENT - another writer holds the
+  // Mission mid-flight, exactly the shape of sqlite_busy above. Classified
+  // terminal it dead-lettered the job under a misleading code AND lost the work
+  // the job was doing (a policy deny went unrecorded). Retryable within the
+  // ORDINARY attempt budget only: retryPastMaxAttempts stays false, so a fence
+  // that never clears still terminates instead of spinning forever. The sibling
+  // warden_ci_mutation_in_flight follows for the identical reason.
   const retryPastMaxAttempts = remoteSideEffectUncertain && !authorizationFailure;
   const retryable =
     !authorizationFailure &&
     (remoteSideEffectUncertain ||
-    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|verifier_advisory_provider_retryable|mcu_(?:accounting|settlement)_persistence_failed/.test(
+    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|verifier_advisory_provider_retryable|mcu_(?:accounting|settlement)_persistence_failed|(?:mission_mutation_dispatch|warden_ci_mutation)_in_flight/.test(
         normalized,
       ));
   const errorCode = explicitCode ?? (retryable

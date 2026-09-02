@@ -1182,7 +1182,21 @@ describe("Warden candidate human review", () => {
        intent_digest, state, lease_owner, lease_generation, authorized_at, dispatching_at, updated_at)
       VALUES ('d-inflight', 'tenant-a', 'm1', 'job-inflight', 'fettler_candidate_delivery',
         'agg-1', ?, ?, 'dispatching', 'worker-a', 1, ?, ?, ?)`)
-      .run(JSON.stringify({ taskId: REVIEW_TASK_ID }), `sha256:${"c".repeat(64)}`, NOW, NOW, NOW);
+      .run(JSON.stringify({
+        // Production-shaped MissionMutationAuthorityV1, not a bare { taskId }:
+        // the fence parses this column, so a stub would exercise a shape the
+        // system never writes.
+        schemaVersion: 1,
+        missionId: "m1",
+        missionRevision: 1,
+        missionState: "created",
+        taskId: REVIEW_TASK_ID,
+        taskRevision: 3,
+        taskStatus: "human_review_required",
+        repositoryId: "repo-1",
+        snapshotId: "snapshot-1",
+        resolvedSha: "a".repeat(40),
+      }), `sha256:${"c".repeat(64)}`, NOW, NOW, NOW);
 
     const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
       method: "POST", headers: { "content-type": "application/json" },

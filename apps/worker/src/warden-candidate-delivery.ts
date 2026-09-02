@@ -304,7 +304,7 @@ function classifyFailure(error: unknown): Readonly<{
     retryable,
     remoteSideEffectUncertain,
     errorCode: !retryable && error instanceof Error &&
-        error.message === "warden_candidate_delivery_mission_authority_upgrade_required"
+        error.message === "warden_candidate_delivery_mission_authority_required"
       ? error.message
       : remoteSideEffectUncertain
       ? "warden_candidate_delivery_remote_side_effect_uncertain"
