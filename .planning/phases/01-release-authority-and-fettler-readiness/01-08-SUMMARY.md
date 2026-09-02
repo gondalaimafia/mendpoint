@@ -15,7 +15,7 @@ affects: [01-18, model-runtime-binding, github-delivery-binding, production-read
 actuals:
   tokens: 40550
   tasks: 3
-  commits: 15
+  commits: 21
 
 tech-stack:
   added: []
@@ -45,11 +45,8 @@ key-files:
     - packages/github/src/app-runtime.test.ts
     - packages/github/src/index.ts
     - packages/ops/src/index.ts
-    - packages/db/package.json
-    - package-lock.json
     - packages/pipeline/src/index.ts
     - packages/pipeline/src/index.test.ts
-    - packages/pipeline/package.json
     - packages/pipeline/src/delivery-resolver.test.ts
     - apps/api/src/server.ts
     - apps/worker/src/cli.ts
@@ -133,7 +130,7 @@ status: complete
 - Removed the legacy branch, commit, and pull-request write sequence from the real pipeline so every customer draft passes through `deliverExactDraft` and durable reconciliation.
 - Enforced exact authority equality before queued, claimed, or expired-lease work can execute, while preserving explicit blocked-operation reactivation after a validated authority rotation.
 - Classified GitHub primary and secondary rate-limit `403` responses as throttling before the generic permission rule, while true permission failures remain permanent.
-- Proved retry, duplicate, exact pull request lost-response, zero-repeat writes, process restart, three-failure trip, half-open recovery, expired authority, tenant isolation, digest substitution, immutable history, and caller reachability with 106 focused tests.
+- Proved retry, duplicate, exact pull request lost-response, zero-repeat writes, process restart, three-failure trip, half-open recovery, expired authority, tenant isolation, digest substitution, invalid-response classification, internal-error redaction, immutable history, and caller reachability.
 
 ## Task Commits
 
@@ -147,8 +144,9 @@ status: complete
 8. **Current rebased evidence series:** `e73e1f03`, `64ed119a`, `1275ba67`, `939de04c`, `39c372e7`, `295b6fe4`, `6209a222`, `a472e346`, `02b81eb5`, `7dda371e`, `33bb3808`
 9. **Independent review RED tests:** `ad811437`
 10. **Exact-head outage delivery repair:** `a0862179`
-11. **Review RED tests for live model reachability and health:** `b82e30bc`
-12. **Live model queue binding and bounded tenant health:** `7f3546e7`
+11. **Review RED tests for live model reachability and health:** `66407249`
+12. **Live model queue binding and bounded tenant health:** `4bb1af43`
+13. **Failure classification and health redaction:** `4ac0c0d8`
 
 Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/605), open, issue body read back with exact `Owner: Codex` claim.
 
@@ -214,8 +212,8 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - **Issue:** The production `agent.ts` model call bypassed the durable queue, the operator could not enumerate tenant degraded state, and the summary claimed both links existed.
 - **Fix:** Bound the real encrypted checkpoint model effect through a worker-supplied queue using the checkpoint effect and request digests, retained unknown outcomes as non-repeatable, blocked reconciliation-required outcomes from authority reactivation, and added an authenticated digest-only tenant health route.
 - **Files modified:** agent runtime and attempt engine, worker composition, durable queue and database barrel, API route and server composition, paired hostile tests, and this summary
-- **Verification:** 206 focused agent, model, database, operations, and API tests plus four affected typechecks pass.
-- **Committed in:** `b82e30bc`, `7f3546e7`
+- **Verification:** 318 exact-head focused integration tests, six affected typechecks, four complete dependency package suites, the protected-authority suite, and the optimized production build pass.
+- **Committed in:** `66407249`, `4bb1af43`, `4ac0c0d8`
 
 ---
 
@@ -232,15 +230,14 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 
 - Exact plan commands plus hostile review regressions cover database, agent, GitHub, pipeline, ops, authority rotation, package resolution, and backup recovery.
 - Focused outage, backup, adapter, caller, and resolver matrix: 106 of 106 tests passed.
-- Current model and visibility repair: agent and model 185 of 185, queue 13 of 13, outage policy 6 of 6, and API health 2 of 2 tests passed.
-- Full package regressions: database passed 501 tests, GitHub passed 195 tests, ops passed 180 tests, and pipeline passed 272 tests.
+- Current exact-head model, visibility, queue, delivery, and worker integration matrix: 318 of 318 tests passed.
+- Full package regressions: database passed 504 tests, agent passed 364 tests, GitHub passed 195 tests, operations passed 180 tests, and pipeline passed 272 tests.
 - Protected authority: exact base-interpreted rotation test passed with `package-lock.json` restored to SHA-256 `193181927b3e5813f43471c60c343c0300c6c71540a9b3921968a215cb57cd0d`.
 - TypeScript: ops, database, agent, GitHub, pipeline, API, and worker package checks passed with no errors.
 - Production build: optimized workspace build passed.
 - Diff integrity: `git diff --check` passed before the repair commit.
-- Current base: `e1d5b7483c057578c9cc8c8b795cfa633f53878f`.
-- Current-base range diff: all 16 pre-refresh commits are patch-identical after rebasing from `e69d997b7eef88ffcc7786a3e51da46eb1e677d4` to `e1d5b7483c057578c9cc8c8b795cfa633f53878f`.
-- Current-base rerun: 106 of 106 focused tests, 38 of 38 protected-authority tests, all seven affected typechecks, database 501 of 501, GitHub 195 of 195, operations 180 of 180, pipeline 272 of 272, optimized 64-page production build, and diff integrity passed.
+- Current base: `1ae5e9a2c331f35ffbd95ae8f2fd34ba6436c40c`.
+- Current-base rerun: 318 of 318 focused integration tests, all six affected typechecks, 33 of 33 protected-authority tests, database 504 of 504, agent 364 of 364, GitHub 195 of 195, operations 180 of 180, pipeline 272 of 272, optimized 64-page production build, and diff integrity passed.
 
 ## User Setup Required
 
