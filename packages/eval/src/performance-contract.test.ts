@@ -131,14 +131,16 @@ describe("Fettler performance contract", () => {
     ]);
     expect(validated.tiers.map((tier) => ({
       id: tier.id,
+      minimumFiles: tier.repository.minimumFiles,
+      minimumSourceLines: tier.repository.minimumSourceLines,
       sourceLines: tier.repository.sourceLines,
       files: tier.repository.files,
       languages: tier.repository.languages.length,
       concurrency: tier.concurrency,
     }))).toEqual([
-      { id: "small", sourceLines: 100_000, files: 2_000, languages: 1, concurrency: 2 },
-      { id: "medium", sourceLines: 1_000_000, files: 20_000, languages: 3, concurrency: 4 },
-      { id: "large", sourceLines: 5_000_000, files: 100_000, languages: 6, concurrency: 8 },
+      { id: "small", minimumFiles: 1_000, minimumSourceLines: 50_000, sourceLines: 100_000, files: 2_000, languages: 1, concurrency: 2 },
+      { id: "medium", minimumFiles: 10_000, minimumSourceLines: 500_000, sourceLines: 1_000_000, files: 20_000, languages: 3, concurrency: 4 },
+      { id: "large", minimumFiles: 50_000, minimumSourceLines: 2_500_000, sourceLines: 5_000_000, files: 100_000, languages: 6, concurrency: 8 },
     ]);
     expect(validated.objectives).toHaveLength(15);
     expect(validated.objectives.find((objective) =>
@@ -242,6 +244,39 @@ describe("Fettler performance contract", () => {
       "load",
       EVALUATED_AT,
     )).toThrow("performance_repository_shape_exceeds_tier");
+
+    expect(() => evaluatePerformanceRun(
+      FETTLER_PERFORMANCE_CONTRACT,
+      base,
+      binding({ repository: {
+        files: 999,
+        sourceLines: 50_000,
+        bytes: 25_000_000,
+        languages: ["typescript"],
+        languageSourceLines: { typescript: 50_000 },
+      } }),
+      "load",
+      EVALUATED_AT,
+    )).toThrow("performance_repository_shape_below_tier");
+
+    const medium = FETTLER_PERFORMANCE_CONTRACT.tiers.find((tier) => tier.id === "medium")!;
+    expect(() => evaluatePerformanceRun(
+      { ...FETTLER_PERFORMANCE_CONTRACT, tiers: [medium], objectives: FETTLER_PERFORMANCE_CONTRACT.objectives.filter((item) => item.tierId === "medium") },
+      base.map((item) => ({ ...item, tierId: "medium" })),
+      binding({
+        tierId: "medium",
+        measuredConcurrency: 4,
+        repository: {
+          files: 10_000,
+          sourceLines: 500_000,
+          bytes: 250_000_000,
+          languages: ["javascript", "python", "typescript"],
+          languageSourceLines: { javascript: 499_998, python: 1, typescript: 1 },
+        },
+      }),
+      "load",
+      EVALUATED_AT,
+    )).toThrow("performance_repository_language_distribution_invalid");
 
     expect(() => evaluatePerformanceRun(
       contract(),

@@ -54,6 +54,22 @@ function contract(): PerformanceContract {
 
 function measurement(durationMs = 10, success = true): PerformanceProbeMeasurement {
   return {
+    observed: {
+      tenantId: "tenant-fettler-production",
+      repositoryId: "github-1319732323",
+      repositoryRevision: "a".repeat(40),
+      deploymentRevision: "b".repeat(40),
+      fixtureDigest: `sha256:${"c".repeat(64)}`,
+      correlationId: "corr-fettler-performance",
+      probeSource: "fettler-production-probe",
+      repository: {
+        files: 10,
+        sourceLines: 100,
+        bytes: 1_000,
+        languages: ["typescript"],
+        languageSourceLines: { typescript: 100 },
+      },
+    },
     metrics: Object.fromEntries(
       METRICS.map((metric) => [metric, { durationMs, success }]),
     ) as PerformanceProbeMeasurement["metrics"],
@@ -74,6 +90,7 @@ function metadata() {
       sourceLines: 100,
       bytes: 1_000,
       languages: ["typescript"],
+      languageSourceLines: { typescript: 100 },
     },
     dependencyVersions: { node: "22.17.0", vitest: "3.0.9" },
   };
@@ -189,8 +206,7 @@ describe("performance runner", () => {
       probe: async () => {
         invocation += 1;
         now += 500;
-        if (invocation === 1) throw new Error("synthetic probe failure");
-        return measurement();
+        return measurement(10, invocation !== 1);
       },
     });
 
@@ -199,6 +215,24 @@ describe("performance runner", () => {
     expect(report.observations.slice(0, 5).every((item) => !item.success)).toBe(true);
     expect(report.evaluation?.results.every((result) => result.failureCount === 1)).toBe(true);
     expect(report.ok).toBe(false);
+  });
+
+  it("retains a same-tick unobserved failure as a nonzero failed sample and incomplete report", async () => {
+    const report = await runPerformanceProbe({
+      contract: contract(),
+      tierId: "test-tier",
+      mode: "load",
+      ...metadata(),
+      now: () => 0,
+      probe: async () => { throw new Error("same tick failure"); },
+    });
+
+    expect(report.status).toBe("incomplete");
+    expect(report.ok).toBe(false);
+    expect(report.observations).toHaveLength(5);
+    expect(report.observations.every((item) => item.durationMs === 1 && !item.success)).toBe(true);
+    expect(report.observations.every((item) => item.bindingSource === "request_context")).toBe(true);
+    expect(report.evaluation).toBeNull();
   });
 
   it("propagates aborts and returns an explicitly incomplete report", async () => {
@@ -306,6 +340,7 @@ describe("performance runner", () => {
       });
       return new Response(JSON.stringify({
         deploymentRevision: "b".repeat(40),
+        observed: measurement().observed,
         ...measurement(),
       }), { status: 200 });
     });
@@ -330,5 +365,29 @@ describe("performance runner", () => {
 
     expect(result).toEqual(measurement());
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a probe response that does not observe the exact requested identity", async () => {
+    const probe = createHttpPerformanceProbe({
+      endpoint: "https://probe.invalid/performance",
+      fetch: async () => new Response(JSON.stringify({
+        ...measurement(),
+        observed: { ...measurement().observed, repositoryId: "github-wrong" },
+      }), { status: 200 }),
+    });
+    await expect(probe({
+      invocationId: "test-tier.load.00000000",
+      sequence: 0,
+      mode: "load",
+      tier: contract().tiers[0]!,
+      repositoryRevision: "a".repeat(40),
+      deploymentRevision: "b".repeat(40),
+      fixtureDigest: "c".repeat(64),
+      tenantId: "tenant-fettler-production",
+      repositoryId: "github-1319732323",
+      correlationId: "corr-fettler-performance",
+      source: "fettler-production-probe",
+      signal: new AbortController().signal,
+    })).rejects.toThrow("performance_probe_repository_mismatch");
   });
 });
