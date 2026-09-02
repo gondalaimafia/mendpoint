@@ -4562,3 +4562,17 @@ Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, ba
   - `npm run closure:check` (49 tests; STRUCTURE PASS), `actions:check` (6; every external uses ref pinned to a SHA), `third-state:check` (17), `config:check` (18; 56 declared, 0 gated-absent), `docs:check` ("Public docs bundle is current"), `eol:check` (14; no CRLF text blobs in the git index): all exit 0.
 - 0 CR bytes in every changed blob (byte count over the `git diff origin/main HEAD` file set). No protected file touched (checked against the 16 in `config/production-closure-authority.json`).
 - Not verified here: CI on the GitHub runners; the customer-profile boot path itself, which by design has no test yet (see Before re-landing item 3); the Codex peer review requested on the pull request.
+
+## 2026-09-02 Fettler GSD Plan 01-01 current-main completion
+
+- [x] Abort the conflicting stale-base merge without resolving unrelated closure-registry files.
+- [x] Restage the seven safe Plan 01-01 commits onto current `origin/main` after pull request 592 merged.
+- [x] Prove the missing `fettler:closure:check` command with a committed RED regression, then add the one-line package binding and pass the GREEN proof.
+- [x] Pass focused tests, the full workspace and root script suites, full typecheck, optimized production build, GA checks, and diff integrity.
+- [ ] Obtain independent exact-head review before push or merge.
+
+### Review
+
+- Local exact head: `648b7d15`; branch `codex/601-fettler-operating-contracts-successor`; ten commits ahead of current-main base `1ae5e9a2`.
+- No source, claims, authority, or Claude-owned conflict was overwritten. The failed merge was aborted, and the successor branch contains only the scoped plan transplant, the RED/GREEN package binding, the completion summary, and this task record.
+- Nothing has been pushed, merged, deployed, activated, or promoted. Independent review and current-base protected continuous integration remain required.
