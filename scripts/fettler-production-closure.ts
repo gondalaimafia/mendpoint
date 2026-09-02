@@ -4,6 +4,11 @@ import {
   performanceContractDigest,
   validatePerformanceContract,
 } from "../packages/eval/src/performance-contract.js";
+import {
+  MCU_LEDGER_ENTRY_TYPES,
+  MCU_SCHEDULE_DIGEST,
+  MCU_VERSION,
+} from "../packages/platform/src/mcu.js";
 
 export const FETTLER_PRODUCTION_CLOSURE_SCHEMA_VERSION =
   "fettler-production-requirement-closure/1" as const;
@@ -24,6 +29,15 @@ export function buildFettlerProductionClosure() {
         evidence: {
           status: "not_observed" as const,
           reason: "production_measurement_not_supplied" as const,
+        },
+      },
+      migrationCompute: {
+        version: MCU_VERSION,
+        digest: MCU_SCHEDULE_DIGEST,
+        ledgerEntryTypes: MCU_LEDGER_ENTRY_TYPES,
+        evidence: {
+          status: "not_observed" as const,
+          reason: "production_ledger_not_supplied" as const,
         },
       },
     },

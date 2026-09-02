@@ -174,6 +174,19 @@ describe("migration compute units", () => {
       .toThrow("mcu_reservation_not_closed");
   });
 
+  it("requires the reservation to start the ordered lifecycle", () => {
+    const outOfOrder = lifecycle();
+    [outOfOrder.entries[0], outOfOrder.entries[1]] = [
+      outOfOrder.entries[1]!,
+      outOfOrder.entries[0]!,
+    ];
+    outOfOrder.entries[0]!.entrySequence = 1;
+    outOfOrder.entries[1]!.entrySequence = 2;
+
+    expect(() => reconcileMcuLedgerLifecycle(outOfOrder))
+      .toThrow("mcu_reservation_must_be_first");
+  });
+
   it("publishes executable examples and requires a new finance approved version for changes", () => {
     for (const example of MCU_SCHEDULE_V1.examples) {
       expect(calculateMcuV1(example.work).totalMicros, example.label).toBe(example.expectedMicros);
