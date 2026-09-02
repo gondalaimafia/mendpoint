@@ -176,6 +176,36 @@ function normalizeFixtureDigest(value: string): string {
   return value.startsWith("sha256:") ? value : `sha256:${value}`;
 }
 
+function canonicalRepositoryShape(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const repository = value as Record<string, unknown>;
+  if (
+    !Number.isSafeInteger(repository.files) ||
+    !Number.isSafeInteger(repository.sourceLines) ||
+    !Number.isSafeInteger(repository.bytes) ||
+    !Number.isSafeInteger(repository.maxFileBytes) ||
+    !Array.isArray(repository.languages) ||
+    repository.languages.some((language) => typeof language !== "string") ||
+    !repository.languageSourceLines ||
+    typeof repository.languageSourceLines !== "object" ||
+    Array.isArray(repository.languageSourceLines)
+  ) {
+    return null;
+  }
+  const languageSourceLines = repository.languageSourceLines as Record<string, unknown>;
+  if (Object.values(languageSourceLines).some((lines) => !Number.isSafeInteger(lines))) return null;
+  return JSON.stringify({
+    files: repository.files,
+    sourceLines: repository.sourceLines,
+    bytes: repository.bytes,
+    maxFileBytes: repository.maxFileBytes,
+    languages: [...repository.languages].sort(),
+    languageSourceLines: Object.fromEntries(
+      Object.entries(languageSourceLines).sort(([left], [right]) => left.localeCompare(right)),
+    ),
+  });
+}
+
 function validateMeasurement(
   measurement: PerformanceProbeMeasurement,
   expected: Pick<PerformanceProbeContext,
@@ -197,7 +227,10 @@ function validateMeasurement(
   ] as const) {
     if (actual !== wanted) invalid(`performance_probe_${field}_mismatch`);
   }
-  if (JSON.stringify(observed.repository) !== JSON.stringify(expected.repository)) {
+  if (
+    canonicalRepositoryShape(observed.repository) === null ||
+    canonicalRepositoryShape(observed.repository) !== canonicalRepositoryShape(expected.repository)
+  ) {
     invalid("performance_probe_repository_shape_mismatch");
   }
   const keys = Object.keys(measurement.metrics);

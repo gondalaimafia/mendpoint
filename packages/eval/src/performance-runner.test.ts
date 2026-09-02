@@ -426,6 +426,11 @@ describe("performance runner", () => {
 
   it("accepts a semantically identical repository shape regardless of object insertion order", async () => {
     let now = 0;
+    const twoLanguageContract = contract();
+    twoLanguageContract.tiers[0] = {
+      ...twoLanguageContract.tiers[0]!,
+      repository: { ...twoLanguageContract.tiers[0]!.repository, languages: ["typescript", "javascript"] },
+    };
     const expectedRepository = {
       files: 10,
       sourceLines: 100,
@@ -435,7 +440,7 @@ describe("performance runner", () => {
       languageSourceLines: { typescript: 80, javascript: 20 },
     };
     const report = await runPerformanceProbe({
-      contract: contract(),
+      contract: twoLanguageContract,
       tierId: "test-tier",
       mode: "load",
       ...metadata(),
