@@ -16,7 +16,7 @@ affects: [01-02-readiness, 05-economics, 06-final-qualification]
 actuals:
   tokens: 24071
   tasks: 3
-  commits: 14
+  commits: 16
 
 tech-stack:
   added: []
@@ -55,22 +55,22 @@ coverage:
         status: pass
     human_judgment: false
   - id: D2
-    description: Reproducible migration compute reservation and settlement lifecycle
+    description: Versioned metric dictionary with load-bearing event-source validation and protected closure reachability
     requirement: ME-FND-007
     verification:
       - kind: unit
-        ref: packages/platform/src/mcu.test.ts, 10 tests
+        ref: packages/eval/src/performance-contract.test.ts, including hostile event-source mismatch coverage
         status: pass
-    human_judgment: false
-  - id: D3
-    description: Current-base protected closure gate with live package authority reachability
-    requirement: ME-FND-008
-    verification:
       - kind: integration
         ref: scripts/fettler-production-closure.test.ts plus npm run ga:check
         status: pass
-      - kind: other
-        ref: npm run evidence:reachability:check
+    human_judgment: false
+  - id: D3
+    description: Reproducible migration compute reservation and settlement lifecycle
+    requirement: ME-FND-008
+    verification:
+      - kind: unit
+        ref: packages/platform/src/mcu.test.ts, 10 tests
         status: pass
     human_judgment: false
 
@@ -94,7 +94,8 @@ status: complete
 ## Accomplishments
 
 - Replaced contradictory pilot-sized thresholds with canonical small, medium, and large Fettler tiers, tier-specific objectives, and documented compatibility input aliases.
-- Made performance proof fail closed unless measured repository shape, concurrency, run interval, and all exact execution identities are present and consistent.
+- Made performance proof fail closed unless producer-observed repository shape, representative tier floors and language distribution, measured concurrency, run interval, metric event source, and all exact execution identities are present and consistent.
+- Retained same-tick pre-observation probe failures as nonzero failed samples while preventing them from qualifying a report.
 - Prevented settlement beyond released reservation and retained a contiguous, deterministic, tamper-evident ledger through invoice entry identifiers.
 - Exported the performance and migration compute authorities and exercised them from the protected general availability preflight without changing protected package authority bytes.
 
@@ -103,6 +104,7 @@ status: complete
 1. **Performance contract TDD:** `d98f8f60`, `e7cb2f16`, `ebf25381`, `3c377389`, `08bfa9cd`
 2. **Migration compute TDD:** `b9065e1b`, `5b8616a7`, `fcc4bd70`, `d9f63901`, `fde7f1dc`
 3. **Closure artifact and protected release gate:** `6a779242`, `44216697`, `049e5490`, `00d74874`
+4. **Exact-head performance review repair:** `89192456`, `b2a16f55`
 
 ## Files Created or Modified
 
@@ -117,7 +119,8 @@ status: complete
 ## Decisions Made
 
 - Legacy `pilot-small`, `pilot-medium`, and `pilot-large` identifiers are accepted only at the input boundary and always normalize to canonical Fettler tier identifiers.
-- A declared revision string is not performance evidence. The evaluator requires every execution and repository identity plus actual measured shape and concurrency.
+- A declared revision string is not performance evidence. The evaluator requires the producer to return every execution identity and measured repository shape, while the runner measures concurrency and run duration.
+- Metric dictionary event sources and probe implementation sources are separate, validated authorities.
 - The migration compute smoke lifecycle is deterministic and synthetic. It proves the authority is executable but deliberately leaves production evidence as `not_observed`.
 
 ## Deviations from Plan
