@@ -855,6 +855,7 @@ describe("Warden (API debug agent)", () => {
     });
     const effectId = `sha256:${"7".repeat(64)}`;
     const requestDigest = `sha256:${"8".repeat(64)}`;
+    let inspectedStatus: "queued" | "claimed" | "blocked" | "failed" | "completed" | null = null;
     const run = vi.fn(async <T>(operation: ModelDependencyOutageOperation<T>) => {
       expect(operation).toMatchObject({
         tenantId: TEST_MODEL_SOURCE.tenantId,
@@ -870,10 +871,7 @@ describe("Warden (API debug agent)", () => {
         value: completed.value,
       } satisfies ModelDependencyOutageResult<T>;
     });
-    const outage = {
-      run,
-      get: vi.fn(() => null),
-    } as unknown as ModelDependencyOutagePort;
+    const outage = { run } as unknown as ModelDependencyOutagePort;
     const execution = {
       state: () => ({ binding, pendingEffect: { kind: "none" } }),
       effectRequest: () => null,
@@ -899,6 +897,15 @@ describe("Warden (API debug agent)", () => {
         const signal = new AbortController().signal;
         expect(await effect.executor.reconcile({ effectId, requestDigest, signal }))
           .toEqual({ status: "not_started" });
+        inspectedStatus = "queued";
+        expect(await effect.executor.reconcile({ effectId, requestDigest, signal }))
+          .toEqual({ status: "not_started" });
+        for (const status of ["claimed", "blocked", "failed", "completed"] as const) {
+          inspectedStatus = status;
+          expect(await effect.executor.reconcile({ effectId, requestDigest, signal }))
+            .toEqual({ status: "unknown" });
+        }
+        inspectedStatus = null;
         const value = await effect.executor.executeIdempotent({
           effectId,
           requestDigest,
@@ -926,6 +933,7 @@ describe("Warden (API debug agent)", () => {
       verifyCommand: "node check.mjs",
       modelOutage: {
         outage,
+        inspect: () => inspectedStatus === null ? null : { status: inspectedStatus },
         decide: () => {
           throw new Error("decision_not_expected");
         },
@@ -933,6 +941,7 @@ describe("Warden (API debug agent)", () => {
         retryBudget: 3,
         expiresAt: "2026-09-02T14:00:00.000Z",
         leaseMs: 30_000,
+        authorityVersion: binding.modelPolicyDigest,
       },
     } as never);
 

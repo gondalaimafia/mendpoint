@@ -32,6 +32,7 @@ import {
   claimNextJob,
   completeJob,
   createDb,
+  createDependencyOutageQueue,
   enqueueJob,
   failJob,
   failWardenCiOperation,
@@ -3912,6 +3913,7 @@ if (job.type === "warden.candidate.cleanup") {
           Date.parse(storage.expiresAt),
           Date.parse(binding.expiresAt),
         )).toISOString();
+        const modelOutageQueue = createDependencyOutageQueue(db.raw);
         // Durable, policy-routed production execution. The shared router is the
         // dispatcher: it decides (execute vs mandatory human handoff), the
         // Fettler attempt is the registered executor, and every decision +
@@ -4032,6 +4034,18 @@ if (job.type === "warden.candidate.cleanup") {
                       Math.max(1_000, Math.floor(leaseMs * 2 / 3)),
                     ),
                     signal: leaseAbort.signal,
+                    ...(modelSourcePolicy ? {
+                      modelOutage: {
+                        outage: modelOutageQueue,
+                        inspect: (scope: Parameters<typeof modelOutageQueue.get>[0]) =>
+                          modelOutageQueue.get(scope),
+                        decide: classifyDependencyOutage,
+                        workerId: fence.workerId,
+                        retryBudget: jobModelCalls,
+                        expiresAt: candidateExpiresAt,
+                        leaseMs: Math.min(60_000, Math.max(1_000, leaseMs)),
+                      },
+                    } : {}),
                   }
                 : undefined;
               // Resume with the compiled envelope via resolveResumeContext so

@@ -8581,6 +8581,7 @@ export {
   type DependencyOutageClaim,
   type DependencyOutageFailureDecision,
   type DependencyOutageHistoryEvent,
+  type DependencyOutageHealthOperation,
   type DependencyOutageKind,
   type DependencyOutageRecord,
   type DependencyOutageReconciliation,
@@ -8589,4 +8590,5 @@ export {
   type DependencyOutageScope,
   type DependencyOutageStanding,
   type DependencyOutageStatus,
+  type DependencyOutageTenantHealth,
 } from "./dependency-outage-queue.js";

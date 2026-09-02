@@ -107,6 +107,7 @@ import {
   registrySummaryMarkdown,
 } from "@mendpoint/db";
 import { parseAuditExportLimit } from "./audit-export.js";
+import { createDependencyOutageRoutes } from "./dependency-outage-routes.js";
 import { changeDetailBody } from "./change-detail.js";
 import {
   detectVendors,
@@ -940,6 +941,7 @@ app.route("/platform/sandbox", createPlatformSandboxRoutes());
 app.route("/learning", createLearningConsentRoutes({ db }));
 app.route("/organization-memory", createOrganizationMemoryRoutes({ db }));
 app.route("/audit-governance", createAuditGovernanceRoutes({ db }));
+app.route("/dependency-outages", createDependencyOutageRoutes({ db }));
 
 // Persist alerts under data/
 try {

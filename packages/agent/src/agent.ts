@@ -40,6 +40,11 @@ import {
   MAX_LIVE_MODEL_PROVENANCE,
 } from "./model-provenance.js";
 import {
+  runModelProviderOperation,
+  type ModelDependencyOutagePolicy,
+  type ModelDependencyOutagePort,
+} from "./model-providers.js";
+import {
   classifyFailures,
   wardenPlaybook,
   type FailureMode,
@@ -2203,6 +2208,26 @@ export type WardenRuntimeLoop = Readonly<{
   repoRoot: string;
   verifyCommand: string;
   durableEffects?: boolean;
+  modelOutage?: WardenModelOutageRuntime;
+}>;
+
+export type WardenModelOutageRuntime = Readonly<{
+  outage: ModelDependencyOutagePort;
+  inspect: (scope: Readonly<{
+    tenantId: string;
+    dependencyKind: "model";
+    providerId: string;
+    operationId: string;
+    operationDigest: string;
+  }>) => Readonly<{
+    status: "queued" | "claimed" | "blocked" | "failed" | "completed";
+  }> | null;
+  decide: ModelDependencyOutagePolicy;
+  workerId: string;
+  retryBudget: number;
+  expiresAt: string;
+  leaseMs: number;
+  authorityVersion: string;
 }>;
 
 type RuntimeUpsertMaterial = Readonly<{
@@ -3112,6 +3137,54 @@ function validateRuntimeModelPlan(value: WardenRuntimeJson): RuntimeModelPlanRes
   });
 }
 
+function modelOutageProviderId(task: AgentTask): string {
+  return task.modelSourcePolicy?.provider ?? (task.planner ? "injected-planner" :
+    resolveTenantModelBackend(task.tenantId, process.env)?.providerId ?? "model-unavailable");
+}
+
+function modelOutageScope(
+  task: AgentTask,
+  runtime: WardenRuntimeLoop,
+  effectId: string,
+  requestDigest: string,
+) {
+  const operationDigest = requestDigest.startsWith("sha256:")
+    ? requestDigest.slice("sha256:".length)
+    : requestDigest;
+  if (!/^[a-f0-9]{64}$/.test(operationDigest)) {
+    throw new Error("warden_runtime_model_outage_digest_invalid");
+  }
+  return Object.freeze({
+    tenantId: runtime.binding.tenantId,
+    dependencyKind: "model" as const,
+    providerId: modelOutageProviderId(task),
+    operationId: `${runtime.binding.jobId}:${effectId}`,
+    operationDigest,
+  });
+}
+
+function modelPlanOutageError(plan: ModelPlanResult): Error {
+  const error = new Error(`warden_runtime_model_${plan.status}`) as Error & {
+    status?: number;
+    code?: string;
+    remoteSideEffectUncertain?: boolean;
+  };
+  if (plan.status === "request_timeout") {
+    error.remoteSideEffectUncertain = true;
+  } else if (plan.status === "request_failed") {
+    error.code = "ECONNREFUSED";
+  } else if (plan.status === "rate_limited") {
+    error.status = 429;
+  } else if (plan.status === "http_transient_error") {
+    error.status = 503;
+  } else if (plan.status === "source_policy_denied") {
+    error.status = 403;
+  } else if (plan.status === "response_invalid" || plan.status === "response_too_large") {
+    error.name = "SyntaxError";
+  }
+  return error;
+}
+
 async function runtimeSuggestTool(
   task: AgentTask,
   runtime: WardenRuntimeLoop,
@@ -3150,8 +3223,21 @@ async function runtimeSuggestTool(
     slot,
     request,
     executor: {
-      reconcile: async () => ({ status: "unknown" as const }),
-      executeIdempotent: async ({ assertFence, signal }) => {
+      reconcile: async ({ effectId, requestDigest }) => {
+        if (!runtime.modelOutage) return { status: "unknown" as const };
+        const record = runtime.modelOutage.inspect(
+          modelOutageScope(task, runtime, effectId, requestDigest),
+        );
+        // No durable claim means the provider was never reached. A queued
+        // record is also safe to retry because the shared queue only returns it
+        // after classifying a definitive pre-processing failure. Every other
+        // state may have crossed the remote boundary and therefore remains
+        // unknown to the checkpoint authority: never repeat it automatically.
+        return record === null || record.status === "queued"
+          ? { status: "not_started" as const }
+          : { status: "unknown" as const };
+      },
+      executeIdempotent: async ({ effectId, requestDigest, assertFence, signal }) => {
         await assertFence();
         const accounting = task.externalModelAccounting;
         const fencedTask: AgentTask = accounting ? {
@@ -3190,36 +3276,59 @@ async function runtimeSuggestTool(
           costUsd: metrics.model.costUsd,
           provenanceCount: metrics.model.provenance.length,
         };
-        const plan = await llmSuggestTool(
-          fencedTask,
-          steps,
-          budget,
-          sourceBudget,
-          sourceContext,
-          metrics,
-          preparedInput,
-          signal,
-        );
-        if (plan.status !== "ok" || !plan.call) {
-          throw new Error("warden_runtime_model_" + plan.status);
+        const invoke = async (): Promise<RuntimeModelPlanResult> => {
+          const plan = await llmSuggestTool(
+            fencedTask,
+            steps,
+            budget,
+            sourceBudget,
+            sourceContext,
+            metrics,
+            preparedInput,
+            signal,
+          );
+          if (plan.status !== "ok" || !plan.call) throw modelPlanOutageError(plan);
+          return Object.freeze({
+            call: plan.call as unknown as WardenRuntimeJson,
+            accounting: Object.freeze({
+              status: "succeeded" as const,
+              promptTokens: metrics.model.promptTokens - before.promptTokens,
+              completionTokens: metrics.model.completionTokens - before.completionTokens,
+              totalTokens: metrics.model.totalTokens - before.totalTokens,
+              costUsd: metrics.model.costUsd - before.costUsd,
+            }),
+            telemetry: Object.freeze({
+              responseBytes: metrics.model.responseBytes - before.responseBytes,
+              provenance: Object.freeze(metrics.model.provenance
+                .slice(before.provenanceCount)
+                .map((record) => Object.freeze({ ...record }))),
+            }),
+          });
+        };
+        if (!runtime.modelOutage) {
+          liveResult = await invoke();
+          return liveResult;
         }
-        liveResult = Object.freeze({
-          call: plan.call as unknown as WardenRuntimeJson,
-          accounting: Object.freeze({
-            status: "succeeded" as const,
-            promptTokens: metrics.model.promptTokens - before.promptTokens,
-            completionTokens: metrics.model.completionTokens - before.completionTokens,
-            totalTokens: metrics.model.totalTokens - before.totalTokens,
-            costUsd: metrics.model.costUsd - before.costUsd,
-          }),
-          telemetry: Object.freeze({
-            responseBytes: metrics.model.responseBytes - before.responseBytes,
-            provenance: Object.freeze(metrics.model.provenance
-              .slice(before.provenanceCount)
-              .map((record) => Object.freeze({ ...record }))),
-          }),
+        const scope = modelOutageScope(task, runtime, effectId, requestDigest);
+        const outcome = await runModelProviderOperation({
+          ...scope,
+          retryBudget: runtime.modelOutage.retryBudget,
+          expiresAt: runtime.modelOutage.expiresAt,
+          workerId: runtime.modelOutage.workerId,
+          leaseMs: runtime.modelOutage.leaseMs,
+          authorityVersion: runtime.modelOutage.authorityVersion,
+          outage: runtime.modelOutage.outage,
+          decide: runtime.modelOutage.decide,
+          reconcile: async () => ({ status: "missing" as const }),
+          invoke,
+          completionDigest: (value) => createHash("sha256")
+            .update(stableSerialize(value), "utf8").digest("hex"),
         });
-        return liveResult!;
+        if (outcome.status !== "completed" && outcome.status !== "recovered") {
+          throw new Error(`warden_runtime_model_outage_${outcome.status}`);
+        }
+        liveResult = outcome.value;
+        return liveResult;
       },
     },
     validateResult: validateRuntimeModelPlan,

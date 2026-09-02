@@ -60,6 +60,33 @@ export type DependencyOutageRecord = DependencyOutageScope & Readonly<{
   updatedAt: string;
 }>;
 
+export type DependencyOutageHealthOperation = Readonly<{
+  dependencyKind: DependencyOutageKind;
+  providerId: string;
+  operationIdentityDigest: string;
+  status: DependencyOutageStatus;
+  standing: DependencyOutageStanding;
+  nextAttemptAt: string;
+  expiresAt: string;
+  circuitState: DependencyOutageCircuitState;
+  authorityBlockedReason: string | null;
+  lastTransition: Readonly<{
+    kind: DependencyOutageHistoryEvent["kind"];
+    observedAt: string;
+  }> | null;
+  stale: boolean;
+}>;
+
+export type DependencyOutageTenantHealth = Readonly<{
+  tenantId: string;
+  standing: DependencyOutageStanding;
+  total: number;
+  returned: number;
+  truncated: boolean;
+  stale: number;
+  operations: readonly DependencyOutageHealthOperation[];
+}>;
+
 export type DependencyOutageClaim = DependencyOutageRecord & Readonly<{
   status: "claimed";
   claimOwner: string;
@@ -142,6 +169,11 @@ type HistoryRow = {
   details_json: string;
   previous_hash: string | null;
   event_hash: string;
+};
+
+type HealthRow = OutageRow & {
+  last_event_kind: DependencyOutageHistoryEvent["kind"] | null;
+  last_event_at: string | null;
 };
 
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
@@ -238,6 +270,8 @@ function ensureSchema(db: DatabaseSync): void {
     ) STRICT;
     CREATE INDEX IF NOT EXISTS dependency_outage_claimable_idx
       ON dependency_outage_operations(status, next_attempt_at, expires_at);
+    CREATE INDEX IF NOT EXISTS dependency_outage_tenant_health_idx
+      ON dependency_outage_operations(tenant_id, updated_at DESC);
     CREATE TABLE IF NOT EXISTS dependency_outage_history (
       sequence INTEGER PRIMARY KEY AUTOINCREMENT,
       tenant_id TEXT NOT NULL,
@@ -358,6 +392,85 @@ export class DependencyOutageQueue {
       throw new Error("dependency_outage_operation_digest_conflict");
     }
     return fromRow(row);
+  }
+
+  tenantHealth(input: Readonly<{
+    tenantId: string;
+    limit?: number;
+    staleAfterMs?: number;
+    now?: string;
+  }>): DependencyOutageTenantHealth {
+    if (!IDENTITY.test(input.tenantId)) throw new Error("dependency_outage_tenant_invalid");
+    const limit = input.limit ?? 50;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error("dependency_outage_list_limit_invalid");
+    }
+    const staleAfterMs = input.staleAfterMs ?? 5 * 60_000;
+    if (!Number.isSafeInteger(staleAfterMs) || staleAfterMs < 1 || staleAfterMs > 24 * 60 * 60_000) {
+      throw new Error("dependency_outage_stale_window_invalid");
+    }
+    const observedAt = iso(input.now ?? this.now(), "dependency_outage_timestamp_invalid");
+    const staleBefore = new Date(Date.parse(observedAt) - staleAfterMs).toISOString();
+    const count = (this.db.prepare(`SELECT COUNT(*) AS count
+      FROM dependency_outage_operations WHERE tenant_id = ?`)
+      .get(input.tenantId) as { count: number }).count;
+    const stale = (this.db.prepare(`SELECT COUNT(*) AS count
+      FROM dependency_outage_operations WHERE tenant_id = ? AND updated_at < ?`)
+      .get(input.tenantId, staleBefore) as { count: number }).count;
+    const rows = this.db.prepare(`SELECT o.*,
+        h.event_kind AS last_event_kind, h.observed_at AS last_event_at
+      FROM dependency_outage_operations o
+      LEFT JOIN dependency_outage_history h ON h.sequence = (
+        SELECT MAX(candidate.sequence) FROM dependency_outage_history candidate
+        WHERE candidate.tenant_id = o.tenant_id
+          AND candidate.dependency_kind = o.dependency_kind
+          AND candidate.provider_id = o.provider_id
+          AND candidate.operation_id = o.operation_id
+      )
+      WHERE o.tenant_id = ?
+      ORDER BY o.updated_at DESC, o.dependency_kind, o.provider_id, o.operation_id
+      LIMIT ?`).all(input.tenantId, limit) as HealthRow[];
+    const operations = rows.map((row): DependencyOutageHealthOperation => Object.freeze({
+      dependencyKind: row.dependency_kind,
+      providerId: row.provider_id,
+      operationIdentityDigest: sha256(canonical({
+        tenantId: row.tenant_id,
+        dependencyKind: row.dependency_kind,
+        providerId: row.provider_id,
+        operationId: row.operation_id,
+        operationDigest: row.operation_digest,
+      })),
+      status: row.status,
+      standing: row.standing,
+      nextAttemptAt: row.next_attempt_at,
+      expiresAt: row.expires_at,
+      circuitState: row.circuit_state,
+      authorityBlockedReason: row.status === "blocked" ? row.last_failure_reason : null,
+      lastTransition: row.last_event_kind === null || row.last_event_at === null
+        ? null
+        : Object.freeze({ kind: row.last_event_kind, observedAt: row.last_event_at }),
+      stale: row.updated_at < staleBefore,
+    }));
+    const standingOrder: readonly DependencyOutageStanding[] = [
+      "degraded_blocked",
+      "degraded_failed",
+      "degraded_retrying",
+      "recovering",
+      "healthy",
+    ];
+    const standing = standingOrder.find((candidate) =>
+      this.db.prepare(`SELECT 1 FROM dependency_outage_operations
+        WHERE tenant_id = ? AND standing = ? LIMIT 1`)
+        .get(input.tenantId, candidate)) ?? "healthy";
+    return Object.freeze({
+      tenantId: input.tenantId,
+      standing,
+      total: count,
+      returned: operations.length,
+      truncated: count > operations.length,
+      stale,
+      operations: Object.freeze(operations),
+    });
   }
 
   enqueue(
@@ -534,7 +647,9 @@ export class DependencyOutageQueue {
       const budgetExhausted = current.attempts_consumed >= current.retry_budget;
       const status: DependencyOutageStatus = budgetExhausted || decision.action === "fail"
         ? "failed"
-        : decision.action === "await_authority" ? "blocked" : "queued";
+        : decision.action === "await_authority" || decision.action === "reconcile"
+          ? "blocked"
+          : "queued";
       const standing: DependencyOutageStanding = status === "failed"
         ? "degraded_failed"
         : status === "blocked" ? "degraded_blocked" : decision.standing;
@@ -587,6 +702,9 @@ export class DependencyOutageQueue {
         throw new Error("dependency_outage_authority_mismatch");
       }
       if (current.expires_at <= input.now) throw new Error("dependency_outage_expired");
+      if (current.last_failure_reason !== "authority_change_required") {
+        throw new Error("dependency_outage_reconciliation_required");
+      }
       this.db.prepare(`UPDATE dependency_outage_operations SET
         status = 'queued', standing = 'degraded_retrying', circuit_state = 'half_open',
         next_attempt_at = ?, authority_version = ?, updated_at = ?

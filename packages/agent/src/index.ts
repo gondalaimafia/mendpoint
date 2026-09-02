@@ -54,7 +54,12 @@ export {
   wardenPlaybook,
 } from "./knowledge.js";
 export { proposeWardenFix, hasAutomaticWardenRepair } from "./fixes.js";
-export { runWarden, runWelder, runApiBugAgent } from "./agent.js";
+export {
+  runWarden,
+  runWelder,
+  runApiBugAgent,
+  type WardenModelOutageRuntime,
+} from "./agent.js";
 export {
   renderInheritedContextSystemBlock,
   inheritedContextEnabled,

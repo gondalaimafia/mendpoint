@@ -188,6 +188,52 @@ describe("durable dependency outage queue", () => {
     db.close();
   });
 
+  it("blocks an uncertain completed effect for reconciliation instead of retrying it", async () => {
+    const db = new DatabaseSync(":memory:");
+    const queue = createDependencyOutageQueue(db, {
+      now: () => "2026-09-01T12:00:00.000Z",
+    });
+    const execute = vi.fn(async (): Promise<never> => {
+      throw Object.assign(new Error("provider outcome unknown"), {
+        remoteSideEffectUncertain: true,
+      });
+    });
+    const operation = {
+      ...SCOPE,
+      workerId: "worker-1",
+      retryBudget: 3,
+      expiresAt: "2026-09-01T13:00:00.000Z",
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+      reconcile: async () => ({ status: "missing" as const }),
+      execute,
+      classify: (): DependencyOutageFailureDecision => ({
+        schemaVersion: 1,
+        action: "reconcile",
+        failureKind: "completed",
+        retryable: false,
+        reason: "completed_effect_requires_reconciliation",
+        nextAttemptAt: null,
+        circuitState: "closed",
+        circuit: { state: "closed", cooldownMs: 30_000, consecutiveFailures: 0 },
+        standing: "recovering",
+      }),
+    };
+
+    await expect(queue.run(operation)).resolves.toMatchObject({
+      status: "blocked",
+      record: {
+        status: "blocked",
+        lastFailureReason: "completed_effect_requires_reconciliation",
+      },
+    });
+    await expect(queue.run(operation)).resolves.toMatchObject({ status: "blocked" });
+    await expect(queue.run({ ...operation, authorityVersion: "model-authority-v2" }))
+      .rejects.toThrow("dependency_outage_reconciliation_required");
+    expect(execute).toHaveBeenCalledTimes(1);
+    db.close();
+  });
+
   it("persists three-failure circuit history across restarts and probes half-open once", async () => {
     const root = mkdtempSync(join(tmpdir(), "mendpoint-outage-circuit-"));
     const path = join(root, "outage.sqlite");
