@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -29,15 +29,17 @@ function executable(dir: string, name: string, source: string): string {
 
 function runController(options: {
   activeRunId?: string;
+  activeCreatedAt?: string;
   latestSuccess?: string;
   acknowledgedRunId?: string;
+  handoffRunId?: string;
   dispatchStatus?: string;
 }) {
   const dir = mkdtempSync(join(tmpdir(), "customer-backup-delivery-"));
   const bin = join(dir, "bin");
   const log = join(dir, "gh.log");
   const ledger = join(dir, "delivery.jsonl");
-  spawnSync("mkdir", ["-p", bin]);
+  mkdirSync(bin, { recursive: true });
   writeFileSync(log, "", "utf8");
   executable(bin, "sleep", "#!/bin/sh\nexit 0\n");
   executable(
@@ -48,8 +50,13 @@ printf '%s\\n' "$*" >> "$GH_STUB_LOG"
 case "$1 $2" in
   'run list')
     case "$*" in
+      *customer-backup-delivery.yml*) printf '%s\\n' "\${GH_STUB_HANDOFF_RUN_ID:-}" ;;
       *displayTitle*) printf '%s\\n' "\${GH_STUB_ACKNOWLEDGED_RUN_ID:-}" ;;
-      *'status != "completed"'*) printf '%s\\n' "\${GH_STUB_ACTIVE_RUN_ID:-}" ;;
+      *'status != "completed"'*)
+        if [ -n "\${GH_STUB_ACTIVE_RUN_ID:-}" ]; then
+          printf '%s\\t%s\\n' "$GH_STUB_ACTIVE_RUN_ID" "$GH_STUB_ACTIVE_CREATED_AT"
+        fi
+        ;;
       *) printf '%s\\n' "\${GH_STUB_LATEST_SUCCESS:-}" ;;
     esac
     ;;
@@ -83,12 +90,15 @@ exit 0
         DELIVERY_CYCLES: "1",
         DELIVERY_SLEEP_SECONDS: "0",
         DELIVERY_MAX_AGE_SECONDS: "1500",
+        DELIVERY_MAX_ACTIVE_AGE_SECONDS: "1800",
         DELIVERY_OBSERVE_ATTEMPTS: "1",
         DELIVERY_OBSERVE_SLEEP_SECONDS: "0",
         GH_STUB_LOG: log,
         GH_STUB_ACTIVE_RUN_ID: options.activeRunId ?? "",
+        GH_STUB_ACTIVE_CREATED_AT: options.activeCreatedAt ?? new Date().toISOString(),
         GH_STUB_LATEST_SUCCESS: options.latestSuccess ?? "2026-01-01T00:00:00Z",
         GH_STUB_ACKNOWLEDGED_RUN_ID: options.acknowledgedRunId ?? "4242",
+        GH_STUB_HANDOFF_RUN_ID: options.handoffRunId ?? "5252",
         GH_STUB_DISPATCH_STATUS: options.dispatchStatus ?? "0",
       },
     },
@@ -143,10 +153,16 @@ describe("customer backup delivery controller workflow", () => {
     expect(result.calls).toContainEqual(expect.stringContaining("displayTitle"));
     expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup-delivery.yml")))
       .toHaveLength(1);
+    expect(result.calls).toContainEqual(expect.stringContaining("predecessor_run_id=9001"));
     expect(result.ledger).toContainEqual(expect.objectContaining({
       event: "backup_dispatched",
       deliveryId: "backup-delivery-9001-1",
       backupRunId: "4242",
+    }));
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "controller_handoff",
+      predecessorRunId: "9001",
+      successorRunId: "5252",
     }));
   });
 
@@ -168,6 +184,34 @@ describe("customer backup delivery controller workflow", () => {
       .toBe(false);
   });
 
+  it("fails loudly when GitHub accepts a handoff but never exposes the exact successor", () => {
+    const result = runController({
+      latestSuccess: new Date().toISOString(),
+      handoffRunId: "",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_delivery_successor_not_observed");
+  });
+
+  it("bounds an active backup instead of treating a hung run as delivery forever", () => {
+    const maintain = step("Maintain continuous backup delivery");
+    expect(maintain.env.DELIVERY_MAX_ACTIVE_AGE_SECONDS).toBeTruthy();
+    expect(Number(maintain.env.DELIVERY_MAX_ACTIVE_AGE_SECONDS)).toBeLessThan(
+      CORE_DISASTER_RECOVERY_POLICY.rpoSeconds,
+    );
+    expect(maintain.run).toContain("customer_backup_delivery_active_stalled");
+    const result = runController({
+      activeRunId: "31337",
+      activeCreatedAt: "2026-01-01T00:00:00Z",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_delivery_active_stalled");
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_active_stalled",
+      backupRunId: "31337",
+    }));
+  });
+
   it("retains a deduplicated alert when controller delivery fails", () => {
     const alert = step("Alert on backup delivery failure");
     expect(alert.if).toBe("${{ failure() }}");
@@ -182,8 +226,10 @@ describe("customer backup delivery controller workflow", () => {
     const readiness = readFileSync(resolve(root, "packages/ops/src/readiness.ts"), "utf8");
     expect(backup).toContain("delivery_id:");
     expect(backup).toContain("inputs.delivery_id");
+    expect(deliverySource).toContain("predecessor_run_id:");
+    expect(deliverySource).toContain("inputs.predecessor_run_id");
     expect(backup).toContain("scripts/customer-backup.ts");
-    expect(producer).toContain("recordVerifiedBackup");
+    expect(producer).toContain("recordLastVerifiedBackupEvidence");
     expect(readiness).toContain('name: "last_verified_backup"');
   });
 });

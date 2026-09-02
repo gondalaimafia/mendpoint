@@ -1,12 +1,21 @@
 name: Customer production backup
 
+run-name: >-
+  ${{ inputs.delivery_id && format('Customer production backup [{0}]', inputs.delivery_id)
+      || 'Customer production backup' }}
+
 permissions:
   contents: read
 
 on:
   schedule:
     - cron: "*/30 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      delivery_id:
+        description: Exact backup-delivery controller identity
+        required: false
+        type: string
 
 concurrency:
   group: customer-production-backup

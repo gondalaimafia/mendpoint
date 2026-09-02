@@ -1,0 +1,259 @@
+name: Customer production backup delivery controller
+
+run-name: >-
+  ${{ inputs.predecessor_run_id
+      && format('Customer production backup delivery [{0}]', inputs.predecessor_run_id)
+      || 'Customer production backup delivery [bootstrap]' }}
+
+# GitHub's best-effort schedule has repeatedly omitted the every-30-minute
+# customer backup for several hours. This controller keeps one bounded runner
+# alive as the clock, then hands control to an exact successor before the runner
+# limit. The hourly schedule, default-branch CI completion, and manual dispatch
+# are recovery inputs; no one of them is the primary cadence.
+#
+# The controller never receives the Fly token, backup key, object-store
+# credentials, or volume access. It can only dispatch the existing protected
+# customer-backup.yml workflow on the reviewed default branch. Backup execution,
+# authenticated evidence publication, and readiness consumption remain in their
+# existing authorities, outside application startup and the worker startup lease.
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      predecessor_run_id:
+        description: Exact predecessor controller run identity
+        required: false
+        type: string
+
+# At most one controller is running and one is pending. With
+# cancel-in-progress=false, a new recovery trigger replaces an older pending run
+# but never kills the controller that currently owns the delivery clock.
+concurrency:
+  group: customer-production-backup-delivery
+  cancel-in-progress: false
+
+jobs:
+  controller:
+    if: >-
+      ${{ (github.event_name != 'workflow_run'
+           || github.event.workflow_run.head_branch == github.event.repository.default_branch)
+          && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    environment: customer-production-backup
+    permissions:
+      contents: read
+      actions: write
+      issues: write
+    steps:
+      - name: Report whether continuous backup delivery is active
+        id: gate
+        shell: bash
+        env:
+          ACTIVE: ${{ vars.MENDPOINT_CUSTOMER_PROFILE_ACTIVE }}
+        run: |
+          set -euo pipefail
+          if [ "$ACTIVE" = "true" ]; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            echo "customer backup delivery controller active"
+          else
+            echo "active=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Backup delivery not applicable::NOT-CONFIGURED: the customer profile is not active, so the continuous delivery controller will not dispatch backups."
+          fi
+
+      - name: Maintain continuous backup delivery
+        if: ${{ steps.gate.outputs.active == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BACKUP_WORKFLOW: customer-backup.yml
+          DELIVERY_WORKFLOW: customer-backup-delivery.yml
+          BACKUP_REF: ${{ github.event.repository.default_branch }}
+          CONTROLLER_RUN_ID: ${{ github.run_id }}
+          DELIVERY_LEDGER_PATH: test-results/customer-backup-delivery/events.jsonl
+          # Twenty-five minutes leaves more than one half of the authoritative
+          # one-hour RPO for dispatch delay and backup completion. The focused
+          # test binds this value below one half of CORE_DISASTER_RECOVERY_POLICY.
+          DELIVERY_MAX_AGE_SECONDS: "1500"
+          # A backup that remains active for thirty minutes has consumed the
+          # controller's full safety margin. Do not queue a duplicate, but do
+          # fail loudly instead of calling the hung run healthy forever.
+          DELIVERY_MAX_ACTIVE_AGE_SECONDS: "1800"
+          # Fifty-four five-minute cycles keep the clock alive for four and one
+          # half hours, with headroom for exact-run observation and handoff.
+          DELIVERY_CYCLES: "54"
+          DELIVERY_SLEEP_SECONDS: "300"
+          DELIVERY_OBSERVE_ATTEMPTS: "18"
+          DELIVERY_OBSERVE_SLEEP_SECONDS: "10"
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$DELIVERY_LEDGER_PATH")"
+          : > "$DELIVERY_LEDGER_PATH"
+
+          record() {
+            jq -nc "$@" >> "$DELIVERY_LEDGER_PATH"
+          }
+
+          for cycle in $(seq 1 "$DELIVERY_CYCLES"); do
+            checked_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+            # A queued or running backup is already delivery in progress. Never
+            # add another one behind it; customer-backup.yml's own concurrency
+            # remains the final duplicate-execution fence.
+            active="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
+              --limit 50 --json databaseId,status,createdAt \
+              --jq '[.[] | select(.status != "completed")] | first | if . then [.databaseId, .createdAt] | @tsv else "" end')"
+            IFS=$'\t' read -r active_id active_created_at <<< "$active"
+            if [ -n "$active_id" ]; then
+              active_epoch="$(date -u -d "$active_created_at" +%s)"
+              active_age="$(( $(date -u +%s) - active_epoch ))"
+              if [ "$active_age" -ge "$DELIVERY_MAX_ACTIVE_AGE_SECONDS" ]; then
+                echo "customer_backup_delivery_active_stalled run_id=$active_id age_seconds=$active_age" >&2
+                record --arg at "$checked_at" --arg id "$active_id" \
+                  --argjson age "$active_age" --argjson cycle "$cycle" \
+                  '{at:$at,event:"backup_active_stalled",cycle:$cycle,backupRunId:$id,ageSeconds:$age}'
+                exit 1
+              fi
+              record --arg at "$checked_at" --arg id "$active_id" \
+                --argjson age "$active_age" --argjson cycle "$cycle" \
+                '{at:$at,event:"backup_active",cycle:$cycle,backupRunId:$id,ageSeconds:$age}'
+            else
+              latest_success="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
+                --limit 50 --json conclusion,createdAt \
+                --jq '[.[] | select(.conclusion == "success")] | first | .createdAt // empty')"
+
+              due=true
+              age_seconds=null
+              if [ -n "$latest_success" ]; then
+                latest_epoch="$(date -u -d "$latest_success" +%s)"
+                now_epoch="$(date -u +%s)"
+                age_seconds="$((now_epoch - latest_epoch))"
+                if [ "$age_seconds" -lt "$DELIVERY_MAX_AGE_SECONDS" ]; then
+                  due=false
+                fi
+              fi
+
+              if [ "$due" = false ]; then
+                record --arg at "$checked_at" --arg createdAt "$latest_success" \
+                  --argjson age "$age_seconds" --argjson cycle "$cycle" \
+                  '{at:$at,event:"backup_recent",cycle:$cycle,createdAt:$createdAt,ageSeconds:$age}'
+              else
+                delivery_id="backup-delivery-${CONTROLLER_RUN_ID}-${cycle}"
+                expected_title="Customer production backup [$delivery_id]"
+                started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                gh workflow run "$BACKUP_WORKFLOW" --repo "$GH_REPO" --ref "$BACKUP_REF" \
+                  -f "delivery_id=$delivery_id"
+
+                # workflow_dispatch returns no run id. Bind acknowledgement to
+                # the unique run-name identity instead of accepting whichever
+                # backup happened to appear next.
+                backup_run_id=""
+                for _ in $(seq 1 "$DELIVERY_OBSERVE_ATTEMPTS"); do
+                  backup_run_id="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
+                    --event workflow_dispatch --limit 50 \
+                    --json databaseId,displayTitle,createdAt \
+                    --jq "[.[] | select(.displayTitle == \"$expected_title\" and .createdAt >= \"$started\")] | first | .databaseId // empty")"
+                  if [ -n "$backup_run_id" ]; then break; fi
+                  sleep "$DELIVERY_OBSERVE_SLEEP_SECONDS"
+                done
+                if [ -z "$backup_run_id" ]; then
+                  echo "customer_backup_delivery_run_not_observed delivery_id=$delivery_id" >&2
+                  record --arg at "$checked_at" --arg deliveryId "$delivery_id" \
+                    --argjson cycle "$cycle" \
+                    '{at:$at,event:"dispatch_unacknowledged",cycle:$cycle,deliveryId:$deliveryId}'
+                  exit 1
+                fi
+                record --arg at "$checked_at" --arg deliveryId "$delivery_id" \
+                  --arg id "$backup_run_id" --argjson cycle "$cycle" \
+                  '{at:$at,event:"backup_dispatched",cycle:$cycle,deliveryId:$deliveryId,backupRunId:$id}'
+              fi
+            fi
+
+            if [ "$cycle" -lt "$DELIVERY_CYCLES" ]; then
+              sleep "$DELIVERY_SLEEP_SECONDS"
+            fi
+          done
+
+          # A workflow_dispatch triggered by GITHUB_TOKEN is allowed to create a
+          # new workflow run. With cancel-in-progress=false it becomes the one
+          # pending successor, starts only after this controller exits, and is
+          # independent of GitHub's best-effort schedule.
+          handoff_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          expected_successor_title="Customer production backup delivery [$CONTROLLER_RUN_ID]"
+          gh workflow run "$DELIVERY_WORKFLOW" --repo "$GH_REPO" --ref "$BACKUP_REF" \
+            -f "predecessor_run_id=$CONTROLLER_RUN_ID"
+          successor_run_id=""
+          for _ in $(seq 1 "$DELIVERY_OBSERVE_ATTEMPTS"); do
+            successor_run_id="$(gh run list --repo "$GH_REPO" --workflow "$DELIVERY_WORKFLOW" \
+              --event workflow_dispatch --limit 50 \
+              --json databaseId,displayTitle,createdAt \
+              --jq "[.[] | select(.displayTitle == \"$expected_successor_title\" and .createdAt >= \"$handoff_started\")] | first | .databaseId // empty")"
+            if [ -n "$successor_run_id" ]; then break; fi
+            sleep "$DELIVERY_OBSERVE_SLEEP_SECONDS"
+          done
+          if [ -z "$successor_run_id" ]; then
+            echo "customer_backup_delivery_successor_not_observed predecessor_run_id=$CONTROLLER_RUN_ID" >&2
+            record --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --arg predecessor "$CONTROLLER_RUN_ID" \
+              '{at:$at,event:"controller_handoff_unacknowledged",predecessorRunId:$predecessor}'
+            exit 1
+          fi
+          record --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg predecessor "$CONTROLLER_RUN_ID" --arg successor "$successor_run_id" \
+            '{at:$at,event:"controller_handoff",predecessorRunId:$predecessor,successorRunId:$successor}'
+
+      - name: Retain the backup delivery ledger
+        if: ${{ always() && steps.gate.outputs.active == 'true' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: customer-backup-delivery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/customer-backup-delivery/events.jsonl
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Alert on backup delivery failure
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          label="customer-production-backup-delivery-failure"
+          gh label create "$label" --repo "$GH_REPO" --color b60205 \
+            --description "Automated: continuous customer backup delivery failed" >/dev/null 2>&1 || true
+          body="The continuous customer backup delivery controller failed. Run: $RUN_URL. The hourly schedule and default-branch CI completion remain recovery triggers. Runbook: docs/CUSTOMER_INCIDENT_RUNBOOK.md"
+          existing="$(gh issue list --repo "$GH_REPO" --state open --label "$label" \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GH_REPO" --body "$body"
+          else
+            gh issue create --repo "$GH_REPO" --label "$label" \
+              --title "Customer backup delivery controller FAILED" --body "$body"
+          fi
+
+      - name: Resolve the delivery alert after a complete controller handoff
+        if: ${{ success() && steps.gate.outputs.active == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          label="customer-production-backup-delivery-failure"
+          for number in $(gh issue list --repo "$GH_REPO" --state open --label "$label" \
+            --json number --jq '.[].number'); do
+            gh issue close "$number" --repo "$GH_REPO" --reason completed \
+              --comment "Continuous backup delivery completed an exact controller handoff. Verified by $RUN_URL."
+          done
