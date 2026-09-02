@@ -19,6 +19,7 @@ import {
   getWardenCiUpdateByRun,
   insertAgentRun,
   insertPrincipal,
+  missionTaskIdForJob,
   openTaskHandoff,
   recordAudit,
   transitionMissionTask,
@@ -27,13 +28,20 @@ import {
   type MissionTask,
 } from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
-import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.js";
+import {
+  registerWardenCandidateReviewRoutes,
+  tryResolveBoundReviewHandoff,
+} from "./warden-candidate-review.js";
 import { enqueueDelegatedPrVerificationJob } from "@mendpoint/worker/delegated-pr-verification-job";
 
 const NOW = "2026-08-06T12:00:00.000Z";
-// The enrollment task the reviewed run drives, derived exactly as the claim
-// modules derive it from the run's (missionId, repositoryId) source binding.
-const REVIEW_TASK_ID = fettlerCampaignMissionTaskId("m1", "repo-1");
+// Production bridges a claimed agent.run onto missionTaskIdForJob(job.id)
+// (ADR D3). The reviewed fixture run is source-job-1 / warden-run-1.
+const REVIEW_JOB_ID = "source-job-1";
+const REVIEW_TASK_ID = missionTaskIdForJob(REVIEW_JOB_ID);
+// Same-repo enrollment task — a different work primitive. Review must not
+// resolve this when the reviewed run's job task is what is (or is not) blocking.
+const ENROLLMENT_TASK_ID = fettlerCampaignMissionTaskId("m1", "repo-1");
 const CANDIDATE_DIGEST = "c".repeat(64);
 const CANDIDATE_MANIFEST_SHA256 = "f".repeat(64);
 const VERIFICATION_AUTHORITY = Object.freeze({
@@ -614,9 +622,9 @@ describe("Warden candidate human review", () => {
     });
   }
 
-  // Advance an enrollment task (by its derived id) to agent_working so a handoff
-  // can be opened on it. Event keys are namespaced by the task id.
-  function advanceEnrollmentTask(db: AppDb, taskId: string): MissionTask {
+  // Advance any MissionTask (by id) to agent_working so a handoff can be
+  // opened on it. Event keys are namespaced by the task id.
+  function advanceTaskToWorking(db: AppDb, taskId: string): MissionTask {
     let task = createMissionTask(db, {
       id: taskId, tenantId: "tenant-a", missionId: "m1", taskType: "code_migration",
       acceptanceCriteria: "tests pass", risk: "medium", actorPrincipalId: "trust-human-a",
@@ -634,8 +642,8 @@ describe("Warden candidate human review", () => {
     });
   }
 
-  // A second candidate_ready run bound to a specific repository, whose source
-  // job carries mission m1 — the linkage the resolver uses to derive the task.
+  // A second candidate_ready run whose source job carries mission m1. The
+  // resolver binds to missionTaskIdForJob(jobId), not the repo enrollment id.
   function seedReviewRunForRepo(db: AppDb, input: { runId: string; jobId: string; repositoryId: string }): void {
     enqueueJob(db, {
       id: input.jobId, tenantId: "tenant-a", type: "agent.run",
@@ -674,22 +682,24 @@ describe("Warden candidate human review", () => {
   }
 
   // CONTROL (Defect B, task binding): on a multi-task mission the resolver must
-  // resolve ONLY the blocker bound to the reviewed run's task, never a sibling's.
-  // Reverting tryResolveBoundReviewHandoff's task-binding turns this RED: the old
-  // first-blocking-match logic resolves task A's (older) exception and records
-  // run B's rationale as task A's answer.
-  it("resolves only the reviewed run's task on a multi-task mission, never a sibling's blocker", async () => {
+  // resolve ONLY the blocker bound to the reviewed run's job task, never a
+  // sibling job's. Reverting to enrollment-id binding or "any single blocker"
+  // turns this RED: neither sibling is an enrollment id, so the job task stays
+  // human_review_required.
+  it("resolves only the reviewed run's job task on a multi-task mission, never a sibling's blocker", async () => {
     const { app, db } = fixture();
     bindMission(db);
-    const taskA = fettlerCampaignMissionTaskId("m1", "repo-A");
-    const taskB = fettlerCampaignMissionTaskId("m1", "repo-B");
-    advanceEnrollmentTask(db, taskA);
-    advanceEnrollmentTask(db, taskB);
+    const taskA = missionTaskIdForJob("source-job-A");
+    const taskB = missionTaskIdForJob("source-job-2");
+    advanceTaskToWorking(db, taskA);
+    advanceTaskToWorking(db, taskB);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     const openedA = openTaskHandoff(db, {
       tenantId: "tenant-a", missionId: "m1", taskId: taskA, reason: "architecture_decision_required",
       question: "Task A: keep the public signature?", context: "Task A candidate changed the mapping.",
       ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
     });
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     const openedB = openTaskHandoff(db, {
       tenantId: "tenant-a", missionId: "m1", taskId: taskB, reason: "architecture_decision_required",
       question: "Task B: keep the public signature?", context: "Task B candidate changed the mapping.",
@@ -701,13 +711,103 @@ describe("Warden candidate human review", () => {
       body: JSON.stringify({ decision: "regenerate", rationale: "Task B: keep the public signature." }),
     });
     expect(response.status).toBe(202);
-    // Task B resolves and resumes; task A is untouched and still blocking.
     expect(getMissionTask(db, "tenant-a", taskB)?.status).toBe("agent_resume");
     expect(getMissionTask(db, "tenant-a", taskA)?.status).toBe("human_review_required");
     const resolvedSupersedes = evaluateMissionExceptions(db, "tenant-a", "m1").resolved.map((row) => row.supersedesId);
     expect(resolvedSupersedes).toContain(openedB.id);
     expect(resolvedSupersedes).not.toContain(openedA.id);
     expect(evaluateMissionExceptions(db, "tenant-a", "m1").blocking.some((row) => row.taskId === taskA)).toBe(true);
+  });
+
+  // FAILURE / mutation: enrollment and job tasks both blocking on the same
+  // (mission, repository). Live review must resolve ONLY the job task.
+  // Rebinding expectedTaskId to fettlerCampaignMissionTaskId(mission, repo)
+  // resumes the enrollment task and leaves the reviewed run's task blocked.
+  it("resolves the reviewed run's job task and leaves the same-repo enrollment blocker open", async () => {
+    const { app, db } = fixture();
+    bindMission(db);
+    workingTask(db);
+    advanceTaskToWorking(db, ENROLLMENT_TASK_ID);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
+    const openedJob = openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID, reason: "architecture_decision_required",
+      question: "Job: keep the public signature?", context: "Reviewed run changed the mapping.",
+      ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
+    });
+    const openedEnrollment = openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: ENROLLMENT_TASK_ID, reason: "architecture_decision_required",
+      question: "Enrollment: keep the campaign scope?", context: "Enrollment is still waiting.",
+      ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
+    });
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "Job: keep the public signature." }),
+    });
+    expect(response.status).toBe(202);
+    expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("agent_resume");
+    expect(getMissionTask(db, "tenant-a", ENROLLMENT_TASK_ID)?.status).toBe("human_review_required");
+    const resolvedSupersedes = evaluateMissionExceptions(db, "tenant-a", "m1").resolved.map((row) => row.supersedesId);
+    expect(resolvedSupersedes).toContain(openedJob.id);
+    expect(resolvedSupersedes).not.toContain(openedEnrollment.id);
+  });
+
+  // Live-path: the only blocker is the enrollment task. Review of the job
+  // must SKIP — unknown-to-this-run is not "close the one blocker we see."
+  // Enrollment-id binding turns this RED by resolving that enrollment task.
+  it("does not resolve a same-repo enrollment blocker when the reviewed job task is not blocking", async () => {
+    const { app, db } = fixture();
+    bindMission(db);
+    advanceTaskToWorking(db, ENROLLMENT_TASK_ID);
+    openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: ENROLLMENT_TASK_ID, reason: "architecture_decision_required",
+      question: "Enrollment: keep the campaign scope?", context: "Only the enrollment task is waiting.",
+      ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
+    });
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "This rationale belongs to the job, not enrollment." }),
+    });
+    expect(response.status).toBe(202);
+    expect(getMissionTask(db, "tenant-a", ENROLLMENT_TASK_ID)?.status).toBe("human_review_required");
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1").missionBlocked).toBe(true);
+  });
+
+  // Edge: missing jobId is "not determined" — skip even when exactly one
+  // blocker exists. Falling back to any-single-blocker turns this RED.
+  it("skips handoff resolution when the reviewed run's job id is unknown", () => {
+    const { db } = fixture();
+    bindMission(db);
+    workingTask(db);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
+    openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID, reason: "architecture_decision_required",
+      question: "Keep the public signature?", context: "Candidate changed the mapping.",
+      ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
+    });
+    const resolved = tryResolveBoundReviewHandoff(db, {
+      tenantId: "tenant-a",
+      missionId: "m1",
+      jobId: null,
+      runId: "warden-run-1",
+      rationale: "Keep the public signature.",
+      authorPrincipalId: "trust-human-a",
+      correlationId: "corr",
+      createdAt: NOW,
+    });
+    expect(resolved).toBeUndefined();
+    const blankJob = tryResolveBoundReviewHandoff(db, {
+      tenantId: "tenant-a",
+      missionId: "m1",
+      jobId: "   ",
+      runId: "warden-run-1",
+      rationale: "Keep the public signature.",
+      authorPrincipalId: "trust-human-a",
+      correlationId: "corr",
+      createdAt: NOW,
+    });
+    expect(blankJob).toBeUndefined();
+    expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("human_review_required");
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1").missionBlocked).toBe(true);
   });
 
   // CONTROL (Defect B, current snapshot): the resolver passes the reviewed run's
@@ -720,6 +820,7 @@ describe("Warden candidate human review", () => {
     bindMission(db);
     workingTask(db);
     seedReviewedSnapshot(db);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     const opened = openTaskHandoff(db, {
       tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID, reason: "architecture_decision_required",
       question: "Keep the public signature?", context: "Candidate changed the mapping.",
@@ -744,6 +845,7 @@ describe("Warden candidate human review", () => {
     const { app, db } = fixture();
     bindMission(db);
     workingTask(db);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     const openedHandoff = openTaskHandoff(db, {
       tenantId: "tenant-a",
       missionId: "m1",
@@ -786,6 +888,7 @@ describe("Warden candidate human review", () => {
     const { app, db } = fixture();
     bindMission(db);
     workingTask(db);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     openTaskHandoff(db, {
       tenantId: "tenant-a",
       missionId: "m1",
@@ -814,6 +917,7 @@ describe("Warden candidate human review", () => {
     bindMission(db);
     workingTask(db);
     seedCiRepairCandidate(db);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     openTaskHandoff(db, {
       tenantId: "tenant-a",
       missionId: "m1",
