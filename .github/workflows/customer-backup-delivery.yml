@@ -86,24 +86,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           BACKUP_WORKFLOW: customer-backup.yml
-          DELIVERY_WORKFLOW: customer-backup-delivery.yml
           BACKUP_REF: ${{ github.event.repository.default_branch }}
           CONTROLLER_RUN_ID: ${{ github.run_id }}
           DELIVERY_LEDGER_PATH: test-results/customer-backup-delivery/events.jsonl
-          # Twenty-five minutes leaves more than one half of the authoritative
-          # one-hour RPO for dispatch delay and backup completion. The focused
-          # test binds this value below one half of CORE_DISASTER_RECOVERY_POLICY.
-          DELIVERY_MAX_AGE_SECONDS: "1500"
+          # The complete authority envelope is kept below the one-hour RPO:
+          # pre-dispatch freshness + active age + both observation windows +
+          # explicit clock/API margin = 900 + 1200 + 120 + 120 + 300 = 2640.
+          DELIVERY_MAX_AGE_SECONDS: "900"
           DELIVERY_RPO_SECONDS: "3600"
-          # A backup that remains active for thirty minutes has consumed the
+          # A backup that remains active for twenty minutes has consumed the
           # controller's full safety margin. Do not queue a duplicate, but do
           # fail loudly instead of calling the hung run healthy forever.
-          DELIVERY_MAX_ACTIVE_AGE_SECONDS: "1800"
+          DELIVERY_MAX_ACTIVE_AGE_SECONDS: "1200"
+          DELIVERY_OBSERVATION_MARGIN_SECONDS: "300"
           # Fifty-four five-minute cycles keep the clock alive for four and one
           # half hours, with headroom for exact-run observation and handoff.
           DELIVERY_CYCLES: "54"
           DELIVERY_SLEEP_SECONDS: "300"
-          DELIVERY_OBSERVE_ATTEMPTS: "18"
+          DELIVERY_OBSERVE_ATTEMPTS: "12"
           DELIVERY_OBSERVE_SLEEP_SECONDS: "10"
         run: |
           set -euo pipefail
@@ -111,6 +111,23 @@ jobs:
           : > "$DELIVERY_LEDGER_PATH"
           record() {
             jq -nc "$@" >> "$DELIVERY_LEDGER_PATH"
+          }
+
+          exact_active_metadata() {
+            local metadata="$1"
+            local window_start="$2"
+            local window_end="$3"
+            local filter='(.status != "completed") and (.head_branch == $branch) and (.path == $path) and (.created_at >= $windowStart) and (.created_at <= $windowEnd) and ((.event == "schedule" and .display_title == "Customer production backup") or (.event == "workflow_dispatch" and (.display_title | startswith("Customer production backup [backup-delivery-")) and (.display_title | endswith("]"))))'
+            jq -e --arg branch "$BACKUP_REF" --arg path ".github/workflows/$BACKUP_WORKFLOW" --arg windowStart "$window_start" --arg windowEnd "$window_end" "$filter" <<< "$metadata" >/dev/null
+          }
+
+          exact_dispatched_backup_metadata() {
+            local metadata="$1"
+            local expected_title="$2"
+            local window_start="$3"
+            local window_end="$4"
+            local filter='(.event == "workflow_dispatch") and (.head_branch == $branch) and (.path == $path) and (.display_title == $title) and (.created_at >= $windowStart) and (.created_at <= $windowEnd)'
+            jq -e --arg branch "$BACKUP_REF" --arg path ".github/workflows/$BACKUP_WORKFLOW" --arg title "$expected_title" --arg windowStart "$window_start" --arg windowEnd "$window_end" "$filter" <<< "$metadata" >/dev/null
           }
 
           latest_successful_backup() {
@@ -142,10 +159,25 @@ jobs:
             # add another one behind it; customer-backup.yml's own concurrency
             # remains the final duplicate-execution fence.
             active="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
-              --limit 50 --json databaseId,status,createdAt \
+              --branch "$BACKUP_REF" --limit 50 --json databaseId,status,createdAt \
               --jq '[.[] | select(.status != "completed")] | first | if . then [.databaseId, .createdAt] | @tsv else "" end')"
             IFS=$'\t' read -r active_id active_created_at <<< "$active"
             if [ -n "$active_id" ]; then
+              active_metadata=""
+              if ! active_metadata="$(gh api "repos/$GH_REPO/actions/runs/$active_id")"; then
+                echo "customer_backup_delivery_active_authority_invalid run_id=$active_id reason=metadata_unavailable" >&2
+                record --arg at "$checked_at" --arg id "$active_id" --argjson cycle "$cycle" \
+                  '{at:$at,event:"backup_active_authority_invalid",cycle:$cycle,backupRunId:$id,reason:"metadata_unavailable"}'
+                exit 1
+              fi
+              active_window_start="$(date -u -d "@$(( $(date -u +%s) - DELIVERY_RPO_SECONDS ))" +%Y-%m-%dT%H:%M:%SZ)"
+              if ! exact_active_metadata "$active_metadata" "$active_window_start" "$checked_at"; then
+                echo "customer_backup_delivery_active_authority_invalid run_id=$active_id reason=metadata_mismatch" >&2
+                record --arg at "$checked_at" --arg id "$active_id" --argjson cycle "$cycle" \
+                  '{at:$at,event:"backup_active_authority_invalid",cycle:$cycle,backupRunId:$id,reason:"metadata_mismatch"}'
+                exit 1
+              fi
+              active_created_at="$(jq -r '.created_at' <<< "$active_metadata")"
               active_epoch="$(date -u -d "$active_created_at" +%s)"
               active_age="$(( $(date -u +%s) - active_epoch ))"
               if [ "$active_age" -ge "$DELIVERY_MAX_ACTIVE_AGE_SECONDS" ]; then
@@ -195,10 +227,19 @@ jobs:
                 # backup happened to appear next.
                 backup_run_id=""
                 for _ in $(seq 1 "$DELIVERY_OBSERVE_ATTEMPTS"); do
-                  backup_run_id="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
-                    --event workflow_dispatch --limit 50 \
-                    --json databaseId,displayTitle,createdAt \
-                    --jq "[.[] | select(.displayTitle == \"$expected_title\" and .createdAt >= \"$started\")] | first | .databaseId // empty")"
+                  for candidate_run_id in $(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
+                    --branch "$BACKUP_REF" --event workflow_dispatch --limit 50 \
+                    --json databaseId,displayTitle,createdAt --jq '.[].databaseId'); do
+                    candidate_metadata=""
+                    if ! candidate_metadata="$(gh api "repos/$GH_REPO/actions/runs/$candidate_run_id")"; then
+                      continue
+                    fi
+                    observed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                    if exact_dispatched_backup_metadata "$candidate_metadata" "$expected_title" "$started" "$observed_at"; then
+                      backup_run_id="$candidate_run_id"
+                      break
+                    fi
+                  done
                   if [ -n "$backup_run_id" ]; then break; fi
                   sleep "$DELIVERY_OBSERVE_SLEEP_SECONDS"
                 done
@@ -237,24 +278,81 @@ jobs:
             exit 1
           fi
 
-          # A workflow_dispatch triggered by GITHUB_TOKEN is allowed to create a
-          # new workflow run. With cancel-in-progress=false it becomes the one
-          # pending successor, starts only after this controller exits, and is
-          # independent of GitHub's best-effort schedule.
+      - name: Hand off continuous backup delivery
+        if: ${{ always() && steps.gate.outputs.active == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DELIVERY_WORKFLOW: customer-backup-delivery.yml
+          BACKUP_REF: ${{ github.event.repository.default_branch }}
+          CONTROLLER_RUN_ID: ${{ github.run_id }}
+          DELIVERY_LEDGER_PATH: test-results/customer-backup-delivery/events.jsonl
+          DELIVERY_OBSERVE_ATTEMPTS: "12"
+          DELIVERY_OBSERVE_SLEEP_SECONDS: "10"
+          DELIVERY_HANDOFF_ATTEMPTS: "3"
+          DELIVERY_HANDOFF_BACKOFF_SECONDS: "10"
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$DELIVERY_LEDGER_PATH")"
+          touch "$DELIVERY_LEDGER_PATH"
+          record() {
+            jq -nc "$@" >> "$DELIVERY_LEDGER_PATH"
+          }
+
+          # This is a separate always() step so a backup, API, freshness, or
+          # observation failure retains its red verdict and alert while still
+          # handing the delivery clock to one exact protected-branch successor.
           handoff_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           expected_successor_title="Customer production backup delivery [$CONTROLLER_RUN_ID]"
-          handoff_status=0
-          gh workflow run "$DELIVERY_WORKFLOW" --repo "$GH_REPO" --ref "$BACKUP_REF" \
-            -f "predecessor_run_id=$CONTROLLER_RUN_ID" || handoff_status=$?
           successor_run_id=""
-          for _ in $(seq 1 "$DELIVERY_OBSERVE_ATTEMPTS"); do
-            successor_run_id="$(gh run list --repo "$GH_REPO" --workflow "$DELIVERY_WORKFLOW" \
-              --event workflow_dispatch --limit 50 \
-              --json databaseId,displayTitle,createdAt \
-              --jq "[.[] | select(.displayTitle == \"$expected_successor_title\" and .createdAt >= \"$handoff_started\")] | first | .databaseId // empty")"
+          handoff_status=0
+          for dispatch_attempt in $(seq 1 "$DELIVERY_HANDOFF_ATTEMPTS"); do
+            handoff_status=0
+            gh workflow run "$DELIVERY_WORKFLOW" --repo "$GH_REPO" --ref "$BACKUP_REF" \
+              -f "predecessor_run_id=$CONTROLLER_RUN_ID" || handoff_status=$?
+
+            for _ in $(seq 1 "$DELIVERY_OBSERVE_ATTEMPTS"); do
+              for candidate_run_id in $(gh run list --repo "$GH_REPO" --workflow "$DELIVERY_WORKFLOW" \
+                --branch "$BACKUP_REF" --event workflow_dispatch --limit 50 \
+                --json databaseId,displayTitle,createdAt --jq '.[].databaseId'); do
+                candidate_metadata=""
+                if ! candidate_metadata="$(gh api "repos/$GH_REPO/actions/runs/$candidate_run_id")"; then
+                  continue
+                fi
+                observed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                if jq -e \
+                  --arg branch "$BACKUP_REF" \
+                  --arg path ".github/workflows/$DELIVERY_WORKFLOW" \
+                  --arg title "$expected_successor_title" \
+                  --arg windowStart "$handoff_started" \
+                  --arg windowEnd "$observed_at" \
+                  '(.event == "workflow_dispatch")
+                   and (.head_branch == $branch)
+                   and (.path == $path)
+                   and (.display_title == $title)
+                   and (.created_at >= $windowStart)
+                   and (.created_at <= $windowEnd)' \
+                  <<< "$candidate_metadata" >/dev/null; then
+                  successor_run_id="$candidate_run_id"
+                  break
+                fi
+              done
+              if [ -n "$successor_run_id" ]; then break; fi
+              sleep "$DELIVERY_OBSERVE_SLEEP_SECONDS"
+            done
             if [ -n "$successor_run_id" ]; then break; fi
-            sleep "$DELIVERY_OBSERVE_SLEEP_SECONDS"
+
+            if [ "$dispatch_attempt" -lt "$DELIVERY_HANDOFF_ATTEMPTS" ]; then
+              backoff_seconds="$((DELIVERY_HANDOFF_BACKOFF_SECONDS * dispatch_attempt))"
+              record --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                --arg predecessor "$CONTROLLER_RUN_ID" --argjson attempt "$dispatch_attempt" \
+                --argjson clientStatus "$handoff_status" --argjson backoff "$backoff_seconds" \
+                '{at:$at,event:"controller_handoff_retry",predecessorRunId:$predecessor,attempt:$attempt,clientStatus:$clientStatus,backoffSeconds:$backoff}'
+              sleep "$backoff_seconds"
+            fi
           done
+
           if [ -z "$successor_run_id" ]; then
             echo "customer_backup_delivery_successor_not_observed predecessor_run_id=$CONTROLLER_RUN_ID" >&2
             record --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \

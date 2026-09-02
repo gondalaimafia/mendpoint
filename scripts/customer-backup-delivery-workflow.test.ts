@@ -45,6 +45,7 @@ function runController(options: {
   deliveryMaxAgeSeconds?: string;
   deliveryRpoSeconds?: string;
   deliverySleepSeconds?: string;
+  deliveryCycles?: string;
   activeMetadataValid?: boolean;
   acknowledgedMetadataValid?: boolean;
   handoffMetadataValid?: boolean;
@@ -98,23 +99,11 @@ case "$1 $2" in
     ;;
   'run view') printf '%s\\n' "\${GH_STUB_BACKUP_JOB_SUCCESS:-1}" ;;
   'api repos/'*)
-    run_id="\${3##*/}"
+    run_id="\${2##*/}"
     case "$run_id" in
-      31337)
-        printf '{"status":"in_progress","event":"%s","head_branch":"%s","path":"%s","display_title":"%s","created_at":"%s"}\\n' \
-          "\${GH_STUB_ACTIVE_EVENT}" "\${GH_STUB_ACTIVE_BRANCH}" "\${GH_STUB_ACTIVE_PATH}" \
-          "\${GH_STUB_ACTIVE_TITLE}" "\${GH_STUB_ACTIVE_CREATED_AT}"
-        ;;
-      4242)
-        printf '{"status":"queued","event":"%s","head_branch":"%s","path":"%s","display_title":"%s","created_at":"%s"}\\n' \
-          "\${GH_STUB_ACK_EVENT}" "\${GH_STUB_ACK_BRANCH}" "\${GH_STUB_ACK_PATH}" \
-          "\${GH_STUB_ACK_TITLE}" "\${GH_STUB_ACK_CREATED_AT}"
-        ;;
-      5252)
-        printf '{"status":"queued","event":"%s","head_branch":"%s","path":"%s","display_title":"%s","created_at":"%s"}\\n' \
-          "\${GH_STUB_HANDOFF_EVENT}" "\${GH_STUB_HANDOFF_BRANCH}" "\${GH_STUB_HANDOFF_PATH}" \
-          "\${GH_STUB_HANDOFF_TITLE}" "\${GH_STUB_HANDOFF_CREATED_AT}"
-        ;;
+      31337) printf '{"status":"in_progress","event":"workflow_dispatch","head_branch":"%s","path":".github/workflows/customer-backup.yml","display_title":"Customer production backup [backup-delivery-9000-1]","created_at":"%s"}\\n' "$GH_STUB_ACTIVE_BRANCH" "$GH_STUB_ACTIVE_CREATED_AT" ;;
+      4242) printf '{"status":"queued","event":"workflow_dispatch","head_branch":"%s","path":".github/workflows/customer-backup.yml","display_title":"Customer production backup [backup-delivery-9001-1]","created_at":"%s"}\\n' "$GH_STUB_ACK_BRANCH" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ;;
+      5252) printf '{"status":"queued","event":"workflow_dispatch","head_branch":"%s","path":".github/workflows/customer-backup-delivery.yml","display_title":"Customer production backup delivery [9001]","created_at":"%s"}\\n' "$GH_STUB_HANDOFF_BRANCH" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ;;
     esac
     ;;
   'workflow run')
@@ -150,7 +139,7 @@ exit 0
     BACKUP_REF: "main",
     CONTROLLER_RUN_ID: "9001",
     DELIVERY_LEDGER_PATH: ledger,
-    DELIVERY_CYCLES: "2",
+    DELIVERY_CYCLES: options.deliveryCycles ?? "2",
     DELIVERY_SLEEP_SECONDS: options.deliverySleepSeconds ?? "0",
     DELIVERY_MAX_AGE_SECONDS: options.deliveryMaxAgeSeconds ?? "900",
     DELIVERY_RPO_SECONDS: options.deliveryRpoSeconds ?? "3600",
@@ -175,20 +164,9 @@ exit 0
     GH_STUB_DISPATCH_ACCEPTED_ON_ERROR: options.dispatchAcceptedOnError ? "1" : "0",
     GH_STUB_HANDOFF_DISPATCH_STATUS: options.handoffDispatchStatus ?? "0",
     GH_STUB_HANDOFF_ACCEPTED_ON_ERROR: options.handoffAcceptedOnError ? "1" : "0",
-    GH_STUB_ACTIVE_EVENT: "workflow_dispatch",
     GH_STUB_ACTIVE_BRANCH: options.activeMetadataValid === false ? "unprotected-branch" : "main",
-    GH_STUB_ACTIVE_PATH: ".github/workflows/customer-backup.yml",
-    GH_STUB_ACTIVE_TITLE: "Customer production backup [backup-delivery-9000-1]",
-    GH_STUB_ACK_EVENT: "workflow_dispatch",
     GH_STUB_ACK_BRANCH: options.acknowledgedMetadataValid === false ? "unprotected-branch" : "main",
-    GH_STUB_ACK_PATH: ".github/workflows/customer-backup.yml",
-    GH_STUB_ACK_TITLE: "Customer production backup [backup-delivery-9001-1]",
-    GH_STUB_ACK_CREATED_AT: now,
-    GH_STUB_HANDOFF_EVENT: "workflow_dispatch",
     GH_STUB_HANDOFF_BRANCH: options.handoffMetadataValid === false ? "unprotected-branch" : "main",
-    GH_STUB_HANDOFF_PATH: ".github/workflows/customer-backup-delivery.yml",
-    GH_STUB_HANDOFF_TITLE: "Customer production backup delivery [9001]",
-    GH_STUB_HANDOFF_CREATED_AT: now,
   };
   const run = (name: string, source: string) => {
     const script = join(dir, `${name}.sh`);
@@ -300,7 +278,7 @@ describe("customer backup delivery controller workflow", () => {
 
   it("binds dispatch acknowledgement to a unique delivery identity", () => {
     const result = runController({});
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr).toBe(0);
     expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup.yml")))
       .toHaveLength(1);
     expect(result.calls).toContainEqual(
@@ -353,7 +331,7 @@ describe("customer backup delivery controller workflow", () => {
   });
 
   it("fails closed when no dispatched backup ever completes successfully", () => {
-    const result = runController({ backupJobSuccess: false });
+    const result = runController({ backupJobSuccess: false, deliveryCycles: "1" });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("customer_backup_delivery_completion_missing");
     expect(result.calls.some((call) => call.startsWith("workflow run customer-backup-delivery.yml")))
@@ -395,15 +373,21 @@ describe("customer backup delivery controller workflow", () => {
     expect(handoff.run).toContain('head_branch == $branch');
     expect(handoff.run).toContain('path == $path');
     expect(handoff.run).toContain('created_at >= $windowStart');
+  });
 
+  it("rejects an active run outside the protected branch authority", () => {
     const activeMismatch = runController({ activeRunId: "31337", activeMetadataValid: false });
     expect(activeMismatch.status).not.toBe(0);
     expect(activeMismatch.stderr).toContain("customer_backup_delivery_active_authority_invalid");
+  });
 
+  it("rejects a lost-response backup dispatch outside the protected branch authority", () => {
     const dispatchMismatch = runController({ acknowledgedMetadataValid: false });
     expect(dispatchMismatch.status).not.toBe(0);
     expect(dispatchMismatch.stderr).toContain("customer_backup_delivery_run_not_observed");
+  });
 
+  it("rejects a successor handoff outside the protected branch authority", () => {
     const handoffMismatch = runController({
       latestSuccess: new Date().toISOString(),
       handoffMetadataValid: false,
@@ -490,7 +474,7 @@ describe("customer backup delivery controller workflow", () => {
     expect(maintain.run).toContain("customer_backup_delivery_active_stalled");
     const result = runController({
       activeRunId: "31337",
-      activeCreatedAt: "2026-01-01T00:00:00Z",
+      activeCreatedAt: new Date(Date.now() - 1_300_000).toISOString(),
     });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("customer_backup_delivery_active_stalled");
