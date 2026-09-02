@@ -337,15 +337,28 @@ function expectOmittedTenantInsertsRejected(
   const statements = [
     `INSERT INTO jobs (id, type, payload_json, created_at)
      VALUES ('jobs-omitted-${suffix}', 'repair', '{}', '${TS}')`,
+    `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+     VALUES ('jobs-explicit-${suffix}', 'tenant_default', 'repair', '{}', '${TS}')`,
     `INSERT INTO repair_sessions (id, repo_path, status, created_at)
      VALUES ('repair_sessions-omitted-${suffix}', '/repo', 'pending', '${TS}')`,
+    `INSERT INTO repair_sessions (id, tenant_id, repo_path, status, created_at)
+     VALUES ('repair_sessions-explicit-${suffix}', 'tenant_default', '/repo', 'pending', '${TS}')`,
     `INSERT INTO agent_runs (id, goal, repo_path, status, created_at)
      VALUES ('agent_runs-omitted-${suffix}', 'repair', '/repo', 'pending', '${TS}')`,
+    `INSERT INTO agent_runs (id, tenant_id, goal, repo_path, status, created_at)
+     VALUES ('agent_runs-explicit-${suffix}', 'tenant_default', 'repair', '/repo', 'pending', '${TS}')`,
     `INSERT INTO audit_events
        (id, actor, action, resource_type, metadata_json, created_at)
      VALUES ('audit_events-omitted-${suffix}', 'legacy', 'legacy.observed', 'legacy', '{}', '${TS}')`,
+    `INSERT INTO audit_events
+       (id, tenant_id, actor, action, resource_type, metadata_json, created_at)
+     VALUES ('audit_events-explicit-${suffix}', 'tenant_default', 'legacy',
+       'legacy.observed', 'legacy', '{}', '${TS}')`,
     `INSERT INTO suppressed_patterns (id, pattern, created_at)
      VALUES ('suppressed_patterns-omitted-${suffix}', 'legacy-pattern', '${TS}')`,
+    `INSERT INTO suppressed_patterns (id, tenant_id, pattern, created_at)
+     VALUES ('suppressed_patterns-explicit-${suffix}', 'tenant_default',
+       'legacy-pattern', '${TS}')`,
   ];
   for (const statement of statements) {
     expect.soft(() => database.exec(statement)).toThrow(
@@ -872,6 +885,7 @@ describe("Fettler/Regauge logical database names", () => {
         `${table}_tenant_required_update`,
         `${table}_tenant_nonblank_insert`,
         `${table}_tenant_nonblank_update`,
+        `${table}_legacy_tenant_ownership_default_insert`,
         `${table}_legacy_tenant_ownership_update`,
         `${table}_legacy_tenant_ownership_delete`,
       ]),
