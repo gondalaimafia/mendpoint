@@ -142,6 +142,40 @@ describe("external customer-managed key provider", () => {
     await expect(vault.decrypt(envelope, context)).resolves.toBe("customer-secret");
   });
 
+  it("rejects fingerprint-only drift across restart for the same external key authority", async () => {
+    const fingerprintA = "a".repeat(64);
+    const fingerprintB = "b".repeat(64);
+    let remoteDataKey: Buffer | undefined;
+    const wrappedDataKey = Buffer.from("same-wrapped-material").toString("base64");
+    const key = {
+      provider: "customer-kms",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: true,
+    } as const;
+    const providerFor = (fingerprint: string) => createExternalKeyEncryptionKeyProvider({
+      provider: "customer-kms",
+      keys: [{ ...externalBinding, keyMaterialFingerprint: fingerprint }],
+    }, externalTransport({
+      attestKey: async () => externalResponse({ keyMaterialFingerprint: fingerprint }),
+      wrapDataKey: async (_key, _tenantId, dataKey) => {
+        remoteDataKey = Buffer.from(dataKey);
+        return externalResponse({ keyMaterialFingerprint: fingerprint, wrappedDataKey });
+      },
+      unwrapDataKey: async () => externalResponse({
+        keyMaterialFingerprint: fingerprint,
+        dataKeyBase64: remoteDataKey?.toString("base64"),
+      }),
+    }));
+    const registry = new EnvelopeKeyLifecycleRegistry();
+    registry.register(lifecycle(key, 1));
+    const envelope = await new EnvelopeSecretVault(registry, [providerFor(fingerprintA)], () => undefined)
+      .encrypt("github-token", "customer-secret", key, context);
+
+    await expect(new EnvelopeSecretVault(registry, [providerFor(fingerprintB)], () => undefined)
+      .decrypt(envelope, context)).rejects.toThrow("vault_decrypt_denied");
+  });
+
   it.each([
     ["wrong tenant", { tenantId: "tenant-b" }],
     ["wrong provider", { provider: "forged-kms" }],

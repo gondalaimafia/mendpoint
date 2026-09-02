@@ -99,6 +99,90 @@ describe("HTTPS external key transport", () => {
     expect(destroyHadErrorListener).toBe(true);
     expect(nativeHttps.request).toHaveBeenCalledTimes(1);
   });
+
+  it("destroys an undeclared native response as soon as streaming crosses the byte ceiling", async () => {
+    let destroyCalls = 0;
+    let destroyHadErrorListener = false;
+    nativeHttps.request.mockImplementationOnce((
+      _url: unknown,
+      options: {
+        lookup: (
+          hostname: string,
+          options: { all: boolean },
+          callback: (error: Error | null, addresses: Array<{ address: string; family: number }>) => void,
+        ) => void;
+      },
+      onResponse: (response: NativeResponse) => void,
+    ) => {
+      options.lookup("vault.example.test", { all: true }, (error, addresses) => {
+        expect(error).toBeNull();
+        expect(addresses).toEqual([{ address: "93.184.216.34", family: 4 }]);
+      });
+      const response = new EventEmitter() as NativeResponse;
+      response.headers = { "content-type": "application/json" };
+      response.statusCode = 200;
+      response.destroy = (error) => {
+        destroyCalls += 1;
+        destroyHadErrorListener = response.listenerCount("error") > 0;
+        if (error) response.emit("error", error);
+      };
+      onResponse(response);
+      queueMicrotask(() => {
+        response.emit("data", Buffer.alloc(80, 1));
+        response.emit("data", Buffer.alloc(80, 2));
+        response.emit("end");
+      });
+      const request = new EventEmitter() as EventEmitter & { end: (body: string) => void };
+      request.end = vi.fn();
+      return request;
+    });
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses: resolvePublicAddress,
+      maxResponseBytes: 128,
+    });
+
+    await expect(transport.attestKey(locator, "tenant-a"))
+      .rejects.toThrow("external_kek_request_failed");
+    expect(destroyCalls).toBe(1);
+    expect(destroyHadErrorListener).toBe(true);
+  });
+
+  it("settles once when a native response aborts before error or end", async () => {
+    let response: NativeResponse | undefined;
+    nativeHttps.request.mockImplementationOnce((
+      _url: unknown,
+      _options: unknown,
+      onResponse: (value: NativeResponse) => void,
+    ) => {
+      response = new EventEmitter() as NativeResponse;
+      response.headers = { "content-type": "application/json" };
+      response.statusCode = 200;
+      response.destroy = vi.fn();
+      onResponse(response);
+      queueMicrotask(() => response?.emit("aborted"));
+      const request = new EventEmitter() as EventEmitter & { end: (body: string) => void };
+      request.end = vi.fn();
+      return request;
+    });
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses: resolvePublicAddress,
+      timeoutMs: 500,
+    });
+    const operation = transport.attestKey(locator, "tenant-a").catch((error: unknown) => error);
+
+    const early = await Promise.race([
+      operation,
+      new Promise<string>((resolve) => setTimeout(() => resolve("still_pending"), 25)),
+    ]);
+    expect(early).toEqual(new Error("external_kek_request_failed"));
+    response?.emit("error", new Error("private provider body"));
+    response?.emit("end");
+    await expect(operation).resolves.toEqual(new Error("external_kek_request_failed"));
+  });
   it("pins the native requester to one validated address for all-address lookup", async () => {
     nativeHttps.request.mockImplementationOnce(nativeJsonRequest("93.184.216.34"));
 
@@ -205,6 +289,25 @@ describe("HTTPS external key transport", () => {
         },
       },
     ]);
+  });
+
+  it("rejects an oversized direct request before resolution or network access", async () => {
+    const resolveAddresses = vi.fn(resolvePublicAddress);
+    const requestImpl = jsonRequester();
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses,
+      requestImpl,
+    });
+
+    await expect(transport.unwrapDataKey(
+      { ...locator, customerManaged: true },
+      "tenant-a",
+      "x".repeat(256 * 1_024),
+    )).rejects.toThrow("external_kek_request_failed");
+    expect(resolveAddresses).not.toHaveBeenCalled();
+    expect(requestImpl).not.toHaveBeenCalled();
   });
 
   it.each([
