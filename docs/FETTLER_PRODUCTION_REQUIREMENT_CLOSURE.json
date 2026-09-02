@@ -31,6 +31,13 @@
       "evidence": {
         "status": "not_observed",
         "reason": "production_ledger_not_supplied"
+      },
+      "selfCheck": {
+        "reconciled": true,
+        "entryCount": 2,
+        "settledEntryIds": [
+          "mcu-entry-437267e7b985b021aec33c1ccce5cf0af6313d947ee32a93fa9d25bedb666701"
+        ]
       }
     }
   }
