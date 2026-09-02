@@ -3488,6 +3488,254 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 #### Review
 
 Main revision `c8d51caa` merged a reviewer key that the runtime ignores and retained null App IDs. The repair uses the verified, nonsecret identity tuple for `mendpoint-closure-authority[bot]` and the observed GitHub Actions App ID. The bot is temporarily bound under `Claude`, which permits reciprocal review of the current Codex and Cursor queue; a second distinct reviewer identity is still required before Claude-owned pull requests can satisfy the same invariant. The 26 GitHub-authority tests, 30 matrix tests, and 12 proposal-authority tests pass, the scripts TypeScript project passes, and `git diff --check` is clean.
+## 2026-08-26 Replace PR #454 with exact Mission handoff authority
+
+Objective: preserve repeated agent to human to agent resume cycles while allowing an authenticated candidate review to resolve only the exact blocking handoff for the reviewed Mission task and immutable source snapshot.
+
+- [x] Inspect PR #454 exact head `006e5442`, both commits, all ten changed files, and the current review, handoff, task-claim, and job-bridge seams.
+- [x] Port the bounded handoff and resume behavior onto current `origin/main` without carrying stale branch state.
+- [x] Require an exact tenant, Mission, product, repository, task, and current snapshot binding before review can close a handoff; missing or ambiguous identity must leave every blocker open.
+- [x] Keep reject human-owned, make approve/regenerate resolution atomic with the review mutation, and retain reviewer identity and evidence lineage.
+- [x] Revision-qualify every repeated handoff/resume transition so same-cycle replay deduplicates and later cycles cannot collide.
+- [x] Prove multi-task isolation, stale-snapshot refusal, missing-source refusal, malformed payload refusal, cross-tenant refusal, repeated cycles, and Fettler/ReGauge/job-bridge reachability in focused suites.
+- [x] Run focused and broad API/DB/worker tests, workspace typecheck, full repository tests, optimized build, GA gates, dependency audit, and diff integrity.
+- [ ] Obtain independent same-spec review, fix every finding, then obtain fresh code-quality review before push.
+
+### Review
+
+PR #454 correctly identified that static transition idempotency keys collide on a second handoff cycle and that a candidate review must resolve a task-bound blocker rather than the first Mission blocker. The replacement removes the sole-blocker guess, reloads the exact tenant repository snapshot, requires it to equal the retained Mission scope, derives the one product task from that exact binding, and resolves only one current task-bound exception. A claimed Mission whose source differs from its retained repository or snapshot now returns conflict and atomically leaves the run, job queue, Mission decisions, and task unchanged. The multi-task regression uses a valid single-repository Mission with a sibling task rather than inventing an impossible multi-repository Mission.
+
+Focused evidence: 27 API review tests, 12 database handoff tests, and 38 Fettler, ReGauge, and shared job-bridge tests pass. The complete repository test command passes every workspace plus 314 root-script tests. Full workspace typecheck, the optimized 50-route build, GA checks, strict diff integrity, and the production dependency audit pass; the audit reports zero vulnerabilities. Both independent review stages remain pending. No requirement or public-claim status changes are authorized.
+## 2026-08-26 Fettler candidate handoff authority closure
+
+- [x] RED: prove the Fettler review route refuses ReGauge missions and cannot resolve their tasks.
+- [x] RED: prove an in-flight membership role downgrade removes `plan:edit` authority before commit.
+- [x] RED: prove malformed array source-job payloads and same-status result, binding, digest, repository, or file mutations fail closed.
+- [x] RED: prove missing, ambiguous, or unresolved exact-task handoff authority blocks approve and regenerate while reject remains human-owned.
+- [x] RED: prove any remaining current Mission blocker prevents candidate delivery.
+- [x] Implement one transaction-local authority reconstruction with current product, membership, role, trust, source, candidate, CI, task, and exception bindings.
+- [x] Use a trusted post-seal commit timestamp for expiry checks and every persisted review or delivery timestamp.
+- [x] Run focused candidate-review regressions, widened API, DB, and worker suites, affected typechecks, and diff integrity.
+- [x] Inspect the complete diff and commit locally without pushing.
+
+### Review
+
+The RED suite produced 12 expected failures: all unsafe paths returned 202 (and one immutable-fixture mutation surfaced as 500) before the authority closure. The route now reconstructs and fingerprints the exact run, result bytes, repository path, changed-file list, source-job payload, snapshot binding, candidate digests, Mission identity, and CI authority before sealing and again under `BEGIN IMMEDIATE`; any difference conflicts before persisted review or delivery.
+
+Mission-bound Fettler approve/regenerate now require exactly one current blocker on the exact human-owned Fettler task. ReGauge missions, missing or ambiguous blockers, incomplete resolution, and cross-snapshot authority fail closed. Reject never resolves the handoff. After an exact resolution, approve also enforces global Mission blocking semantics before any delivery enqueue.
+
+The transaction rechecks the durable human principal, creation/expiry/revocation window, active membership, current membership role's `plan:edit`, OIDC method, and membership evidence using the trusted post-seal commit timestamp. Source-job JSON must be a non-null plain object on approve and regenerate.
+
+Verification: 41 focused candidate-review tests pass. Complete API, DB, and worker workspaces pass 537, 431, and 591 tests respectively (one pre-existing worker test skipped). API, DB, and worker typechecks pass, and strict diff integrity is clean. No schema or production configuration changed; no push was performed.
+
+## 2026-08-26 Durable successor and remote-mutation Mission authority
+
+- [x] RED: prove approve and regenerate carry the exact reviewed Mission task and revision through real queue claims and two complete handoff cycles.
+- [x] RED: prove cancel, supersede, or Mission revision drift during the asynchronous seal conflicts before review commit.
+- [x] RED: prove cancellation or a new blocking exception after enqueue or after claim prevents every remote GitHub mutation.
+- [x] RED: prove the ADR record-only compatibility case resolves only one current record-only blocker when the exact task is truly absent, while mixed or ambiguous authority fails closed.
+- [x] Add one versioned durable Mission mutation-authority contract shared by candidate review, delivery, CI update, and worker dispatch.
+- [x] Resume the exact authenticated enrollment task to `agent_working` only when the real successor job is claimed.
+- [x] Revalidate Mission state, revision, snapshot, task authority, and global blocking semantics immediately before every remote mutation.
+- [x] Run focused lifecycle, API, DB, and worker regressions, affected typechecks, build, and strict diff review.
+- [x] Inspect the final diff and create a new local commit without pushing.
+
+### Review
+
+Candidate review now seals and rechecks Mission state and revision, resolves either one exact task-bound blocker or the narrowly retained one-record ADR compatibility case, and writes a versioned Mission authority object into every successor or remote-mutation job. The real queue claim resumes only that reviewed task. Successful regeneration returns the same task to human review, so two complete review cycles no longer depend on a test helper or a fabricated job task.
+
+Draft delivery and CI update validate the durable Mission, task, repository, snapshot, and revision bindings at enqueue, after claim, and immediately before each GitHub mutation. Cancellation, revision drift, a new global blocker, a missing reviewed task, or record/task ambiguity fails closed without a remote call. CI repair successors inherit the exact same authority.
+
+Verification: complete API, database, and worker suites pass 540, 431, and 597 tests respectively, with one intentional worker skip. API, database, and worker typechecks pass. The optimized 50-route production build passes, and `git diff --check` is clean. The durable contract is payload schema version 1, so existing unbound queue records remain readable without adding a table migration. No push was performed.
+
+## 2026-08-26 Mission-authorized remote mutation point of no return
+
+- [x] RED: drive real approve to delivery and approve to CI update jobs through claim and Mission task settlement.
+- [x] RED: prove cancellation, a blocker, or lease transfer after the final authority read but before GitHub prevents the remote call.
+- [x] RED: prove initial approval authority survives draft observation, CI repair, repeated review/update, and crash replay without consulting stale source-job authority.
+- [x] Give delivery and CI update jobs explicit global Mission binding and claimed-task lifecycle semantics.
+- [x] Atomically bind the active lease, Mission/task/snapshot authority, and mutation intent as the durable dispatch point of no return.
+- [x] Serialize Mission transition and blocker writers against pending mutation intents, with explicit revocation and remote uncertainty behavior.
+- [x] Retain and propagate fresh post-review authority through delivery, CI cycle, repair, and update state using versioned migrations.
+- [x] Run focused and widened API, database, and worker suites, affected typechecks, production build, and strict diff checks.
+- [x] Review all producers and consumers, document evidence, and create a new local commit without pushing.
+
+### Review
+
+Authenticated approve now writes the exact Mission id and versioned Mission, task, repository, and snapshot authority into delivery and CI update jobs. The global claim bridge moves only that task from `agent_resume` to `agent_working`; terminal delivery without CI and successful final observation complete the same task atomically with job settlement. Direct route-to-worker tests exercise both approve-to-delivery and approve-to-CI-update through real queue claims.
+
+Every remote mutation now has a durable dispatch record bound to its exact intent digest, aggregate, Mission authority, worker, lease generation, and active lease. Mission transitions and new blockers revoke an authorized pre-dispatch intent under `BEGIN IMMEDIATE`. Once dispatch begins, they fail closed until the remote result is settled or reconciled. Late cancellation, blocker, and lease-transfer regressions prove no remote call occurs before the point of no return; lost-response tests retain an explicit uncertain state and prevent control-plane transitions until exact replay or read-only reconciliation settles it.
+
+Fresh authority is retained on deliveries, CI cycles, and CI updates and propagated through observation, repair dispatch, human review, update, and the next observation. Repair dispatch reads the current cycle authority rather than the original source job, preventing an old task revision from reappearing during repeated repair cycles. Fresh and upgrade-path databases receive the new nullable authority columns and the durable dispatch table.
+
+Verification: 46 focused candidate-review lifecycle tests pass. Complete API, database, and worker suites pass 542, 431, and 606 tests respectively, with one intentional worker skip. API, database, and worker typechecks pass. The optimized 50-route production build passes, all mutation-authority producers and consumers were enumerated, and `git diff --check` is clean. No push was performed.
+
+## 2026-08-26 Review repair: complete Mission dispatch fencing
+
+- [x] RED: prove every task authority transition serializes with authorized, dispatching, and uncertain mutations.
+- [x] RED: prove scope, graph, policy bind, and policy advancement writers share the same Mission fence.
+- [x] RED: prove green CI observation cannot complete a task while a blocking exception is introduced.
+- [x] RED: prove legacy mission-bound delivery and update jobs without retained authority are quarantined without remote mutation or fabricated task authority.
+- [x] Implement the smallest shared-transaction fencing and deterministic upgrade quarantine.
+- [x] Run focused and complete DB/worker suites, affected typechecks, production build, and strict diff review.
+- [x] Record exact evidence and remaining review findings; commit locally without pushing.
+
+### Review
+
+All reachable Mission authority revision writers are now inside the same `BEGIN IMMEDIATE` dispatch fence: Mission state, repository and snapshot scope, graph version, policy bind and policy advancement, plus every real MissionTask transition. Same-value and same-status replays remain no-op idempotent operations. Authorized intents are revoked; dispatching and uncertain remote effects block the authority change.
+
+Green CI completion reasserts the exact Mission mutation authority with global blocking semantics inside the observation finalization transaction. The adversarial regression introduces a blocker after evidence persistence and proves the observation, cleanup handoff, job settlement, and task completion all remain uncommitted. Delivery settles its own dispatch before task completion inside the same transaction, preserving the crash-replay contract without letting the task fence reject its own known remote effect.
+
+## 2026-08-26 Review repair: atomic Mission CI takeover
+
+- [x] RED: reproduce rollback at the historical split boundary between Mission dispatch and CI update uncertainty.
+- [x] RED: restart from the historical split state and prove exact not-applied, applied, and unknown reconciliation behavior.
+- [x] Reject cross-tenant, cross-aggregate, and intent-drift takeover without changing either authority record.
+- [x] Implement one database transaction for the Mission-bound takeover while retaining the non-Mission path.
+- [x] Run focused regressions, complete database, API, and worker suites, affected typechecks, closure, ADR, and strict diff checks.
+- [x] Record exact evidence, commit, and push the repaired PR head without merging or deploying.
+
+### Review
+
+Mission-bound CI takeover now moves the exact `fettler_ci_updates` row and its exact
+`mission_mutation_dispatches` row to uncertainty in one immediate transaction. The
+transition binds tenant, job, aggregate, retained authority JSON, intent digest,
+and expected source states. A simulated failure on the second write rolls the first
+write back. Non-Mission updates retain their original single-row transition.
+
+The same transaction recognizes both historical partial states. A persisted
+`update=uncertain, dispatch=dispatching` pair is normalized after closing and
+reopening the database. Exact `not_applied` evidence settles the old intent and
+rearms that same intent once; `applied` settles without a second GitHub mutation;
+`unknown` remains uncertain and read only. Tenant, aggregate, and intent drift are
+rejected without changing either record.
+
+RED evidence was three focused failures: the paired function was absent and the
+historical split dead-ended at `warden_ci_update_not_applied_conflict`. GREEN
+evidence is 27 focused update tests, 455 complete database tests, 543 complete API
+tests, and 644 complete worker tests with one intentional skip. Database and worker
+typechecks pass. The 32-test closure gate reports 101 requirements and current PR
+499; the 13-test ADR gate reports 50 valid ADRs. Strict diff integrity passes. No
+merge, deployment, or production state mutation was performed.
+
+Rolling-upgrade delivery and update rows carrying any Mission binding but no exact retained authority are deterministically quarantined before GitHub. They receive stable nonretryable upgrade-required codes and never synthesize a MissionTask or reconstruct historical authority from current state.
+
+Verification: 77 focused dispatch, task, delivery, update, and Mission tests pass; the exact observation suite passes 13 tests. Complete database and worker suites pass 437 and 612 tests respectively, with one intentional worker skip. Database and worker typechecks and the optimized production build pass, the complete authority-writer and mutation-consumer searches were reviewed, and `git diff --check` is clean. No production state changed and no push was performed. No P0, P1, or P2 review finding remains in this repaired class.
+
+## 2026-08-26 Second review repair: exact task authority scope
+
+- [x] RED: prove authoritative task creation fences taskless mutation authority before insert.
+- [x] RED: prove dependency insertion fences and revision-invalidates only the dependent task.
+- [x] RED: prove task B transitions never revoke or block task A dispatches in the same Mission.
+- [x] Audit all task create, update, dependency, and removal writers for exact task versus Mission scope.
+- [x] Implement task-scoped dispatch fencing while retaining Mission-wide fences for Mission and blocker writers.
+- [x] Run focused and full DB/worker suites, typechecks, production build, and diff integrity.
+- [x] Commit locally without pushing and record the exact reviewed head.
+
+### Review
+
+Task creation now fences only taskless authority inside the same immediate transaction before insertion. Authorized taskless dispatch is revoked, dispatching and uncertain taskless effects block enrollment, and an idempotent replay returns the existing task without a second mutation. Later task enrollment remains independent from existing sibling-task dispatches.
+
+Task transitions and dependency changes now use exact task-scoped authority. A transition of task B neither revokes nor blocks task A. Adding a dependency fences the dependent task, increments that task's authority revision, and makes its readiness false atomically; replay does not increment the revision again. Mission revision and blocker writers retain the Mission-wide fence. The writer audit found no dependency-removal writer and no direct task mutation outside the reviewed task module; job enrollment composes the fenced create and transition operations.
+
+Verification: the RED task suite failed 9 of 25 tests across every reported seam before implementation. The final task suite passes 26 tests, the focused Mission and worker lifecycle suites pass 22 and 52 tests, complete database and worker suites pass 447 and 612 tests respectively with one intentional worker skip, both affected typechecks pass, and the optimized 50-route production build passes. The authority-writer and mutation-consumer searches were reviewed and `git diff --check` is clean. No production state changed and no push was performed. No P0, P1, or P2 finding remains in this second repaired class.
+## 2026-08-26 Review repair: fence blocking exception reaffirmation
+
+- [x] RED: prove a blocking reaffirmation revokes an authorized Mission mutation dispatch.
+- [x] RED: prove dispatching and uncertain Mission mutations reject reaffirmation without changing the exception chain, event ledger, standing, or dispatch state.
+- [x] RED: prove the fence is scoped to the exact tenant and Mission and that snapshot validation and transaction rollback remain fail closed.
+- [x] Preserve nonblocking reaffirmation, resolution, withdrawal, and exact replay behavior.
+- [x] Audit every exception raise, reaffirm, resolve, withdraw, reopen, and supersede path for an equivalent blocking-head bypass.
+- [x] Run focused and widened database, API, and worker suites, affected typechecks, optimized build, and strict diff checks.
+- [x] Inspect the final diff, record review evidence, and commit locally without pushing.
+
+### Review
+
+Blocking reaffirmation now loads the exact tenant-scoped exception head inside `BEGIN IMMEDIATE`, then invokes the Mission-wide mutation-dispatch fence before inserting the superseding open head. Authorized intent is revoked atomically. Dispatching or uncertain remote effects reject the reaffirmation without changing the dispatch, exception chain, exception event ledger, or current standing. Invalid snapshot authority fails before the fence. Nonblocking reaffirmation remains independent, and an exact blocking replay fails on the already-superseded head before it can revoke later authority.
+
+The writer audit found one insert seam. New raises already fence before `insertException`; reaffirmation is the only transition that can create an open blocking head; resolution and withdrawal always create nonblocking terminal heads. There is no separate reopen writer or direct production SQL writer outside this module.
+
+RED evidence: four focused assertions failed before the repair: two authorized dispatches remained live, and dispatching and uncertain effects both allowed the reaffirmed head. GREEN evidence: the exception suite passes 16 tests; widened Mission database tests pass 76, candidate-review API tests pass 46, and worker mutation/lifecycle tests pass 48. Complete database, API, and worker suites pass 453, 542, and 612 tests respectively, with one intentional worker skip. The API and worker suites were run with one Vitest worker after unrelated duration-only failures under concurrent load; every isolated timeout case also passed. Database, API, and worker typechecks pass. The optimized 50-route production build and `git diff --check` pass. No production state changed and no push was performed.
+
+## 2026-08-26 Review repair: durable CI update reconciliation
+
+- [x] RED: drive a post-begin ambiguous CI update through real `processJobsOnce` settlement at the ordinary attempt cap.
+- [x] Prove every ambiguous retry remains read only until exact reconciliation determines whether the first remote mutation applied.
+- [x] Keep the update job retryable past the ordinary cap and settle the Mission dispatch only from exact reconciliation.
+- [x] Preserve the blocking reaffirmation repair and all non-ambiguous worker failure behavior.
+- [x] Run focused worker regressions, affected typechecks, relevant complete gates, build, and strict diff checks.
+- [x] Record exact evidence, inspect the final diff, and commit locally without pushing.
+
+### Review
+
+The RED worker-loop regression reached the ordinary attempt cap after GitHub returned an invalid post-call result and failed with `retried: 0`; the job dead-lettered while its Mission dispatch remained `dispatching`. The repair atomically marks both the CI update and exact Mission dispatch uncertain, attaches an explicit post-call uncertainty signal to remote, validation, reconciliation, and finalization failures, and carries that signal through generic job settlement so reconciliation remains pending beyond the ordinary cap.
+
+The real drain now proves attempts three and four remain pending while exact read-only reconciliation reports unknown, then completes on attempt five when reconciliation proves the original write applied. The remote update function is called exactly once. Non-ambiguous failures retain the existing bounded classifier behavior, and the blocking reaffirmation implementation is unchanged.
+
+Verification: focused CLI and update suites pass 89 tests. The widened Mission dispatch, exception reaffirmation, delivery, observation, and update set passes 60 tests, including all 16 exception tests. The complete worker suite passes 613 tests with one intentional skip. Worker, API, and database typechecks pass. The third-state gate passes 17 tests and its repository scan. The optimized 50-route production build and strict diff integrity pass. No production state changed and no push was performed.
+
+## 2026-08-26 Third review repair: terminal Mission mutation uncertainty
+
+- [x] RED: prove exact `not_applied` reconciliation atomically clears the old CI and Mission uncertainty before pause, feedback drift, or fresh authority checks can fail.
+- [x] RED: prove an exact replay of a stale snapshot-bound blocking exception does not revoke newer authorized mutation authority.
+- [x] RED: prove lease expiry during feedback observation or exact reconciliation prevents a new GitHub mutation.
+- [x] Implement the smallest exact settlement and fresh-dispatch fences while preserving unknown/applied crash replay.
+- [x] Run focused and widened database and worker suites, affected typechecks, optimized build, audit, and strict diff checks.
+- [x] Record the exact evidence and lesson, inspect the final diff, and commit locally without pushing.
+
+### Review
+
+Exact `not_applied` evidence now settles the prior CI and Mission uncertainty together before any new mutation can be considered. A paused cycle or changed review request therefore terminally fails the CI update without leaving active Mission authority. When all current checks still pass, the worker atomically binds the fresh CI intent and reauthorizes only the exact settled tenant, job, aggregate, authority, and intent record. Unknown and applied reconciliation remain read only, and the original remote update is never repeated until absence is proven.
+
+Blocking exception raises now detect an exact existing digest inside the same immediate transaction before invoking the Mission-wide dispatch fence. A stale exact replay returns the immutable row without changing newer authority or emitting another event. Fresh blocking raises and blocking reaffirmations retain the existing atomic fence.
+
+The worker takes a fresh time immediately before the atomic intent authorization and again at the Mission remote-call boundary. The feedback and reconciliation regressions advance time beyond lease expiry and prove GitHub receives no new call. RED evidence was five intended failures with 32 passing controls. GREEN evidence is 38 focused tests, 199 widened Mission and CI tests, 454 complete database tests, and 618 complete worker tests with one intentional skip. Full workspace typecheck, the optimized 50-route build, the 17-test third-state gate, production dependency audit with zero vulnerabilities, and strict diff integrity pass. No production state changed and no push was performed.
+
+## 2026-08-26 Fourth review repair: direct Mission run producer authority
+
+- [x] RED: prove `POST /agent/runs` rejects a bare `missionId` before it can enqueue a permanently unreviewable job.
+- [x] Preserve the canonical campaign producer, Mission task, handoff, approval, regeneration, and remote-mutation authority path.
+- [x] Prove rejected direct requests create no job, AgentRun, MissionTask, exception, or successor authority.
+- [x] Run focused API and worker lifecycle tests, affected typechecks, optimized build, dependency audit, and strict diff checks.
+- [x] Record review evidence and create a local commit without pushing.
+
+### Review
+
+RED evidence: the request parser returned a successful value containing `missionId`, making the unsupported shape queueable. The public route invokes that parser and returns its error before tenant resolution, idempotency derivation, the transaction, `enqueueJob`, or `insertAgentRun`; after the repair every defined `missionId`, including malformed values, receives the same bounded 400 contract and cannot create a job, run, task, exception, or successor.
+
+The canonical positive path remains campaign-owned. Its existing end-to-end regressions prove repository-scoped task claim, one blocking handoff, same-task regenerate and replay, approval, real delivery claim, terminal task settlement, tenant and snapshot mismatch denial, policy enforcement, lease fencing, and no duplicate job on campaign replay. The focused input, candidate-review, and Mission bridge set passes 67 tests. Complete API and worker suites pass 542 and 618 tests respectively, with one intentional worker skip. Full workspace typecheck, the optimized 50-route build, public docs check, 13-test ADR check, production dependency audit with zero vulnerabilities, and strict diff integrity pass. The superseded direct-binding ADR and CI repair compatibility ADR now match the enforced contract. No production state changed and no push was performed.
+
+## 2026-08-26 Fifth review repair: durable outcome replay isolation
+
+- [x] RED: prove artifact filesystem failure cannot block DB-only merged-outcome settlement.
+- [x] RED: prove one bounded order observes syntax-invalid and structurally-invalid authority before later valid work.
+- [x] Select and classify one global deterministic replay batch, rotating every examined row without starvation.
+- [x] Record the durable remote-mutation state machine, migration, rollback, and point-of-no-return invariants in an ADR.
+- [x] Run focused and affected suites, typechecks, ADR and production gates, and strict diff review.
+- [x] Record exact evidence and commit locally without pushing.
+
+### Review
+
+Merged current `origin/main` at `4fbf3260` while preserving the branch's stricter
+Mission authority implementation and the revision-qualified handoff behavior
+already shipped on main. Durable merged-outcome replay now executes before any
+artifact path is created or inspected, so an unavailable filesystem defers only
+artifact cleanup. The replay reader selects one global order before parsing;
+syntax-invalid, structurally-invalid, valid, deferred, and already-settled rows
+share one limit and every examined row advances the deterministic scan cursor.
+The result reports malformed and not-applicable classifications separately.
+
+RED evidence: the focused observation suite failed exactly two new regressions.
+Artifact storage raised `EEXIST` before DB settlement, and the split valid-first
+queries settled the later valid authority while observing only one of two older
+malformed rows. GREEN evidence: 111 affected worker tests, 47 affected database
+tests, and 47 candidate-review API tests pass. Database, worker, and API
+typechecks pass. The optimized 50-route build, complete GA gate, 13-test ADR
+gate, 17-test third-state gate, and strict diff integrity pass. ADR
+`2026-08-26-durable-mission-remote-mutation-dispatch` records the state machine,
+migration, rollback, and the committed `dispatching` point of no clean rollback.
+No push, merge, production mutation, requirement promotion, or public-claim
+change was performed.
 
 ## 2026-08-27 Release ingestion integrity v2
 

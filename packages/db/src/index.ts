@@ -2330,6 +2330,7 @@ CREATE TABLE IF NOT EXISTS fettler_candidate_deliveries (
   sealed_sha256 TEXT NOT NULL,
   requester_principal_id TEXT NOT NULL,
   rationale TEXT NOT NULL,
+  mission_authority_json TEXT,
   precursor_migration_pr_id TEXT,
   intent_digest TEXT,
   branch_name TEXT,
@@ -2390,6 +2391,7 @@ CREATE TABLE IF NOT EXISTS fettler_ci_cycles (
   repair_job_id TEXT,
   paused_by TEXT,
   pause_reason TEXT,
+  mission_authority_json TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (tenant_id, delivery_id)
@@ -2425,6 +2427,7 @@ CREATE TABLE IF NOT EXISTS fettler_ci_updates (
   sealed_sha256 TEXT NOT NULL,
   reviewer_principal_id TEXT NOT NULL,
   rationale TEXT NOT NULL,
+  mission_authority_json TEXT,
   intent_digest TEXT,
   commit_sha TEXT,
   requested_at TEXT NOT NULL,
@@ -2434,6 +2437,29 @@ CREATE TABLE IF NOT EXISTS fettler_ci_updates (
 );
 CREATE INDEX IF NOT EXISTS fettler_ci_updates_tenant_status_idx
   ON fettler_ci_updates(tenant_id, status, updated_at);
+
+CREATE TABLE IF NOT EXISTS mission_mutation_dispatches (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  mission_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  mutation_kind TEXT NOT NULL,
+  aggregate_id TEXT NOT NULL,
+  authority_json TEXT NOT NULL,
+  intent_digest TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('authorized', 'dispatching', 'uncertain', 'settled', 'revoked')),
+  lease_owner TEXT NOT NULL,
+  lease_generation INTEGER NOT NULL,
+  authorized_at TEXT NOT NULL,
+  dispatching_at TEXT,
+  uncertain_at TEXT,
+  settled_at TEXT,
+  revoked_at TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, job_id)
+);
+CREATE INDEX IF NOT EXISTS mission_mutation_dispatches_mission_state_idx
+  ON mission_mutation_dispatches(tenant_id, mission_id, state);
 
 -- Retrieval context-gap sink. One row per admitted governed-learning lesson whose
 -- attribution derived to retrieval (spec 17.4.2): objective verification failed AND
@@ -2668,7 +2694,8 @@ function migrateWardenCiAwaitingReview(db: AppDb): void {
     "remote_repository_id", "installation_id", "pull_request_number", "base_branch", "branch_name",
     "base_revision", "current_head_sha", "required_checks_json", "allowed_changed_paths_json",
     "max_cycles", "used_cycles", "max_model_calls", "maximum_cost_usd", "current_observation_digest",
-    "repair_run_id", "repair_job_id", "paused_by", "pause_reason", "created_at", "updated_at",
+    "repair_run_id", "repair_job_id", "paused_by", "pause_reason", "mission_authority_json",
+    "created_at", "updated_at",
   ].join(", ");
   db.raw.exec("BEGIN IMMEDIATE");
   try {
@@ -2701,6 +2728,7 @@ function migrateWardenCiAwaitingReview(db: AppDb): void {
         repair_job_id TEXT,
         paused_by TEXT,
         pause_reason TEXT,
+        mission_authority_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE (tenant_id, delivery_id)
@@ -2759,6 +2787,9 @@ function migrateWardenTransformerTableNames(db: AppDb): void {
     },
     { table: "warden_campaign_targets", name: "enrolled_installation_id", sql: "TEXT" },
     { table: "warden_ci_updates", name: "expected_feedback_digest", sql: "TEXT" },
+    { table: "warden_candidate_deliveries", name: "mission_authority_json", sql: "TEXT" },
+    { table: "warden_ci_cycles", name: "mission_authority_json", sql: "TEXT" },
+    { table: "warden_ci_updates", name: "mission_authority_json", sql: "TEXT" },
     {
       table: "transformer_adaptive_candidates",
       name: "base_branch",
@@ -3177,6 +3208,9 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "github_installations", name: "suspended_at", sql: "TEXT" },
     { table: "github_installations", name: "deleted_at", sql: "TEXT" },
     { table: "fettler_ci_updates", name: "expected_feedback_digest", sql: "TEXT" },
+    { table: "fettler_candidate_deliveries", name: "mission_authority_json", sql: "TEXT" },
+    { table: "fettler_ci_cycles", name: "mission_authority_json", sql: "TEXT" },
+    { table: "fettler_ci_updates", name: "mission_authority_json", sql: "TEXT" },
     {
       table: "fettler_campaign_targets",
       name: "enrollment_source",
@@ -4738,6 +4772,9 @@ export {
   getWardenCandidateDeliveryByRun,
   bindWardenCandidateDeliveryScope,
   bindWardenCandidateDeliveryIntent,
+  refreshWardenCandidateDeliveryMissionAuthority,
+  replayWardenCandidateDeliveryMergedOutcome,
+  replayPendingWardenCandidateDeliveryMergedOutcomes,
   recordWardenCandidateDeliverySuccess,
   recordWardenCandidateDeliveryFailure,
   findWardenCandidateDeliveryByPrUrl,
@@ -4765,7 +4802,10 @@ export {
   getWardenCiUpdateByRun,
   enqueueWardenCiUpdate,
   bindWardenCiUpdateIntent,
+  authorizeWardenCiUpdateIntent,
   markWardenCiUpdateUncertain,
+  markWardenCiUpdateTakeoverUncertain,
+  reconcileWardenCiUpdateNotApplied,
   completeWardenCiUpdate,
   type WardenCiCycle,
   type WardenCiObservation,
@@ -4850,6 +4890,24 @@ export type {
   MissionState,
   MissionTriggerKind,
 } from "./mission.js";
+export {
+  assertMissionMutationAuthority,
+  createMissionMutationAuthority,
+  parseMissionMutationAuthority,
+  refreshMissionMutationAuthority,
+} from "./mission-mutation-authority.js";
+export type { MissionMutationAuthorityV1 } from "./mission-mutation-authority.js";
+export {
+  authorizeMissionMutationDispatch,
+  beginMissionMutationRemoteCall,
+  markMissionMutationDispatchUncertain,
+  settleMissionMutationDispatch,
+} from "./mission-mutation-dispatch.js";
+export {
+  revokePendingMissionMutationDispatches,
+  revokePendingMissionTaskMutationDispatches,
+} from "./mission-mutation-dispatch-fence.js";
+export type { MissionMutationDispatchState } from "./mission-mutation-dispatch.js";
 export {
   MAX_TRAJECTORY_BLOB_CHARS,
   finalizeTrajectory,

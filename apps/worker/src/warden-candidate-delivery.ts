@@ -3,15 +3,25 @@ import {
   bindWardenCandidateDeliveryScope,
   bindWardenCandidateDeliveryIntent,
   completeJob,
+  authorizeMissionMutationDispatch,
+  beginMissionMutationRemoteCall,
   failJob,
   getAgentRun,
+  getJob,
   getWardenCandidateDelivery,
+  assertMissionMutationAuthority,
+  parseMissionMutationAuthority,
+  refreshMissionMutationAuthority,
+  refreshWardenCandidateDeliveryMissionAuthority,
+  markMissionMutationDispatchUncertain,
+  settleMissionMutationDispatch,
   recordAudit,
   recordWardenCandidateDeliveryFailure,
   recordWardenCandidateDeliverySuccess,
   type AppDb,
   type JobRow,
   type WardenCandidateDeliveryRecord,
+  type MissionMutationAuthorityV1,
   enqueueWardenCiCycle,
 } from "@mendpoint/db";
 import {
@@ -61,9 +71,13 @@ export type WardenCandidateDeliveryWorkerInput = Readonly<{
     maxModelCalls: number;
     maximumCostUsd: number;
   }>;
+  beforeRemoteDispatch?: () => void;
 }>;
 
-function parsePayload(job: JobRow): { deliveryId: string; runId: string } {
+function parsePayload(job: JobRow): {
+  deliveryId: string; runId: string; missionId: string | null;
+  missionAuthority: MissionMutationAuthorityV1 | null;
+} {
   let value: unknown;
   try { value = JSON.parse(job.payload_json); } catch { throw new Error("warden_candidate_delivery_payload_invalid"); }
   if (!value || typeof value !== "object") throw new Error("warden_candidate_delivery_payload_invalid");
@@ -71,7 +85,22 @@ function parsePayload(job: JobRow): { deliveryId: string; runId: string } {
   if (typeof record.deliveryId !== "string" || typeof record.runId !== "string") {
     throw new Error("warden_candidate_delivery_payload_invalid");
   }
-  return { deliveryId: record.deliveryId, runId: record.runId };
+  return { deliveryId: record.deliveryId, runId: record.runId,
+    missionId: typeof record.missionId === "string" && record.missionId.trim() ? record.missionId : null,
+    missionAuthority: record.missionAuthority === undefined ? null : parseMissionMutationAuthority(record.missionAuthority) };
+}
+
+function sourceMissionId(input: WardenCandidateDeliveryWorkerInput, runJobId: string | null): string | null {
+  const sourceJob = runJobId ? getJob(input.db, runJobId, input.job.tenant_id) : undefined;
+  if (!sourceJob) return null;
+  let value: unknown;
+  try { value = JSON.parse(sourceJob.payload_json); } catch { throw new Error("warden_candidate_delivery_source_invalid"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("warden_candidate_delivery_source_invalid");
+  }
+  return typeof (value as Record<string, unknown>).missionId === "string"
+    ? String((value as Record<string, unknown>).missionId)
+    : null;
 }
 
 function assertArtifact(delivery: WardenCandidateDeliveryRecord, artifact: Record<string, unknown>) {
@@ -274,7 +303,10 @@ function classifyFailure(error: unknown): Readonly<{
   return Object.freeze({
     retryable,
     remoteSideEffectUncertain,
-    errorCode: remoteSideEffectUncertain
+    errorCode: !retryable && error instanceof Error &&
+        error.message === "warden_candidate_delivery_mission_authority_required"
+      ? error.message
+      : remoteSideEffectUncertain
       ? "warden_candidate_delivery_remote_side_effect_uncertain"
       : retryable
         ? "warden_candidate_delivery_retryable"
@@ -296,6 +328,40 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
   try {
     const run = getAgentRun(input.db, payload.runId, input.job.tenant_id);
     if (!run || run.status !== "candidate_approved") throw new Error("warden_candidate_delivery_run_not_approved");
+    const claimedMissionId = sourceMissionId(input, run.job_id);
+    const authorityBindings = [payload.missionId, claimedMissionId, delivery.missionAuthority?.missionId]
+      .filter((value): value is string => value !== null && value !== undefined);
+    // THREE states, not two, and for the same reason as the enqueue gate:
+    // a delivery enqueued before the authority contract existed has a Mission
+    // bound source run and NULL authority. Failing it terminally
+    // (upgrade_required is not retryable) would destroy every such row on
+    // upgrade, and no later write can mint the authority it is missing.
+    // Absent -> proceed unbound as main does. Mismatched -> still fail, below.
+    if (authorityBindings.length > 0 && !payload.missionAuthority) {
+      recordAudit(input.db, {
+        id: `audit_${createHash("sha256")
+          .update(`${input.job.tenant_id}\0${input.job.id}\0mission_authority_absent`)
+          .digest("hex")}`,
+        tenantId: input.job.tenant_id,
+        actor: "fettler-candidate-delivery",
+        action: "fettler.candidate_delivery.mission_authority_absent",
+        resourceType: "fettler_candidate_delivery",
+        resourceId: delivery.id,
+        metadata: {
+          jobId: input.job.id, runId: delivery.runId,
+          claimedMissionIds: [...new Set(authorityBindings)],
+          reason: "authority_never_minted",
+        },
+      });
+    }
+    if (payload.missionAuthority && (!payload.missionId ||
+        authorityBindings.some((missionId) => missionId !== payload.missionAuthority!.missionId) ||
+        (delivery.missionAuthority &&
+          JSON.stringify(delivery.missionAuthority) !== JSON.stringify(payload.missionAuthority)))) {
+      throw new Error("warden_candidate_delivery_mission_authority_required");
+    }
+    if (payload.missionAuthority) assertMissionMutationAuthority(input.db, input.job.tenant_id,
+      payload.missionAuthority, { allowClaimedTask: true, requireNoBlocking: true });
     const artifact = readWardenApprovalArtifact({ tenantId: input.job.tenant_id, path: delivery.sealedPath,
       sha256: delivery.sealedSha256, env: input.artifactEnv });
     assertArtifact(delivery, artifact);
@@ -308,19 +374,61 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
     const repository = await input.resolveRepository({ tenantId: delivery.tenantId, repositoryId: delivery.repositoryId,
       snapshotId: delivery.snapshotId, baseBranch: delivery.baseBranch,
       expectedBaseRevision: delivery.expectedBaseRevision });
+    // Snapshot expiry gates the whole delivery and BOTH gates run before any
+    // Mission dispatch row can exist. Authorizing first would leave a
+    // `dispatching` row behind for a remote call that never happens, and that row
+    // fences every other Mission writer with mission_mutation_dispatch_in_flight.
     const deliveryAttemptAt = now();
     const snapshotExpiresAt = Date.parse(repository.snapshotExpiresAt);
     if (!Number.isFinite(snapshotExpiresAt) || snapshotExpiresAt <= Date.parse(deliveryAttemptAt)) {
       throw new Error("warden_candidate_delivery_snapshot_expired");
     }
+    if (payload.missionAuthority) assertMissionMutationAuthority(input.db, input.job.tenant_id,
+      payload.missionAuthority, { allowClaimedTask: true, requireNoBlocking: true });
     const intent = deliveryIntent(delivery, artifact, repository, run.report_md, reviewedChanges);
+    const digest = intentDigest(intent);
     bindWardenCandidateDeliveryIntent(input.db, { tenantId: delivery.tenantId, deliveryId: delivery.id,
-      intentDigest: intentDigest(intent), branchName: intent.branch, observedAt: deliveryAttemptAt });
+      intentDigest: digest, branchName: intent.branch, observedAt: deliveryAttemptAt,
+      workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation });
     const remoteAttemptAt = now();
     if (Date.parse(repository.snapshotExpiresAt) <= Date.parse(remoteAttemptAt)) {
       throw new Error("warden_candidate_delivery_snapshot_expired");
     }
-    const remote = await input.github.deliverExactDraft(intent);
+    if (payload.missionAuthority) authorizeMissionMutationDispatch(input.db, {
+      tenantId: delivery.tenantId, jobId: input.job.id, mutationKind: "fettler_candidate_delivery",
+      aggregateId: delivery.id, authority: payload.missionAuthority, intentDigest: digest,
+      workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation, observedAt: now(),
+    });
+    input.beforeRemoteDispatch?.();
+    if (payload.missionAuthority) beginMissionMutationRemoteCall(input.db, {
+      tenantId: delivery.tenantId, jobId: input.job.id, authority: payload.missionAuthority,
+      intentDigest: digest, workerId: input.job.lease_owner,
+      leaseGeneration: input.job.lease_generation, observedAt: now(), permitUncertainReplay: true,
+    });
+    let remote: ExactDraftDeliveryResult;
+    try {
+      remote = await input.github.deliverExactDraft(intent);
+    } catch (error) {
+      if (payload.missionAuthority) {
+        try {
+          markMissionMutationDispatchUncertain(input.db, {
+            tenantId: delivery.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: now(),
+          });
+        } catch (markError) {
+          // The remote call already happened, and the GitHub error's own
+          // classification (notably `remoteSideEffectUncertain`) is what decides
+          // retry policy. Letting a bookkeeping conflict replace it would
+          // downgrade an uncertain remote mutation to a plain terminal conflict,
+          // and nothing would ever reconcile it.
+          console.error(
+            `  Mission dispatch uncertainty marking failed job=${input.job.id}: ${
+              markError instanceof Error ? markError.message : String(markError)
+            }`,
+          );
+        }
+      }
+      throw error;
+    }
     try {
       // Once the remote call returns, GitHub may already contain the draft.
       // Evidence validation and every local finalization setup step therefore
@@ -329,6 +437,20 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
       const completedAt = now();
       input.db.raw.exec("BEGIN IMMEDIATE");
       try {
+        // Settle this job's own remote-mutation fence before changing task
+        // authority. Both writes remain in this transaction, so any later
+        // failure restores the dispatching state for uncertainty handling.
+        if (payload.missionAuthority) settleMissionMutationDispatch(input.db, {
+          tenantId: delivery.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: completedAt,
+        });
+        const freshMissionAuthority = payload.missionAuthority
+          ? refreshMissionMutationAuthority(input.db, delivery.tenantId, payload.missionAuthority,
+            { allowClaimedTask: true, allowSettledTask: true, requireNoBlocking: true })
+          : null;
+        if (freshMissionAuthority) refreshWardenCandidateDeliveryMissionAuthority(input.db, {
+          tenantId: delivery.tenantId, deliveryId: delivery.id, authority: freshMissionAuthority,
+          observedAt: completedAt,
+        });
         recordWardenCandidateDeliverySuccess(input.db, { tenantId: delivery.tenantId, deliveryId: delivery.id,
           branchName: remote.branch, baseRevision: remote.baseSha, commitSha: remote.commitSha,
           draftPrNumber: remote.number, draftPrUrl: remote.url, observedAt: completedAt });
@@ -348,6 +470,7 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
             maxModelCalls: input.ciReentry.maxModelCalls,
             maximumCostUsd: input.ciReentry.maximumCostUsd,
             observedAt: completedAt,
+            ...(freshMissionAuthority ? { missionAuthority: freshMissionAuthority } : {}),
           });
         }
         recordAudit(input.db, { id: `warden_delivery_audit_${createHash("sha256").update([delivery.tenantId, delivery.id].join("\0")).digest("hex").slice(0, 32)}`,
@@ -394,6 +517,13 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
         pullRequestNumber: remote.number, pullRequestUrl: remote.url, commitSha: remote.commitSha });
     } catch (error) {
       if (error instanceof Error && error.message === "warden_candidate_delivery_lease_lost") throw error;
+      if (payload.missionAuthority) {
+        const dispatch = input.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+          WHERE tenant_id = ? AND job_id = ?`).get(delivery.tenantId, input.job.id) as { state: string } | undefined;
+        if (dispatch?.state === "dispatching") markMissionMutationDispatchUncertain(input.db, {
+          tenantId: delivery.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: now(),
+        });
+      }
       throw new WardenCandidateDeliveryFinalizationError(error);
     }
   } catch (error) {

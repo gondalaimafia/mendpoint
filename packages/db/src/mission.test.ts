@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  advanceMissionPolicyEnvelopeVersion,
   bindMissionGraphVersion,
   bindMissionPolicyEnvelopeVersion,
+  bindMissionScope,
   createDb,
   createMission,
   createWardenCampaign,
@@ -61,6 +63,17 @@ function wardenCampaign(db: AppDb, id = "campaign") {
   return createWardenCampaign(db, { id, tenantId: "t1", name: "Payments upgrade", ownerPrincipalId: "p1",
     concurrencyLimit: 1, completionPolicy: "all", eventId: `wc-${id}`, idempotencyKey: `wc-${id}`,
     correlationId: "corr", createdAt: "2026-01-01T00:00:00.000Z" });
+}
+
+function insertMissionDispatch(db: AppDb, state: "authorized" | "dispatching" | "uncertain", suffix: string) {
+  db.raw.prepare(`INSERT INTO mission_mutation_dispatches
+    (id, tenant_id, mission_id, job_id, mutation_kind, aggregate_id, authority_json,
+     intent_digest, state, lease_owner, lease_generation, authorized_at, dispatching_at,
+     uncertain_at, updated_at)
+    VALUES (?, 't1', 'm-fettler', ?, 'fettler_candidate_delivery', ?, '{}', ?, ?, 'worker-1', 1, ?, ?, ?, ?)`)
+    .run(`dispatch-${suffix}`, `job-${suffix}`, `aggregate-${suffix}`, `sha256:${suffix.padEnd(64, "a")}`,
+      state, "2026-01-01T00:00:00.000Z", state === "dispatching" ? "2026-01-01T00:00:00.000Z" : null,
+      state === "uncertain" ? "2026-01-01T00:00:00.000Z" : null, "2026-01-01T00:00:00.000Z");
 }
 
 describe("mission execution-context version binding", () => {
@@ -138,6 +151,64 @@ describe("mission execution-context version binding", () => {
         actorPrincipalId: "p2", eventId: "gv-x", idempotencyKey: "gv-x", correlationId: "corr",
         createdAt: "2026-01-03T00:00:00.000Z" }),
     ).toThrow("mission_not_found");
+  });
+
+  it.each(["dispatching", "uncertain"] as const)(
+    "blocks every Mission authority revision writer while a mutation is %s",
+    (state) => {
+      const graphDb = fixture();
+      fettlerMission(graphDb);
+      insertMissionDispatch(graphDb, state, `${state}-graph`);
+      expect(() => bindGraph(graphDb, "m-fettler", "sgv1:abc")).toThrow("mission_mutation_dispatch_in_flight");
+      expect(getMission(graphDb, "t1", "m-fettler")).toMatchObject({ revision: 1, graphVersionId: null });
+
+      const scopeDb = fixture();
+      fettlerMission(scopeDb);
+      scopeDb.raw.prepare(`INSERT INTO scm_connections
+        (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+        VALUES ('scm-1','t1','github','app://1','1','GitHub',?,?)`).run("2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+      scopeDb.raw.prepare(`INSERT INTO connected_repositories
+        (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch,
+         environment, retention_days, status, created_at, updated_at)
+        VALUES ('repo-1','t1','scm-1','1','acme','sdk','main','main','production',30,'ready',?,?)`)
+        .run("2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+      scopeDb.raw.prepare(`INSERT INTO repository_snapshots
+        (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+         submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+        VALUES ('snapshot-1','t1','repo-1','main',?,?, 'C:\\snapshot','reject','reject','[]',1,?,?)`)
+        .run("a".repeat(40), `sha256:${"b".repeat(64)}`, "2026-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z");
+      insertMissionDispatch(scopeDb, state, `${state}-scope`);
+      expect(() => bindMissionScope(scopeDb, { tenantId: "t1", missionId: "m-fettler",
+        repositoryId: "repo-1", snapshotId: "snapshot-1", actorPrincipalId: "p1", eventId: "scope",
+        idempotencyKey: "scope", correlationId: "corr", createdAt: "2026-01-03T00:00:00.000Z" }))
+        .toThrow("mission_mutation_dispatch_in_flight");
+      expect(getMission(scopeDb, "t1", "m-fettler")).toMatchObject({ revision: 1, repositoryId: null, snapshotId: null });
+
+      const policyDb = fixture();
+      fettlerMission(policyDb);
+      bindPolicy(policyDb, "m-fettler", "1");
+      policyDb.raw.prepare(`INSERT INTO policy_envelopes
+        (tenant_id, version, policy_envelope_id, envelope_json, content_sha256, created_at)
+        VALUES ('t1', 2, 'policy-2', '{}', ?, ?)`)
+        .run(`sha256:${"c".repeat(64)}`, "2026-01-01T00:00:00.000Z");
+      insertMissionDispatch(policyDb, state, `${state}-policy`);
+      expect(() => advanceMissionPolicyEnvelopeVersion(policyDb, { tenantId: "t1", missionId: "m-fettler",
+        expectedPolicyEnvelopeVersion: "1", nextPolicyEnvelopeVersion: "2", actorPrincipalId: "p1",
+        authorityRef: "approval:1", eventId: "advance", idempotencyKey: "advance", correlationId: "corr",
+        createdAt: "2026-01-03T00:00:00.000Z" })).toThrow("mission_mutation_dispatch_in_flight");
+      expect(getMission(policyDb, "t1", "m-fettler")).toMatchObject({ revision: 2, policyEnvelopeVersion: "1" });
+    },
+  );
+
+  it("revokes authorized mutation intent on authority change but keeps same-value bind idempotent", () => {
+    const db = fixture();
+    fettlerMission(db);
+    insertMissionDispatch(db, "authorized", "graph-authorized");
+    expect(bindGraph(db, "m-fettler", "sgv1:abc").graphVersionId).toBe("sgv1:abc");
+    expect((db.raw.prepare(`SELECT state FROM mission_mutation_dispatches WHERE id = ?`)
+      .get("dispatch-graph-authorized") as { state: string }).state).toBe("revoked");
+    insertMissionDispatch(db, "dispatching", "graph-replay");
+    expect(bindGraph(db, "m-fettler", "sgv1:abc", "-replay").revision).toBe(2);
   });
 });
 
