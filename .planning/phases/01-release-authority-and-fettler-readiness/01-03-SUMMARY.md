@@ -21,14 +21,15 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 - `packages/platform/src/vault-envelope.ts`: `createExternalKeyEncryptionKeyProvider` factory and fail-closed external provider implementation using the unchanged `KeyEncryptionKeyProvider` interface.
 - `packages/platform/src/index.ts`: public factory, client, configuration, and transport exports.
 - `packages/platform/src/external-kek-client.test.ts`: denial, malformed-body, request and response overrun, timeout, abort settlement, HTTPS, request-shape, native all-address lookup, socket-reuse mutation, exact media-type, IPv4 and IPv6 address-class, private-authorization, DNS-rebinding, and safe destination-denial observability coverage.
-- `packages/platform/src/vault-envelope.test.ts`: authority mutation, fingerprint-only restart drift, stale attestation, invalid runtime data-key material, redaction, destination-denial observability, and full envelope seal-and-open coverage.
+- `packages/platform/src/vault-envelope.test.ts`: authority mutation, fingerprint-only restart drift, stale attestation, malformed runtime key objects, invalid runtime data-key material, redaction, destination-denial observability, and full envelope seal-and-open coverage.
 
 ## Verification
 
 - RED authority verification: ten direct-transport cases proved malformed identifiers, non-customer-managed keys, wrong-size data keys, and malformed or oversized wrapped material reached the authorized requester before validation.
 - RED observability verification: sixteen cases proved destination-policy denials were flattened into generic request or operation failures and invalid runtime key material could bypass stable error normalization.
-- `npm test --workspace @mendpoint/platform -- external-kek-client.test.ts vault-envelope.test.ts`: 80 tests passed.
-- `npm test --workspace @mendpoint/platform`: 316 tests passed across 20 files.
+- RED runtime-boundary verification: null and undefined key objects escaped through native type errors across the public provider operations before the transport boundary.
+- `npm test --workspace @mendpoint/platform -- external-kek-client.test.ts vault-envelope.test.ts`: 82 tests passed.
+- `npm test --workspace @mendpoint/platform`: 318 tests passed across 20 files.
 - `npm run typecheck -w @mendpoint/platform`: passed.
 - `npm run build`: optimized production build passed, including all 64 static pages.
 - `git diff --check`: passed.
@@ -44,6 +45,7 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 - Provider responses require the exact `application/json` media type, with parameters such as a valid charset accepted only after the media type is parsed exactly.
 - Provider bodies, credentials, plaintext data keys, and wrapped bytes are never copied into errors.
 - The transport and provider preserve only the fixed `external_kek_destination_invalid` code so an operator can distinguish destination-policy enforcement from provider or network failure. Every other external error remains redacted.
+- Malformed runtime key objects are rejected through the same fixed operation error before any transport method can run.
 - Serialized requests larger than 128 KiB are rejected before timeout setup, destination resolution, or requester invocation.
 - Responses with the wrong provider, tenant, key identifier, key version, attestation, or key-material fingerprint are rejected.
 - Customer-managed attestations require a canonical fingerprint and bind it into version 2 of the attestation authority. Previously persisted customer-managed envelopes without that binding fail closed; local and other non-customer-managed digests remain byte-compatible.
@@ -60,8 +62,9 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 - `663e7176` and `0e0aeb11`: fingerprint-drift and pre-network request-ceiling hostile tests and repair.
 - `42a4ffb3` and `ef75b808`: direct public-transport input-boundary hostile tests and pre-network validation repair.
 - `3576fe1c` and `2be3b9a0`: destination-denial and invalid runtime key-material hostile tests and safe-code preservation repair.
+- `33517054` and `35d7f348`: malformed runtime key-object hostile tests and common binding-boundary repair.
 
-The exact current base for this series is `1ae5e9a2c331f35ffbd95ae8f2fd34ba6436c40c`; the commands above verify the exact pre-summary implementation head `2be3b9a066d87396eccebcc880c6083edcdfa837`. Earlier reviews are superseded by the two observability commits and this evidence refresh. A different reviewer must inspect and approve the final exact head before merge.
+The exact current base for this series is `1ae5e9a2c331f35ffbd95ae8f2fd34ba6436c40c`; the commands above verify the exact pre-summary implementation head `35d7f3483d4941492d761f299bd879283b8ff446`. Earlier reviews are superseded by the observability and runtime-boundary commits plus this evidence refresh. A different reviewer must inspect and approve the final exact head before merge.
 
 ## Remaining Release Work
 
