@@ -441,6 +441,40 @@ function applyReleasedFallbackBackfill(path: string): void {
   legacy.close();
 }
 
+function applyExactReleasedPredecessorTenantMigration(path: string): void {
+  const predecessor = new DatabaseSync(path);
+  for (const table of LEGACY_OWNERSHIP_TABLES) {
+    predecessor.exec(`ALTER TABLE ${table} DROP COLUMN tenant_id`);
+    predecessor.exec(
+      `ALTER TABLE ${table}
+       ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+    );
+  }
+  predecessor.close();
+}
+
+function sealReleasedSuccessorEmptyReconciliationState(path: string): void {
+  const predecessor = new DatabaseSync(path);
+  predecessor.exec(`
+    CREATE TABLE legacy_tenant_ownership_reconciliation_scope (
+      table_name TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      discovered_at TEXT NOT NULL,
+      PRIMARY KEY (table_name, row_id, tenant_id)
+    );
+    CREATE TABLE legacy_tenant_ownership_reconciliation_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      sealed_at TEXT NOT NULL
+    );
+    INSERT INTO legacy_tenant_ownership_reconciliation_state
+      (id, schema_version, sealed_at)
+    VALUES (1, 1, '2026-09-02T00:00:00.000Z');
+  `);
+  predecessor.close();
+}
+
 function persistLegacyOwnershipAttestations(
   path: string,
   mutate?: (input: {
@@ -514,6 +548,52 @@ function persistLegacyOwnershipAttestations(
 }
 
 describe("Fettler/Regauge logical database names", () => {
+  it.each([false, true])(
+    "quarantines the exact released-predecessor default across restart (sealed empty state: %s)",
+    (sealEmptyState) => {
+      const path = join(newDir(`tenant-exact-predecessor-${sealEmptyState}`), "legacy.sqlite");
+      buildLegacyOwnershipVolume(path);
+      applyExactReleasedPredecessorTenantMigration(path);
+      if (sealEmptyState) sealReleasedSuccessorEmptyReconciliationState(path);
+
+      const predecessor = new DatabaseSync(path);
+      try {
+        expect(
+          predecessor.prepare("PRAGMA table_info(jobs)").all()
+            .find((column: any) => column.name === "tenant_id"),
+        ).toMatchObject({
+          type: "TEXT",
+          notnull: 1,
+          dflt_value: "'tenant_default'",
+        });
+      } finally {
+        predecessor.close();
+      }
+
+      expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+      expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+
+      const preserved = new DatabaseSync(path);
+      try {
+        expect(
+          preserved.prepare(
+            `SELECT table_name, row_id, tenant_id
+             FROM legacy_tenant_ownership_reconciliation_scope
+             ORDER BY table_name, row_id`,
+          ).all(),
+        ).toHaveLength(LEGACY_OWNERSHIP_TABLES.length * 4);
+        expect(
+          preserved.prepare(
+            `SELECT id, status FROM jobs
+             WHERE id = 'jobs-empty' AND tenant_id = 'tenant_default'`,
+          ).get(),
+        ).toEqual({ id: "jobs-empty", status: "pending" });
+      } finally {
+        preserved.close();
+      }
+    },
+  );
+
   it("fails closed when a prior released boot already laundered unknown ownership", () => {
     const path = join(newDir("tenant-two-step-laundering"), "legacy.sqlite");
     buildLegacyOwnershipVolume(path);
