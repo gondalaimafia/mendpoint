@@ -365,6 +365,7 @@ export type ModelDependencyOutageOperation<T> = Readonly<{
   retryBudget: number;
   expiresAt: string;
   leaseMs: number;
+  authorityVersion: string;
   reconcile: () => Promise<
     | Readonly<{ status: "missing" }>
     | Readonly<{ status: "completed"; value: T; completionDigest: string }>
@@ -483,12 +484,16 @@ export function runModelProviderOperation<T>(input: Readonly<{
   expiresAt: string;
   workerId: string;
   leaseMs: number;
+  authorityVersion: string;
   outage: ModelDependencyOutagePort;
   decide: ModelDependencyOutagePolicy;
   reconcile: ModelDependencyOutageOperation<T>["reconcile"];
   invoke: () => Promise<T>;
   completionDigest: (value: T) => string;
 }>): Promise<ModelDependencyOutageResult<T>> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(input.authorityVersion)) {
+    throw new Error("model_dependency_outage_authority_invalid");
+  }
   const operation: ModelDependencyOutageOperation<T> = Object.freeze({
     schemaVersion: 1,
     tenantId: input.tenantId,
@@ -500,6 +505,7 @@ export function runModelProviderOperation<T>(input: Readonly<{
     expiresAt: input.expiresAt,
     workerId: input.workerId,
     leaseMs: input.leaseMs,
+    authorityVersion: input.authorityVersion,
     reconcile: input.reconcile,
     execute: async () => {
       const value = await input.invoke();

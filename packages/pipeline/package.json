@@ -25,6 +25,7 @@
     "@mendpoint/github": "*",
     "@mendpoint/notify": "*",
     "@mendpoint/orchestrator": "*",
+    "@mendpoint/ops": "*",
     "@mendpoint/policy": "*",
     "@mendpoint/repair": "*",
     "@mendpoint/shared": "*",

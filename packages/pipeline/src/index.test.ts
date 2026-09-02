@@ -1,4 +1,5 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +33,7 @@ import {
   issueVerificationWaiver,
   type SecurityScanAttestation,
 } from "@mendpoint/contract";
-import { applyPrFeedback, runChangePipeline } from "./index.js";
+import { applyPrFeedback, createPipelineDeliveryResolver, runChangePipeline } from "./index.js";
 import {
   getSoftwareGraphHead,
   openGraphLearnMemory,
@@ -166,6 +167,34 @@ afterEach(() => {
 
 
 describe("pipeline", () => {
+  it("composes the durable outage queue over the primary production database", () => {
+    const db = seedProviderVersions();
+    const prior = {
+      mode: process.env.GITHUB_MODE,
+      appId: process.env.GITHUB_APP_ID,
+      key: process.env.GITHUB_APP_PRIVATE_KEY,
+    };
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    process.env.GITHUB_MODE = "real";
+    process.env.GITHUB_APP_ID = "4718395";
+    process.env.GITHUB_APP_PRIVATE_KEY = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    try {
+      expect(createPipelineDeliveryResolver({
+        tenantId: "tenant_default",
+        providerSlug: "acme-payments",
+      }, db)).toBeTypeOf("function");
+      expect(db.raw.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dependency_outage_operations'",
+      ).get()).toEqual({ name: "dependency_outage_operations" });
+    } finally {
+      if (prior.mode === undefined) delete process.env.GITHUB_MODE;
+      else process.env.GITHUB_MODE = prior.mode;
+      if (prior.appId === undefined) delete process.env.GITHUB_APP_ID;
+      else process.env.GITHUB_APP_ID = prior.appId;
+      if (prior.key === undefined) delete process.env.GITHUB_APP_PRIVATE_KEY;
+      else process.env.GITHUB_APP_PRIVATE_KEY = prior.key;
+    }
+  });
   it("rejects an explicitly requested version that does not exist", async () => {
     const db = seedProviderVersions();
     await expect(

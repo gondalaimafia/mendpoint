@@ -81,7 +81,7 @@ export type GitHubDependencyOutageOperation<T> = Readonly<{
   retryBudget: number;
   expiresAt: string;
   leaseMs: number;
-  authorityVersion?: string;
+  authorityVersion: string;
   reconcile: () => Promise<Readonly<{ status: "missing" }> |
     Readonly<{ status: "completed"; value: T; completionDigest: string }>>;
   execute: () => Promise<Readonly<{ value: T; completionDigest: string }>>;
@@ -132,7 +132,7 @@ export type GitHubDependencyOutageOptions = Readonly<{
   expiresInMs: number;
   workerId: string;
   leaseMs?: number;
-  authorityVersion?: string;
+  authorityVersion: string;
   now?: () => string;
 }>;
 
@@ -800,7 +800,8 @@ export class GitHubAppDelivery implements GitHubDelivery {
         !Number.isFinite(Date.parse(now)) || new Date(Date.parse(now)).toISOString() !== now ||
         !Number.isSafeInteger(options.retryBudget) || options.retryBudget < 1 ||
         !Number.isSafeInteger(options.expiresInMs) || options.expiresInMs < 1 ||
-        !Number.isSafeInteger(options.leaseMs ?? 30_000) || (options.leaseMs ?? 30_000) < 1) {
+        !Number.isSafeInteger(options.leaseMs ?? 30_000) || (options.leaseMs ?? 30_000) < 1 ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(options.authorityVersion)) {
       throw new Error("github_dependency_outage_configuration_invalid");
     }
     const operationDigest = digest(input);
@@ -821,7 +822,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
       retryBudget: options.retryBudget,
       expiresAt,
       leaseMs: options.leaseMs ?? 30_000,
-      ...(options.authorityVersion === undefined ? {} : { authorityVersion: options.authorityVersion }),
+      authorityVersion: options.authorityVersion,
       reconcile: async () => this.withAuthRetry(async (octokit) => {
         const observed = await inspectExistingExactDraft(octokit, input);
         return observed.status === "completed"

@@ -31,6 +31,8 @@ import {
   recordCapabilityAdoptionOpportunity,
   type AppDb,
 } from "@mendpoint/db";
+import { createDependencyOutageQueue } from "@mendpoint/db/dependency-outage";
+import { classifyDependencyOutage } from "@mendpoint/ops";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -525,6 +527,7 @@ export function createPipelineDeliveryResolver(input: PipelineInput, db: AppDb) 
   const legacyToken = process.env.GITHUB_TOKEN?.trim();
   const legacy = legacyToken ? new OctokitGitHubDelivery(legacyToken) : null;
   const appDeliveries = new Map<string, GitHubDelivery>();
+  const outage = createDependencyOutageQueue(db.raw);
   return (
     consumer: {
       installation_id: string | null;
@@ -677,13 +680,30 @@ export function createPipelineDeliveryResolver(input: PipelineInput, db: AppDb) 
     if (repository.connection.external_account_id !== installationId) {
       throw new Error("github_app_connection_mismatch");
     }
-    const key = `${appCredentials.appId}:${installationId}:${authorizedRepository.id}`;
+    const authorityVersion = `github-installation:${createHash("sha256").update(JSON.stringify({
+      appId: appCredentials.appId,
+      credentialDigest: createHash("sha256").update(appCredentials.privateKeyPem).digest("hex"),
+      accountId: verified.account_id,
+      installationId,
+      permissionsJson: verified.permissions_json,
+      repositoriesJson: verified.repositories_json,
+    })).digest("hex")}`;
+    const key = `${appCredentials.appId}:${installationId}:${authorizedRepository.id}:${authorityVersion}`;
     let delivery = appDeliveries.get(key);
     if (!delivery) {
       delivery = createAppDelivery(
         numericInstallationId,
         appCredentials,
         [authorizedRepository.id],
+        {
+          tenantId: input.tenantId,
+          outage,
+          decide: classifyDependencyOutage,
+          retryBudget: 5,
+          expiresInMs: 60 * 60 * 1_000,
+          workerId: `pipeline-${process.pid}`,
+          authorityVersion,
+        },
       );
       appDeliveries.set(key, delivery);
     }

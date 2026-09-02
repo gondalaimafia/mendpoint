@@ -541,6 +541,7 @@ describe("github app runtime", () => {
         retryBudget: 3,
         expiresInMs: 60_000,
         workerId: "worker-1",
+        authorityVersion: "installation-v1",
       },
     );
     const input = {
@@ -564,10 +565,12 @@ describe("github app runtime", () => {
       providerId: "github",
       retryBudget: 3,
       workerId: "worker-1",
+      authorityVersion: "installation-v1",
     });
     expect(run.mock.calls[0]![0].operationId).toMatch(/^github-draft:[a-f0-9]{64}$/);
     expect(run.mock.calls[0]![0].operationId.length).toBeLessThanOrEqual(200);
     expect(run.mock.calls[0]![0].operationDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(run.mock.calls[0]![0].authorityVersion).toBe("installation-v1");
   });
 
   it("reconciles an exact lost-response draft before every Git write", async () => {
@@ -657,6 +660,7 @@ describe("github app runtime", () => {
         retryBudget: 5,
         expiresInMs: 60_000,
         workerId: "worker-1",
+        authorityVersion: "installation-v1",
         now: () => "2026-09-01T12:00:10.000Z",
       },
     );
@@ -738,6 +742,7 @@ describe("github app runtime", () => {
         retryBudget: 5,
         expiresInMs: 60_000,
         workerId: "worker-1",
+        authorityVersion: "installation-v1",
         now: () => "2026-09-01T12:00:00.000Z",
       },
     );

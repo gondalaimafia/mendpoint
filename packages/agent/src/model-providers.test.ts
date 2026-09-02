@@ -234,6 +234,7 @@ describe("model provider outage recovery", () => {
       async run<T>(
         operation: ModelDependencyOutageOperation<T>,
       ): Promise<ModelDependencyOutageResult<T>> {
+        expect(operation.authorityVersion).toBe("model-authority-v1");
         const decision = operation.classify(
           Object.assign(new Error("upstream unavailable"), { status: 503 }),
           {
@@ -260,6 +261,7 @@ describe("model provider outage recovery", () => {
       expiresAt: "2026-09-01T13:00:00.000Z",
       workerId: "worker-1",
       leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
       outage,
       decide,
       reconcile: async () => ({ status: "missing" }),
@@ -302,6 +304,7 @@ describe("model provider outage recovery", () => {
       expiresAt: "2026-09-01T13:00:00.000Z",
       workerId: "worker-1",
       leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
       outage,
       decide: () => {
         throw new Error("decision_not_expected");
@@ -315,6 +318,27 @@ describe("model provider outage recovery", () => {
       completionDigest: () => "2".repeat(64),
     })).resolves.toEqual({ status: "recovered", value: { output: "original" } });
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed model authority before the outage queue is called", () => {
+    const run = vi.fn();
+    expect(() => runModelProviderOperation({
+      tenantId: "tenant-acme",
+      providerId: "muse-spark",
+      operationId: "mission-123:model-call-4",
+      operationDigest: "f".repeat(64),
+      retryBudget: 3,
+      expiresAt: "2026-09-01T13:00:00.000Z",
+      workerId: "worker-1",
+      leaseMs: 30_000,
+      authorityVersion: "bad authority",
+      outage: { run } as ModelDependencyOutagePort,
+      decide: () => { throw new Error("decision_not_expected"); },
+      reconcile: async () => ({ status: "missing" }),
+      invoke: async () => ({ output: "unused" }),
+      completionDigest: () => "2".repeat(64),
+    })).toThrow("model_dependency_outage_authority_invalid");
+    expect(run).not.toHaveBeenCalled();
   });
 });
 

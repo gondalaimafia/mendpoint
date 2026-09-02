@@ -12,6 +12,8 @@ import { dirname, join, parse } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
+import { createDb } from "@mendpoint/db";
+import { createDependencyOutageQueue } from "@mendpoint/db/dependency-outage";
 import {
   assessRecoveryDrillCadence,
   createApplicationConsistentBackup,
@@ -416,6 +418,59 @@ describe("disaster recovery", () => {
       }
     } finally {
       live.close();
+    }
+  });
+
+  it("retains the production dependency outage queue through restart, backup, and restore", () => {
+    const { source, backup, restore } = fixture();
+    const databasePath = join(source, "database.sqlite");
+    rmSync(databasePath);
+    const app = createDb(databasePath);
+    const queue = createDependencyOutageQueue(app.raw);
+    const scope = {
+      tenantId: "tenant-acme",
+      dependencyKind: "scm" as const,
+      providerId: "github",
+      operationId: "github-draft:authority-proof",
+      operationDigest: "b".repeat(64),
+    };
+    queue.enqueue({
+      ...scope,
+      retryBudget: 3,
+      expiresAt: "2026-09-01T13:00:00.000Z",
+      nextAttemptAt: "2026-09-01T12:00:00.000Z",
+      standing: "degraded_blocked",
+      authorityVersion: "installation-v1",
+      status: "blocked",
+    }, "2026-09-01T12:00:00.000Z");
+    app.raw.close();
+
+    const restarted = createDb(databasePath);
+    expect(createDependencyOutageQueue(restarted.raw).get(scope)).toMatchObject({
+      status: "blocked",
+      authorityVersion: "installation-v1",
+    });
+    restarted.raw.close();
+
+    const manifest = createBackupBundle({
+      policy: POLICY,
+      backupId: "backup-outage-queue",
+      createdAt: "2026-09-01T12:05:00.000Z",
+      sourceRoot: source,
+      backupRoot: backup,
+      resources: TEST_RESOURCES,
+      key: BACKUP_KEY,
+      keyId: BACKUP_KEY_ID,
+    });
+    restoreBackupAtomically({ backupRoot: backup, targetRoot: restore, manifest, key: BACKUP_KEY });
+    const restored = createDb(join(restore, "database.sqlite"));
+    try {
+      expect(createDependencyOutageQueue(restored.raw).get(scope)).toMatchObject({
+        status: "blocked",
+        authorityVersion: "installation-v1",
+      });
+    } finally {
+      restored.raw.close();
     }
   });
 

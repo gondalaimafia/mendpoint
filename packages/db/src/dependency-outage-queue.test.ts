@@ -94,6 +94,7 @@ describe("durable dependency outage queue", () => {
       retryBudget: 3,
       expiresAt: "2026-09-01T13:00:00.000Z",
       leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
       reconcile: async () => remote === null
         ? ({ status: "missing" as const })
         : ({ status: "completed" as const, value: remote.value, completionDigest: remote.digest }),
@@ -138,6 +139,7 @@ describe("durable dependency outage queue", () => {
         retryBudget: 6,
         expiresAt: "2026-09-01T13:00:00.000Z",
         leaseMs: 30_000,
+        authorityVersion: "model-authority-v1",
         reconcile: async () => ({ status: "missing" as const }),
         execute: async () => { throw Object.assign(new Error("unavailable"), { status: 503 }); },
         classify: (_error, context) => {
@@ -195,6 +197,7 @@ describe("durable dependency outage queue", () => {
       retryBudget: 6,
       expiresAt: "2026-09-01T13:00:00.000Z",
       leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
       reconcile: async () => ({ status: "missing" as const }),
       execute: async () => ({ value: "recovered", completionDigest: COMPLETION }),
       classify: () => { throw new Error("classification_not_expected"); },
@@ -230,28 +233,69 @@ describe("durable dependency outage queue", () => {
     db.close();
   });
 
-  it("reactivates authorization-blocked work only after the authority version changes", () => {
+  it("reactivates authentication-blocked work only after the authority version changes", async () => {
     const db = new DatabaseSync(":memory:");
-    const queue = createDependencyOutageQueue(db);
-    queue.enqueue({
+    let now = "2026-09-01T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    const operation = {
       ...SCOPE,
+      workerId: "worker-1",
       retryBudget: 3,
       expiresAt: "2026-09-01T13:00:00.000Z",
-      nextAttemptAt: "2026-09-01T12:00:00.000Z",
-      standing: "degraded_blocked",
       authorityVersion: "installation-v1",
+      leaseMs: 30_000,
+      reconcile: async () => ({ status: "missing" as const }),
+      execute: async (): Promise<never> => {
+        throw Object.assign(new Error("bad credentials"), { status: 401 });
+      },
+      classify: (): DependencyOutageFailureDecision => ({
+        schemaVersion: 1,
+        action: "await_authority",
+        failureKind: "authentication",
+        retryable: false,
+        reason: "authority_change_required",
+        nextAttemptAt: null,
+        circuitState: "open",
+        circuit: { state: "open", openedAt: now, cooldownMs: 30_000, consecutiveFailures: 1 },
+        standing: "degraded_blocked",
+      }),
+    };
+    await expect(queue.run(operation)).resolves.toMatchObject({
       status: "blocked",
-    }, "2026-09-01T12:00:00.000Z");
+      record: { authorityVersion: "installation-v1" },
+    });
     expect(() => queue.reactivateAuthority(SCOPE, {
       previousAuthorityVersion: "installation-v1",
       nextAuthorityVersion: "installation-v1",
       now: "2026-09-01T12:05:00.000Z",
     })).toThrow("dependency_outage_authority_unchanged");
-    expect(queue.reactivateAuthority(SCOPE, {
-      previousAuthorityVersion: "installation-v1",
-      nextAuthorityVersion: "installation-v2",
-      now: "2026-09-01T12:05:00.000Z",
-    })).toMatchObject({ status: "queued", authorityVersion: "installation-v2" });
+    now = "2026-09-01T12:05:01.000Z";
+    await expect(queue.run({
+      ...operation,
+      workerId: "worker-2",
+      authorityVersion: "installation-v2",
+      execute: async () => ({ value: "delivered", completionDigest: COMPLETION }),
+      classify: () => { throw new Error("classification_not_expected"); },
+    })).resolves.toMatchObject({ status: "completed", value: "delivered" });
+    expect(queue.history(SCOPE).map((event) => event.kind)).toContain("authority_reactivated");
+    db.close();
+  });
+
+  it("rejects missing or malformed authority on authority-bearing operations", async () => {
+    const db = new DatabaseSync(":memory:");
+    const queue = createDependencyOutageQueue(db, { now: () => "2026-09-01T12:00:00.000Z" });
+    const operation = {
+      ...SCOPE,
+      workerId: "worker-1",
+      retryBudget: 3,
+      expiresAt: "2026-09-01T13:00:00.000Z",
+      leaseMs: 30_000,
+      authorityVersion: "bad authority",
+      reconcile: async () => ({ status: "missing" as const }),
+      execute: async () => ({ value: "unused", completionDigest: COMPLETION }),
+      classify: () => retryDecision(),
+    };
+    await expect(queue.run(operation)).rejects.toThrow("dependency_outage_authority_invalid");
     db.close();
   });
 

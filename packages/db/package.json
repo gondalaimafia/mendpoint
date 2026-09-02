@@ -6,7 +6,8 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./dependency-outage": "./src/dependency-outage-queue.ts"
   },
   "scripts": {
     "test": "vitest run",

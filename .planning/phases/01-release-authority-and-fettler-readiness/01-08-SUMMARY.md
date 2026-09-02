@@ -9,6 +9,7 @@ provides:
   - Versioned product-neutral dependency outage decision contract.
   - Tenant-scoped SQLite outage queue with fenced claims and immutable hash-chained history.
   - Injected model and GitHub outage recovery ports with provider-specific failure classification.
+  - Supported database subpath and production GitHub composition over the primary application database.
 affects: [01-18, model-runtime-binding, github-delivery-binding, production-readiness]
 
 actuals:
@@ -30,6 +31,7 @@ key-files:
     - packages/ops/src/dependency-outage.test.ts
     - packages/db/src/dependency-outage-queue.ts
     - packages/db/src/dependency-outage-queue.test.ts
+    - packages/db/src/dependency-outage-export.test.ts
   modified:
     - packages/agent/src/model-providers.ts
     - packages/agent/src/model-providers.test.ts
@@ -38,11 +40,15 @@ key-files:
     - packages/github/src/app-runtime.test.ts
     - packages/github/src/index.ts
     - packages/ops/src/index.ts
+    - packages/db/package.json
+    - packages/pipeline/src/index.ts
+    - packages/pipeline/src/index.test.ts
+    - packages/ops/src/disaster-recovery.test.ts
 
 key-decisions:
   - "Use injected structural ports instead of importing ops or db from GitHub, because ops already depends on GitHub and the direct plan link would create a package cycle."
   - "Keep exact provider reconciliation inside the GitHub delivery implementation, where branch, commit identity, complete tree delta, file content, file mode, and draft pull request state can be validated read-only before a repeated write."
-  - "Do not fabricate production reachability: live caller construction and the database barrel binding remain explicit follow-up work."
+  - "Expose the queue through the ownership-safe @mendpoint/db/dependency-outage subpath and compose the real GitHub App delivery path over AppDb.raw so the mandatory database backup includes outage state."
 
 patterns-established:
   - "Outage authority: tenant, dependency kind, provider, operation identifier, and operation digest form the exact recovery scope."
@@ -83,25 +89,25 @@ coverage:
     requirement: ME-ENT-008
     verification:
       - kind: integration
-        ref: Live binding is outside the plan-owned files and is not present on this branch.
-        status: unknown
+        ref: packages/pipeline/src/index.test.ts and packages/ops/src/disaster-recovery.test.ts
+        status: pass
     human_judgment: true
-    rationale: Production reachability cannot be established until the live callers and database package export are bound and tested.
+    rationale: The real GitHub App delivery consumer is bound and backup recovery is proven. The generic model port remains available for the first production model caller because no non-test model invocation exists in the repository.
 
 duration: 1h 20m
 completed: 2026-09-02
-status: halted
+status: complete
 ---
 
 # Phase 01 Plan 08: Model and SCM Outage Controls Summary
 
-**The outage policy, durable queue, and dependency-inverted model and GitHub seams are implemented and tested, but Plan 01-08 is halted before production reachability because its required direct links conflict with the package graph and its live caller files are outside the plan scope.**
+**The outage policy and durable queue now protect the real GitHub App delivery path through the primary application database, retain exact authority identity, and survive restart, backup, and restore.**
 
 ## Performance
 
 - **Duration:** 1 hour 20 minutes
 - **Completed:** 2026-09-02T02:35:54.1100596Z
-- **Tasks:** 3 implementation tasks completed; production binding remains incomplete
+- **Tasks:** 3 implementation tasks completed, plus exact-head production binding repair
 - **Files modified:** 11 implementation and test files, plus this summary
 
 ## Accomplishments
@@ -110,6 +116,8 @@ status: halted
 - Added a durable tenant-scoped queue with restart recovery, fenced claims, exact-once completion, operation and completion digest conflict detection, and append-only hash-chained history.
 - Added provider-specific model and GitHub classification and injected ports that carry the reconstructed circuit snapshot into every decision.
 - Added read-only GitHub reconciliation that verifies the exact branch, commit identity, parent, full tree delta, file content, file mode, and draft pull request before any repeated blob, tree, commit, reference, or pull request write.
+- Made authority identity mandatory for model and GitHub operations, proved an authentication block can resume only after exact authority rotation, and bound GitHub delivery to an installation and credential digest.
+- Added the supported database subpath, production pipeline composition, and restart plus encrypted backup and restore proof over the primary database.
 - Proved retry, duplicate, exact pull request lost-response, zero-repeat writes, process restart, three-failure trip, half-open recovery, expired authority, tenant isolation, digest substitution, immutable history, and package-cycle behavior with 51 focused tests.
 
 ## Task Commits
@@ -121,6 +129,7 @@ status: halted
 5. **Typed result correction:** `fd51cdc6` (`fix`)
 6. **Authority, hostile tests, identifiers, and barrel exports:** `dbc632ac` (`fix`)
 7. **Durable circuit and read-only GitHub reconciliation repair:** `de0f4a34` (`fix`)
+8. **Current rebased evidence series:** `2e82ac20`, `10dc7f67`, `84a91091`, `cac1bf6b`, `5baa6dbe`, `456118de`, `9049b340`, `130e3e44`, `4fe36fff`, `f3170f70`
 
 Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/605), open, issue body read back with exact `Owner: Codex` claim.
 
@@ -138,7 +147,7 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 
 ## Decisions Made
 
-- The plan's proposed GitHub to database link was not implemented because `@mendpoint/ops` already depends on `@mendpoint/github`; importing ops or database into GitHub would create a package cycle. Structural injected ports preserve ownership direction and are covered by an architecture test.
+- The GitHub package retains an injected port to avoid a package cycle. The production pipeline owns composition and imports the durable queue through `@mendpoint/db/dependency-outage` plus the shared decision policy from ops.
 - A lost GitHub response is classified as requiring provider reconciliation. The outage adapter performs an exact read-only observation before execution; a fully delivered draft completes from provider state, while an exact committed branch without a pull request resumes at pull request creation without repeating Git object writes.
 - Operation identifiers are digest-bounded so maximum provider path lengths cannot overflow durable queue limits.
 
@@ -172,7 +181,7 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 ---
 
 **Total deviations:** 3: one architectural correction, one ownership-preserving deferral, and one independently reviewed reliability repair.
-**Impact on plan:** The core behavior is complete and tested. The final production link and therefore ME-ENT-008 qualification are not complete.
+**Impact on plan:** The engineering behavior and real GitHub production link are complete and tested. Requirement promotion still needs exact deployed-revision outage proof.
 
 ## Issues Encountered
 
@@ -181,11 +190,11 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 
 ## Verification
 
-- Exact plan commands plus hostile review regressions: all four workspaces passed, 51 focused tests total.
+- Exact plan commands plus hostile review regressions cover database, agent, GitHub, pipeline, ops, authority rotation, package resolution, and backup recovery.
 - Full package regressions: ops passed 179 tests; GitHub passed 195 tests.
 - TypeScript: ops, database, agent, and GitHub package checks passed with no errors.
 - Diff integrity: `git diff --check` passed before the repair commit.
-- Current base: rebased onto `4bf8e1c0fd729922c2203f0339d3befd5f612ad6` before the final runs.
+- Current base: `b21503356259fb0b4e5f7f6599a2f45d0bbd1cfb`.
 
 ## User Setup Required
 
@@ -193,15 +202,9 @@ None for the core contract. Production activation requires code binding, not a s
 
 ## Next Phase Readiness
 
-The following exact work remains before this plan can be marked complete or ME-ENT-008 can be promoted:
-
-1. Export `DependencyOutageQueue` from the database package after the #587 ownership overlap is clear.
-2. Construct the queue in a live runtime composition root and inject it into model operations and `GitHubAppDelivery`.
-3. Bind the shared `classifyDependencyOutage` decision into those live ports.
-4. Add live degraded-state readback and an integration test proving model and GitHub callers reach the durable queue.
-5. Re-run production startup, outage recovery, and exact-revision evidence before any availability or public-claim promotion.
+Before ME-ENT-008 promotion, deploy the exact revision and capture live GitHub failure, degraded-state, authority-rotation, recovery, and rollback evidence. Bind the already typed model port when the repository gains its first production model invocation; no non-test model caller exists on this base.
 
 ---
 *Phase: 01-release-authority-and-fettler-readiness*
 *Plan: 08*
-*Status: halted at production binding*
+*Status: engineering complete, deployment proof pending*

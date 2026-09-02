@@ -85,7 +85,7 @@ export type DependencyOutageRunOperation<T> = DependencyOutageScope & Readonly<{
   retryBudget: number;
   expiresAt: string;
   leaseMs: number;
-  authorityVersion?: string;
+  authorityVersion: string;
   reconcile: () => Promise<DependencyOutageReconciliation<T>>;
   execute: () => Promise<Readonly<{ value: T; completionDigest: string }>>;
   classify: (
@@ -383,6 +383,9 @@ export class DependencyOutageQueue {
     if (Date.parse(input.expiresAt) <= Date.parse(observedAt)) {
       throw new Error("dependency_outage_expired");
     }
+    if (input.authorityVersion !== undefined && !IDENTITY.test(input.authorityVersion)) {
+      throw new Error("dependency_outage_authority_invalid");
+    }
     const status = input.status ?? "queued";
     const circuit: DependencyOutageCircuitSnapshot = Object.freeze({
       state: input.circuitState ?? "closed",
@@ -626,11 +629,21 @@ export class DependencyOutageQueue {
 
   async run<T>(operation: DependencyOutageRunOperation<T>): Promise<DependencyOutageRunResult<T>> {
     const now = this.now();
-    this.enqueue({
+    const enqueued = this.enqueue({
       ...operation,
       nextAttemptAt: now,
       standing: "degraded_retrying",
     }, now);
+    if (enqueued.status === "blocked" && enqueued.authorityVersion !== operation.authorityVersion) {
+      if (enqueued.authorityVersion === null) {
+        throw new Error("dependency_outage_authority_missing");
+      }
+      this.reactivateAuthority(operation, {
+        previousAuthorityVersion: enqueued.authorityVersion,
+        nextAuthorityVersion: operation.authorityVersion,
+        now,
+      });
+    }
     const claim = this.claim({ ...operation, now, leaseMs: operation.leaseMs });
     if (!claim) {
       const record = this.get(operation)!;
