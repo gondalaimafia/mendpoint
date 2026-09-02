@@ -19,6 +19,9 @@ describe("Fettler production closure operating contracts", () => {
     expect(packageManifest.scripts?.["fettler:closure:check"]).toBe(
       "tsx scripts/fettler-production-closure.ts",
     );
+    expect(packageManifest.scripts?.["ga:check"]).toContain(
+      "npm run fettler:closure:check",
+    );
   });
 
   it("binds performance and metric definitions without claiming a measurement", () => {
