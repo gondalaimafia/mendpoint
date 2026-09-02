@@ -311,6 +311,42 @@ describe("HTTPS external key transport", () => {
   });
 
   it.each([
+    ["missing tenant", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.attestKey(locator, "   ")],
+    ["missing provider", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.attestKey({ ...locator, provider: "" }, "tenant-a")],
+    ["oversized provider", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.attestKey({ ...locator, provider: "x".repeat(257) }, "tenant-a")],
+    ["missing key identifier", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.attestKey({ ...locator, keyId: "" }, "tenant-a")],
+    ["missing key version", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.attestKey({ ...locator, version: "" }, "tenant-a")],
+    ["non-customer-managed wrap", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.wrapDataKey({ ...locator, customerManaged: false }, "tenant-a", Buffer.alloc(32))],
+    ["wrong-size data key", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.wrapDataKey({ ...locator, customerManaged: true }, "tenant-a", Buffer.alloc(31))],
+    ["non-customer-managed unwrap", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.unwrapDataKey({ ...locator, customerManaged: false }, "tenant-a", "d3JhcHBlZA==")],
+    ["non-canonical wrapped key", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.unwrapDataKey({ ...locator, customerManaged: true }, "tenant-a", "d3JhcHBlZA")],
+    ["oversized wrapped key", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.unwrapDataKey({ ...locator, customerManaged: true }, "tenant-a", "A".repeat(100_000))],
+  ])("rejects %s before resolution, timeout, or network work", async (_name, invoke) => {
+    const resolveAddresses = vi.fn(resolvePublicAddress);
+    const requestImpl = jsonRequester();
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses,
+      requestImpl,
+    });
+
+    await expect(invoke(transport)).rejects.toThrow("external_kek_request_failed");
+    expect(resolveAddresses).not.toHaveBeenCalled();
+    expect(requestImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
     ["http://vault.example.test", "external_kek_transport_configuration_invalid"],
     ["https://user:password@vault.example.test", "external_kek_transport_configuration_invalid"],
     ["https://vault.example.test?tenant=a", "external_kek_transport_configuration_invalid"],
