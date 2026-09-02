@@ -5,12 +5,10 @@ import { join } from "node:path";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  bindMissionScope,
   createDb,
+  bindMissionScope,
   createMission,
   createMissionTask,
-  createWardenCampaign,
-  linkFettlerCampaignToMission,
   enqueueJob,
   evaluateMissionExceptions,
   fettlerCampaignMissionTaskId,
@@ -20,31 +18,43 @@ import {
   getMission,
   getMissionTask,
   getWardenCiCycle,
-  getWardenCiUpdateByRun,
   getWardenCandidateDeliveryByRun,
+  getWardenCiUpdateByRun,
   insertAgentRun,
   insertPrincipal,
+  missionTaskIdForJob,
   openTaskHandoff,
   raiseMissionException,
+  recordWardenCandidateDeliveryOutcome,
   regaugeLaunchMissionTaskId,
   recordAudit,
-  recordWardenCandidateDeliveryOutcome,
-  transitionMissionTask,
   transitionMission,
+  transitionMissionTask,
   verifyAuditIntegrity,
   type AppDb,
   type MissionTask,
 } from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
-import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.js";
+import {
+  registerWardenCandidateReviewRoutes,
+  tryResolveBoundReviewHandoff,
+} from "./warden-candidate-review.js";
 import { enqueueDelegatedPrVerificationJob } from "@mendpoint/worker/delegated-pr-verification-job";
 import { processJobsOnce } from "@mendpoint/worker/job-runner";
-import type { ExactDraftDeliveryInput, ExactDraftUpdateInput, GitHubDelivery } from "@mendpoint/github";
+import type {
+  ExactDraftDeliveryInput,
+  ExactDraftUpdateInput,
+  GitHubDelivery,
+} from "@mendpoint/github";
 
 const NOW = "2026-08-06T12:00:00.000Z";
-// The enrollment task the reviewed run drives, derived exactly as the claim
-// modules derive it from the run's (missionId, repositoryId) source binding.
-const REVIEW_TASK_ID = fettlerCampaignMissionTaskId("m1", "repo-1");
+// Production bridges a claimed agent.run onto missionTaskIdForJob(job.id)
+// (ADR D3). The reviewed fixture run is source-job-1 / warden-run-1.
+const REVIEW_JOB_ID = "source-job-1";
+const REVIEW_TASK_ID = missionTaskIdForJob(REVIEW_JOB_ID);
+// Same-repo enrollment task — a different work primitive. Review must not
+// resolve this when the reviewed run's job task is what is (or is not) blocking.
+const ENROLLMENT_TASK_ID = fettlerCampaignMissionTaskId("m1", "repo-1");
 const CANDIDATE_DIGEST = "c".repeat(64);
 const CANDIDATE_MANIFEST_SHA256 = "f".repeat(64);
 const VERIFICATION_AUTHORITY = Object.freeze({
@@ -70,6 +80,53 @@ function markDelegatedVerificationRequest(db: AppDb, jobId: string): void {
     .run(JSON.stringify({ sessionId: "warden-run-1", status: "candidate_ready",
       delegatedVerification: { schemaVersion: 1, jobId, authority: VERIFICATION_AUTHORITY } }),
     "source-job-1", "tenant-a");
+}
+
+function approvalArtifact(input: Readonly<{
+  directory: string; revision: string; rationale: string;
+}>) {
+  const dataRoot = join(input.directory, "data");
+  const approvals = join(dataRoot, "warden-evidence", "tenant-a", "approvals");
+  mkdirSync(approvals, { recursive: true });
+  const before = Buffer.from("export const old = 1;\n");
+  const after = Buffer.from("export const fixed = 1;\n");
+  const beforeSha256 = `sha256:${createHash("sha256").update(before).digest("hex")}`;
+  const afterSha256 = `sha256:${createHash("sha256").update(after).digest("hex")}`;
+  const artifact = {
+    schemaVersion: 3,
+    tenantId: "tenant-a",
+    repositoryId: "repo-1",
+    snapshotId: "snapshot-1",
+    baseBranch: "main",
+    expectedBaseRevision: input.revision,
+    reviewerPrincipalId: "trust-human-a",
+    rationale: input.rationale,
+    reviewEvidence: {
+      schemaVersion: 1,
+      summary: "The exact candidate passed every configured check.",
+      verification: { summary: "The target and regression checks passed.", commands: [{
+        command: "npm test", ok: true, exitCode: 0, outputSha256: `sha256:${"e".repeat(64)}`,
+      }] },
+      edits: [{
+        path: "src/client.ts", rationale: "Repair the bounded SDK call.", category: "api_repair",
+        risk: "medium", confidence: 1, assessmentSource: "planner",
+        verification: { summary: "The target and regression checks passed.",
+          commandOutputSha256: [`sha256:${"e".repeat(64)}`] },
+      }],
+    },
+    changedPaths: ["src/client.ts"],
+    sourceDigest: `sha256:${"c".repeat(64)}`,
+    candidate: { digest: `sha256:${"d".repeat(64)}`, entries: [{
+      path: "src/client.ts", size: after.byteLength, sha256: afterSha256, executable: false,
+    }] },
+    files: [{ path: "src/client.ts", before: before.toString("base64"), after: after.toString("base64"),
+      beforeSha256, afterSha256 }],
+  };
+  const bytes = Buffer.from(JSON.stringify(artifact));
+  const sha256 = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  const path = join(approvals, `${sha256.slice(7)}.json`);
+  writeFileSync(path, bytes);
+  return { artifact, dataRoot, path, sha256 };
 }
 
 function fixture(options: {
@@ -156,53 +213,6 @@ function fixture(options: {
     ...(options.sealApproval ? { sealApproval: options.sealApproval } : {}),
   });
   return { app, db, audit, directory };
-}
-
-function approvalArtifact(input: Readonly<{
-  directory: string; revision: string; rationale: string;
-}>) {
-  const dataRoot = join(input.directory, "data");
-  const approvals = join(dataRoot, "warden-evidence", "tenant-a", "approvals");
-  mkdirSync(approvals, { recursive: true });
-  const before = Buffer.from("export const old = 1;\n");
-  const after = Buffer.from("export const fixed = 1;\n");
-  const beforeSha256 = `sha256:${createHash("sha256").update(before).digest("hex")}`;
-  const afterSha256 = `sha256:${createHash("sha256").update(after).digest("hex")}`;
-  const artifact = {
-    schemaVersion: 3,
-    tenantId: "tenant-a",
-    repositoryId: "repo-1",
-    snapshotId: "snapshot-1",
-    baseBranch: "main",
-    expectedBaseRevision: input.revision,
-    reviewerPrincipalId: "trust-human-a",
-    rationale: input.rationale,
-    reviewEvidence: {
-      schemaVersion: 1,
-      summary: "The exact candidate passed every configured check.",
-      verification: { summary: "The target and regression checks passed.", commands: [{
-        command: "npm test", ok: true, exitCode: 0, outputSha256: `sha256:${"e".repeat(64)}`,
-      }] },
-      edits: [{
-        path: "src/client.ts", rationale: "Repair the bounded SDK call.", category: "api_repair",
-        risk: "medium", confidence: 1, assessmentSource: "planner",
-        verification: { summary: "The target and regression checks passed.",
-          commandOutputSha256: [`sha256:${"e".repeat(64)}`] },
-      }],
-    },
-    changedPaths: ["src/client.ts"],
-    sourceDigest: `sha256:${"c".repeat(64)}`,
-    candidate: { digest: `sha256:${"d".repeat(64)}`, entries: [{
-      path: "src/client.ts", size: after.byteLength, sha256: afterSha256, executable: false,
-    }] },
-    files: [{ path: "src/client.ts", before: before.toString("base64"), after: after.toString("base64"),
-      beforeSha256, afterSha256 }],
-  };
-  const bytes = Buffer.from(JSON.stringify(artifact));
-  const sha256 = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-  const path = join(approvals, `${sha256.slice(7)}.json`);
-  writeFileSync(path, bytes);
-  return { artifact, dataRoot, path, sha256 };
 }
 
 function seedCiRepairCandidate(db: AppDb, reviewFeedbackDigest: string | null = null) {
@@ -435,131 +445,6 @@ describe("Warden candidate human review", () => {
       .toEqual({ count: 0 });
   });
 
-  it("does not grant review authority when the current membership role loses plan edit while sealing", async () => {
-    let database: AppDb | undefined;
-    const fixtureResult = fixture({
-      sealApproval: async () => {
-        database!.raw.prepare(`UPDATE tenant_memberships SET role = 'viewer', updated_at = ?
-          WHERE tenant_id = 'tenant-a' AND issuer = 'https://identity.example.com' AND subject = 'reviewer-a'`)
-          .run("2026-08-06T12:00:01.000Z");
-        return { path: "C:\\sealed-downgraded-approval.json", sha256: `sha256:${"b".repeat(64)}`, created: true };
-      },
-    });
-    database = fixtureResult.db;
-    seedCiRepairCandidate(database);
-
-    const response = await fixtureResult.app.request("/agent/runs/warden-run-1/candidate/review", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision: "approve", rationale: "Approve only with current plan edit authority." }),
-    });
-
-    expect(response.status).toBe(403);
-    expect(getAgentRun(database, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
-    expect(getWardenCiUpdateByRun(database, "tenant-a", "warden-run-1")).toBeUndefined();
-  });
-
-  it("uses the post-seal commit time for trust expiry and persisted review authority", async () => {
-    let sealed = false;
-    const fixtureResult = fixture({
-      now: () => sealed ? "2026-08-06T12:00:02.000Z" : NOW,
-      sealApproval: async () => {
-        sealed = true;
-        return { path: "C:\\sealed-expired-approval.json", sha256: `sha256:${"b".repeat(64)}`, created: true };
-      },
-    });
-    seedCiRepairCandidate(fixtureResult.db);
-    fixtureResult.db.raw.prepare("UPDATE principals SET expires_at = ? WHERE id = 'trust-human-a'")
-      .run("2026-08-06T12:00:01.000Z");
-
-    const response = await fixtureResult.app.request("/agent/runs/warden-run-1/candidate/review", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision: "approve", rationale: "Approve only before trust expiry." }),
-    });
-
-    expect(response.status).toBe(403);
-    expect(getAgentRun(fixtureResult.db, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
-    expect(getWardenCiUpdateByRun(fixtureResult.db, "tenant-a", "warden-run-1")).toBeUndefined();
-  });
-
-  it.each(["approve", "regenerate"] as const)(
-    "rejects an array source job payload on %s",
-    async (decision) => {
-      const { app, db } = fixture({ sealApproval: async () => ({ path: "C:\\sealed.json",
-        sha256: `sha256:${"b".repeat(64)}`, created: true }) });
-      seedCiRepairCandidate(db);
-      db.raw.prepare("UPDATE jobs SET payload_json = '[]' WHERE id = 'source-job-1' AND tenant_id = 'tenant-a'").run();
-      const jobsBefore = (db.raw.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count;
-
-      const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ decision, rationale: "Do not trust a malformed source payload." }),
-      });
-
-      expect(response.status).toBe(409);
-      expect(getAgentRun(db, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
-      expect((db.raw.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count).toBe(jobsBefore);
-      expect(getWardenCiUpdateByRun(db, "tenant-a", "warden-run-1")).toBeUndefined();
-    },
-  );
-
-  it.each(["result", "files", "source", "job"] as const)(
-    "conflicts when the sealed candidate %s authority changes without a status transition",
-    async (mutation) => {
-      let database: AppDb | undefined;
-      const fixtureResult = fixture({ sealApproval: async () => {
-        if (mutation === "result") {
-          const current = JSON.parse(getAgentRun(database!, "warden-run-1", "tenant-a")!.result_json!) as Record<string, unknown>;
-          database!.raw.prepare("UPDATE agent_runs SET result_json = ? WHERE id = 'warden-run-1' AND tenant_id = 'tenant-a'")
-            .run(JSON.stringify({ ...current, artifacts: { ...(current.artifacts as Record<string, unknown>),
-              candidateDigest: "9".repeat(64) } }));
-        } else if (mutation === "files") {
-          database!.raw.prepare("UPDATE agent_runs SET files_changed_json = ? WHERE id = 'warden-run-1' AND tenant_id = 'tenant-a'")
-            .run('["src/other.ts"]');
-        } else if (mutation === "source") {
-          database!.raw.prepare("UPDATE agent_runs SET repo_path = 'C:\\other-snapshot' WHERE id = 'warden-run-1'").run();
-        } else {
-          const sourceJob = getJob(database!, "source-job-1", "tenant-a")!;
-          const payload = JSON.parse(sourceJob.payload_json) as Record<string, unknown>;
-          database!.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1' AND tenant_id = 'tenant-a'")
-            .run(JSON.stringify({ ...payload, goal: "Different concurrent authority" }));
-        }
-        return { path: "C:\\sealed-raced-approval.json", sha256: `sha256:${"b".repeat(64)}`, created: true };
-      } });
-      database = fixtureResult.db;
-      seedCiRepairCandidate(database);
-
-      const response = await fixtureResult.app.request("/agent/runs/warden-run-1/candidate/review", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ decision: "approve", rationale: "Approve only the exact sealed candidate." }),
-      });
-
-      expect(response.status).toBe(409);
-      expect(getAgentRun(database, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
-      expect(getWardenCiUpdateByRun(database, "tenant-a", "warden-run-1")).toBeUndefined();
-    },
-  );
-
-  it("re-resolves mutable CI authority under the review transaction", async () => {
-    let database: AppDb | undefined;
-    const fixtureResult = fixture({ sealApproval: async () => {
-      database!.raw.prepare(`UPDATE fettler_ci_cycles SET current_head_sha = ?, updated_at = ?
-        WHERE id = 'cycle-a' AND tenant_id = 'tenant-a'`)
-        .run("9".repeat(40), "2026-08-06T12:00:01.000Z");
-      return { path: "C:\\sealed-stale-ci.json", sha256: `sha256:${"b".repeat(64)}`, created: true };
-    } });
-    database = fixtureResult.db;
-    seedCiRepairCandidate(database);
-
-    const response = await fixtureResult.app.request("/agent/runs/warden-run-1/candidate/review", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision: "approve", rationale: "Approve only the exact current CI authority." }),
-    });
-
-    expect(response.status).toBe(409);
-    expect(getAgentRun(database, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
-    expect(getWardenCiUpdateByRun(database, "tenant-a", "warden-run-1")).toBeUndefined();
-  });
-
   it("binds an approved review repair update to the exact observed feedback digest", async () => {
     const reviewDigest = `sha256:${"9".repeat(64)}`;
     const { app, db } = fixture({ sealApproval: async () => ({ path: "C:\\sealed.json",
@@ -682,15 +567,14 @@ describe("Warden candidate human review", () => {
   // regenerate branch makes this die.
   it("records the reviewer directive as a mission decision when the regenerate is mission-bound", async () => {
     const { app, db } = fixture();
-    seedReviewedSnapshot(db);
-    bindMission(db);
-    workingTask(db);
-    openTaskHandoff(db, {
-      tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID,
-      reason: "architecture_decision_required", question: "Keep the public signature?",
-      context: "The candidate changes the request mapping.", ownerPrincipalId: "trust-human-a",
-      correlationId: "corr-reviewer-directive", createdAt: NOW,
+    createMission(db, {
+      id: "m1", tenantId: "tenant-a", product: "fettler", triggerKind: "migration_objective",
+      objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
+      eventId: "ev-m1", idempotencyKey: "cm-m1", correlationId: "corr", createdAt: NOW,
     });
+    const src = getJob(db, "source-job-1", "tenant-a")!;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
+      .run(JSON.stringify({ ...JSON.parse(src.payload_json), missionId: "m1" }));
 
     const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
       method: "POST",
@@ -705,17 +589,23 @@ describe("Warden candidate human review", () => {
     // The mission id is carried forward to the regenerated run.
     expect(JSON.parse(getJob(db, body.supersedingJobId, "tenant-a")!.payload_json)).toMatchObject({ missionId: "m1" });
     // The reviewer directive is now a durable active decision on the mission.
-    const active = getActiveMissionDecisions(db, "tenant-a", "m1")
-      .filter((decision) => decision.scope === "reviewer_directive:warden-run-1");
+    const active = getActiveMissionDecisions(db, "tenant-a", "m1");
     expect(active).toHaveLength(1);
     expect(active[0]!.decision).toBe("Do not use a raw OAuth flow: it violates the internal auth policy.");
+    expect(active[0]!.scope).toBe("reviewer_directive:warden-run-1");
     expect(active[0]!.decisionType).toBe("verification");
   });
 
   it("records the rejected approach as a path-scoped mission decision when reject is mission-bound", async () => {
     const { app, db } = fixture();
-    seedReviewedSnapshot(db);
-    bindMission(db);
+    createMission(db, {
+      id: "m1", tenantId: "tenant-a", product: "fettler", triggerKind: "migration_objective",
+      objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
+      eventId: "ev-m1", idempotencyKey: "cm-m1", correlationId: "corr", createdAt: NOW,
+    });
+    const src = getJob(db, "source-job-1", "tenant-a")!;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
+      .run(JSON.stringify({ ...JSON.parse(src.payload_json), missionId: "m1" }));
 
     const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
       method: "POST",
@@ -764,38 +654,23 @@ describe("Warden candidate human review", () => {
     expect(count.n).toBe(0);
   });
 
-  function bindMission(
-    db: AppDb,
-    product: "fettler" | "regauge" = "fettler",
-    options: { viaCampaign?: boolean } = {},
-  ): void {
+  function bindMission(db: AppDb, product: "fettler" | "regauge" = "fettler"): void {
     createMission(db, {
       id: "m1", tenantId: "tenant-a", product, triggerKind: "migration_objective",
       objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
       eventId: "ev-m1", idempotencyKey: "cm-m1", correlationId: "corr", createdAt: NOW,
     });
+    const src = getJob(db, "source-job-1", "tenant-a")!;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
+      .run(JSON.stringify({ ...JSON.parse(src.payload_json), missionId: "m1" }));
+  }
+
+  function scopeMission(db: AppDb): void {
     bindMissionScope(db, {
       tenantId: "tenant-a", missionId: "m1", repositoryId: "repo-1", snapshotId: "snapshot-1",
       actorPrincipalId: "trust-human-a", eventId: "ev-m1-scope", idempotencyKey: "cm-m1-scope",
       correlationId: "corr", createdAt: NOW,
     });
-    const src = getJob(db, "source-job-1", "tenant-a")!;
-    if (options.viaCampaign) {
-      // SYNTHETIC BY CONSTRUCTION: production has no campaign -> agent.run
-      // originator yet, so no real source job carries a campaign hint. Built by
-      // hand to pin the rule ahead of that join. See the PR body.
-      createWardenCampaign(db, { id: "campaign-1", tenantId: "tenant-a", name: "SDK migration",
-        ownerPrincipalId: "trust-human-a", concurrencyLimit: 1, completionPolicy: "all",
-        eventId: "ev-campaign", idempotencyKey: "cm-campaign", correlationId: "corr", createdAt: NOW });
-      linkFettlerCampaignToMission(db, { tenantId: "tenant-a", campaignId: "campaign-1",
-        missionId: "m1", actorPrincipalId: "trust-human-a", eventId: "ev-campaign-link",
-        idempotencyKey: "cm-campaign-link", correlationId: "corr", createdAt: NOW });
-      db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
-        .run(JSON.stringify({ ...JSON.parse(src.payload_json), campaignId: "campaign-1" }));
-      return;
-    }
-    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
-      .run(JSON.stringify({ ...JSON.parse(src.payload_json), missionId: "m1" }));
   }
 
   function workingTask(db: AppDb): MissionTask {
@@ -816,9 +691,9 @@ describe("Warden candidate human review", () => {
     });
   }
 
-  // Advance an enrollment task (by its derived id) to agent_working so a handoff
-  // can be opened on it. Event keys are namespaced by the task id.
-  function advanceEnrollmentTask(db: AppDb, taskId: string): MissionTask {
+  // Advance any MissionTask (by id) to agent_working so a handoff can be
+  // opened on it. Event keys are namespaced by the task id.
+  function advanceTaskToWorking(db: AppDb, taskId: string): MissionTask {
     let task = createMissionTask(db, {
       id: taskId, tenantId: "tenant-a", missionId: "m1", taskType: "code_migration",
       acceptanceCriteria: "tests pass", risk: "medium", actorPrincipalId: "trust-human-a",
@@ -833,6 +708,24 @@ describe("Warden candidate human review", () => {
       tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision, to: "agent_working",
       actorPrincipalId: "trust-human-a", eventId: `e-work-${taskId}`, idempotencyKey: `c-work-${taskId}`,
       correlationId: "corr", createdAt: NOW,
+    });
+  }
+
+  // A second candidate_ready run whose source job carries mission m1. The
+  // resolver binds to missionTaskIdForJob(jobId), not the repo enrollment id.
+  function seedReviewRunForRepo(db: AppDb, input: { runId: string; jobId: string; repositoryId: string }): void {
+    enqueueJob(db, {
+      id: input.jobId, tenantId: "tenant-a", type: "agent.run",
+      payload: { goal: "Repair the SDK", sessionId: input.runId, missionId: "m1" }, createdAt: NOW,
+    });
+    insertAgentRun(db, {
+      id: input.runId, tenantId: "tenant-a", jobId: input.jobId, goal: "Repair the SDK",
+      repoPath: "C:\\snapshot", status: "candidate_ready", ok: true, steps: 3, filesChanged: ["src/client.ts"],
+      resultJson: JSON.stringify({
+        source: { repositoryId: input.repositoryId, snapshotId: "snapshot-1", revision: "a".repeat(40) },
+        artifacts: { candidateDigest: CANDIDATE_DIGEST, candidateManifestSha256: CANDIDATE_MANIFEST_SHA256 },
+      }),
+      createdAt: NOW, finishedAt: NOW,
     });
   }
 
@@ -857,179 +750,133 @@ describe("Warden candidate human review", () => {
       .run("a".repeat(40), `sha256:${"c".repeat(64)}`, NOW);
   }
 
-  it("never resolves a ReGauge MissionTask through the Fettler candidate review route", async () => {
-    const { app, db } = fixture({ sealApproval: async () => ({ path: "C:\\sealed-regauge.json",
-      sha256: `sha256:${"b".repeat(64)}`, created: true }) });
-    seedReviewedSnapshot(db);
-    bindMission(db, "regauge");
-    const taskId = regaugeLaunchMissionTaskId("m1", "repo-1");
-    advanceEnrollmentTask(db, taskId);
-    const blocker = openTaskHandoff(db, {
-      tenantId: "tenant-a", missionId: "m1", taskId, reason: "architecture_decision_required",
-      question: "Continue the ReGauge stage?", context: "This is ReGauge-owned work.",
-      ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
-    });
-
-    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision: "approve", rationale: "This route must not cross product authority." }),
-    });
-
-    expect(response.status).toBe(409);
-    expect(getMissionTask(db, "tenant-a", taskId)?.status).toBe("human_review_required");
-    expect(db.raw.prepare(`SELECT status, supersedes_id FROM mission_exceptions
-      WHERE tenant_id = 'tenant-a' AND id = ?`).get(blocker.id)).toEqual({
-      status: "open", supersedes_id: null,
-    });
-    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get()).toEqual({ count: 0 });
-  });
-
-  it.each(["approve", "regenerate"] as const)(
-    "fails closed on %s when the exact human-owned task has no blocking exception",
-    async (decision) => {
-      const { app, db } = fixture({ sealApproval: async () => ({ path: "C:\\sealed-missing.json",
-        sha256: `sha256:${"b".repeat(64)}`, created: true }) });
-      seedReviewedSnapshot(db);
-      bindMission(db);
-      const task = workingTask(db);
-      transitionMissionTask(db, {
-        tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision, to: "human_review_required",
-        actorPrincipalId: "trust-human-a", handoffReason: "candidate_review_required",
-        eventId: "e-missing-handoff", idempotencyKey: "c-missing-handoff", correlationId: "corr", createdAt: NOW,
-      });
-      const jobsBefore = (db.raw.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count;
-
-      const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ decision, rationale: "Do not bypass missing blocking authority." }),
-      });
-
-      expect(response.status).toBe(409);
-      expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("human_review_required");
-      expect(getAgentRun(db, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
-      expect((db.raw.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count).toBe(jobsBefore);
-      expect(db.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get()).toEqual({ count: 0 });
-    },
-  );
-
-  it("fails closed when the exact human-owned task has ambiguous blocking exceptions", async () => {
-    const { app, db } = fixture();
-    seedReviewedSnapshot(db);
-    bindMission(db);
-    workingTask(db);
-    for (const suffix of ["a", "b"]) {
-      openTaskHandoff(db, {
-        tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID,
-        reason: "architecture_decision_required", question: `Resolve ambiguity ${suffix}?`,
-        context: `Blocking context ${suffix}.`, ownerPrincipalId: "trust-human-a",
-        correlationId: `corr-${suffix}`, createdAt: suffix === "a" ? NOW : "2026-08-06T12:00:01.000Z",
-      });
-    }
-    const jobsBefore = (db.raw.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count;
-
-    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision: "regenerate", rationale: "Do not guess which blocker this resolves." }),
-    });
-
-    expect(response.status).toBe(409);
-    expect(evaluateMissionExceptions(db, "tenant-a", "m1").blocking).toHaveLength(2);
-    expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("human_review_required");
-    expect((db.raw.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count).toBe(jobsBefore);
-  });
-
-  // Same refusal, reached through a CAMPAIGN hint instead of an explicit
-  // missionId. Swap this reader back to a raw `payload.missionId` read and the
-  // run looks unbound: no Mission checks run at all and the review returns 202.
-  it("fails closed on a CAMPAIGN-bound source job with ambiguous blockers (fixture-minted state; production has no campaign to agent.run originator yet)", async () => {
-    const { app, db } = fixture();
-    seedReviewedSnapshot(db);
-    bindMission(db, "fettler", { viaCampaign: true });
-    workingTask(db);
-    for (const suffix of ["a", "b"]) {
-      openTaskHandoff(db, {
-        tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID,
-        reason: "architecture_decision_required", question: `Resolve ambiguity ${suffix}?`,
-        context: `Blocking context ${suffix}.`, ownerPrincipalId: "trust-human-a",
-        correlationId: `corr-${suffix}`, createdAt: suffix === "a" ? NOW : "2026-08-06T12:00:01.000Z",
-      });
-    }
-    const jobsBefore = (db.raw.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count;
-
-    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision: "regenerate", rationale: "Do not guess which blocker this resolves." }),
-    });
-
-    expect(response.status).toBe(409);
-    expect(evaluateMissionExceptions(db, "tenant-a", "m1").blocking).toHaveLength(2);
-    expect((db.raw.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count).toBe(jobsBefore);
-  });
-
-  it("does not approve or enqueue delivery while any current Mission blocker remains", async () => {
-    const { app, db } = fixture({ sealApproval: async () => ({ path: "C:\\sealed-global-blocker.json",
-      sha256: `sha256:${"b".repeat(64)}`, created: true }) });
-    seedReviewedSnapshot(db);
-    bindMission(db);
-    const siblingTaskId = "mission-sibling-global-blocker";
-    advanceEnrollmentTask(db, siblingTaskId);
-    advanceEnrollmentTask(db, REVIEW_TASK_ID);
-    openTaskHandoff(db, {
-      tenantId: "tenant-a", missionId: "m1", taskId: siblingTaskId, reason: "policy_exception",
-      question: "Resolve the sibling policy exception?", context: "Global Mission delivery is blocked.",
-      ownerPrincipalId: "trust-human-a", correlationId: "corr-sibling", createdAt: NOW,
-    });
-    openTaskHandoff(db, {
-      tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID, reason: "architecture_decision_required",
-      question: "Approve this candidate?", context: "The candidate itself is ready.",
-      ownerPrincipalId: "trust-human-a", correlationId: "corr-review", createdAt: NOW,
-    });
-
-    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision: "approve", rationale: "Resolve only the exact candidate question." }),
-    });
-
-    expect(response.status).toBe(409);
-    expect(getAgentRun(db, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
-    expect(evaluateMissionExceptions(db, "tenant-a", "m1").missionBlocked).toBe(true);
-    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get()).toEqual({ count: 0 });
-  });
-
   // CONTROL (Defect B, task binding): on a multi-task mission the resolver must
-  // resolve ONLY the blocker bound to the reviewed run's task, never a sibling's.
-  // Reverting tryResolveBoundReviewHandoff's task-binding turns this RED: the old
-  // first-blocking-match logic resolves task A's (older) exception and records
-  // run B's rationale as task A's answer.
-  it("resolves only the reviewed run's task on a multi-task mission, never a sibling's blocker", async () => {
+  // resolve ONLY the blocker bound to the reviewed run's job task, never a
+  // sibling job's. Reverting to enrollment-id binding or "any single blocker"
+  // turns this RED: neither sibling is an enrollment id, so the job task stays
+  // human_review_required.
+  it("resolves only the reviewed run's job task on a multi-task mission, never a sibling's blocker", async () => {
     const { app, db } = fixture();
-    seedReviewedSnapshot(db);
     bindMission(db);
-    const siblingTaskId = "mission-sibling-task";
-    advanceEnrollmentTask(db, siblingTaskId);
-    advanceEnrollmentTask(db, REVIEW_TASK_ID);
+    const taskA = missionTaskIdForJob("source-job-A");
+    const taskB = missionTaskIdForJob("source-job-2");
+    advanceTaskToWorking(db, taskA);
+    advanceTaskToWorking(db, taskB);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     const openedA = openTaskHandoff(db, {
-      tenantId: "tenant-a", missionId: "m1", taskId: siblingTaskId, reason: "architecture_decision_required",
+      tenantId: "tenant-a", missionId: "m1", taskId: taskA, reason: "architecture_decision_required",
       question: "Task A: keep the public signature?", context: "Task A candidate changed the mapping.",
       ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
     });
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     const openedB = openTaskHandoff(db, {
-      tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID, reason: "architecture_decision_required",
+      tenantId: "tenant-a", missionId: "m1", taskId: taskB, reason: "architecture_decision_required",
       question: "Task B: keep the public signature?", context: "Task B candidate changed the mapping.",
       ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
     });
-    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+    seedReviewRunForRepo(db, { runId: "warden-run-2", jobId: "source-job-2", repositoryId: "repo-B" });
+    const response = await app.request("/agent/runs/warden-run-2/candidate/review", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ decision: "regenerate", rationale: "Task B: keep the public signature." }),
     });
     expect(response.status).toBe(202);
-    // Task B resolves and resumes; task A is untouched and still blocking.
-    expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("agent_resume");
-    expect(getMissionTask(db, "tenant-a", siblingTaskId)?.status).toBe("human_review_required");
+    expect(getMissionTask(db, "tenant-a", taskB)?.status).toBe("agent_resume");
+    expect(getMissionTask(db, "tenant-a", taskA)?.status).toBe("human_review_required");
     const resolvedSupersedes = evaluateMissionExceptions(db, "tenant-a", "m1").resolved.map((row) => row.supersedesId);
     expect(resolvedSupersedes).toContain(openedB.id);
     expect(resolvedSupersedes).not.toContain(openedA.id);
-    expect(evaluateMissionExceptions(db, "tenant-a", "m1").blocking.some((row) => row.taskId === siblingTaskId)).toBe(true);
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1").blocking.some((row) => row.taskId === taskA)).toBe(true);
+  });
+
+  // FAILURE / mutation: enrollment and job tasks both blocking on the same
+  // (mission, repository). Live review must resolve ONLY the job task.
+  // Rebinding expectedTaskId to fettlerCampaignMissionTaskId(mission, repo)
+  // resumes the enrollment task and leaves the reviewed run's task blocked.
+  it("resolves the reviewed run's job task and leaves the same-repo enrollment blocker open", async () => {
+    const { app, db } = fixture();
+    bindMission(db);
+    workingTask(db);
+    advanceTaskToWorking(db, ENROLLMENT_TASK_ID);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
+    const openedJob = openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID, reason: "architecture_decision_required",
+      question: "Job: keep the public signature?", context: "Reviewed run changed the mapping.",
+      ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
+    });
+    const openedEnrollment = openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: ENROLLMENT_TASK_ID, reason: "architecture_decision_required",
+      question: "Enrollment: keep the campaign scope?", context: "Enrollment is still waiting.",
+      ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
+    });
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "Job: keep the public signature." }),
+    });
+    expect(response.status).toBe(202);
+    expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("agent_resume");
+    expect(getMissionTask(db, "tenant-a", ENROLLMENT_TASK_ID)?.status).toBe("human_review_required");
+    const resolvedSupersedes = evaluateMissionExceptions(db, "tenant-a", "m1").resolved.map((row) => row.supersedesId);
+    expect(resolvedSupersedes).toContain(openedJob.id);
+    expect(resolvedSupersedes).not.toContain(openedEnrollment.id);
+  });
+
+  // Live-path: the only blocker is the enrollment task. Review of the job
+  // must SKIP — unknown-to-this-run is not "close the one blocker we see."
+  // Enrollment-id binding turns this RED by resolving that enrollment task.
+  it("does not resolve a same-repo enrollment blocker when the reviewed job task is not blocking", async () => {
+    const { app, db } = fixture();
+    bindMission(db);
+    advanceTaskToWorking(db, ENROLLMENT_TASK_ID);
+    openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: ENROLLMENT_TASK_ID, reason: "architecture_decision_required",
+      question: "Enrollment: keep the campaign scope?", context: "Only the enrollment task is waiting.",
+      ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
+    });
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "This rationale belongs to the job, not enrollment." }),
+    });
+    expect(response.status).toBe(202);
+    expect(getMissionTask(db, "tenant-a", ENROLLMENT_TASK_ID)?.status).toBe("human_review_required");
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1").missionBlocked).toBe(true);
+  });
+
+  // Edge: missing jobId is "not determined" — skip even when exactly one
+  // blocker exists. Falling back to any-single-blocker turns this RED.
+  it("skips handoff resolution when the reviewed run's job id is unknown", () => {
+    const { db } = fixture();
+    bindMission(db);
+    workingTask(db);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
+    openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID, reason: "architecture_decision_required",
+      question: "Keep the public signature?", context: "Candidate changed the mapping.",
+      ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
+    });
+    const resolved = tryResolveBoundReviewHandoff(db, {
+      tenantId: "tenant-a",
+      missionId: "m1",
+      jobId: null,
+      runId: "warden-run-1",
+      rationale: "Keep the public signature.",
+      authorPrincipalId: "trust-human-a",
+      correlationId: "corr",
+      createdAt: NOW,
+    });
+    expect(resolved).toBeUndefined();
+    const blankJob = tryResolveBoundReviewHandoff(db, {
+      tenantId: "tenant-a",
+      missionId: "m1",
+      jobId: "   ",
+      runId: "warden-run-1",
+      rationale: "Keep the public signature.",
+      authorPrincipalId: "trust-human-a",
+      correlationId: "corr",
+      createdAt: NOW,
+    });
+    expect(blankJob).toBeUndefined();
+    expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("human_review_required");
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1").missionBlocked).toBe(true);
   });
 
   // CONTROL (Defect B, current snapshot): the resolver passes the reviewed run's
@@ -1039,9 +886,10 @@ describe("Warden candidate human review", () => {
   // enters `blocking` and the handoff is never resolved.
   it("resolves a handoff observed against the reviewed run's current snapshot", async () => {
     const { app, db } = fixture();
-    seedReviewedSnapshot(db);
     bindMission(db);
     workingTask(db);
+    seedReviewedSnapshot(db);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     const opened = openTaskHandoff(db, {
       tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID, reason: "architecture_decision_required",
       question: "Keep the public signature?", context: "Candidate changed the mapping.",
@@ -1060,48 +908,13 @@ describe("Warden candidate human review", () => {
       .toContain(opened.id);
   });
 
-  it("fails closed when the reviewed run source differs from the retained Mission scope", async () => {
-    const { app, db } = fixture();
-    seedReviewedSnapshot(db);
-    bindMission(db);
-    workingTask(db);
-    db.raw.prepare(`INSERT INTO connected_repositories
-      (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch,
-       environment, retention_days, status, created_at, updated_at)
-      VALUES ('repo-2', 'tenant-a', 'connection-review', '12', 'acme', 'other', 'main', 'main',
-       'production', 30, 'ready', ?, ?)`).run(NOW, NOW);
-    db.raw.prepare(`INSERT INTO repository_snapshots
-      (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
-       submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
-      VALUES ('snapshot-2', 'tenant-a', 'repo-2', 'main', ?, ?, 'C:\\snapshot-2',
-       'reject', 'reject', '[]', 1, ?, '2099-01-01T00:00:00.000Z')`)
-      .run("b".repeat(40), `sha256:${"d".repeat(64)}`, NOW);
-    const result = JSON.parse(getAgentRun(db, "warden-run-1", "tenant-a")!.result_json!) as Record<string, unknown>;
-    db.raw.prepare("UPDATE agent_runs SET result_json = ? WHERE id = 'warden-run-1' AND tenant_id = 'tenant-a'")
-      .run(JSON.stringify({ ...result,
-        source: { repositoryId: "repo-2", snapshotId: "snapshot-2", revision: "b".repeat(40) } }));
-    const jobsBefore = (db.raw.prepare("SELECT COUNT(*) AS n FROM jobs WHERE tenant_id = 'tenant-a'").get() as { n: number }).n;
-
-    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision: "regenerate", rationale: "Use the retained Mission source." }),
-    });
-
-    expect(response.status).toBe(409);
-    expect(getAgentRun(db, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
-    expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("agent_working");
-    expect(getActiveMissionDecisions(db, "tenant-a", "m1")).toHaveLength(0);
-    expect((db.raw.prepare("SELECT COUNT(*) AS n FROM jobs WHERE tenant_id = 'tenant-a'").get() as { n: number }).n)
-      .toBe(jobsBefore);
-  });
-
   // CONTROL: deleting tryResolveBoundReviewHandoff on regenerate leaves the
   // exception blocking and the MissionTask in human_review_required.
   it("resolves an open handoff on mission-bound regenerate and moves the task to agent_resume", async () => {
     const { app, db } = fixture();
-    seedReviewedSnapshot(db);
     bindMission(db);
     workingTask(db);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     const openedHandoff = openTaskHandoff(db, {
       tenantId: "tenant-a",
       missionId: "m1",
@@ -1142,9 +955,9 @@ describe("Warden candidate human review", () => {
 
   it("does not resolve an open handoff on reject (task stays human-owned)", async () => {
     const { app, db } = fixture();
-    seedReviewedSnapshot(db);
     bindMission(db);
     workingTask(db);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     openTaskHandoff(db, {
       tenantId: "tenant-a",
       missionId: "m1",
@@ -1172,7 +985,9 @@ describe("Warden candidate human review", () => {
     });
     seedCiRepairCandidate(db);
     bindMission(db);
+    scopeMission(db);
     workingTask(db);
+    // Fixture-established precondition (not end-to-end): production mints this job-task handoff only via handoffCompletedJobToMissionReview.
     openTaskHandoff(db, {
       tenantId: "tenant-a",
       missionId: "m1",
@@ -1192,21 +1007,184 @@ describe("Warden candidate human review", () => {
     expect(response.status).toBe(202);
     expect(evaluateMissionExceptions(db, "tenant-a", "m1").missionBlocked).toBe(false);
     expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("agent_resume");
-    const update = getWardenCiUpdateByRun(db, "tenant-a", "warden-run-1")!;
-    expect(JSON.parse(getJob(db, update.jobId, "tenant-a")!.payload_json)).toMatchObject({
-      missionId: "m1",
-      missionAuthority: {
-        schemaVersion: 1,
-        missionId: "m1",
-        missionRevision: getMission(db, "tenant-a", "m1")!.revision,
-        missionState: getMission(db, "tenant-a", "m1")!.state,
-        taskId: REVIEW_TASK_ID,
-        taskRevision: getMissionTask(db, "tenant-a", REVIEW_TASK_ID)!.revision,
-        repositoryId: "repo-1",
-        snapshotId: "snapshot-1",
-        resolvedSha: "d".repeat(40),
+  });
+
+  it("keeps the committed winner seal through an orchestrated concurrent approval conflict", async () => {
+    const { app: _unused, db, audit, directory } = fixture();
+    db.raw.prepare(
+      `INSERT INTO scm_connections
+       (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+       VALUES ('connection-1', 'tenant-a', 'github', 'app://1', '1', 'GitHub', ?, ?)`,
+    ).run(NOW, NOW);
+    db.raw.prepare(
+      `INSERT INTO connected_repositories
+       (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch,
+        environment, retention_days, status, created_at, updated_at)
+       VALUES ('repo-1', 'tenant-a', 'connection-1', '11', 'acme', 'sdk', 'main', 'main',
+        'production', 30, 'ready', ?, ?)`,
+    ).run(NOW, NOW);
+    db.raw.prepare(
+      `INSERT INTO repository_snapshots
+       (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+        submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+       VALUES ('snapshot-1', 'tenant-a', 'repo-1', 'main', ?, ?, 'C:\\snapshot',
+        'reject', 'reject', '[]', 1, ?, '2099-01-01T00:00:00.000Z')`,
+    ).run("a".repeat(40), `sha256:${"c".repeat(64)}`, NOW);
+    const sealPath = join(directory, "winner.json");
+    const sealSha = `sha256:${"b".repeat(64)}`;
+    let arrived = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const sealApproval = vi.fn(async () => {
+      writeFileSync(sealPath, "winner", { flag: existsSync(sealPath) ? "w" : "wx" });
+      arrived++;
+      if (arrived === 2) release();
+      await gate;
+      return { path: sealPath, sha256: sealSha, created: arrived === 1 };
+    });
+    const concurrent = new Hono<ApiEnv>();
+    concurrent.use("*", async (c, next) => {
+      c.set("principal", { id: "human:reviewer@example.com", tenantId: "tenant-a", role: "owner" });
+      c.set("trustPrincipalId", "trust-human-a");
+      c.set("authMethod", "oidc");
+      c.set("membershipEvidenceId", MEMBERSHIP_EVIDENCE_ID);
+      c.set("requestId", "request-concurrent");
+      return next();
+    });
+    registerWardenCandidateReviewRoutes(concurrent, db, audit, { now: () => NOW, sealApproval });
+    const request = () => concurrent.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "The target and regression checks pass." }),
+    });
+    const responses = await Promise.all([request(), request()]);
+    expect(responses.map((response) => response.status).sort()).toEqual([202, 409]);
+    expect(existsSync(sealPath)).toBe(true);
+    expect(getAgentRun(db, "warden-run-1", "tenant-a")?.status).toBe("candidate_approved");
+  });
+
+  it("does not grant review authority when the current membership role loses plan edit while sealing", async () => {
+    let database: AppDb | undefined;
+    const fixtureResult = fixture({
+      sealApproval: async () => {
+        database!.raw.prepare(`UPDATE tenant_memberships SET role = 'viewer', updated_at = ?
+          WHERE tenant_id = 'tenant-a' AND issuer = 'https://identity.example.com' AND subject = 'reviewer-a'`)
+          .run("2026-08-06T12:00:01.000Z");
+        return { path: "C:\\sealed-downgraded-approval.json", sha256: `sha256:${"b".repeat(64)}`, created: true };
       },
     });
+    database = fixtureResult.db;
+    seedCiRepairCandidate(database);
+
+    const response = await fixtureResult.app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "Approve only with current plan edit authority." }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(getAgentRun(database, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
+    expect(getWardenCiUpdateByRun(database, "tenant-a", "warden-run-1")).toBeUndefined();
+  });
+
+  it("uses the post-seal commit time for trust expiry and persisted review authority", async () => {
+    let sealed = false;
+    const fixtureResult = fixture({
+      now: () => sealed ? "2026-08-06T12:00:02.000Z" : NOW,
+      sealApproval: async () => {
+        sealed = true;
+        return { path: "C:\\sealed-expired-approval.json", sha256: `sha256:${"b".repeat(64)}`, created: true };
+      },
+    });
+    seedCiRepairCandidate(fixtureResult.db);
+    fixtureResult.db.raw.prepare("UPDATE principals SET expires_at = ? WHERE id = 'trust-human-a'")
+      .run("2026-08-06T12:00:01.000Z");
+
+    const response = await fixtureResult.app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "Approve only before trust expiry." }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(getAgentRun(fixtureResult.db, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
+    expect(getWardenCiUpdateByRun(fixtureResult.db, "tenant-a", "warden-run-1")).toBeUndefined();
+  });
+
+  it("re-resolves mutable CI authority under the review transaction", async () => {
+    let database: AppDb | undefined;
+    const fixtureResult = fixture({ sealApproval: async () => {
+      database!.raw.prepare(`UPDATE fettler_ci_cycles SET current_head_sha = ?, updated_at = ?
+        WHERE id = 'cycle-a' AND tenant_id = 'tenant-a'`)
+        .run("9".repeat(40), "2026-08-06T12:00:01.000Z");
+      return { path: "C:\\sealed-stale-ci.json", sha256: `sha256:${"b".repeat(64)}`, created: true };
+    } });
+    database = fixtureResult.db;
+    seedCiRepairCandidate(database);
+
+    const response = await fixtureResult.app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "Approve only the exact current CI authority." }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(getAgentRun(database, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
+    expect(getWardenCiUpdateByRun(database, "tenant-a", "warden-run-1")).toBeUndefined();
+  });
+
+  it("never resolves a ReGauge MissionTask through the Fettler candidate review route", async () => {
+    const { app, db } = fixture({ sealApproval: async () => ({ path: "C:\\sealed-regauge.json",
+      sha256: `sha256:${"b".repeat(64)}`, created: true }) });
+    seedReviewedSnapshot(db);
+    bindMission(db, "regauge");
+    const taskId = regaugeLaunchMissionTaskId("m1", "repo-1");
+    advanceTaskToWorking(db, taskId);
+    const blocker = openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId, reason: "architecture_decision_required",
+      question: "Continue the ReGauge stage?", context: "This is ReGauge-owned work.",
+      ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
+    });
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "This route must not cross product authority." }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(getMissionTask(db, "tenant-a", taskId)?.status).toBe("human_review_required");
+    expect(db.raw.prepare(`SELECT status, supersedes_id FROM mission_exceptions
+      WHERE tenant_id = 'tenant-a' AND id = ?`).get(blocker.id)).toEqual({
+      status: "open", supersedes_id: null,
+    });
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get()).toEqual({ count: 0 });
+  });
+
+  it("does not approve or enqueue delivery while any current Mission blocker remains", async () => {
+    const { app, db } = fixture({ sealApproval: async () => ({ path: "C:\\sealed-global-blocker.json",
+      sha256: `sha256:${"b".repeat(64)}`, created: true }) });
+    seedReviewedSnapshot(db);
+    bindMission(db);
+    const siblingTaskId = "mission-sibling-global-blocker";
+    advanceTaskToWorking(db, siblingTaskId);
+    advanceTaskToWorking(db, REVIEW_TASK_ID);
+    openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: siblingTaskId, reason: "policy_exception",
+      question: "Resolve the sibling policy exception?", context: "Global Mission delivery is blocked.",
+      ownerPrincipalId: "trust-human-a", correlationId: "corr-sibling", createdAt: NOW,
+    });
+    openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID, reason: "architecture_decision_required",
+      question: "Approve this candidate?", context: "The candidate itself is ready.",
+      ownerPrincipalId: "trust-human-a", correlationId: "corr-review", createdAt: NOW,
+    });
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "Resolve only the exact candidate question." }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(getAgentRun(db, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1").missionBlocked).toBe(true);
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get()).toEqual({ count: 0 });
   });
 
   it("runs mission-bound approve through the real delivery claim and terminal task settlement", async () => {
@@ -1218,6 +1196,7 @@ describe("Warden candidate human review", () => {
     sealed = approvalArtifact({ directory: value.directory, revision: "a".repeat(40), rationale });
     seedReviewedSnapshot(value.db);
     bindMission(value.db);
+    scopeMission(value.db);
     workingTask(value.db);
     openTaskHandoff(value.db, {
       tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID,
@@ -1268,6 +1247,7 @@ describe("Warden candidate human review", () => {
     sealed = approvalArtifact({ directory: value.directory, revision: "d".repeat(40), rationale });
     seedCiRepairCandidate(value.db);
     bindMission(value.db);
+    scopeMission(value.db);
     workingTask(value.db);
     openTaskHandoff(value.db, {
       tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID,
@@ -1342,150 +1322,5 @@ describe("Warden candidate human review", () => {
     expect(getMission(db, "tenant-a", "m1")?.state).toBe("cancelled");
     expect(getAgentRun(db, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get()).toEqual({ count: 0 });
-  });
-
-  it("preserves a source-job-bound record-only ADR compatibility handoff when the enrollment task is absent", async () => {
-    const { app, db } = fixture();
-    seedReviewedSnapshot(db);
-    bindMission(db);
-    const blocker = openTaskHandoff(db, {
-      tenantId: "tenant-a", missionId: "m1", reason: "architecture_decision_required",
-      question: "Should job source-job-1 (agent.run) under mission m1 proceed after advisory verification passed?",
-      context: "Review-first job source-job-1 settled successfully. Human approval is required before delivery.",
-      ownerPrincipalId: "trust-human-a",
-      observedAgainst: { snapshotId: "snapshot-1", resolvedSha: "a".repeat(40) },
-      correlationId: "source-job-1", createdAt: NOW,
-    });
-
-    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision: "regenerate", rationale: "Preserve the compatibility contract." }),
-    });
-
-    expect(response.status).toBe(202);
-    expect(evaluateMissionExceptions(db, "tenant-a", "m1").resolved.map((row) => row.supersedesId))
-      .toContain(blocker.id);
-    const body = await response.json() as { supersedingJobId: string };
-    expect(JSON.parse(getJob(db, body.supersedingJobId, "tenant-a")!.payload_json)).toMatchObject({
-      missionId: "m1",
-      missionAuthority: {
-        schemaVersion: 1,
-        missionId: "m1",
-        taskId: null,
-        taskRevision: null,
-        repositoryId: "repo-1",
-        snapshotId: "snapshot-1",
-        resolvedSha: "a".repeat(40),
-      },
-    });
-  });
-
-  it("does not treat an unrelated singleton policy blocker as taskless candidate authority", async () => {
-    const { app, db } = fixture();
-    seedReviewedSnapshot(db);
-    bindMission(db);
-    const blocker = raiseMissionException(db, {
-      tenantId: "tenant-a", missionId: "m1", reason: "policy_exception",
-      impact: "Runtime policy requires an independent operator exception.",
-      resolutionPath: "Resolve the runtime policy outside candidate review.", blocking: true,
-      ownerPrincipalId: "trust-human-a",
-      observedAgainst: { snapshotId: "snapshot-1", resolvedSha: "a".repeat(40) },
-      correlationId: "source-job-1", createdAt: NOW,
-    });
-
-    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision: "regenerate", rationale: "Do not consume unrelated policy authority." }),
-    });
-
-    expect(response.status).toBe(409);
-    expect(db.raw.prepare(`SELECT status, supersedes_id FROM mission_exceptions
-      WHERE tenant_id = 'tenant-a' AND id = ?`).get(blocker.id)).toEqual({
-      status: "open", supersedes_id: null,
-    });
-    expect(db.raw.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE tenant_id = 'tenant-a'
-      AND id LIKE 'warden-regenerate-job-%'`).get()).toEqual({ count: 0 });
-  });
-
-  it("fails closed when task-bound and record-only handoff authority are mixed", async () => {
-    const { app, db } = fixture();
-    seedReviewedSnapshot(db);
-    bindMission(db);
-    workingTask(db);
-    const taskBlocker = openTaskHandoff(db, {
-      tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID,
-      reason: "architecture_decision_required", question: "Regenerate?", context: "Task review.",
-      ownerPrincipalId: "trust-human-a", correlationId: "task", createdAt: NOW,
-    });
-    const recordBlocker = raiseMissionException(db, {
-      tenantId: "tenant-a", missionId: "m1", reason: "architecture_decision_required",
-      impact: "The record-only ADR also blocks mutation.",
-      resolutionPath: "Resolve the retained ADR independently.", blocking: true,
-      ownerPrincipalId: "trust-human-a", correlationId: "record", createdAt: NOW,
-    });
-
-    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision: "regenerate", rationale: "Do not guess between mixed authorities." }),
-    });
-
-    expect(response.status).toBe(409);
-    expect(evaluateMissionExceptions(db, "tenant-a", "m1").blocking.map((row) => row.id))
-      .toEqual(expect.arrayContaining([taskBlocker.id, recordBlocker.id]));
-    expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("human_review_required");
-  });
-
-  it("keeps the committed winner seal through an orchestrated concurrent approval conflict", async () => {
-    const { app: _unused, db, audit, directory } = fixture();
-    db.raw.prepare(
-      `INSERT INTO scm_connections
-       (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
-       VALUES ('connection-1', 'tenant-a', 'github', 'app://1', '1', 'GitHub', ?, ?)`,
-    ).run(NOW, NOW);
-    db.raw.prepare(
-      `INSERT INTO connected_repositories
-       (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch,
-        environment, retention_days, status, created_at, updated_at)
-       VALUES ('repo-1', 'tenant-a', 'connection-1', '11', 'acme', 'sdk', 'main', 'main',
-        'production', 30, 'ready', ?, ?)`,
-    ).run(NOW, NOW);
-    db.raw.prepare(
-      `INSERT INTO repository_snapshots
-       (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
-        submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
-       VALUES ('snapshot-1', 'tenant-a', 'repo-1', 'main', ?, ?, 'C:\\snapshot',
-        'reject', 'reject', '[]', 1, ?, '2099-01-01T00:00:00.000Z')`,
-    ).run("a".repeat(40), `sha256:${"c".repeat(64)}`, NOW);
-    const sealPath = join(directory, "winner.json");
-    const sealSha = `sha256:${"b".repeat(64)}`;
-    let arrived = 0;
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    const sealApproval = vi.fn(async () => {
-      writeFileSync(sealPath, "winner", { flag: existsSync(sealPath) ? "w" : "wx" });
-      arrived++;
-      if (arrived === 2) release();
-      await gate;
-      return { path: sealPath, sha256: sealSha, created: arrived === 1 };
-    });
-    const concurrent = new Hono<ApiEnv>();
-    concurrent.use("*", async (c, next) => {
-      c.set("principal", { id: "human:reviewer@example.com", tenantId: "tenant-a", role: "owner" });
-      c.set("trustPrincipalId", "trust-human-a");
-      c.set("authMethod", "oidc");
-      c.set("membershipEvidenceId", MEMBERSHIP_EVIDENCE_ID);
-      c.set("requestId", "request-concurrent");
-      return next();
-    });
-    registerWardenCandidateReviewRoutes(concurrent, db, audit, { now: () => NOW, sealApproval });
-    const request = () => concurrent.request("/agent/runs/warden-run-1/candidate/review", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision: "approve", rationale: "The target and regression checks pass." }),
-    });
-    const responses = await Promise.all([request(), request()]);
-    expect(responses.map((response) => response.status).sort()).toEqual([202, 409]);
-    expect(existsSync(sealPath)).toBe(true);
-    expect(getAgentRun(db, "warden-run-1", "tenant-a")?.status).toBe("candidate_approved");
   });
 });

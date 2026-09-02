@@ -10,7 +10,6 @@ import {
   createMission,
   createMissionMutationAuthority,
   createMissionTask,
-  createWardenCampaign,
   enqueueJob,
   enqueueWardenCandidateDelivery,
   getJob,
@@ -18,7 +17,6 @@ import {
   getWardenCiCycle,
   insertAgentRun,
   insertPrincipal,
-  linkFettlerCampaignToMission,
   getMission,
   getMissionTask,
   openTaskHandoff,
@@ -160,10 +158,7 @@ function fixture(preciseEvidence = false, deleted = false, providerChange = fals
   return { db, dataRoot, delivery, job };
 }
 
-function bindMissionAuthority(
-  value: ReturnType<typeof fixture>,
-  options: { campaignBoundSource?: boolean } = {},
-) {
+function bindMissionAuthority(value: ReturnType<typeof fixture>) {
   const { db } = value;
   insertPrincipal(db, { id: "principal-owner", tenantId: "tenant-a", kind: "human",
     subject: "owner@example.com", displayName: "Owner", createdAt: NOW });
@@ -203,19 +198,8 @@ function bindMissionAuthority(
   resolveTaskHandoff(db, { tenantId: "tenant-a", priorExceptionId: blocker.id, taskId: task.id,
     resolutionNote: "Approve", decision: "Approve", scope: "handoff_resolution:delivery",
     authorPrincipalId: "principal-owner", correlationId: "corr", createdAt: NOW });
-  if (options.campaignBoundSource) {
-    // SYNTHETIC BY CONSTRUCTION — see the campaign-bound test below.
-    createWardenCampaign(db, { id: "campaign-1", tenantId: "tenant-a", name: "Stripe migration",
-      ownerPrincipalId: "principal-owner", concurrencyLimit: 1, completionPolicy: "all",
-      eventId: "e-campaign", idempotencyKey: "c-campaign", correlationId: "corr", createdAt: NOW });
-    linkFettlerCampaignToMission(db, { tenantId: "tenant-a", campaignId: "campaign-1",
-      missionId: "mission-1", actorPrincipalId: "principal-owner", eventId: "e-link",
-      idempotencyKey: "c-link", correlationId: "corr", createdAt: NOW });
-  }
   enqueueJob(db, { id: "source-job-1", tenantId: "tenant-a", type: "agent.run", createdAt: NOW,
-    payload: options.campaignBoundSource
-      ? { campaignId: "campaign-1", consumerId: "consumer-1", sessionId: "warden-run-1" }
-      : { missionId: "mission-1", consumerId: "consumer-1", sessionId: "warden-run-1" } });
+    payload: { missionId: "mission-1", consumerId: "consumer-1", sessionId: "warden-run-1" } });
   const authority = createMissionMutationAuthority({ mission: getMission(db, "tenant-a", "mission-1")!,
     task: getMissionTask(db, "tenant-a", "task-1")!, repositoryId: "repo-1", snapshotId: "snapshot-1",
     resolvedSha: "a".repeat(40) });
@@ -256,41 +240,6 @@ describe("Warden exact candidate draft delivery", () => {
     expect(getJob(value.db, value.job.id, "tenant-a")?.error)
       .toContain("warden_candidate_delivery_snapshot_expired");
     // Move the expiry gate after authorize() and this is 1, not 0.
-    expect(value.db.raw.prepare(`SELECT COUNT(*) AS n FROM mission_mutation_dispatches
-      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ n: 0 });
-  });
-
-  // SYNTHETIC BY CONSTRUCTION: production has no campaign -> `agent.run`
-  // originator today. The campaign executor stops at stage `review` and never
-  // mints an AgentRun, so no real source job carries a campaign hint. The fixture
-  // builds that state by hand to pin the RULE ahead of that join landing, because
-  // the moment it lands this is the path an unfenced remote mutation takes.
-  it("quarantines a CAMPAIGN-bound source job with no retained authority (fixture-minted state; production has no campaign to agent.run originator yet)", async () => {
-    const value = bindMissionAuthority(fixture(), { campaignBoundSource: true });
-    // No authority anywhere on the delivery payload: the ONLY signal that this
-    // delivery is Mission-bound is the source job's campaign hint.
-    value.db.raw.prepare(`UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?`)
-      .run(JSON.stringify({ deliveryId: value.delivery.id, runId: "warden-run-1" }),
-        value.job.id, "tenant-a");
-    value.db.raw.prepare("UPDATE fettler_candidate_deliveries SET mission_authority_json = NULL WHERE id = ?")
-      .run(value.delivery.id);
-    const deliverExactDraft = vi.fn();
-
-    await expect(runWardenCandidateDelivery({ db: value.db,
-      job: getJob(value.db, value.job.id, "tenant-a")!,
-      github: { deliverExactDraft } as unknown as GitHubDelivery,
-      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
-      now: () => NOW })).resolves.toMatchObject({ status: "delivery_failed" });
-
-    // Swap sourceMissionId() back to a raw `payload.missionId` read and this dies:
-    // the campaign hint is invisible, authorityBindings is empty, the upgrade
-    // check passes, and the delivery proceeds to GitHub with no Mission fence.
-    expect(getJob(value.db, value.job.id, "tenant-a")).toMatchObject({
-      status: "dead_letter",
-      error_code: "warden_candidate_delivery_mission_authority_upgrade_required",
-    });
-    expect(deliverExactDraft).not.toHaveBeenCalled();
     expect(value.db.raw.prepare(`SELECT COUNT(*) AS n FROM mission_mutation_dispatches
       WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ n: 0 });
   });

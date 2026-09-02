@@ -18,8 +18,10 @@ import {
   missionTaskIdForJob,
   openTaskHandoff,
   parseMissionMutationAuthority,
+  getMission,
   recordExecutionCostFromRoutingLedger,
-  resolveBoundMissionForJobPayload,
+  resolveMissionForFettlerCampaign,
+  resolveMissionForRegaugeCampaign,
   transitionMissionTask,
   type ActualExecutionCostEntry,
   type AppDb,
@@ -95,15 +97,25 @@ function missionTaskAgentPrincipal(db: AppDb, tenantId: string, createdAt: strin
 }
 
 /**
- * Resolve the mission a job is bound to, if any.
- *
- * Delegates to the db-side `resolveBoundMissionForJobPayload` so this and every
- * authority reader share ONE answer. The rule used to live here alone, which let
- * a second, weaker answer (raw `payload.missionId`) grow up beside it on the
- * authorization path.
+ * Resolve the mission a job is bound to, if any. `missionId` on the payload is
+ * a claimed binding (missing row fails closed). A `campaignId` is only a hint:
+ * resolve through the Fettler/ReGauge campaign FK and skip when nothing is
+ * linked — that is the enrollment gap, not a fabricated mission.
  */
 export function resolveBoundMissionForJob(db: AppDb, job: BridgedJob): Mission | undefined {
-  return resolveBoundMissionForJobPayload(db, job.tenant_id, payloadRecord(job));
+  const payload = payloadRecord(job);
+  const missionId = textField(payload, "missionId");
+  if (missionId) {
+    const mission = getMission(db, job.tenant_id, missionId);
+    if (!mission) throw new Error("mission_task_job_mission_not_found");
+    return mission;
+  }
+  const campaignId = textField(payload, "campaignId")
+    ?? textField(payload, "fettlerCampaignId")
+    ?? textField(payload, "regaugeCampaignId");
+  if (!campaignId) return undefined;
+  return resolveMissionForFettlerCampaign(db, job.tenant_id, campaignId)
+    ?? resolveMissionForRegaugeCampaign(db, job.tenant_id, campaignId);
 }
 
 /** Create-or-drive the MissionTask for a claimed job. No-op when unbound. */

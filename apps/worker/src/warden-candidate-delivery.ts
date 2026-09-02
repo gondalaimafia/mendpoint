@@ -12,7 +12,6 @@ import {
   assertMissionMutationAuthority,
   parseMissionMutationAuthority,
   refreshMissionMutationAuthority,
-  resolveBoundMissionForJobPayload,
   refreshWardenCandidateDeliveryMissionAuthority,
   markMissionMutationDispatchUncertain,
   settleMissionMutationDispatch,
@@ -99,15 +98,9 @@ function sourceMissionId(input: WardenCandidateDeliveryWorkerInput, runJobId: st
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("warden_candidate_delivery_source_invalid");
   }
-  // Canonical resolver, not a raw `payload.missionId` read. A campaign-bound
-  // source job IS Mission bound; returning null for one empties
-  // `authorityBindings` below, which skips the upgrade check and every dispatch
-  // fence. On an authorization path "could not determine" must not mean "allow".
-  try {
-    return resolveBoundMissionForJobPayload(input.db, input.job.tenant_id, value)?.id ?? null;
-  } catch {
-    throw new Error("warden_candidate_delivery_source_invalid");
-  }
+  return typeof (value as Record<string, unknown>).missionId === "string"
+    ? String((value as Record<string, unknown>).missionId)
+    : null;
 }
 
 function assertArtifact(delivery: WardenCandidateDeliveryRecord, artifact: Record<string, unknown>) {

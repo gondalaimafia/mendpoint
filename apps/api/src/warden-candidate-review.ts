@@ -8,14 +8,13 @@ import {
   enqueueWardenCandidateDelivery,
   enqueueWardenCiUpdate,
   createMissionMutationAuthority,
-  fettlerCampaignMissionTaskId,
   getAgentRun,
   getJob,
   getMission,
-  resolveBoundMissionForJobPayload,
   getMissionTask,
   getPrincipal,
   getTenantMembership,
+  missionTaskIdForJob,
   recordReviewerDirective,
   evaluateMissionExceptions,
   resolveTaskHandoff,
@@ -136,36 +135,28 @@ const HUMAN_HANDOFF_TASK_STATUSES = new Set([
   "human_working",
 ]);
 
-type ReviewHandoffResolution =
-  | Readonly<{ kind: "unbound" }>
-  | Readonly<{ kind: "resolved"; exceptionId: string; taskId: string | null }>
-  | Readonly<{
-      kind: "blocked";
-      reason: "mission_missing" | "product_mismatch" | "snapshot_mismatch" | "task_missing" |
-        "task_not_human_owned" | "exception_missing" | "exception_ambiguous" | "resolution_incomplete";
-    }>;
-
 /**
  * Close an open agent→human handoff when a bound Mission already has a
  * blocking exception. Unbound review skips (never fabricate a Mission).
  * Reject does not call this: that would send the task to `agent_resume`.
  *
- * The reviewed run drives exactly ONE Fettler enrollment task, derived the same
- * way the claim module derives it — `(missionId, repositoryId)` under the
- * Fettler task-id helper. Resolution binds to that one task: resolving any other
- * task's blocker would answer a sibling task's question with THIS run's rationale
- * and close the wrong blocker. Missing, non-human-owned, or ambiguous authority
- * returns an explicit blocked result so approve/regenerate can fail closed.
- * The reviewed run's snapshot is passed to the evaluator so a blocker observed
- * against a superseded snapshot is STALE, never resolved here as current.
+ * The reviewed `agent.run` is bridged onto exactly one MissionTask —
+ * `missionTaskIdForJob(run.job_id)` (ADR D3). That is not the campaign
+ * enrollment/launch task (`fettlerCampaignMissionTaskId` /
+ * `regaugeLaunchMissionTaskId`). Resolving the enrollment blocker with this
+ * run's rationale would answer a different question. When `jobId` is missing
+ * we SKIP (unknown is not "any single blocker"). When the job task is not
+ * among the current blockers we also SKIP — we never fall back to a sibling
+ * or enrollment exception. The reviewed run's snapshot is passed to the
+ * evaluator so a blocker observed against a superseded snapshot is STALE.
  */
 export function tryResolveBoundReviewHandoff(
   db: AppDb,
   input: {
     tenantId: string;
     missionId: string | null;
-    repositoryId: string;
-    current: SnapshotIdentity;
+    jobId: string | null;
+    current?: SnapshotIdentity;
     runId: string;
     rationale: string;
     authorPrincipalId: string;
@@ -173,79 +164,50 @@ export function tryResolveBoundReviewHandoff(
     correlationId: string;
     createdAt: string;
   },
-): ReviewHandoffResolution {
-  if (!input.missionId) return Object.freeze({ kind: "unbound" });
+): { exceptionId: string; taskId: string | null } | undefined {
+  if (!input.missionId) return undefined;
   const mission = getMission(db, input.tenantId, input.missionId);
-  if (!mission) return Object.freeze({ kind: "blocked", reason: "mission_missing" });
-  if (mission.product !== "fettler") return Object.freeze({ kind: "blocked", reason: "product_mismatch" });
-  if (["accepted", "rejected", "partial", "failed", "cancelled"].includes(mission.state)) {
-    return Object.freeze({ kind: "blocked", reason: "resolution_incomplete" });
-  }
-  const snapshot = listRepositorySnapshots(db, input.tenantId, input.repositoryId)
-    .find((candidate) => candidate.id === input.current.snapshotId);
-  if (!snapshot || snapshot.resolved_sha !== input.current.resolvedSha ||
-      mission.repositoryId !== input.repositoryId || mission.snapshotId !== input.current.snapshotId) {
-    return Object.freeze({ kind: "blocked", reason: "snapshot_mismatch" });
-  }
-  const expectedTaskId = fettlerCampaignMissionTaskId(input.missionId, input.repositoryId);
-  const expectedTask = getMissionTask(db, input.tenantId, expectedTaskId);
-  const blocking = evaluateMissionExceptions(db, input.tenantId, input.missionId, input.current).blocking;
-  if (!expectedTask || expectedTask.missionId !== input.missionId) {
-    const recordOnly = blocking.filter((exception) => exception.taskId === null);
-    if (blocking.length !== 1 || recordOnly.length !== 1) {
-      return Object.freeze({ kind: "blocked", reason: blocking.length === 0 ? "task_missing" : "exception_ambiguous" });
-    }
-    const match = recordOnly[0]!;
-    const sourceRun = getAgentRun(db, input.runId, input.tenantId);
-    const sourceJobId = sourceRun?.job_id ?? null;
-    const raised = db.raw.prepare(`SELECT correlation_id FROM domain_events
-      WHERE tenant_id = ? AND aggregate_type = 'mission' AND aggregate_id = ?
-        AND event_type = 'mission.exception_raised'
-        AND json_valid(payload_json) = 1
-        AND json_extract(payload_json, '$.exceptionId') = ?
-      ORDER BY event_sequence DESC LIMIT 1`).get(
-      input.tenantId, input.missionId, match.id,
-    ) as { correlation_id: string } | undefined;
-    const candidateSpecific = Boolean(
-      sourceJobId &&
-      match.category === "architecture_decision_required" &&
-      match.resolutionPath === "await_human_resolution" &&
-      match.observedSnapshotId === input.current.snapshotId &&
-      match.observedResolvedSha === input.current.resolvedSha &&
-      raised?.correlation_id === sourceJobId &&
-      match.reason.includes(`job ${sourceJobId} `) &&
-      match.impact.includes(`Review-first job ${sourceJobId} `),
-    );
-    if (!candidateSpecific) {
-      return Object.freeze({ kind: "blocked", reason: "exception_missing" });
-    }
-    resolveTaskHandoff(db, {
+  if (!mission) return undefined;
+  const jobId = typeof input.jobId === "string" && input.jobId.trim() ? input.jobId : null;
+  if (!jobId) {
+    console.warn(JSON.stringify({
+      event: "warden_review_handoff_resolution_skipped",
+      reason: "reviewed_run_job_unknown",
       tenantId: input.tenantId,
-      priorExceptionId: match.id,
-      resolutionNote: input.rationale,
-      decision: input.rationale,
-      scope: `handoff_resolution:${input.runId}`,
-      authorPrincipalId: input.authorPrincipalId,
-      ...(input.evidence && input.evidence.length > 0 ? { evidence: input.evidence } : {}),
-      correlationId: input.correlationId,
-      createdAt: input.createdAt,
-    });
-    if (evaluateMissionExceptions(db, input.tenantId, input.missionId, input.current).blocking
-      .some((exception) => exception.id === match.id)) {
-      return Object.freeze({ kind: "blocked", reason: "resolution_incomplete" });
+      missionId: input.missionId,
+      runId: input.runId,
+    }));
+    return undefined;
+  }
+  const expectedTaskId = missionTaskIdForJob(jobId);
+  const blocking = evaluateMissionExceptions(db, input.tenantId, input.missionId, input.current).blocking;
+  const candidates = blocking.filter((exception) => {
+    if (exception.taskId !== expectedTaskId) return false;
+    const task = getMissionTask(db, input.tenantId, exception.taskId);
+    return Boolean(task && HUMAN_HANDOFF_TASK_STATUSES.has(task.status));
+  });
+  if (candidates.length !== 1) {
+    // TELEMETRY GAP (deliberate; follow-up work, not this change): only the
+    // blocking-but-unmatched case is reported. When `blocking` is empty this
+    // returns silently, and that is the path that always fires in production
+    // today, because nothing currently opens a task-bound blocking Mission
+    // exception for this resolver to close.
+    if (blocking.length > 0) {
+      console.warn(JSON.stringify({
+        event: "warden_review_handoff_resolution_skipped",
+        tenantId: input.tenantId,
+        missionId: input.missionId,
+        runId: input.runId,
+        jobId,
+        expectedTaskId,
+        blockingCount: blocking.length,
+        candidateCount: candidates.length,
+      }));
     }
-    return Object.freeze({ kind: "resolved", exceptionId: match.id, taskId: null });
+    return undefined;
   }
-  if (!HUMAN_HANDOFF_TASK_STATUSES.has(expectedTask.status)) {
-    return Object.freeze({ kind: "blocked", reason: "task_not_human_owned" });
-  }
-  if (blocking.some((exception) => exception.taskId === null)) {
-    return Object.freeze({ kind: "blocked", reason: "exception_ambiguous" });
-  }
-  const candidates = blocking.filter((exception) => exception.taskId === expectedTaskId);
-  if (candidates.length === 0) return Object.freeze({ kind: "blocked", reason: "exception_missing" });
-  if (candidates.length !== 1) return Object.freeze({ kind: "blocked", reason: "exception_ambiguous" });
   const match = candidates[0]!;
+  const taskId = match.taskId ?? undefined;
   resolveTaskHandoff(db, {
     tenantId: input.tenantId,
     priorExceptionId: match.id,
@@ -254,41 +216,35 @@ export function tryResolveBoundReviewHandoff(
     scope: `handoff_resolution:${input.runId}`,
     authorPrincipalId: input.authorPrincipalId,
     ...(input.evidence && input.evidence.length > 0 ? { evidence: input.evidence } : {}),
-    taskId: expectedTaskId,
+    ...(taskId ? { taskId } : {}),
     correlationId: input.correlationId,
     createdAt: input.createdAt,
   });
-  const resolvedTask = getMissionTask(db, input.tenantId, expectedTaskId);
-  const stillBlocking = evaluateMissionExceptions(db, input.tenantId, input.missionId, input.current).blocking
-    .some((exception) => exception.id === match.id || exception.taskId === expectedTaskId);
-  if (!resolvedTask || resolvedTask.status !== "agent_resume" || stillBlocking) {
-    return Object.freeze({ kind: "blocked", reason: "resolution_incomplete" });
-  }
-  return Object.freeze({ kind: "resolved", exceptionId: match.id, taskId: expectedTaskId });
+  return { exceptionId: match.id, taskId: match.taskId };
 }
 
+
+/**
+ * Mint the durable Mission authority for a review that actually resolved the
+ * run's own task-bound handoff. A skipped resolution (main's #516 rule: no
+ * bound Mission, unknown job, or no single matching blocker on
+ * `missionTaskIdForJob(run.job_id)`) mints nothing and the review proceeds
+ * unbound, exactly as it does today. This never fabricates authority.
+ */
 function missionAuthorityAfterResolution(
   db: AppDb,
   tenantId: string,
   missionId: string | null,
-  resolution: ReviewHandoffResolution,
+  resolution: { exceptionId: string; taskId: string | null } | undefined,
   binding: NonNullable<CandidateReviewAuthority["binding"]>,
 ): MissionMutationAuthorityV1 | null {
-  if (!missionId || resolution.kind === "unbound") return null;
-  if (resolution.kind !== "resolved") throw new Error("warden_candidate_handoff_authority_invalid");
+  if (!missionId || !resolution) return null;
   const mission = getMission(db, tenantId, missionId);
   if (!mission) throw new Error("warden_candidate_handoff_authority_invalid");
   const task = resolution.taskId ? getMissionTask(db, tenantId, resolution.taskId) ?? null : null;
   if (resolution.taskId && !task) throw new Error("warden_candidate_handoff_authority_invalid");
   return createMissionMutationAuthority({ mission, task, repositoryId: binding.repositoryId,
     snapshotId: binding.snapshotId, resolvedSha: binding.revision });
-}
-
-function requireResolvedReviewHandoff(resolution: ReviewHandoffResolution): void {
-  if (resolution.kind === "unbound" || resolution.kind === "resolved") return;
-  if (resolution.reason === "product_mismatch") throw new Error("warden_candidate_mission_product_invalid");
-  if (resolution.reason === "snapshot_mismatch") throw new Error("warden_candidate_snapshot_binding_mismatch");
-  throw new Error("warden_candidate_handoff_authority_invalid");
 }
 
 function plainObject(value: unknown): value is Record<string, unknown> {
@@ -406,24 +362,15 @@ function candidateReviewAuthority(
   if (missionValue !== undefined && (typeof missionValue !== "string" || !missionValue.trim())) {
     throw new Error("warden_candidate_source_job_invalid");
   }
-  // Canonical resolver, not a raw `payload.missionId` read. A campaign-bound
-  // source job IS Mission bound; calling it unbound here lets approve skip the
-  // Mission handoff and enqueue a delivery carrying no authority at all.
-  let mission;
-  try {
-    mission = sourceJob
-      ? resolveBoundMissionForJobPayload(db, input.tenantId, sourceJob.payload)
-      : undefined;
-  } catch {
-    throw new Error("warden_candidate_snapshot_binding_mismatch");
-  }
-  const missionId = mission?.id ?? null;
+  const missionId = typeof missionValue === "string" ? missionValue : null;
+  const mission = missionId ? getMission(db, input.tenantId, missionId) : undefined;
+  if (missionId && !mission) throw new Error("warden_candidate_snapshot_binding_mismatch");
   if (mission && mission.product !== "fettler") throw new Error("warden_candidate_mission_product_invalid");
   if (mission && ["accepted", "rejected", "partial", "failed", "cancelled"].includes(mission.state)) {
     throw new Error("warden_candidate_review_conflict");
   }
   const hasCiFailure = plainObject(result.ciFailure);
-  let binding = input.decision === "approve" || hasCiFailure || missionId
+  let binding = input.decision === "approve" || hasCiFailure
     ? sourceBinding(db, input.tenantId, result)
     : null;
   const ciAuthority = binding && hasCiFailure
@@ -651,6 +598,15 @@ export function registerWardenCandidateReviewRoutes(
     db.raw.exec("BEGIN IMMEDIATE");
     try {
       const reviewedAt = clock();
+      // The reviewed run's own source snapshot, read from its recorded result.
+      // Available on regenerate as well as approve, unlike `binding`, which is
+      // only computed for approve/CI. Passed to the exception evaluator so a
+      // blocker observed against a superseded snapshot reads as STALE.
+      const reviewedSource = plainObject(result.source) ? result.source : null;
+      const reviewedSnapshot: SnapshotIdentity | undefined =
+        typeof reviewedSource?.snapshotId === "string" && typeof reviewedSource?.revision === "string"
+          ? { snapshotId: reviewedSource.snapshotId, resolvedSha: reviewedSource.revision }
+          : undefined;
       const currentTrust = trustId ? getPrincipal(db, tenantId, trustId) : undefined;
       const currentMembership = issuer && subject ? getTenantMembership(db, tenantId, issuer, subject) : undefined;
       const reviewedAtMs = Date.parse(reviewedAt);
@@ -703,7 +659,6 @@ export function registerWardenCandidateReviewRoutes(
         // no mission bound skips this — the mission is never fabricated.
         const regenerateMissionId = currentAuthority.missionId;
         if (regenerateMissionId) {
-          if (!binding) throw new Error("warden_candidate_snapshot_binding_mismatch");
           recordReviewerDirective(db, {
             tenantId,
             missionId: regenerateMissionId,
@@ -718,8 +673,8 @@ export function registerWardenCandidateReviewRoutes(
           const resolution = tryResolveBoundReviewHandoff(db, {
             tenantId,
             missionId: regenerateMissionId,
-            repositoryId: binding.repositoryId,
-            current: { snapshotId: binding.snapshotId, resolvedSha: binding.revision },
+            jobId: run.job_id,
+            ...(reviewedSnapshot ? { current: reviewedSnapshot } : {}),
             runId: run.id,
             rationale: body.rationale,
             authorPrincipalId: trustId!,
@@ -727,8 +682,12 @@ export function registerWardenCandidateReviewRoutes(
             correlationId: next.runId,
             createdAt: reviewedAt,
           });
-          requireResolvedReviewHandoff(resolution);
-          missionAuthority = missionAuthorityAfterResolution(db, tenantId, regenerateMissionId, resolution, binding);
+          // Authority needs the exact validated repository/snapshot binding. A
+          // regenerate with no such binding resolves the handoff but mints no
+          // authority, leaving the successor unbound exactly as main leaves it.
+          missionAuthority = binding
+            ? missionAuthorityAfterResolution(db, tenantId, regenerateMissionId, resolution, binding)
+            : null;
         }
         const nextPayload = { ...originalPayload, sessionId: next.runId, reviewFeedback: body.rationale,
           supersedesRunId: run.id, reviewerPrincipalId: principal.id,
@@ -778,8 +737,8 @@ export function registerWardenCandidateReviewRoutes(
           const resolution = tryResolveBoundReviewHandoff(db, {
             tenantId,
             missionId: currentAuthority.missionId,
-            repositoryId: binding!.repositoryId,
-            current: { snapshotId: binding!.snapshotId, resolvedSha: binding!.revision },
+            jobId: run.job_id,
+            ...(reviewedSnapshot ? { current: reviewedSnapshot } : {}),
             runId: run.id,
             rationale: body.rationale,
             authorPrincipalId: trustId!,
@@ -787,7 +746,6 @@ export function registerWardenCandidateReviewRoutes(
             correlationId: run.id,
             createdAt: reviewedAt,
           });
-          requireResolvedReviewHandoff(resolution);
           missionAuthority = missionAuthorityAfterResolution(db, tenantId, currentAuthority.missionId,
             resolution, binding);
           if (currentAuthority.missionId && evaluateMissionExceptions(db, tenantId,

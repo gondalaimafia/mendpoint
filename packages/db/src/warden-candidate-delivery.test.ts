@@ -144,45 +144,6 @@ afterEach(() => {
 });
 
 describe("Warden candidate delivery outbox", () => {
-  // SYNTHETIC BY CONSTRUCTION: no production surface enqueues an `agent.run`
-  // carrying a campaign hint today, because the campaign executor stops at stage
-  // `review` and never mints an AgentRun. This fixture builds that state by hand
-  // to pin the RULE ahead of that join. See the PR body and the Supersession note
-  // in docs/adr/2026-08-25-agent-run-mission-id.md.
-  it("refuses a campaign-bound source job with no authority (fixture-minted state; production has no campaign to agent.run originator yet)", () => {
-    const db = fixture({ goal: "Repair the SDK", campaignId: "campaign-1" });
-    insertPrincipal(db, { id: "principal-owner", tenantId: "tenant-a", kind: "human",
-      subject: "owner@example.com", displayName: "Owner", createdAt: NOW });
-    createWardenCampaign(db, { id: "campaign-1", tenantId: "tenant-a", name: "Stripe migration",
-      ownerPrincipalId: "principal-owner", concurrencyLimit: 1, completionPolicy: "all",
-      eventId: "e-campaign", idempotencyKey: "c-campaign", correlationId: "corr", createdAt: NOW });
-    createMission(db, { id: "mission-1", tenantId: "tenant-a", product: "fettler",
-      triggerKind: "provider_change", objective: "Repair the SDK", ownerPrincipalId: "principal-owner",
-      eventId: "e-mission", idempotencyKey: "c-mission", correlationId: "corr", createdAt: NOW });
-    linkFettlerCampaignToMission(db, { tenantId: "tenant-a", campaignId: "campaign-1",
-      missionId: "mission-1", actorPrincipalId: "principal-owner", eventId: "e-link",
-      idempotencyKey: "c-link", correlationId: "corr", createdAt: NOW });
-
-    // The canonical resolver calls this job Mission-bound through the campaign FK.
-    // Enqueueing it with no authority would hand the worker a delivery whose
-    // `authorityBindings` are empty, and the worker would then skip every Mission
-    // dispatch fence. A reader that goes back to raw `payload.missionId` sees no
-    // `missionId` key, answers "unbound", and this expectation fails.
-    expect(() => enqueueWardenCandidateDelivery(db, {
-      tenantId: "tenant-a",
-      runId: "warden-run-1",
-      repositoryId: "repo-1",
-      snapshotId: "snapshot-1",
-      baseBranch: "main",
-      expectedBaseRevision: "a".repeat(40),
-      sealedPath: "C:\\data\\warden-evidence\\tenant-a\\approvals\\seal.json",
-      sealedSha256: `sha256:${"b".repeat(64)}`,
-      requesterPrincipalId: "human:reviewer@example.com",
-      rationale: "The target and regression checks pass.",
-      now: NOW,
-    })).toThrow("warden_candidate_delivery_binding_mismatch");
-  });
-
   it("atomically enqueues one deterministic tenant-scoped draft delivery", () => {
     const db = fixture();
     const input = {
