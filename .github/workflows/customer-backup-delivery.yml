@@ -127,9 +127,29 @@ jobs:
                 --argjson age "$active_age" --argjson cycle "$cycle" \
                 '{at:$at,event:"backup_active",cycle:$cycle,backupRunId:$id,ageSeconds:$age}'
             else
-              latest_success="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
-                --limit 50 --json conclusion,createdAt \
-                --jq '[.[] | select(.conclusion == "success")] | first | .createdAt // empty')"
+              # A workflow-level success is not backup completion: GitHub marks
+              # the workflow green when the protected backup job is skipped.
+              # Inspect each successful candidate and accept only a run whose
+              # exact backup job completed successfully.
+              candidate_rows="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
+                --branch "$BACKUP_REF" --limit 50 --json databaseId,conclusion,createdAt \
+                --jq '.[] | select(.conclusion == "success") | [.databaseId, .createdAt] | @tsv')"
+              latest_success=""
+              latest_success_run_id=""
+              while IFS=$'\t' read -r candidate_run_id candidate_created_at; do
+                if [ -z "$candidate_run_id" ]; then continue; fi
+                backup_job_success="$(gh run view "$candidate_run_id" --repo "$GH_REPO" \
+                  --json jobs \
+                  --jq '[.jobs[] | select(.name == "backup" and .conclusion == "success")] | length')"
+                if [ "$backup_job_success" = "1" ]; then
+                  latest_success="$candidate_created_at"
+                  latest_success_run_id="$candidate_run_id"
+                  break
+                fi
+                record --arg at "$checked_at" --arg id "$candidate_run_id" \
+                  --arg createdAt "$candidate_created_at" --argjson cycle "$cycle" \
+                  '{at:$at,event:"backup_workflow_success_without_backup_job",cycle:$cycle,backupRunId:$id,createdAt:$createdAt}'
+              done <<< "$candidate_rows"
 
               due=true
               age_seconds=null
@@ -143,9 +163,10 @@ jobs:
               fi
 
               if [ "$due" = false ]; then
-                record --arg at "$checked_at" --arg createdAt "$latest_success" \
+                record --arg at "$checked_at" --arg id "$latest_success_run_id" \
+                  --arg createdAt "$latest_success" \
                   --argjson age "$age_seconds" --argjson cycle "$cycle" \
-                  '{at:$at,event:"backup_recent",cycle:$cycle,createdAt:$createdAt,ageSeconds:$age}'
+                  '{at:$at,event:"backup_recent",cycle:$cycle,backupRunId:$id,createdAt:$createdAt,ageSeconds:$age}'
               else
                 delivery_id="backup-delivery-${CONTROLLER_RUN_ID}-${cycle}"
                 expected_title="Customer production backup [$delivery_id]"

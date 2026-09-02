@@ -31,6 +31,7 @@ function runController(options: {
   activeRunId?: string;
   activeCreatedAt?: string;
   latestSuccess?: string;
+  backupJobSuccess?: boolean;
   acknowledgedRunId?: string;
   handoffRunId?: string;
   dispatchStatus?: string;
@@ -57,9 +58,14 @@ case "$1 $2" in
           printf '%s\\t%s\\n' "$GH_STUB_ACTIVE_RUN_ID" "$GH_STUB_ACTIVE_CREATED_AT"
         fi
         ;;
-      *) printf '%s\\n' "\${GH_STUB_LATEST_SUCCESS:-}" ;;
+      *)
+        if [ -n "\${GH_STUB_LATEST_SUCCESS:-}" ]; then
+          printf '%s\\t%s\\n' '777' "$GH_STUB_LATEST_SUCCESS"
+        fi
+        ;;
     esac
     ;;
+  'run view') printf '%s\\n' "\${GH_STUB_BACKUP_JOB_SUCCESS:-1}" ;;
   'workflow run')
     case "$*" in
       *customer-backup.yml*) exit "\${GH_STUB_DISPATCH_STATUS:-0}" ;;
@@ -97,6 +103,7 @@ exit 0
         GH_STUB_ACTIVE_RUN_ID: options.activeRunId ?? "",
         GH_STUB_ACTIVE_CREATED_AT: options.activeCreatedAt ?? new Date().toISOString(),
         GH_STUB_LATEST_SUCCESS: options.latestSuccess ?? "2026-01-01T00:00:00Z",
+        GH_STUB_BACKUP_JOB_SUCCESS: options.backupJobSuccess === false ? "0" : "1",
         GH_STUB_ACKNOWLEDGED_RUN_ID: options.acknowledgedRunId ?? "4242",
         GH_STUB_HANDOFF_RUN_ID: options.handoffRunId ?? "5252",
         GH_STUB_DISPATCH_STATUS: options.dispatchStatus ?? "0",
@@ -181,6 +188,30 @@ describe("customer backup delivery controller workflow", () => {
     expect(maintain.run).toContain('gh run view "$candidate_run_id"');
     expect(maintain.run).toContain('.name == "backup" and .conclusion == "success"');
     expect(maintain.run).toContain("backup_workflow_success_without_backup_job");
+
+    const result = runController({
+      latestSuccess: new Date().toISOString(),
+      backupJobSuccess: false,
+    });
+    expect(result.status).toBe(0);
+    expect(result.calls.some((call) => call.startsWith("run view 777"))).toBe(true);
+    expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup.yml")))
+      .toHaveLength(1);
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_workflow_success_without_backup_job",
+      backupRunId: "777",
+    }));
+  });
+
+  it("accepts only an exact successful backup job as recent completion", () => {
+    const result = runController({ latestSuccess: new Date().toISOString() });
+    expect(result.status).toBe(0);
+    expect(result.calls.some((call) => call.startsWith("run view 777"))).toBe(true);
+    expect(result.calls.some((call) => call.startsWith("workflow run customer-backup.yml"))).toBe(false);
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_recent",
+      backupRunId: "777",
+    }));
   });
 
   it("fails loudly when GitHub accepts a dispatch but never exposes its exact run", () => {
