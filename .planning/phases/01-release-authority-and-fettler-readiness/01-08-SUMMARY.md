@@ -9,13 +9,13 @@ provides:
   - Versioned product-neutral dependency outage decision contract.
   - Tenant-scoped SQLite outage queue with fenced claims and immutable hash-chained history.
   - Injected model and GitHub outage recovery ports with provider-specific failure classification.
-  - Supported database subpath and production GitHub composition over the primary application database.
+  - Supported database root export and production GitHub composition over the primary application database.
 affects: [01-18, model-runtime-binding, github-delivery-binding, production-readiness]
 
 actuals:
   tokens: 37942
   tasks: 3
-  commits: 11
+  commits: 13
 
 tech-stack:
   added: []
@@ -41,14 +41,19 @@ key-files:
     - packages/github/src/index.ts
     - packages/ops/src/index.ts
     - packages/db/package.json
+    - package-lock.json
     - packages/pipeline/src/index.ts
     - packages/pipeline/src/index.test.ts
+    - packages/pipeline/package.json
+    - packages/pipeline/src/delivery-resolver.test.ts
+    - apps/api/src/server.ts
+    - apps/worker/src/cli.ts
     - packages/ops/src/disaster-recovery.test.ts
 
 key-decisions:
   - "Use injected structural ports instead of importing ops or db from GitHub, because ops already depends on GitHub and the direct plan link would create a package cycle."
   - "Keep exact provider reconciliation inside the GitHub delivery implementation, where branch, commit identity, complete tree delta, file content, file mode, and draft pull request state can be validated read-only before a repeated write."
-  - "Expose the queue through the ownership-safe @mendpoint/db/dependency-outage subpath and compose the real GitHub App delivery path over AppDb.raw so the mandatory database backup includes outage state."
+  - "Expose the queue through the existing @mendpoint/db root contract, inject the shared ops decision from API and worker composition roots, and keep package-lock.json byte-identical to the protected base."
 
 patterns-established:
   - "Outage authority: tenant, dependency kind, provider, operation identifier, and operation digest form the exact recovery scope."
@@ -92,7 +97,7 @@ coverage:
         ref: packages/pipeline/src/index.test.ts and packages/ops/src/disaster-recovery.test.ts
         status: pass
     human_judgment: true
-    rationale: The real GitHub App delivery consumer is bound and backup recovery is proven. The generic model port remains available for the first production model caller because no non-test model invocation exists in the repository.
+    rationale: The real API and worker pipeline callers inject the shared outage policy, exact-draft delivery is the only SCM write path, and backup recovery is proven. The generic model port remains available for the first production model caller because no non-test model invocation exists in the repository.
 
 duration: 1h 20m
 completed: 2026-09-02
@@ -101,14 +106,14 @@ status: complete
 
 # Phase 01 Plan 08: Model and SCM Outage Controls Summary
 
-**The outage policy and durable queue now protect the real GitHub App delivery path through the primary application database, retain exact authority identity, and survive restart, backup, and restore.**
+**The outage policy and durable queue now protect the real API and worker GitHub App delivery path through the primary application database, retain exact authority identity, and survive restart, backup, and restore.**
 
 ## Performance
 
 - **Duration:** 1 hour 20 minutes
 - **Completed:** 2026-09-02T02:35:54.1100596Z
-- **Tasks:** 3 implementation tasks completed, plus exact-head production binding repair
-- **Files modified:** 11 implementation and test files, plus this summary
+- **Tasks:** 3 implementation tasks completed, plus exact-head production binding and review repair
+- **Files modified:** 14 implementation, composition, package, and test files, plus this summary
 
 ## Accomplishments
 
@@ -117,8 +122,11 @@ status: complete
 - Added provider-specific model and GitHub classification and injected ports that carry the reconstructed circuit snapshot into every decision.
 - Added read-only GitHub reconciliation that verifies the exact branch, commit identity, parent, full tree delta, file content, file mode, and draft pull request before any repeated blob, tree, commit, reference, or pull request write.
 - Made authority identity mandatory for model and GitHub operations, proved an authentication block can resume only after exact authority rotation, and bound GitHub delivery to an installation and credential digest.
-- Added the supported database subpath, production pipeline composition, and restart plus encrypted backup and restore proof over the primary database.
-- Proved retry, duplicate, exact pull request lost-response, zero-repeat writes, process restart, three-failure trip, half-open recovery, expired authority, tenant isolation, digest substitution, immutable history, and package-cycle behavior with 51 focused tests.
+- Added the supported database root export, API and worker policy injection, production pipeline composition, and restart plus encrypted backup and restore proof over the primary database.
+- Removed the legacy branch, commit, and pull-request write sequence from the real pipeline so every customer draft passes through `deliverExactDraft` and durable reconciliation.
+- Enforced exact authority equality before queued, claimed, or expired-lease work can execute, while preserving explicit blocked-operation reactivation after a validated authority rotation.
+- Classified GitHub primary and secondary rate-limit `403` responses as throttling before the generic permission rule, while true permission failures remain permanent.
+- Proved retry, duplicate, exact pull request lost-response, zero-repeat writes, process restart, three-failure trip, half-open recovery, expired authority, tenant isolation, digest substitution, immutable history, and caller reachability with 106 focused tests.
 
 ## Task Commits
 
@@ -130,6 +138,8 @@ status: complete
 6. **Authority, hostile tests, identifiers, and barrel exports:** `dbc632ac` (`fix`)
 7. **Durable circuit and read-only GitHub reconciliation repair:** `de0f4a34` (`fix`)
 8. **Current rebased evidence series:** `e73e1f03`, `64ed119a`, `1275ba67`, `939de04c`, `39c372e7`, `295b6fe4`, `6209a222`, `a472e346`, `02b81eb5`, `7dda371e`, `33bb3808`
+9. **Independent review RED tests:** `ad811437`
+10. **Exact-head outage delivery repair:** `a0862179`
 
 Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/605), open, issue body read back with exact `Owner: Codex` claim.
 
@@ -143,11 +153,13 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - `packages/agent/src/model-providers.test.ts` - Model classification and completed-request reconciliation tests.
 - `packages/github/src/app-runtime.ts` - GitHub failure evidence mapping and injected exact-draft recovery operation.
 - `packages/github/src/app-runtime.test.ts` - GitHub outage scope, classification, and bounded operation identifier tests.
-- `packages/agent/src/index.ts`, `packages/github/src/index.ts`, `packages/ops/src/index.ts` - Minimal public exports for the new seams.
+- `packages/agent/src/index.ts`, `packages/github/src/index.ts`, `packages/ops/src/index.ts`, `packages/db/src/index.ts` - Minimal public exports for the new seams.
+- `apps/api/src/server.ts`, `apps/worker/src/cli.ts` - Production composition roots that inject the shared outage decision policy.
+- `packages/pipeline/src/index.ts` - Exact-draft-only GitHub delivery and fail-closed policy binding.
 
 ## Decisions Made
 
-- The GitHub package retains an injected port to avoid a package cycle. The production pipeline owns composition and imports the durable queue through `@mendpoint/db/dependency-outage` plus the shared decision policy from ops.
+- The GitHub package retains an injected port to avoid a package cycle. The production pipeline imports the queue through the existing `@mendpoint/db` root contract, while the API and worker composition roots inject the shared decision policy they already depend on.
 - A lost GitHub response is classified as requiring provider reconciliation. The outage adapter performs an exact read-only observation before execution; a fully delivered draft completes from provider state, while an exact committed branch without a pull request resumes at pull request creation without repeating Git object writes.
 - Operation identifiers are digest-bounded so maximum provider path lengths cannot overflow durable queue limits.
 
@@ -178,21 +190,33 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - **Verification:** 51 focused tests, four affected package type checks, the full 179-test ops suite, and the full 195-test GitHub suite pass.
 - **Committed in:** `de0f4a34`
 
+**4. Exact-head review found four production reachability and authority defects**
+- **Found during:** independent exact-head review of pull request #606 at `3d9dceb6`
+- **Issue:** The real pipeline still used legacy unfenced GitHub writes, executable queued work accepted stale authority, rate-limited `403` responses were treated as permission failures, and a new package dependency changed protected lockfile bytes.
+- **Fix:** Routed the real pipeline through exact-draft delivery, required matching authority for every executable state and takeover, ordered rate-limit evidence before generic permission handling, root-exported the queue, and injected the shared policy from existing API and worker composition roots.
+- **Files modified:** database queue and root, GitHub runtime, pipeline, API and worker composition roots, package metadata, and paired hostile tests
+- **Verification:** 106 focused tests, seven affected type checks, full database, GitHub, ops, and pipeline suites, protected authority test, optimized production build, and diff integrity pass.
+- **Committed in:** `ad811437`, `a0862179`
+
 ---
 
-**Total deviations:** 3: one architectural correction, one ownership-preserving deferral, and one independently reviewed reliability repair.
+**Total deviations:** 4: one architectural correction, one ownership-preserving deferral, and two independently reviewed reliability repairs.
 **Impact on plan:** The engineering behavior and real GitHub production link are complete and tested. Requirement promotion still needs exact deployed-revision outage proof.
 
 ## Issues Encountered
 
 - The system Node runtime is version 24 while the repository declares Node 22. Exact workspace tests passed, and the same suites also passed with provisioned Node 22.23.2.
 - The first append-only hostile test used the wrong column name. The test was corrected to mutate `event_kind`, then proved both update and delete triggers fail closed.
+- Parallel full-package execution saturated the Windows host and caused timeout-only failures in unrelated long-running API, worker, agent, ops, and pipeline cases. Bounded sequential reruns passed ops, pipeline, database, and GitHub completely; the API and worker timeout cases did not touch this plan's code and remained outside this repair.
 
 ## Verification
 
 - Exact plan commands plus hostile review regressions cover database, agent, GitHub, pipeline, ops, authority rotation, package resolution, and backup recovery.
-- Full package regressions: ops passed 179 tests; GitHub passed 195 tests.
-- TypeScript: ops, database, agent, and GitHub package checks passed with no errors.
+- Focused outage, backup, adapter, caller, and resolver matrix: 106 of 106 tests passed.
+- Full package regressions: database passed 501 tests, GitHub passed 195 tests, ops passed 180 tests, and pipeline passed 272 tests.
+- Protected authority: exact base-interpreted rotation test passed with `package-lock.json` restored to SHA-256 `193181927b3e5813f43471c60c343c0300c6c71540a9b3921968a215cb57cd0d`.
+- TypeScript: ops, database, agent, GitHub, pipeline, API, and worker package checks passed with no errors.
+- Production build: optimized workspace build passed.
 - Diff integrity: `git diff --check` passed before the repair commit.
 - Current base: `e69d997b7eef88ffcc7786a3e51da46eb1e677d4`.
 
