@@ -11,17 +11,16 @@ import {
 } from "./fettler-production-closure.js";
 
 describe("Fettler production closure operating contracts", () => {
-  it("exposes the canonical closure check through the workspace command", () => {
-    const packageManifest = JSON.parse(
-      readFileSync(join(process.cwd(), "package.json"), "utf8"),
-    ) as { scripts?: Record<string, string> };
+  it("enforces the canonical closure artifact inside the existing GA preflight", () => {
+    const gaCheckSource = readFileSync(
+      join(process.cwd(), "scripts", "ga-check.ts"),
+      "utf8",
+    );
 
-    expect(packageManifest.scripts?.["fettler:closure:check"]).toBe(
-      "tsx scripts/fettler-production-closure.ts",
+    expect(gaCheckSource).toContain(
+      'import { checkFettlerProductionClosureArtifact } from "./fettler-production-closure.js";',
     );
-    expect(packageManifest.scripts?.["ga:check"]).toContain(
-      "npm run fettler:closure:check",
-    );
+    expect(gaCheckSource).toContain("checkFettlerProductionClosureArtifact();");
   });
 
   it("binds performance and metric definitions without claiming a measurement", () => {
