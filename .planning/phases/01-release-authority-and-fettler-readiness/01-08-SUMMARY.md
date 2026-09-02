@@ -15,7 +15,7 @@ affects: [01-18, model-runtime-binding, github-delivery-binding, production-read
 actuals:
   tokens: 40550
   tasks: 4
-  commits: 22
+  commits: 24
 
 tech-stack:
   added: []
@@ -34,6 +34,7 @@ key-files:
     - packages/db/src/dependency-outage-export.test.ts
     - apps/api/src/dependency-outage-routes.ts
     - apps/api/src/dependency-outage-routes.test.ts
+    - apps/api/src/dependency-outage-recovery.test.ts
   modified:
     - packages/agent/src/agent.ts
     - packages/agent/src/agent.test.ts
@@ -136,6 +137,9 @@ status: complete
 - Removed the legacy branch, commit, and pull-request write sequence from the real pipeline so every customer draft passes through `deliverExactDraft` and durable reconciliation.
 - Enforced exact authority equality before queued, claimed, or expired-lease work can execute, while preserving explicit blocked-operation reactivation after a validated authority rotation.
 - Classified GitHub primary and secondary rate-limit `403` responses as throttling before the generic permission rule, while true permission failures remain permanent.
+- Added `attemptsRemaining` to the exact versioned decision contract and reject decisions that disagree with the durable queue budget.
+- Made reconciliation-blocked and expired lease-recovered claims replayable without consuming another external attempt, and terminalize an expired claim only after one final read-only reconciliation.
+- Retained the queue's original expiry through model and GitHub classification so an adapter cannot extend durable authority near the deadline.
 - Proved retry, duplicate, exact pull request lost-response, zero-repeat writes, process restart, three-failure trip, half-open recovery, expired authority, tenant isolation, digest substitution, invalid-response classification, internal-error redaction, immutable history, and caller reachability.
 
 ## Task Commits
@@ -153,7 +157,9 @@ status: complete
 11. **Review RED tests for live model reachability and health:** `66407249`
 12. **Live model queue binding and bounded tenant health:** `4bb1af43`
 13. **Failure classification and health redaction:** `4ac0c0d8`
-14. **Exact-head state-machine review repair:** current atomic repair commit
+14. **Exact-head state-machine review repair:** `bb9d4c2c`
+15. **Round-two recovery-chain RED tests:** `a07ec7aa`
+16. **Round-two durable reconciliation repair:** `08c4f304`
 
 Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/605), open, issue body read back with exact `Owner: Codex` claim.
 
@@ -228,18 +234,26 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - **Fix:** Validated the exact decision union before mutation, made action precedence explicit, bounded retry timestamps to the live operation window, settled queued expiry once behind the database transaction, carried transport dispatch evidence into classification, and resumed exact-draft delivery from the existing commit.
 - **Files modified:** durable queue and tests, agent planner transport classification and tests, GitHub App recovery and tests, and this summary.
 - **Verification:** 279 focused tests, all seven affected complete workspace suites, seven scoped type checks, the optimized production build, the complete general availability gate, and diff integrity pass.
-- **Committed in:** current atomic repair commit
+- **Committed in:** `bb9d4c2c`
+
+**7. Exact-head review found four producer-to-consumer replay defects**
+- **Found during:** independent exact-head review of pull request #606 at `bb9d4c2c`
+- **Issue:** The policy emitted `attemptsRemaining` but the real queue rejected that key, reconciliation-blocked rows were unreachable through the runner, expired lease-recovered claims remained claimed without settlement, and GitHub recomputed expiry instead of using the retained queue deadline.
+- **Fix:** Aligned and validated the exact decision shape and durable budget, added fenced reconciliation-only claims that do not consume external attempts, reconciled expired recovered claims before terminal settlement, carried the retained expiry into classification, and exposed an explicit commit-ready `resume` observation that skips Git object writes.
+- **Files modified:** outage policy and durable queue, model and GitHub outage ports, focused unit tests, and a real policy-to-queue-to-GitHub integration suite.
+- **Verification:** 284 focused tests; all seven affected full workspace suites; all seven affected type checks; the optimized 64-page production build; the complete general availability gate; and diff integrity passed. The first parallel API run had one unrelated 15-second repository-materialization timeout; the isolated full rerun passed 709 of 709.
+- **Committed in:** `a07ec7aa`, `08c4f304`
 
 ---
 
-**Total deviations:** 6: one architectural correction, one ownership-preserving deferral, and four independently reviewed reliability repairs.
+**Total deviations:** 7: one architectural correction, one ownership-preserving deferral, and five independently reviewed reliability repairs.
 **Impact on plan:** The engineering behavior and both live production call paths are implemented and tested. Requirement promotion still needs exact deployed-revision outage and rollback proof.
 
 ## Issues Encountered
 
 - The system Node runtime is version 24 while the repository declares Node 22. Exact workspace tests passed, and the same suites also passed with provisioned Node 22.23.2.
 - The first append-only hostile test used the wrong column name. The test was corrected to mutate `event_kind`, then proved both update and delete triggers fail closed.
-- Parallel full-package execution saturated the Windows host and caused timeout-only failures in unrelated long-running API, worker, agent, ops, and pipeline cases. Bounded sequential reruns passed ops, pipeline, database, and GitHub completely; the API and worker timeout cases did not touch this plan's code and remained outside this repair.
+- A parallel full-package run produced one 15-second timeout in an unrelated API repository-materialization test. The isolated full API rerun passed 709 of 709, so the final evidence records the parallel result as host contention rather than a product failure.
 
 ## Verification
 
@@ -248,7 +262,8 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - Current exact-head model, visibility, queue, delivery, and worker integration matrix: 318 of 318 tests passed.
 - Final exact-head outage snapshot: 279 of 279 tests passed across operations policy, database queue and export, agent planner and provider classification, GitHub exact-draft recovery, API health projection, and pipeline delivery.
 - Full package regressions: database passed 504 tests, agent passed 364 tests, GitHub passed 195 tests, operations passed 180 tests, and pipeline passed 272 tests.
-- Final affected workspace regressions: database passed 519 tests, agent passed 372 tests, GitHub passed 196 tests, operations passed 181 tests, pipeline passed 272 tests, API passed 706 tests, and worker passed 745 tests with one intentional skip.
+- Round-two recovery-chain snapshot: 284 of 284 focused tests passed, including a real adapter integration proving exact policy acceptance, commit-ready pull-request recovery without repeated Git object writes, and retained-expiry classification.
+- Final affected workspace regressions: database passed 521 tests, agent passed 372 tests, GitHub passed 196 tests, operations passed 181 tests, pipeline passed 272 tests, API passed 709 tests, and worker passed 745 tests with one intentional skip.
 - Protected authority: exact base-interpreted rotation test passed with `package-lock.json` restored to SHA-256 `193181927b3e5813f43471c60c343c0300c6c71540a9b3921968a215cb57cd0d`.
 - TypeScript: ops, database, agent, GitHub, pipeline, API, and worker package checks passed with no errors.
 - Production build: optimized workspace build passed.
@@ -267,7 +282,7 @@ Before ME-ENT-008 promotion, deploy the exact revision and capture live model an
 
 ## Self-Check: PASSED
 
-- RED, GREEN, and repair summary commits are present in the exact PR branch history.
+- RED commit `a07ec7aa`, GREEN commit `08c4f304`, and this repair summary commit are present in the exact PR branch history.
 - Every implementation and test file named by the repair exists at the recorded exact head.
 - The implementation commits are ready for final current-main refresh, independent exact-head review, and protected push evidence.
 
