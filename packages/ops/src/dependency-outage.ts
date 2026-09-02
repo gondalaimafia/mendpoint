@@ -136,6 +136,25 @@ function openedCircuit(
   });
 }
 
+function expiredOperationDecision(
+  input: DependencyOutageFailureInput,
+  circuit: DependencyCircuitSnapshot,
+): DependencyOutageDecision {
+  const nextCircuit = openedCircuit(circuit, input.now);
+  return Object.freeze({
+    schemaVersion: DEPENDENCY_OUTAGE_SCHEMA_VERSION,
+    action: "fail",
+    failureKind: "expired",
+    retryable: false,
+    reason: "operation_expired",
+    nextAttemptAt: null,
+    attemptsRemaining: Math.max(0, input.retryBudget - input.attempt),
+    circuitState: "open",
+    circuit: nextCircuit,
+    standing: "degraded_failed",
+  });
+}
+
 function deterministicRetryDelayMs(input: DependencyOutageFailureInput): number {
   if (input.retryAfterMs !== undefined) {
     if (!Number.isSafeInteger(input.retryAfterMs) || input.retryAfterMs < 0 ||
@@ -220,16 +239,7 @@ export function classifyDependencyOutage(
   }
 
   if (input.failureKind === "expired" || now >= expiresAt) {
-    const nextCircuit = openedCircuit(circuit, input.now);
-    return decision(input, {
-      action: "fail",
-      retryable: false,
-      reason: "operation_expired",
-      nextAttemptAt: null,
-      circuitState: "open",
-      circuit: nextCircuit,
-      standing: "degraded_failed",
-    });
+    return expiredOperationDecision(input, circuit);
   }
 
   if (input.failureKind === "authentication" || input.failureKind === "permission") {
@@ -275,6 +285,7 @@ export function classifyDependencyOutage(
     const openedAt = timestamp(circuit.openedAt!, "dependency_outage_circuit_invalid");
     const probeAt = openedAt + circuit.cooldownMs;
     if (now < probeAt) {
+      if (probeAt >= expiresAt) return expiredOperationDecision(input, circuit);
       return decision(input, {
         action: "wait",
         retryable: true,
@@ -302,12 +313,14 @@ export function classifyDependencyOutage(
 
   if (circuit.state === "half_open" ||
       circuit.consecutiveFailures + 1 >= CIRCUIT_FAILURE_THRESHOLD) {
+    const nextAttemptAt = now + circuit.cooldownMs;
+    if (nextAttemptAt >= expiresAt) return expiredOperationDecision(input, circuit);
     const nextCircuit = openedCircuit(circuit, input.now);
     return decision(input, {
       action: "wait",
       retryable: true,
       reason: "circuit_opened",
-      nextAttemptAt: new Date(now + circuit.cooldownMs).toISOString(),
+      nextAttemptAt: new Date(nextAttemptAt).toISOString(),
       circuitState: "open",
       circuit: nextCircuit,
       standing: "degraded_retrying",
@@ -315,6 +328,7 @@ export function classifyDependencyOutage(
   }
 
   const delayMs = deterministicRetryDelayMs(input);
+  if (now + delayMs >= expiresAt) return expiredOperationDecision(input, circuit);
   const nextCircuit = Object.freeze({
     state: "closed" as const,
     cooldownMs: circuit.cooldownMs,

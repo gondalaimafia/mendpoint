@@ -222,6 +222,7 @@ describe("model provider outage recovery", () => {
       retryable: true,
       reason: "transient_failure",
       nextAttemptAt: "2026-09-01T12:00:01.000Z",
+      attemptsRemaining: 2,
       circuitState: "closed" as const,
       circuit: {
         state: "closed" as const,
@@ -240,6 +241,7 @@ describe("model provider outage recovery", () => {
           {
             attempt: 1,
             retryBudget: 3,
+            expiresAt: "2026-09-01T13:00:00.000Z",
             now: "2026-09-01T12:00:00.000Z",
             circuit: {
               state: "open",

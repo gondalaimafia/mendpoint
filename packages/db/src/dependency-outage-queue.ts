@@ -26,6 +26,7 @@ export type DependencyOutageFailureDecision = Readonly<{
   retryable: boolean;
   reason: string;
   nextAttemptAt: string | null;
+  attemptsRemaining: number;
   circuitState: DependencyOutageCircuitState;
   circuit: DependencyOutageCircuitSnapshot;
   standing: DependencyOutageStanding;
@@ -96,7 +97,8 @@ export type DependencyOutageClaim = DependencyOutageRecord & Readonly<{
 export type DependencyOutageHistoryEvent = Readonly<{
   sequence: number;
   kind: "enqueued" | "claimed" | "claim_recovered" | "retry_scheduled" |
-    "authority_blocked" | "authority_reactivated" | "failed" | "completed";
+    "authority_blocked" | "authority_reactivated" | "reconciliation_required" |
+    "reconciliation_claimed" | "failed" | "completed";
   observedAt: string;
   details: Readonly<Record<string, unknown>>;
   previousHash: string | null;
@@ -105,6 +107,7 @@ export type DependencyOutageHistoryEvent = Readonly<{
 
 export type DependencyOutageReconciliation<T> =
   | Readonly<{ status: "missing" }>
+  | Readonly<{ status: "resume" }>
   | Readonly<{ status: "completed"; value: T; completionDigest: string }>;
 
 export type DependencyOutageRunOperation<T> = DependencyOutageScope & Readonly<{
@@ -120,6 +123,7 @@ export type DependencyOutageRunOperation<T> = DependencyOutageScope & Readonly<{
     context: Readonly<{
       attempt: number;
       retryBudget: number;
+      expiresAt: string;
       now: string;
       circuit: DependencyOutageCircuitSnapshot;
     }>,
@@ -189,7 +193,7 @@ const OUTAGE_STANDINGS = new Set([
   "healthy", "degraded_retrying", "degraded_blocked", "degraded_failed", "recovering",
 ]);
 const DECISION_KEYS = [
-  "action", "circuit", "circuitState", "failureKind", "nextAttemptAt", "reason",
+  "action", "attemptsRemaining", "circuit", "circuitState", "failureKind", "nextAttemptAt", "reason",
   "retryable", "schemaVersion", "standing",
 ].join(",");
 const DECISION_FAILURE_KINDS: Readonly<Record<DependencyOutageFailureDecision["action"], ReadonlySet<string>>> = {
@@ -242,6 +246,7 @@ function validateFailureDecision(decision: DependencyOutageFailureDecision): voi
       Object.keys(decision).sort().join(",") !== DECISION_KEYS ||
       decision.schemaVersion !== 1 || !FAILURE_ACTIONS.has(decision.action) ||
       !FAILURE_KINDS.has(decision.failureKind) || typeof decision.retryable !== "boolean" ||
+      !Number.isSafeInteger(decision.attemptsRemaining) || decision.attemptsRemaining < 0 ||
       !IDENTITY.test(decision.reason) || !CIRCUIT_STATES.has(decision.circuitState) ||
       !OUTAGE_STANDINGS.has(decision.standing) || decision.circuit === null ||
       typeof decision.circuit !== "object" || Array.isArray(decision.circuit) ||
@@ -289,6 +294,9 @@ function validateReconciliation<T>(value: unknown): DependencyOutageReconciliati
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record).sort();
   if (record.status === "missing" && keys.length === 1 && keys[0] === "status") {
+    return value as DependencyOutageReconciliation<T>;
+  }
+  if (record.status === "resume" && keys.length === 1 && keys[0] === "status") {
     return value as DependencyOutageReconciliation<T>;
   }
   if (record.status === "completed" && keys.join(",") === "completionDigest,status,value" &&
@@ -400,6 +408,56 @@ function circuitFromRow(row: OutageRow): DependencyOutageCircuitSnapshot {
     ...(row.circuit_opened_at === null ? {} : { openedAt: row.circuit_opened_at }),
     cooldownMs: row.circuit_cooldown_ms,
     consecutiveFailures: row.consecutive_failures,
+  });
+}
+
+function circuitFromRecord(record: DependencyOutageRecord): DependencyOutageCircuitSnapshot {
+  return Object.freeze({
+    state: record.circuitState,
+    ...(record.circuitOpenedAt === null ? {} : { openedAt: record.circuitOpenedAt }),
+    cooldownMs: record.circuitCooldownMs,
+    consecutiveFailures: record.consecutiveFailures,
+  });
+}
+
+function reconciliationDecision(
+  claim: DependencyOutageClaim,
+): DependencyOutageFailureDecision {
+  return Object.freeze({
+    schemaVersion: 1,
+    action: "reconcile",
+    failureKind: "completed",
+    retryable: false,
+    reason: "completed_effect_requires_reconciliation",
+    nextAttemptAt: null,
+    attemptsRemaining: Math.max(0, claim.retryBudget - claim.attemptsConsumed),
+    circuitState: claim.circuitState,
+    circuit: circuitFromRecord(claim),
+    standing: "recovering",
+  });
+}
+
+function expiredDecision(
+  claim: DependencyOutageClaim,
+  observedAt: string,
+): DependencyOutageFailureDecision {
+  const circuit = Object.freeze({
+    state: "open" as const,
+    openedAt: observedAt,
+    cooldownMs: claim.circuitCooldownMs,
+    consecutiveFailures: claim.consecutiveFailures + 1,
+  });
+  return Object.freeze({
+    schemaVersion: 1,
+    action: "fail",
+    failureKind: "expired",
+    retryable: false,
+    reason: "operation_expired",
+    nextAttemptAt: null,
+    attemptsRemaining: Math.max(0, claim.retryBudget - claim.attemptsConsumed),
+    circuitState: "open",
+    circuit,
+    standing: "degraded_failed",
   });
 }
 
@@ -642,7 +700,10 @@ export class DependencyOutageQueue {
       }
       const recovering = current.status === "claimed" &&
         current.claim_expires_at !== null && current.claim_expires_at <= input.now;
-      if (current.status === "queued" || recovering) {
+      const reconciling = current.status === "blocked" &&
+        current.last_failure_reason === "completed_effect_requires_reconciliation";
+      const expiredRecovery = recovering && current.expires_at <= input.now;
+      if (current.status === "queued" || recovering || reconciling) {
         if (!IDENTITY.test(input.authorityVersion)) {
           throw new Error("dependency_outage_authority_invalid");
         }
@@ -670,22 +731,31 @@ export class DependencyOutageQueue {
         }));
         return null;
       }
-      if ((current.status !== "queued" && !recovering) ||
-          current.next_attempt_at > input.now || current.expires_at <= input.now ||
-          current.attempts_consumed >= current.retry_budget) return null;
+      const retryEligible = (current.status === "queued" || recovering) &&
+        current.next_attempt_at <= input.now && current.expires_at > input.now &&
+        current.attempts_consumed < current.retry_budget;
+      if (!retryEligible && !reconciling && !expiredRecovery) return null;
       const generation = current.claim_generation + 1;
       const expiresAt = new Date(Date.parse(input.now) + input.leaseMs).toISOString();
+      const consumeAttempt = !reconciling && !expiredRecovery;
       this.db.prepare(`UPDATE dependency_outage_operations SET
         status = 'claimed', standing = 'recovering',
-        circuit_state = CASE WHEN circuit_state = 'open' THEN 'half_open' ELSE circuit_state END,
+        circuit_state = CASE WHEN ? = 1 AND circuit_state = 'open' THEN 'half_open' ELSE circuit_state END,
         claim_owner = ?,
-        claim_generation = ?, claim_expires_at = ?, attempts_consumed = attempts_consumed + 1,
+        claim_generation = ?, claim_expires_at = ?, attempts_consumed = attempts_consumed + ?,
         updated_at = ?
         WHERE tenant_id = ? AND dependency_kind = ? AND provider_id = ? AND operation_id = ?`)
-        .run(input.workerId, generation, expiresAt, input.now, input.tenantId,
+        .run(consumeAttempt ? 1 : 0, input.workerId, generation, expiresAt, consumeAttempt ? 1 : 0,
+          input.now, input.tenantId,
           input.dependencyKind, input.providerId, input.operationId);
-      this.append(input, recovering ? "claim_recovered" : "claimed", input.now,
-        Object.freeze({ workerId: input.workerId, claimGeneration: generation, leaseExpiresAt: expiresAt }));
+      this.append(input, reconciling ? "reconciliation_claimed" : recovering ? "claim_recovered" : "claimed",
+        input.now, Object.freeze({
+          workerId: input.workerId,
+          claimGeneration: generation,
+          leaseExpiresAt: expiresAt,
+          reconciliationOnly: reconciling || expiredRecovery,
+          expired: current.expires_at <= input.now,
+        }));
       return fromRow(this.row(input)!) as DependencyOutageClaim;
     });
   }
@@ -744,6 +814,10 @@ export class DependencyOutageQueue {
         current.claim_generation === claim.claimGeneration &&
         current.claim_expires_at !== null && current.claim_expires_at > observedAt;
       if (!active) throw new Error("dependency_outage_claim_fence_lost");
+      if (decision.attemptsRemaining !==
+          Math.max(0, current.retry_budget - current.attempts_consumed)) {
+        throw new Error("dependency_outage_attempts_remaining_mismatch");
+      }
       if (decision.nextAttemptAt !== null && decision.nextAttemptAt < observedAt) {
         throw new Error("dependency_outage_retry_before_failure");
       }
@@ -772,7 +846,8 @@ export class DependencyOutageQueue {
           decision.failureKind, budgetExhausted ? "retry_budget_exhausted" : decision.reason,
           observedAt, claim.tenantId, claim.dependencyKind, claim.providerId, claim.operationId);
       const event = status === "failed" ? "failed" :
-        status === "blocked" ? "authority_blocked" : "retry_scheduled";
+        decision.action === "reconcile" ? "reconciliation_required" :
+          status === "blocked" ? "authority_blocked" : "retry_scheduled";
       this.append(claim, event, observedAt, Object.freeze({
         claimGeneration: claim.claimGeneration,
         failureKind: decision.failureKind,
@@ -896,6 +971,9 @@ export class DependencyOutageQueue {
         record,
       });
     }
+    const reconciliationOnly =
+      claim.lastFailureReason === "completed_effect_requires_reconciliation" ||
+      claim.expiresAt <= now;
     const observed = validateReconciliation<T>(await operation.reconcile());
     if (observed.status === "completed") {
       const completed = this.complete(claim, observed.completionDigest, this.now());
@@ -903,6 +981,17 @@ export class DependencyOutageQueue {
         throw new Error("dependency_outage_completion_fence_lost");
       }
       return Object.freeze({ status: "recovered", value: observed.value, record: completed.record });
+    }
+    const reconciledAt = this.now();
+    if (claim.expiresAt <= reconciledAt) {
+      const decision = expiredDecision(claim, reconciledAt);
+      const record = this.fail(claim, decision, reconciledAt);
+      return Object.freeze({ status: "failed", record, decision });
+    }
+    if (reconciliationOnly && observed.status === "missing") {
+      const decision = reconciliationDecision(claim);
+      const record = this.fail(claim, decision, reconciledAt);
+      return Object.freeze({ status: "blocked", record, decision });
     }
     try {
       const executed = await operation.execute();
@@ -914,6 +1003,7 @@ export class DependencyOutageQueue {
       const decision = operation.classify(error, {
         attempt: claim.attemptsConsumed,
         retryBudget: claim.retryBudget,
+        expiresAt: claim.expiresAt,
         now: failedAt,
         circuit: Object.freeze({
           state: claim.circuitState,

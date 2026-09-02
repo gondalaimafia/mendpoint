@@ -11,6 +11,10 @@ import { classifyDependencyOutage } from "@mendpoint/ops";
 const BASE_SHA = "a".repeat(40);
 const COMMIT_SHA = "c".repeat(40);
 const COMPLETION = "d".repeat(64);
+const BASE_TREE_SHA = "1".repeat(40);
+const HEAD_TREE_SHA = "2".repeat(40);
+const BASE_BLOB_SHA = "3".repeat(40);
+const HEAD_BLOB_SHA = "4".repeat(40);
 
 function credentials() {
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -83,8 +87,8 @@ describe("dependency outage producer-to-consumer recovery", () => {
     let now = "2026-09-02T12:00:00.000Z";
     let branchSha = BASE_SHA;
     const queue = createDependencyOutageQueue(db, { now: () => now });
-    const createBlob = vi.fn(async () => ({ data: { sha: "blob-after" } }));
-    const createTree = vi.fn(async () => ({ data: { sha: "tree-after" } }));
+    const createBlob = vi.fn(async () => ({ data: { sha: HEAD_BLOB_SHA } }));
+    const createTree = vi.fn(async () => ({ data: { sha: HEAD_TREE_SHA } }));
     const createCommit = vi.fn(async () => ({ data: { sha: COMMIT_SHA } }));
     const updateRef = vi.fn(async ({ sha }: { sha: string }) => {
       branchSha = sha;
@@ -108,10 +112,10 @@ describe("dependency outage producer-to-consumer recovery", () => {
         })),
         getCommit: vi.fn(async ({ commit_sha }: { commit_sha: string }) => ({
           data: commit_sha === BASE_SHA
-            ? { sha: BASE_SHA, tree: { sha: "tree-before" }, parents: [] }
+            ? { sha: BASE_SHA, tree: { sha: BASE_TREE_SHA }, parents: [] }
             : {
                 sha: COMMIT_SHA,
-                tree: { sha: "tree-after" },
+                tree: { sha: HEAD_TREE_SHA },
                 parents: [{ sha: BASE_SHA }],
                 message: "Open approved Fettler candidate",
                 author: {
@@ -133,7 +137,7 @@ describe("dependency outage producer-to-consumer recovery", () => {
               path: "src/a.ts",
               type: "blob",
               mode: "100644",
-              sha: tree_sha === "tree-before" ? "blob-before" : "blob-after",
+              sha: tree_sha === BASE_TREE_SHA ? BASE_BLOB_SHA : HEAD_BLOB_SHA,
             }],
           },
         })),

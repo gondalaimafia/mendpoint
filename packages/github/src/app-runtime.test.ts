@@ -534,6 +534,7 @@ describe("github app runtime", () => {
       retryable: false,
       reason: "authority_change_required",
       nextAttemptAt: null,
+      attemptsRemaining: 2,
       circuitState: "open" as const,
       circuit: {
         state: "open" as const,
@@ -779,7 +780,7 @@ describe("github app runtime", () => {
     };
     const outage: GitHubDependencyOutagePort = {
       async run<T>(operation: Parameters<GitHubDependencyOutagePort["run"]>[0]) {
-        expect(await operation.reconcile()).toEqual({ status: "missing" });
+        expect(await operation.reconcile()).toEqual({ status: "resume" });
         const executed = await operation.execute();
         return { status: "completed" as const, value: executed.value as T };
       },
@@ -837,6 +838,7 @@ describe("github app runtime", () => {
       retryable: true,
       reason: "circuit_open",
       nextAttemptAt: "2026-09-01T12:00:30.000Z",
+      attemptsRemaining: 2,
       circuitState: "open" as const,
       circuit: {
         state: "open" as const,
@@ -851,6 +853,7 @@ describe("github app runtime", () => {
         const decision = operation.classify(Object.assign(new Error("unavailable"), { status: 503 }), {
           attempt: 3,
           retryBudget: 5,
+          expiresAt: "2026-09-01T13:00:00.000Z",
           now: "2026-09-01T12:00:00.000Z",
           circuit: {
             state: "open",

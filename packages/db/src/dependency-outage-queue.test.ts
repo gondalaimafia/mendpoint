@@ -18,7 +18,10 @@ const SCOPE = Object.freeze({
   operationDigest: DIGEST,
 });
 
-function retryDecision(nextAttemptAt = "2026-09-01T12:00:01.000Z"): DependencyOutageFailureDecision {
+function retryDecision(
+  nextAttemptAt = "2026-09-01T12:00:01.000Z",
+  attemptsRemaining = 2,
+): DependencyOutageFailureDecision {
   return {
     schemaVersion: 1,
     action: "retry",
@@ -26,6 +29,7 @@ function retryDecision(nextAttemptAt = "2026-09-01T12:00:01.000Z"): DependencyOu
     retryable: true,
     reason: "transient_failure",
     nextAttemptAt,
+    attemptsRemaining,
     circuitState: "closed",
     circuit: { state: "closed", cooldownMs: 30_000, consecutiveFailures: 1 },
     standing: "degraded_retrying",
@@ -34,8 +38,9 @@ function retryDecision(nextAttemptAt = "2026-09-01T12:00:01.000Z"): DependencyOu
 
 function decisionForAction(
   action: DependencyOutageFailureDecision["action"],
+  attemptsRemaining = 2,
 ): DependencyOutageFailureDecision {
-  const base = retryDecision("2026-09-02T12:00:01.000Z");
+  const base = retryDecision("2026-09-02T12:00:01.000Z", attemptsRemaining);
   if (action === "reconcile") {
     return {
       ...base,
@@ -187,11 +192,11 @@ describe("durable dependency outage queue", () => {
   });
 
   it.each([
-    ["completed reconciliation", decisionForAction("reconcile"), "blocked", "completed_effect_requires_reconciliation"],
-    ["authentication recovery", decisionForAction("await_authority"), "blocked", "authority_change_required"],
-    ["permission recovery", { ...decisionForAction("await_authority"), failureKind: "permission" }, "blocked", "authority_change_required"],
-    ["transient retry", decisionForAction("retry"), "failed", "retry_budget_exhausted"],
-    ["throttle wait", { ...decisionForAction("wait"), failureKind: "throttled", reason: "provider_throttled" }, "failed", "retry_budget_exhausted"],
+    ["completed reconciliation", decisionForAction("reconcile", 0), "blocked", "completed_effect_requires_reconciliation"],
+    ["authentication recovery", decisionForAction("await_authority", 0), "blocked", "authority_change_required"],
+    ["permission recovery", { ...decisionForAction("await_authority", 0), failureKind: "permission" }, "blocked", "authority_change_required"],
+    ["transient retry", decisionForAction("retry", 0), "failed", "retry_budget_exhausted"],
+    ["throttle wait", { ...decisionForAction("wait", 0), failureKind: "throttled", reason: "provider_throttled" }, "failed", "retry_budget_exhausted"],
   ] as const)("applies final-attempt precedence to %s", (_name, decision, status, reason) => {
     const queue = createDependencyOutageQueue(new DatabaseSync(":memory:"));
     queue.enqueue({
@@ -589,6 +594,7 @@ describe("durable dependency outage queue", () => {
         retryable: false,
         reason: "completed_effect_requires_reconciliation",
         nextAttemptAt: null,
+        attemptsRemaining: 2,
         circuitState: "closed",
         circuit: { state: "closed", cooldownMs: 30_000, consecutiveFailures: 0 },
         standing: "recovering",
@@ -650,6 +656,7 @@ describe("durable dependency outage queue", () => {
             retryable: true,
             reason: open ? "circuit_opened" : "transient_failure",
             nextAttemptAt: new Date(Date.parse(context.now) + (open ? 30_000 : 1_000)).toISOString(),
+            attemptsRemaining: context.retryBudget - context.attempt,
             circuitState: open ? "open" : "closed",
             circuit: open
               ? { state: "open", openedAt: context.now, cooldownMs: 30_000, consecutiveFailures: count }
@@ -722,7 +729,7 @@ describe("durable dependency outage queue", () => {
       authorityVersion: "model-authority-v1",
     }, "2026-09-01T12:00:00.000Z");
     const claim = queue.claim({ ...SCOPE, workerId: "worker-1", now: "2026-09-01T12:00:00.000Z", leaseMs: 1_000, authorityVersion: "model-authority-v1" })!;
-    const failed = queue.fail(claim, retryDecision(), "2026-09-01T12:00:00.500Z");
+    const failed = queue.fail(claim, retryDecision("2026-09-01T12:00:01.000Z", 0), "2026-09-01T12:00:00.500Z");
     expect(failed).toMatchObject({ status: "failed", standing: "degraded_failed" });
     expect(queue.claim({ ...SCOPE, workerId: "worker-2", now: "2026-09-01T12:00:02.000Z", leaseMs: 1_000, authorityVersion: "model-authority-v1" }))
       .toBeNull();
@@ -836,6 +843,7 @@ describe("durable dependency outage queue", () => {
         retryable: false,
         reason: "authority_change_required",
         nextAttemptAt: null,
+        attemptsRemaining: 2,
         circuitState: "open",
         circuit: { state: "open", openedAt: now, cooldownMs: 30_000, consecutiveFailures: 1 },
         standing: "degraded_blocked",

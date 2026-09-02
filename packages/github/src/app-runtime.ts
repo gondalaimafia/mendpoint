@@ -58,6 +58,7 @@ export type GitHubDependencyOutageDecision = Readonly<{
   retryable: boolean;
   reason: string;
   nextAttemptAt: string | null;
+  attemptsRemaining: number;
   circuitState: "closed" | "open" | "half_open";
   circuit: GitHubDependencyCircuitSnapshot;
   standing: "healthy" | "degraded_retrying" | "degraded_blocked" | "degraded_failed" | "recovering";
@@ -83,6 +84,7 @@ export type GitHubDependencyOutageOperation<T> = Readonly<{
   leaseMs: number;
   authorityVersion: string;
   reconcile: () => Promise<Readonly<{ status: "missing" }> |
+    Readonly<{ status: "resume" }> |
     Readonly<{ status: "completed"; value: T; completionDigest: string }>>;
   execute: () => Promise<Readonly<{ value: T; completionDigest: string }>>;
   classify: (
@@ -90,6 +92,7 @@ export type GitHubDependencyOutageOperation<T> = Readonly<{
     context: Readonly<{
       attempt: number;
       retryBudget: number;
+      expiresAt: string;
       now: string;
       circuit: GitHubDependencyCircuitSnapshot;
     }>,
@@ -844,7 +847,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
         commitReadySha = observed.status === "commit_ready" ? observed.commitSha : undefined;
         return observed.status === "completed"
           ? observed
-          : Object.freeze({ status: "missing" as const });
+          : Object.freeze({ status: observed.status === "commit_ready" ? "resume" as const : "missing" as const });
       }),
       execute: async () => {
         const value = await this.withAuthRetry((octokit) => commitReadySha === undefined
@@ -863,7 +866,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
           attempt: context.attempt,
           retryBudget: context.retryBudget,
           now: context.now,
-          expiresAt,
+          expiresAt: context.expiresAt,
           circuit: context.circuit,
           ...(evidence.retryAfterMs === undefined ? {} : { retryAfterMs: evidence.retryAfterMs }),
         });

@@ -1029,6 +1029,7 @@ describe("Warden (API debug agent)", () => {
           const decision = operation.classify(error, {
             attempt: 1,
             retryBudget: 3,
+            expiresAt: "2026-09-02T13:00:00.000Z",
             now: "2026-09-02T12:00:00.000Z",
             circuit: { state: "closed", cooldownMs: 30_000, consecutiveFailures: 0 },
           });

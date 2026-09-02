@@ -342,6 +342,7 @@ export type ModelDependencyOutageDecision = Readonly<{
   retryable: boolean;
   reason: string;
   nextAttemptAt: string | null;
+  attemptsRemaining: number;
   circuitState: "closed" | "open" | "half_open";
   circuit: ModelDependencyCircuitSnapshot;
   standing: "healthy" | "degraded_retrying" | "degraded_blocked" | "degraded_failed" | "recovering";
@@ -368,6 +369,7 @@ export type ModelDependencyOutageOperation<T> = Readonly<{
   authorityVersion: string;
   reconcile: () => Promise<
     | Readonly<{ status: "missing" }>
+    | Readonly<{ status: "resume" }>
     | Readonly<{ status: "completed"; value: T; completionDigest: string }>
   >;
   execute: () => Promise<Readonly<{ value: T; completionDigest: string }>>;
@@ -376,6 +378,7 @@ export type ModelDependencyOutageOperation<T> = Readonly<{
     context: Readonly<{
       attempt: number;
       retryBudget: number;
+      expiresAt: string;
       now: string;
       circuit: ModelDependencyCircuitSnapshot;
     }>,
@@ -522,7 +525,7 @@ export function runModelProviderOperation<T>(input: Readonly<{
         attempt: context.attempt,
         retryBudget: context.retryBudget,
         now: context.now,
-        expiresAt: input.expiresAt,
+        expiresAt: context.expiresAt,
         circuit: context.circuit,
         ...(evidence.retryAfterMs === undefined ? {} : { retryAfterMs: evidence.retryAfterMs }),
       });
