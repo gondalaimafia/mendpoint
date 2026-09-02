@@ -38,6 +38,12 @@ function runController(options: {
   acknowledgedRunId?: string;
   handoffRunId?: string;
   dispatchStatus?: string;
+  dispatchAcceptedOnError?: boolean;
+  handoffDispatchStatus?: string;
+  handoffAcceptedOnError?: boolean;
+  deliveryMaxAgeSeconds?: string;
+  deliverySleepSeconds?: string;
+  realSleep?: boolean;
 }) {
   const dir = mkdtempSync(join(tmpdir(), "customer-backup-delivery-"));
   const bin = join(dir, "bin");
@@ -46,7 +52,10 @@ function runController(options: {
   const dispatched = join(dir, "dispatched");
   mkdirSync(bin, { recursive: true });
   writeFileSync(log, "", "utf8");
-  executable(bin, "sleep", "#!/bin/sh\nexit 0\n");
+  executable(bin, "sleep", `#!/bin/sh
+if [ "\${GH_STUB_REAL_SLEEP:-0}" = 1 ]; then exec /usr/bin/sleep "$@"; fi
+exit 0
+`);
   executable(
     bin,
     "gh",
@@ -76,7 +85,13 @@ case "$1 $2" in
     case "$*" in
       *customer-backup.yml*)
         status="\${GH_STUB_DISPATCH_STATUS:-0}"
-        if [ "$status" = 0 ]; then : > "$GH_STUB_DISPATCHED"; fi
+        if [ "$status" = 0 ] || [ "\${GH_STUB_DISPATCH_ACCEPTED_ON_ERROR:-0}" = 1 ]; then
+          : > "$GH_STUB_DISPATCHED"
+        fi
+        exit "$status"
+        ;;
+      *customer-backup-delivery.yml*)
+        status="\${GH_STUB_HANDOFF_DISPATCH_STATUS:-0}"
         exit "$status"
         ;;
     esac
@@ -104,8 +119,8 @@ exit 0
         CONTROLLER_RUN_ID: "9001",
         DELIVERY_LEDGER_PATH: ledger,
         DELIVERY_CYCLES: "2",
-        DELIVERY_SLEEP_SECONDS: "0",
-        DELIVERY_MAX_AGE_SECONDS: "1500",
+        DELIVERY_SLEEP_SECONDS: options.deliverySleepSeconds ?? "0",
+        DELIVERY_MAX_AGE_SECONDS: options.deliveryMaxAgeSeconds ?? "1500",
         DELIVERY_MAX_ACTIVE_AGE_SECONDS: "1800",
         DELIVERY_OBSERVE_ATTEMPTS: "1",
         DELIVERY_OBSERVE_SLEEP_SECONDS: "0",
@@ -119,6 +134,10 @@ exit 0
         GH_STUB_ACKNOWLEDGED_RUN_ID: options.acknowledgedRunId ?? "4242",
         GH_STUB_HANDOFF_RUN_ID: options.handoffRunId ?? "5252",
         GH_STUB_DISPATCH_STATUS: options.dispatchStatus ?? "0",
+        GH_STUB_DISPATCH_ACCEPTED_ON_ERROR: options.dispatchAcceptedOnError ? "1" : "0",
+        GH_STUB_HANDOFF_DISPATCH_STATUS: options.handoffDispatchStatus ?? "0",
+        GH_STUB_HANDOFF_ACCEPTED_ON_ERROR: options.handoffAcceptedOnError ? "1" : "0",
+        GH_STUB_REAL_SLEEP: options.realSleep ? "1" : "0",
       },
     },
   );
@@ -257,9 +276,47 @@ describe("customer backup delivery controller workflow", () => {
       .toBe(false);
   });
 
+  it("does not carry an early completion beyond the current freshness window", () => {
+    const result = runController({
+      latestSuccess: new Date().toISOString(),
+      deliveryMaxAgeSeconds: "1",
+      deliverySleepSeconds: "2",
+      realSleep: true,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_delivery_completion_missing");
+    expect(result.calls.some((call) => call.startsWith("workflow run customer-backup-delivery.yml")))
+      .toBe(false);
+  });
+
   it("isolates irrelevant branch recovery runs from the accepted successor", () => {
     expect(String(delivery.concurrency.group)).toContain("github.event.workflow_run.head_branch");
     expect(String(delivery.concurrency.group)).toContain("github.run_id");
+    expect(String(delivery.concurrency.group)).toContain("head_repository.full_name");
+    expect(String(controller.if)).toContain("head_repository.full_name");
+    expect(String(controller.if)).toContain("workflow_run.event == 'push'");
+  });
+
+  it("reconciles an accepted backup dispatch after the client loses its response", () => {
+    const result = runController({ dispatchStatus: "1", dispatchAcceptedOnError: true });
+    expect(result.status).toBe(0);
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_dispatched",
+      backupRunId: "4242",
+    }));
+  });
+
+  it("reconciles an accepted controller handoff after the client loses its response", () => {
+    const result = runController({
+      latestSuccess: new Date().toISOString(),
+      handoffDispatchStatus: "1",
+      handoffAcceptedOnError: true,
+    });
+    expect(result.status).toBe(0);
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "controller_handoff",
+      successorRunId: "5252",
+    }));
   });
 
   it("rechecks durable freshness inside serialized backup execution", () => {
