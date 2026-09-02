@@ -228,6 +228,12 @@ None for the core contract. Production activation requires code binding, not a s
 
 Before ME-ENT-008 promotion, deploy the exact revision and capture live GitHub failure, degraded-state, authority-rotation, recovery, and rollback evidence. Bind the already typed model port when the repository gains its first production model invocation; no non-test model caller exists on this base.
 
+## Self-Check: PASSED
+
+- RED, GREEN, and repair summary commits are present in the exact PR branch history.
+- Every implementation and test file named by the repair exists at the recorded exact head.
+- The worktree is clean and the remote pull request head matches the local head after push.
+
 ---
 *Phase: 01-release-authority-and-fettler-readiness*
 *Plan: 08*
