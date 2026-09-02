@@ -138,6 +138,13 @@ describe("Fettler performance contract", () => {
   it("fails closed with stable codes for missing, duplicate, and stale observations", () => {
     expect(() => evaluatePerformanceRun(
       contract(),
+      completeObservations(),
+      "load",
+      EVALUATED_AT,
+    )).toThrow("performance_observation_deployment_revision_invalid");
+
+    expect(() => evaluatePerformanceRun(
+      contract(),
       observations("first_result", [500, 600, 700]),
       "load",
       EVALUATED_AT,
@@ -153,6 +160,9 @@ describe("Fettler performance contract", () => {
       observedAt: "2026-09-01T00:00:00.000Z",
     }));
     expect(() => evaluatePerformanceRun(contract(), stale, "load", EVALUATED_AT))
+      .toThrow("performance_observation_stale");
+
+    expect(() => evaluatePerformanceRun(contract(), stale, "load"))
       .toThrow("performance_observation_stale");
   });
 

@@ -267,4 +267,30 @@ describe("performance runner", () => {
     expect(result).toEqual(measurement());
     expect(request).toHaveBeenCalledTimes(1);
   });
+
+  it("rejects an HTTP measurement that does not echo the exact workload identity", async () => {
+    const probe = createHttpPerformanceProbe({
+      endpoint: "https://probe.invalid/performance",
+      fetch: async () => new Response(JSON.stringify({
+        deploymentRevision: "b".repeat(40),
+        repositoryRevision: "d".repeat(40),
+        fixtureDigest: "c".repeat(64),
+        tierId: "test-tier",
+        mode: "load",
+        invocationId: "test-tier.load.00000000",
+        ...measurement(),
+      }), { status: 200 }),
+    });
+
+    await expect(probe({
+      invocationId: "test-tier.load.00000000",
+      sequence: 0,
+      mode: "load",
+      tier: contract().tiers[0]!,
+      repositoryRevision: "a".repeat(40),
+      deploymentRevision: "b".repeat(40),
+      fixtureDigest: "c".repeat(64),
+      signal: new AbortController().signal,
+    })).rejects.toThrow("performance_probe_repository_revision_mismatch");
+  });
 });
