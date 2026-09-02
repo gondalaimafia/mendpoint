@@ -4562,3 +4562,17 @@ Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, ba
   - `npm run closure:check` (49 tests; STRUCTURE PASS), `actions:check` (6; every external uses ref pinned to a SHA), `third-state:check` (17), `config:check` (18; 56 declared, 0 gated-absent), `docs:check` ("Public docs bundle is current"), `eol:check` (14; no CRLF text blobs in the git index): all exit 0.
 - 0 CR bytes in every changed blob (byte count over the `git diff origin/main HEAD` file set). No protected file touched (checked against the 16 in `config/production-closure-authority.json`).
 - Not verified here: CI on the GitHub runners; the customer-profile boot path itself, which by design has no test yet (see Before re-landing item 3); the Codex peer review requested on the pull request.
+
+## 2026-09-02 xmldom production audit repair
+
+- [x] Reproduce the production dependency audit failure and trace it through `@node-saml/node-saml`, `xml-encryption`, and `xml-crypto` to `@xmldom/xmldom` 0.8.13.
+- [x] Update only the transitive lock entry to `@xmldom/xmldom` 0.8.15, preserving every direct dependency and manifest range.
+- [x] Verify the zero-vulnerability production audit, the complete web test suite, the web typecheck, the optimized production build, and diff integrity.
+
+### Review
+
+- `npm audit --omit=dev` reports zero vulnerabilities.
+- All 275 web tests pass, including all 15 SAML tests.
+- The web TypeScript check and the 64-route optimized production build pass.
+- `git diff --check` passes. The dependency change is limited to the three version, source, and integrity fields for the transitive XML package; this task record is the only other file changed.
+- Shipping remains gated on independent exact-head review, current-base protected checks, the authority rotation, protected merge, and exact production verification.
