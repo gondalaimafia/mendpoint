@@ -58,7 +58,7 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 
 ## Commits and range-diff identity
 
-The patch manifest contains 24 implementation and hostile-test patches. By subject and category, they introduce the external customer-managed key adapter and its initial verification; bind exact destinations; repair native all-address lookup, validated socket isolation, and response settlement; expose and close authority-binding and request-ceiling gaps; validate malformed requests before network work; preserve safe destination-denial signals; normalize malformed runtime key objects; and reject coerced non-string identifiers. Documentation-only commits follow those implementation and test patches.
+The pre-summary stack contains 24 patch-identical commits: 15 implementation/test commits and 9 documentation-evidence commits. Four documentation-only commits follow the final implementation head.
 
 The exact current base for this series is `5f9e47aeaa1235a663c7ee9d247b66b63f25d69c`; the commands above verify the exact pre-summary implementation head `bc9ecc33c838a7df9c70e0328ef4cb71aded3bf2`. Earlier reviews are superseded by the observability, runtime-boundary, and identifier-boundary patches plus this evidence refresh. A different reviewer must inspect and approve the final exact head before merge.
 
