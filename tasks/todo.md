@@ -4856,3 +4856,14 @@ Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, ba
 - The optimized production build exits 0 with 64 generated pages. `npm run ga:check` exits 0 and ends with `GA CHECK PASS`.
 - The implementation and rollback evidence are recorded in `.planning/phases/01-release-authority-and-fettler-readiness/01-04-SUMMARY.md`.
 - Pull requests 606 and 610, Plans 01-05 and 01-06, merge authority, and deployment authority are outside this repair and remain untouched.
+
+## 2026-09-02 Pull request 625 same-tenant attested upsert repair
+
+- [ ] Add a regression proving an attested legacy repair session can progress under its unchanged identifier and tenant while ownership mutation, identifier mutation, and deletion remain rejected.
+- [ ] Narrow the source trigger to reject actual identifier or ownership changes rather than every statement naming those columns.
+- [ ] Run focused and full database tests, database typecheck, diff integrity, and exact-head verification.
+
+### Review
+
+- RED: the focused regression failed at `insertRepairSession` with `legacy_tenant_ownership_source_immutable` before the same-tenant status transition; 1 failed and 34 skipped.
+- GREEN verification pending.

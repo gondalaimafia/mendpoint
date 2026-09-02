@@ -9,7 +9,9 @@ import {
   computeLegacyTenantOwnershipAttestationDigest,
   createDb,
   enqueueJob,
+  getRepairSession,
   getJob,
+  insertRepairSession,
 } from "./index.js";
 
 // Release A makes the destructive old-to-new rename tolerant of a future
@@ -803,6 +805,55 @@ describe("Fettler/Regauge logical database names", () => {
       });
     },
   );
+
+  it("permits same-tenant repair-session progress without weakening source guards", () => {
+    const path = join(newDir("tenant-attested-repair-session-progress"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    attestExactReconciliationScope(path);
+
+    const authorized = boot(path);
+    insertRepairSession(authorized, {
+      id: "repair_sessions-empty",
+      tenantId: "tenant_default",
+      consumerId: "consumer-reviewed",
+      repoPath: "/repo",
+      status: "verified",
+      attempts: 1,
+      editsCount: 2,
+      ok: true,
+      reportMd: "reviewed",
+      createdAt: TS,
+      finishedAt: "2026-09-02T00:10:00.000Z",
+    });
+
+    expect(getRepairSession(
+      authorized,
+      "repair_sessions-empty",
+      "tenant_default",
+    )).toMatchObject({
+      id: "repair_sessions-empty",
+      tenant_id: "tenant_default",
+      status: "verified",
+      attempts: 1,
+      edits_count: 2,
+      ok: 1,
+    });
+    expect(() => authorized.raw.prepare(
+      `UPDATE repair_sessions
+       SET tenant_id = 'tenant_other'
+       WHERE id = 'repair_sessions-empty'`,
+    ).run()).toThrow("legacy_tenant_ownership_source_immutable");
+    expect(() => authorized.raw.prepare(
+      `UPDATE repair_sessions
+       SET id = 'repair_sessions-renamed'
+       WHERE id = 'repair_sessions-empty'`,
+    ).run()).toThrow("legacy_tenant_ownership_source_immutable");
+    expect(() => authorized.raw.prepare(
+      "DELETE FROM repair_sessions WHERE id = 'repair_sessions-empty'",
+    ).run()).toThrow("legacy_tenant_ownership_source_immutable");
+  });
 
   it("rejects a source-row tenant mismatch at every restart", () => {
     const path = join(newDir("tenant-attested-source-revalidated"), "legacy.sqlite");
