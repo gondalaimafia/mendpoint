@@ -3450,22 +3450,17 @@ function migrateProvidersFeedColumns(db: AppDb) {
        SELECT RAISE(ABORT, 'usage_finance_authorizations_append_only');
      END`,
   );
-  if (
-    addedColumns.has("usage_ledger_entries.finance_authorization_id") ||
-    addedColumns.has("usage_ledger_entries.finance_authorization_digest")
-  ) {
-    run(
-      db,
-      `INSERT INTO usage_legacy_finance_evidence
-         (entry_id, tenant_id, entry_hash, authority_status, migration_version)
-       SELECT id, tenant_id, entry_hash, 'legacy_unverified', 'usage-finance-authority/1'
-         FROM usage_ledger_entries
-        WHERE entry_type IN ('adjustment', 'credit')
-          AND finance_authorization_id IS NULL
-          AND finance_authorization_digest IS NULL
-       ON CONFLICT(entry_id) DO NOTHING`,
-    );
-  }
+  run(
+    db,
+    `INSERT INTO usage_legacy_finance_evidence
+       (entry_id, tenant_id, entry_hash, authority_status, migration_version)
+     SELECT id, tenant_id, entry_hash, 'legacy_unverified', 'usage-finance-authority/1'
+       FROM usage_ledger_entries
+      WHERE entry_type IN ('adjustment', 'credit')
+        AND finance_authorization_id IS NULL
+        AND finance_authorization_digest IS NULL
+     ON CONFLICT(entry_id) DO NOTHING`,
+  );
   run(
     db,
     `UPDATE feed_schedule_windows

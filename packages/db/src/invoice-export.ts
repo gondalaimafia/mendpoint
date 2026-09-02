@@ -94,6 +94,7 @@ export type InvoiceExportReconciliation = Readonly<{
   usageChain: Readonly<{
     ok: boolean;
     checked: number;
+    financeAuthorityStatus: "verified" | "legacy_unverified" | "invalid";
     legacyUnverifiedFinanceEntryIds: readonly string[];
   }>;
   sourceLines: Readonly<{ ok: boolean; checked: number }>;
@@ -1025,8 +1026,9 @@ export function reconcileInvoiceExport(
     usageChain: Object.freeze({
       ok: usage.ok,
       checked: usage.checked,
+      financeAuthorityStatus: usage.financeAuthorityStatus,
       legacyUnverifiedFinanceEntryIds: Object.freeze(
-        usage.ok ? [...(usage.legacyUnverifiedFinanceEntryIds ?? [])] : [],
+        [...usage.legacyUnverifiedFinanceEntryIds],
       ),
     }),
     sourceLines: Object.freeze({ ok: sourceLinesOk, checked: invoice.lines.length }),

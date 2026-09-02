@@ -1611,13 +1611,21 @@ export function reconcileUsageLedger(db: AppDb, tenantId: string) {
       entry.previousHash !== previousHash ||
       entry.entryHash !== expectedHash
     ) {
-      return { ok: false, checked: index, error: `usage_integrity:${entry.id}` };
+      return {
+        ok: false,
+        checked: index,
+        error: `usage_integrity:${entry.id}`,
+        financeAuthorityStatus: "invalid" as const,
+        legacyUnverifiedFinanceEntryIds,
+      };
     }
     if (!financeAuthorizationMatchesEntry(db, entry)) {
       return {
         ok: false,
         checked: index,
         error: `usage_finance_authorization_invalid:${entry.id}`,
+        financeAuthorityStatus: "invalid" as const,
+        legacyUnverifiedFinanceEntryIds,
       };
     }
     if (isLegacyUnverifiedFinanceEntry(db, entry)) {
@@ -1629,24 +1637,48 @@ export function reconcileUsageLedger(db: AppDb, tenantId: string) {
       reservations.set(entry.id, entry.reservedMcuMicrosDelta);
     } else if (entry.reservationId) {
       if (!reservations.has(entry.reservationId)) {
-        return { ok: false, checked: index, error: `usage_reservation_missing:${entry.id}` };
+        return {
+          ok: false,
+          checked: index,
+          error: `usage_reservation_missing:${entry.id}`,
+          financeAuthorityStatus: "invalid" as const,
+          legacyUnverifiedFinanceEntryIds,
+        };
       }
       reservations.set(
         entry.reservationId,
         reservations.get(entry.reservationId)! + entry.reservedMcuMicrosDelta,
       );
       if (reservations.get(entry.reservationId)! < 0) {
-        return { ok: false, checked: index, error: `usage_reservation_negative:${entry.id}` };
+        return {
+          ok: false,
+          checked: index,
+          error: `usage_reservation_negative:${entry.id}`,
+          financeAuthorityStatus: "invalid" as const,
+          legacyUnverifiedFinanceEntryIds,
+        };
       }
     }
     if (reserved < 0 || consumed < 0) {
-      return { ok: false, checked: index, error: `usage_balance_negative:${entry.id}` };
+      return {
+        ok: false,
+        checked: index,
+        error: `usage_balance_negative:${entry.id}`,
+        financeAuthorityStatus: "invalid" as const,
+        legacyUnverifiedFinanceEntryIds,
+      };
     }
     if (entry.invoiceReference) {
       invoices[entry.invoiceReference] =
         (invoices[entry.invoiceReference] ?? 0) + entry.consumedMcuMicrosDelta;
       if (invoices[entry.invoiceReference]! < 0) {
-        return { ok: false, checked: index, error: `usage_invoice_negative:${entry.id}` };
+        return {
+          ok: false,
+          checked: index,
+          error: `usage_invoice_negative:${entry.id}`,
+          financeAuthorityStatus: "invalid" as const,
+          legacyUnverifiedFinanceEntryIds,
+        };
       }
     }
     previousHash = entry.entryHash;
@@ -1659,14 +1691,25 @@ export function reconcileUsageLedger(db: AppDb, tenantId: string) {
      FROM usage_ledger_entries WHERE tenant_id = ?`,
     [tenantId],
   )!;
-  const ok = reserved === totals.reserved && consumed === totals.consumed;
+  const totalsMatch = reserved === totals.reserved && consumed === totals.consumed;
+  const financeAuthorityStatus = !totalsMatch
+    ? "invalid" as const
+    : legacyUnverifiedFinanceEntryIds.length > 0
+      ? "legacy_unverified" as const
+      : "verified" as const;
+  const ok = totalsMatch && financeAuthorityStatus === "verified";
   return {
     ok,
     checked: entries.length,
-    error: ok ? undefined : "usage_totals_mismatch",
+    error: !totalsMatch
+      ? "usage_totals_mismatch"
+      : financeAuthorityStatus === "legacy_unverified"
+        ? "usage_finance_authority_legacy_unverified"
+        : undefined,
     reservedMcuMicros: reserved,
     consumedMcuMicros: consumed,
     invoices,
+    financeAuthorityStatus,
     legacyUnverifiedFinanceEntryIds,
   };
 }

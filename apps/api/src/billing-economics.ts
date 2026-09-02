@@ -335,7 +335,13 @@ function publicGrossMargin(report: GrossMarginReconciliation) {
     complete: report.complete,
     currency: report.currency,
     ledgers: {
-      usage: { ok: report.usageIntegrity.ok, checked: report.usageIntegrity.checked },
+      usage: {
+        ok: report.usageIntegrity.ok,
+        checked: report.usageIntegrity.checked,
+        financeAuthorityStatus: report.usageIntegrity.financeAuthorityStatus,
+        legacyUnverifiedFinanceEntryIds:
+          report.usageIntegrity.legacyUnverifiedFinanceEntryIds,
+      },
       executionCosts: {
         ok: report.costIntegrity.ok && report.outcomeIntegrity.ok,
         checked: report.costIntegrity.checked,
