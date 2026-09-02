@@ -139,7 +139,13 @@ const CUSTOMER_ROLE_SECRETS = Object.freeze({
     "MENDPOINT_WEB_ACCESS_TOKEN",
     "OIDC_CLIENT_SECRET",
   ]),
+  // The only role permitted to take a backup: the encryption key plus the
+  // object-store credentials, and nothing else. MENDPOINT_APPLICATION_DATA_KEY is
+  // deliberately absent -- handing it over would let the backup process decrypt
+  // live application data, and the key-distinctness check that reads it already
+  // runs in the api role, which holds both.
   backup: Object.freeze([
+    "MENDPOINT_BACKUP_KEY",
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",

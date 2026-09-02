@@ -300,8 +300,22 @@ describe("Fettler-only customer Fly profile", () => {
     expect(backup.AWS_SECRET_ACCESS_KEY).toBe(env.AWS_SECRET_ACCESS_KEY);
     expect(backup.AWS_SESSION_TOKEN).toBe(env.AWS_SESSION_TOKEN);
     expect(backup.GITHUB_APP_PRIVATE_KEY).toBeUndefined();
-    expect(backup.MENDPOINT_BACKUP_KEY).toBeUndefined();
+    // The backup role is the ONLY role that can actually take a backup: it needs
+    // the encryption key as well as the object-store credentials. Nothing else
+    // gets both, and the backup role gets nothing else.
+    expect(backup.MENDPOINT_BACKUP_KEY).toBe(env.MENDPOINT_BACKUP_KEY);
+    expect(backup.MENDPOINT_APPLICATION_DATA_KEY).toBeUndefined();
+    expect(backup.OPENAI_API_KEY).toBeUndefined();
+    expect(backup.MENDPOINT_API_KEY).toBeUndefined();
+    expect(backup.MENDPOINT_SANDBOX_FLY_TOKEN).toBeUndefined();
+    expect(backup.FLY_API_TOKEN).toBeUndefined();
+    expect(backup.MENDPOINT_PROCESS_ROLE).toBe("backup");
     expect(backup.MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON).toBeUndefined();
+    // The reason the scheduler cannot live in the worker or the api process:
+    // neither can complete a backup, and moving the trigger must not change that.
+    expect(worker.MENDPOINT_BACKUP_KEY).toBeUndefined();
+    expect(worker.AWS_ACCESS_KEY_ID).toBeUndefined();
+    expect(api.AWS_ACCESS_KEY_ID).toBeUndefined();
     expect(CUSTOMER_WARDEN_REQUIRED_SECRETS).not.toContain(
       "MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON",
     );
