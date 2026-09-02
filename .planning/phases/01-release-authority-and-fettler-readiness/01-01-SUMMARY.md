@@ -16,7 +16,7 @@ affects: [01-02-readiness, 05-economics, 06-final-qualification]
 actuals:
   tokens: 24071
   tasks: 3
-  commits: 21
+  commits: 22
 
 tech-stack:
   added: []
@@ -170,7 +170,13 @@ status: complete
 - Protected `npm run ga:check`: passed.
 - Strict evidence reachability: passed; migration compute runtime is reachable.
 - `git diff --check`: passed.
-- Current base: `origin/main` at `b21503356259fb0b4e5f7f6599a2f45d0bbd1cfb`.
+- Current base: `origin/main` at `e69d997b7eef88ffcc7786a3e51da46eb1e677d4`.
+- Release-update tested implementation head: `c27fe751b06796d394579d999537fafb8998d55e`.
+- Release-update evaluator matrix: 23 of 23 passed; migration compute and closure matrix: 13 of 13 passed, for 36 of 36 focused tests.
+- Release-update affected typechecks: evaluator, platform, and scripts passed.
+- Release-update optimized production build: passed, 64 pages generated.
+- Release-update protected `npm run ga:check`: passed on the current base.
+- Release-update diff integrity: passed across the exact 14 plan-owned files.
 
 ## TDD Gate Compliance
 
@@ -192,8 +198,8 @@ None.
 ## Self-Check: PASSED
 
 - All 14 changed implementation, test, export, gate, and artifact files exist.
-- All 21 task commits are present on `codex/601-fettler-operating-contracts` after this repair commit.
-- The exact head is based on current `origin/main`, with no uncommitted implementation changes.
+- All 21 task commits are present on `codex/601-fettler-operating-contracts`; this release update adds one metadata commit rather than amending history.
+- The tested implementation head is based on current `origin/main`; the returned release-update head is its summary-only successor.
 
 ---
 *Phase: 01-release-authority-and-fettler-readiness*
