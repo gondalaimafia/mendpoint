@@ -715,6 +715,118 @@ describe("github app runtime", () => {
     expect(createPull).not.toHaveBeenCalled();
   });
 
+  it("resumes a commit-ready exact draft at pull request creation without repeating Git object writes", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const createBlob = vi.fn(async () => { throw new Error("duplicate_blob_write"); });
+    const createTree = vi.fn(async () => { throw new Error("duplicate_tree_write"); });
+    const createCommit = vi.fn(async () => { throw new Error("duplicate_commit_write"); });
+    const createRef = vi.fn(async () => { throw new Error("duplicate_ref_write"); });
+    const updateRef = vi.fn(async () => { throw new Error("duplicate_ref_write"); });
+    const exactPull = {
+      number: 24,
+      html_url: "https://github.com/acme/shop/pull/24",
+      state: "open",
+      draft: true,
+      title: "Fettler candidate",
+      body: "Exact candidate",
+      head: { ref: "mendpoint/fettler/candidate-a", sha: EXACT_COMMIT_SHA },
+      base: { ref: "main", sha: EXACT_BASE_SHA },
+    };
+    const createPull = vi.fn(async () => ({ data: exactPull }));
+    const fakeOctokit = {
+      git: {
+        getRef: vi.fn(async () => ({ data: { object: { sha: EXACT_COMMIT_SHA } } })),
+        getCommit: vi.fn(async ({ commit_sha }: { commit_sha: string }) => ({
+          data: commit_sha === EXACT_BASE_SHA
+            ? { sha: EXACT_BASE_SHA, tree: { sha: "b".repeat(40) }, parents: [] }
+            : {
+              sha: EXACT_COMMIT_SHA,
+              tree: { sha: "d".repeat(40) },
+              parents: [{ sha: EXACT_BASE_SHA }],
+              message: "Open approved Fettler candidate",
+              author: { name: "Mendpoint", email: "delivery@mendpoint.ai", date: "2026-09-01T12:00:00.000Z" },
+              committer: { name: "Mendpoint", email: "delivery@mendpoint.ai", date: "2026-09-01T12:00:00.000Z" },
+            },
+        })),
+        getTree: vi.fn(async ({ tree_sha }: { tree_sha: string }) => ({
+          data: {
+            truncated: false,
+            tree: tree_sha === "b".repeat(40)
+              ? [{ path: "src/a.ts", type: "blob", mode: "100644", sha: "blob-before" }]
+              : [{ path: "src/a.ts", type: "blob", mode: "100644", sha: "blob-after" }],
+          },
+        })),
+        createBlob,
+        createTree,
+        createCommit,
+        createRef,
+        updateRef,
+      },
+      repos: {
+        getContent: vi.fn(async () => ({
+          data: {
+            type: "file",
+            encoding: "base64",
+            content: Buffer.from("changed\n", "utf8").toString("base64"),
+          },
+        })),
+      },
+      pulls: {
+        list: vi.fn(async () => ({ data: [] })),
+        create: createPull,
+      },
+    };
+    const outage: GitHubDependencyOutagePort = {
+      async run<T>(operation: Parameters<GitHubDependencyOutagePort["run"]>[0]) {
+        expect(await operation.reconcile()).toEqual({ status: "missing" });
+        const executed = await operation.execute();
+        return { status: "completed" as const, value: executed.value as T };
+      },
+    };
+    const delivery = new GitHubAppDelivery(
+      { appId: "99", privateKeyPem: pem },
+      42,
+      undefined,
+      [77],
+      {
+        tenantId: "tenant-acme",
+        outage,
+        decide: () => { throw new Error("decision_not_expected"); },
+        retryBudget: 5,
+        expiresInMs: 60_000,
+        workerId: "worker-1",
+        authorityVersion: "installation-v1",
+        now: () => "2026-09-01T12:00:10.000Z",
+      },
+    );
+    (delivery as unknown as { octokit: () => Promise<typeof fakeOctokit> }).octokit =
+      async () => fakeOctokit;
+
+    await expect(delivery.deliverExactDraft({
+      owner: "acme",
+      repo: "shop",
+      baseBranch: "main",
+      expectedBaseSha: EXACT_BASE_SHA,
+      branch: "mendpoint/fettler/candidate-a",
+      commitMessage: "Open approved Fettler candidate",
+      commitDate: "2026-09-01T12:00:00.000Z",
+      title: "Fettler candidate",
+      body: "Exact candidate",
+      files: [{ path: "src/a.ts", content: "changed\n", mode: "100644" }],
+    })).resolves.toMatchObject({
+      number: 24,
+      commitSha: EXACT_COMMIT_SHA,
+      draft: true,
+    });
+    expect(createPull).toHaveBeenCalledTimes(1);
+    expect(createBlob).not.toHaveBeenCalled();
+    expect(createTree).not.toHaveBeenCalled();
+    expect(createCommit).not.toHaveBeenCalled();
+    expect(createRef).not.toHaveBeenCalled();
+    expect(updateRef).not.toHaveBeenCalled();
+  });
+
   it("threads the durable circuit snapshot into the GitHub decision input", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();

@@ -826,6 +826,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
       branch: input.branch,
     })}`;
     const expiresAt = new Date(Date.parse(now) + options.expiresInMs).toISOString();
+    let commitReadySha: string | undefined;
     const result = await options.outage.run<ExactDraftDeliveryResult>(Object.freeze({
       schemaVersion: 1,
       tenantId: options.tenantId,
@@ -840,12 +841,15 @@ export class GitHubAppDelivery implements GitHubDelivery {
       authorityVersion: options.authorityVersion,
       reconcile: async () => this.withAuthRetry(async (octokit) => {
         const observed = await inspectExistingExactDraft(octokit, input);
+        commitReadySha = observed.status === "commit_ready" ? observed.commitSha : undefined;
         return observed.status === "completed"
           ? observed
           : Object.freeze({ status: "missing" as const });
       }),
       execute: async () => {
-        const value = await this.withAuthRetry((octokit) => deliverExactDraftWithOctokit(octokit, input));
+        const value = await this.withAuthRetry((octokit) => commitReadySha === undefined
+          ? deliverExactDraftWithOctokit(octokit, input)
+          : deliverFromExistingExactCommit(octokit, input, commitReadySha));
         return Object.freeze({ value, completionDigest: digest(value) });
       },
       classify: (error, context) => {

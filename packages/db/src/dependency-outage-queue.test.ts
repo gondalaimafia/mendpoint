@@ -32,7 +32,339 @@ function retryDecision(nextAttemptAt = "2026-09-01T12:00:01.000Z"): DependencyOu
   };
 }
 
+function decisionForAction(
+  action: DependencyOutageFailureDecision["action"],
+): DependencyOutageFailureDecision {
+  const base = retryDecision("2026-09-02T12:00:01.000Z");
+  if (action === "reconcile") {
+    return {
+      ...base,
+      action,
+      failureKind: "completed",
+      retryable: false,
+      reason: "completed_effect_requires_reconciliation",
+      nextAttemptAt: null,
+      standing: "recovering",
+    };
+  }
+  if (action === "await_authority") {
+    return {
+      ...base,
+      action,
+      failureKind: "authentication",
+      retryable: false,
+      reason: "authority_change_required",
+      nextAttemptAt: null,
+      circuitState: "open",
+      circuit: {
+        state: "open",
+        openedAt: "2026-09-02T12:00:00.000Z",
+        cooldownMs: 30_000,
+        consecutiveFailures: 1,
+      },
+      standing: "degraded_blocked",
+    };
+  }
+  if (action === "fail") {
+    return {
+      ...base,
+      action,
+      failureKind: "permanent",
+      retryable: false,
+      reason: "permanent_failure",
+      nextAttemptAt: null,
+      circuitState: "open",
+      circuit: {
+        state: "open",
+        openedAt: "2026-09-02T12:00:00.000Z",
+        cooldownMs: 30_000,
+        consecutiveFailures: 1,
+      },
+      standing: "degraded_failed",
+    };
+  }
+  if (action === "wait") {
+    return {
+      ...base,
+      action,
+      reason: "circuit_open",
+      circuitState: "open",
+      circuit: {
+        state: "open",
+        openedAt: "2026-09-02T12:00:00.000Z",
+        cooldownMs: 30_000,
+        consecutiveFailures: 3,
+      },
+    };
+  }
+  return {
+    ...base,
+    action,
+    reason: "transient_failure",
+  };
+}
+
 describe("durable dependency outage queue", () => {
+  it("rejects every unknown decision enum and extra field while retaining the active fence", () => {
+    const invalidDecisions: readonly DependencyOutageFailureDecision[] = [
+      { ...retryDecision(), action: "mystery" } as never,
+      { ...retryDecision(), failureKind: "mystery" },
+      { ...retryDecision(), circuitState: "mystery" } as never,
+      { ...retryDecision(), circuit: { ...retryDecision().circuit, state: "mystery" } } as never,
+      { ...retryDecision(), standing: "mystery" } as never,
+      { ...retryDecision(), unsupported: true } as never,
+      { ...retryDecision(), circuit: { ...retryDecision().circuit, unsupported: true } } as never,
+    ];
+
+    for (const [index, decision] of invalidDecisions.entries()) {
+      const queue = createDependencyOutageQueue(new DatabaseSync(":memory:"));
+      const scope = { ...SCOPE, operationId: `invalid-decision-${index}` };
+      queue.enqueue({
+        ...scope,
+        retryBudget: 3,
+        expiresAt: "2026-09-02T14:00:00.000Z",
+        nextAttemptAt: "2026-09-02T12:00:00.000Z",
+        standing: "degraded_retrying",
+        authorityVersion: "model-authority-v1",
+      }, "2026-09-02T12:00:00.000Z");
+      const claim = queue.claim({
+        ...scope,
+        workerId: "worker-1",
+        now: "2026-09-02T12:00:00.000Z",
+        leaseMs: 30_000,
+        authorityVersion: "model-authority-v1",
+      })!;
+      expect(() => queue.fail(claim, decision, "2026-09-02T12:00:01.000Z"))
+        .toThrow("dependency_outage_decision_invalid");
+      expect(queue.get(scope)).toMatchObject({
+        status: "claimed",
+        claimGeneration: claim.claimGeneration,
+      });
+    }
+  });
+
+  it("rejects every invalid action and failure-kind combination", () => {
+    const failureKinds = [
+      "timeout", "throttled", "transient", "invalid_response", "authentication",
+      "permission", "permanent", "expired", "completed",
+    ] as const;
+    const allowed = {
+      retry: new Set(["timeout", "throttled", "transient", "invalid_response"]),
+      wait: new Set(["timeout", "throttled", "transient", "invalid_response"]),
+      await_authority: new Set(["authentication", "permission"]),
+      fail: new Set(["timeout", "throttled", "transient", "invalid_response", "permanent", "expired"]),
+      reconcile: new Set(["completed"]),
+    } satisfies Record<DependencyOutageFailureDecision["action"], ReadonlySet<string>>;
+
+    let index = 0;
+    for (const action of Object.keys(allowed) as DependencyOutageFailureDecision["action"][]) {
+      for (const failureKind of failureKinds) {
+        if (allowed[action].has(failureKind)) continue;
+        const queue = createDependencyOutageQueue(new DatabaseSync(":memory:"));
+        const scope = { ...SCOPE, operationId: `invalid-pair-${index++}` };
+        queue.enqueue({
+          ...scope,
+          retryBudget: 3,
+          expiresAt: "2026-09-02T14:00:00.000Z",
+          nextAttemptAt: "2026-09-02T12:00:00.000Z",
+          standing: "degraded_retrying",
+          authorityVersion: "model-authority-v1",
+        }, "2026-09-02T12:00:00.000Z");
+        const claim = queue.claim({
+          ...scope,
+          workerId: "worker-1",
+          now: "2026-09-02T12:00:00.000Z",
+          leaseMs: 30_000,
+          authorityVersion: "model-authority-v1",
+        })!;
+        expect(() => queue.fail(
+          claim,
+          { ...decisionForAction(action), failureKind },
+          "2026-09-02T12:00:01.000Z",
+        ), `${action}:${failureKind}`).toThrow("dependency_outage_decision_invalid");
+      }
+    }
+  });
+
+  it.each([
+    ["completed reconciliation", decisionForAction("reconcile"), "blocked", "completed_effect_requires_reconciliation"],
+    ["authentication recovery", decisionForAction("await_authority"), "blocked", "authority_change_required"],
+    ["permission recovery", { ...decisionForAction("await_authority"), failureKind: "permission" }, "blocked", "authority_change_required"],
+    ["transient retry", decisionForAction("retry"), "failed", "retry_budget_exhausted"],
+    ["throttle wait", { ...decisionForAction("wait"), failureKind: "throttled", reason: "provider_throttled" }, "failed", "retry_budget_exhausted"],
+  ] as const)("applies final-attempt precedence to %s", (_name, decision, status, reason) => {
+    const queue = createDependencyOutageQueue(new DatabaseSync(":memory:"));
+    queue.enqueue({
+      ...SCOPE,
+      retryBudget: 1,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      nextAttemptAt: "2026-09-02T12:00:00.000Z",
+      standing: "degraded_retrying",
+      authorityVersion: "model-authority-v1",
+    }, "2026-09-02T12:00:00.000Z");
+    const claim = queue.claim({
+      ...SCOPE,
+      workerId: "worker-1",
+      now: "2026-09-02T12:00:00.000Z",
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+    })!;
+    expect(queue.fail(claim, decision, "2026-09-02T12:00:01.000Z")).toMatchObject({
+      status,
+      lastFailureKind: decision.failureKind,
+      lastFailureReason: reason,
+    });
+  });
+
+  it("rejects retry scheduling at or beyond the operation expiry", () => {
+    for (const nextAttemptAt of [
+      "2026-09-02T14:00:00.000Z",
+      "2026-09-02T14:00:00.001Z",
+    ]) {
+      const queue = createDependencyOutageQueue(new DatabaseSync(":memory:"));
+      queue.enqueue({
+        ...SCOPE,
+        retryBudget: 3,
+        expiresAt: "2026-09-02T14:00:00.000Z",
+        nextAttemptAt: "2026-09-02T12:00:00.000Z",
+        standing: "degraded_retrying",
+        authorityVersion: "model-authority-v1",
+      }, "2026-09-02T12:00:00.000Z");
+      const claim = queue.claim({
+        ...SCOPE,
+        workerId: "worker-1",
+        now: "2026-09-02T12:00:00.000Z",
+        leaseMs: 30_000,
+        authorityVersion: "model-authority-v1",
+      })!;
+      expect(() => queue.fail(claim, retryDecision(nextAttemptAt), "2026-09-02T12:00:01.000Z"))
+        .toThrow("dependency_outage_retry_after_expiry");
+      expect(queue.get(SCOPE)).toMatchObject({ status: "claimed" });
+    }
+  });
+
+  it("rejects retry scheduling before the failure timestamp", () => {
+    const queue = createDependencyOutageQueue(new DatabaseSync(":memory:"));
+    queue.enqueue({
+      ...SCOPE,
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      nextAttemptAt: "2026-09-02T12:00:00.000Z",
+      standing: "degraded_retrying",
+      authorityVersion: "model-authority-v1",
+    }, "2026-09-02T12:00:00.000Z");
+    const claim = queue.claim({
+      ...SCOPE,
+      workerId: "worker-1",
+      now: "2026-09-02T12:00:00.000Z",
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+    })!;
+
+    expect(() => queue.fail(
+      claim,
+      retryDecision("2026-09-02T12:00:00.999Z"),
+      "2026-09-02T12:00:01.000Z",
+    )).toThrow("dependency_outage_retry_before_failure");
+    expect(queue.get(SCOPE)).toMatchObject({ status: "claimed" });
+  });
+
+  it.each([
+    ["before its first claim", "2026-09-02T12:00:00.000Z"],
+    ["while waiting for retry", "2026-09-02T12:30:00.000Z"],
+  ])("terminalizes queued work that expires %s", (_name, nextAttemptAt) => {
+    const db = new DatabaseSync(":memory:");
+    const queue = createDependencyOutageQueue(db);
+    queue.enqueue({
+      ...SCOPE,
+      retryBudget: 3,
+      expiresAt: "2026-09-02T13:00:00.000Z",
+      nextAttemptAt,
+      standing: "degraded_retrying",
+      authorityVersion: "model-authority-v1",
+    }, "2026-09-02T12:00:00.000Z");
+
+    expect(queue.claim({
+      ...SCOPE,
+      workerId: "worker-1",
+      now: "2026-09-02T13:00:00.000Z",
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+    })).toBeNull();
+    expect(queue.get(SCOPE)).toMatchObject({
+      status: "failed",
+      standing: "degraded_failed",
+      lastFailureKind: "expired",
+      lastFailureReason: "operation_expired",
+    });
+    expect(queue.history(SCOPE).at(-1)).toMatchObject({
+      kind: "failed",
+      details: { failureKind: "expired", reason: "operation_expired" },
+    });
+  });
+
+  it("settles an expired queued operation exactly once across competing claimers", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-outage-expiry-"));
+    const path = join(root, "outage.sqlite");
+    const first = createDependencyOutageQueue(new DatabaseSync(path));
+    const second = createDependencyOutageQueue(new DatabaseSync(path));
+    first.enqueue({
+      ...SCOPE,
+      retryBudget: 3,
+      expiresAt: "2026-09-02T13:00:00.000Z",
+      nextAttemptAt: "2026-09-02T12:00:00.000Z",
+      standing: "degraded_retrying",
+      authorityVersion: "model-authority-v1",
+    }, "2026-09-02T12:00:00.000Z");
+    const claimInput = {
+      ...SCOPE,
+      workerId: "worker-1",
+      now: "2026-09-02T13:00:00.000Z",
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+    };
+
+    expect(first.claim(claimInput)).toBeNull();
+    expect(second.claim({ ...claimInput, workerId: "worker-2" })).toBeNull();
+    expect(first.history(SCOPE).filter((event) =>
+      event.kind === "failed" && event.details.reason === "operation_expired"
+    )).toHaveLength(1);
+  });
+
+  it("replays an expired queued operation as the same terminal failure", async () => {
+    let now = "2026-09-02T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(new DatabaseSync(":memory:"), { now: () => now });
+    const operation = {
+      ...SCOPE,
+      workerId: "worker-1",
+      retryBudget: 3,
+      expiresAt: "2026-09-02T13:00:00.000Z",
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+      reconcile: async () => ({ status: "missing" as const }),
+      execute: async () => { throw new Error("execute_not_expected"); },
+      classify: () => retryDecision(),
+    };
+    queue.enqueue({
+      ...operation,
+      nextAttemptAt: "2026-09-02T12:30:00.000Z",
+      standing: "degraded_retrying",
+    }, now);
+    now = "2026-09-02T13:00:00.000Z";
+
+    await expect(queue.run(operation)).resolves.toMatchObject({
+      status: "failed",
+      record: { lastFailureKind: "expired", lastFailureReason: "operation_expired" },
+    });
+    await expect(queue.run(operation)).resolves.toMatchObject({
+      status: "failed",
+      record: { lastFailureKind: "expired", lastFailureReason: "operation_expired" },
+    });
+    expect(queue.history(SCOPE).filter((event) =>
+      event.kind === "failed" && event.details.reason === "operation_expired"
+    )).toHaveLength(1);
+  });
+
   it("rejects malformed injected failure decisions instead of minting retry authority", async () => {
     const queue = createDependencyOutageQueue(new DatabaseSync(":memory:"), {
       now: () => "2026-09-02T12:00:00.000Z",

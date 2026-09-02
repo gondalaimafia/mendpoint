@@ -40,6 +40,7 @@ import { proposeWardenFix } from "./fixes.js";
 import { discoverVerifyCommand } from "./discover-verify.js";
 import type { AgentPlanner, AgentTask, InheritedContextInjection } from "./types.js";
 import type {
+  ModelDependencyOutagePolicy,
   ModelDependencyOutageOperation,
   ModelDependencyOutagePort,
   ModelDependencyOutageResult,
@@ -112,8 +113,31 @@ describe("runtime model authority", () => {
 });
 
 describe("runtime model outage classification", () => {
+  it.each([
+    "ECONNREFUSED",
+    "EAI_AGAIN",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+    "UND_ERR_CONNECT_TIMEOUT",
+  ])("classifies known pre-dispatch %s failures as retryable transient work", (transportFailureCode) => {
+    const error = modelPlanOutageError({
+      status: "request_failed",
+      call: null,
+      transportFailureCode,
+      requestDispatchState: "not_dispatched",
+    } as never);
+    expect(error).not.toHaveProperty("remoteSideEffectUncertain");
+    expect(error).toMatchObject({ code: transportFailureCode });
+    expect(classifyModelProviderFailure({ error })).toEqual({ failureKind: "transient" });
+  });
+
   it("blocks reconciliation after a post-dispatch connection loss", () => {
-    const error = modelPlanOutageError({ status: "request_failed", call: null });
+    const error = modelPlanOutageError({
+      status: "request_failed",
+      call: null,
+      transportFailureCode: "ECONNRESET",
+      requestDispatchState: "uncertain",
+    } as never);
     expect(error).toMatchObject({ remoteSideEffectUncertain: true });
     expect(classifyModelProviderFailure({ error })).toEqual({ failureKind: "completed" });
   });
@@ -957,6 +981,134 @@ describe("Warden (API debug agent)", () => {
 
     expect(run).toHaveBeenCalledTimes(1);
     expect(result.metrics.model).toMatchObject({ calls: 1, successfulCalls: 1 });
+  });
+
+  it.each([
+    ["ECONNREFUSED", "transient"],
+    ["ECONNRESET", "completed"],
+  ] as const)("carries the underlying %s dispatch evidence through the live outage classifier", async (
+    transportFailureCode,
+    expectedFailureKind,
+  ) => {
+    const dir = intentFixture();
+    const priorUrl = process.env.LLM_AGENT_URL;
+    const priorKey = process.env.OPENAI_API_KEY;
+    const priorModel = process.env.LLM_AGENT_MODEL;
+    process.env.LLM_AGENT_URL = "https://models.example/v1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.LLM_AGENT_MODEL = TEST_MODEL_SOURCE.modelSourcePolicy.model;
+    const task = {
+      goal: "Repair the API path typo.",
+      repoRoot: dir,
+      verifyCommand: "node check.mjs",
+      errorLog: "HTTP 404 for /v1/chargess",
+      useLlm: true,
+      ...TEST_MODEL_SOURCE,
+      maxSteps: 3,
+    };
+    const binding: WardenCheckpointBinding = Object.freeze({
+      schemaVersion: 1,
+      tenantId: TEST_MODEL_SOURCE.tenantId,
+      jobId: `job-transport-${transportFailureCode.toLowerCase()}`,
+      attemptId: `attempt-transport-${transportFailureCode.toLowerCase()}`,
+      repositoryId: "repository-runtime-outage",
+      snapshotId: "snapshot-runtime-outage",
+      revision: "revision-runtime-outage",
+      sourceManifestSha256: `sha256:${"1".repeat(64)}`,
+      allowedPathsDigest: `sha256:${"2".repeat(64)}`,
+      verificationProfileDigest: `sha256:${"3".repeat(64)}`,
+      modelPolicyDigest: createWardenRuntimeModelAuthorityDigest(task),
+    });
+    const classifiedKinds: string[] = [];
+    const outage: ModelDependencyOutagePort = {
+      async run<T>(operation: ModelDependencyOutageOperation<T>) {
+        try {
+          const completed = await operation.execute();
+          return { status: "completed" as const, value: completed.value };
+        } catch (error) {
+          const decision = operation.classify(error, {
+            attempt: 1,
+            retryBudget: 3,
+            now: "2026-09-02T12:00:00.000Z",
+            circuit: { state: "closed", cooldownMs: 30_000, consecutiveFailures: 0 },
+          });
+          classifiedKinds.push(decision.failureKind);
+          return { status: "deferred" as const, decision };
+        }
+      },
+    };
+    const execution = {
+      state: () => ({ binding, pendingEffect: { kind: "none" } }),
+      effectRequest: () => null,
+      assertCurrent: async () => undefined,
+      runEffect: async (raw: unknown) => {
+        const effect = raw as {
+          executor: {
+            executeIdempotent: (input: {
+              effectId: string;
+              requestDigest: string;
+              writerLeaseGeneration: number;
+              signal: AbortSignal;
+              assertFence: () => Promise<void>;
+            }) => Promise<WardenRuntimeJson>;
+          };
+        };
+        return effect.executor.executeIdempotent({
+          effectId: `sha256:${"7".repeat(64)}`,
+          requestDigest: `sha256:${"8".repeat(64)}`,
+          writerLeaseGeneration: 1,
+          signal: new AbortController().signal,
+          assertFence: async () => undefined,
+        });
+      },
+    } as unknown as WardenRuntimeExecution;
+
+    try {
+      vi.stubGlobal("fetch", vi.fn(async () => {
+        throw Object.assign(new TypeError("fetch failed"), {
+          cause: { code: transportFailureCode },
+        });
+      }));
+      await expect(runWardenWithRuntime(task, {
+        execution,
+        binding,
+        repoRoot: dir,
+        verifyCommand: "node check.mjs",
+        modelOutage: {
+          outage,
+          inspect: () => null,
+          decide: (input: Parameters<ModelDependencyOutagePolicy>[0]) => ({
+            schemaVersion: 1,
+            action: input.failureKind === "completed" ? "reconcile" : "retry",
+            failureKind: input.failureKind,
+            retryable: input.failureKind !== "completed",
+            reason: input.failureKind === "completed"
+              ? "completed_effect_requires_reconciliation"
+              : "transient_failure",
+            nextAttemptAt: input.failureKind === "completed"
+              ? null
+              : "2026-09-02T12:00:01.000Z",
+            circuitState: "closed",
+            circuit: { state: "closed", cooldownMs: 30_000, consecutiveFailures: 1 },
+            standing: input.failureKind === "completed" ? "recovering" : "degraded_retrying",
+          }),
+          workerId: "worker-1",
+          retryBudget: 3,
+          expiresAt: "2026-09-02T14:00:00.000Z",
+          leaseMs: 30_000,
+          authorityVersion: binding.modelPolicyDigest,
+        },
+      } as never)).rejects.toThrow("warden_runtime_model_outage_deferred");
+      expect(classifiedKinds).toEqual([expectedFailureKind]);
+    } finally {
+      vi.unstubAllGlobals();
+      if (priorUrl === undefined) delete process.env.LLM_AGENT_URL;
+      else process.env.LLM_AGENT_URL = priorUrl;
+      if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorKey;
+      if (priorModel === undefined) delete process.env.LLM_AGENT_MODEL;
+      else process.env.LLM_AGENT_MODEL = priorModel;
+    }
   });
 
   it("aborts the runtime planner before a stale settlement can commit", async () => {

@@ -464,7 +464,7 @@ export function classifyModelProviderFailure(input: Readonly<{
   if (status === 408 || status === 425 || (status !== undefined && status >= 500 && status <= 599)) {
     return Object.freeze({ failureKind: "transient" });
   }
-  if (/ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH/i.test(code)) {
+  if (/ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT/i.test(code)) {
     return Object.freeze({ failureKind: "transient" });
   }
   return Object.freeze({ failureKind: "permanent" });

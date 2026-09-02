@@ -183,6 +183,29 @@ const FAILURE_KINDS = new Set([
   "timeout", "throttled", "transient", "invalid_response", "authentication",
   "permission", "permanent", "expired", "completed",
 ]);
+const FAILURE_ACTIONS = new Set(["retry", "wait", "await_authority", "fail", "reconcile"]);
+const CIRCUIT_STATES = new Set(["closed", "open", "half_open"]);
+const OUTAGE_STANDINGS = new Set([
+  "healthy", "degraded_retrying", "degraded_blocked", "degraded_failed", "recovering",
+]);
+const DECISION_KEYS = [
+  "action", "circuit", "circuitState", "failureKind", "nextAttemptAt", "reason",
+  "retryable", "schemaVersion", "standing",
+].join(",");
+const DECISION_FAILURE_KINDS: Readonly<Record<DependencyOutageFailureDecision["action"], ReadonlySet<string>>> = {
+  retry: new Set(["timeout", "throttled", "transient", "invalid_response"]),
+  wait: new Set(["timeout", "throttled", "transient", "invalid_response"]),
+  await_authority: new Set(["authentication", "permission"]),
+  fail: new Set(["timeout", "throttled", "transient", "invalid_response", "permanent", "expired"]),
+  reconcile: new Set(["completed"]),
+};
+const DECISION_REASONS: Readonly<Record<DependencyOutageFailureDecision["action"], ReadonlySet<string>>> = {
+  retry: new Set(["half_open_probe", "provider_throttled", "provider_response_invalid", "provider_timeout", "transient_failure"]),
+  wait: new Set(["circuit_open", "circuit_opened", "provider_throttled"]),
+  await_authority: new Set(["authority_change_required"]),
+  fail: new Set(["operation_expired", "permanent_failure", "retry_budget_exhausted"]),
+  reconcile: new Set(["completed_effect_requires_reconciliation"]),
+};
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -215,8 +238,16 @@ function validateScope(scope: DependencyOutageScope): void {
 }
 
 function validateFailureDecision(decision: DependencyOutageFailureDecision): void {
-  if (decision.schemaVersion !== 1 || !FAILURE_KINDS.has(decision.failureKind) ||
-      typeof decision.retryable !== "boolean" || !IDENTITY.test(decision.reason)) {
+  if (decision === null || typeof decision !== "object" || Array.isArray(decision) ||
+      Object.keys(decision).sort().join(",") !== DECISION_KEYS ||
+      decision.schemaVersion !== 1 || !FAILURE_ACTIONS.has(decision.action) ||
+      !FAILURE_KINDS.has(decision.failureKind) || typeof decision.retryable !== "boolean" ||
+      !IDENTITY.test(decision.reason) || !CIRCUIT_STATES.has(decision.circuitState) ||
+      !OUTAGE_STANDINGS.has(decision.standing) || decision.circuit === null ||
+      typeof decision.circuit !== "object" || Array.isArray(decision.circuit) ||
+      !CIRCUIT_STATES.has(decision.circuit.state) ||
+      !["consecutiveFailures,cooldownMs,state", "consecutiveFailures,cooldownMs,openedAt,state"]
+        .includes(Object.keys(decision.circuit).sort().join(","))) {
     throw new Error("dependency_outage_decision_invalid");
   }
   validateCircuit(decision.circuit);
@@ -228,11 +259,25 @@ function validateFailureDecision(decision: DependencyOutageFailureDecision): voi
   if (schedulesRetry !== decision.retryable || schedulesRetry !== (decision.nextAttemptAt !== null)) {
     throw new Error("dependency_outage_decision_invalid");
   }
-  if (decision.action === "reconcile" && decision.failureKind !== "completed") {
+  if (!DECISION_FAILURE_KINDS[decision.action].has(decision.failureKind) ||
+      !DECISION_REASONS[decision.action].has(decision.reason)) {
     throw new Error("dependency_outage_decision_invalid");
   }
-  if (decision.action === "await_authority" &&
-      decision.failureKind !== "authentication" && decision.failureKind !== "permission") {
+  const standingValid = decision.action === "retry"
+    ? decision.standing === "degraded_retrying" || decision.standing === "recovering"
+    : decision.action === "wait"
+      ? decision.standing === "degraded_retrying"
+      : decision.action === "await_authority"
+        ? decision.standing === "degraded_blocked"
+        : decision.action === "fail"
+          ? decision.standing === "degraded_failed"
+          : decision.standing === "recovering";
+  const circuitValid = decision.action === "retry"
+    ? decision.circuitState !== "open"
+    : decision.action === "wait" || decision.action === "await_authority" || decision.action === "fail"
+      ? decision.circuitState === "open"
+      : true;
+  if (!standingValid || !circuitValid) {
     throw new Error("dependency_outage_decision_invalid");
   }
 }
@@ -536,9 +581,6 @@ export class DependencyOutageQueue {
     iso(observedAt, "dependency_outage_timestamp_invalid");
     iso(input.nextAttemptAt, "dependency_outage_next_attempt_invalid");
     iso(input.expiresAt, "dependency_outage_expiry_invalid");
-    if (Date.parse(input.expiresAt) <= Date.parse(observedAt)) {
-      throw new Error("dependency_outage_expired");
-    }
     if (input.authorityVersion !== undefined && !IDENTITY.test(input.authorityVersion)) {
       throw new Error("dependency_outage_authority_invalid");
     }
@@ -557,6 +599,9 @@ export class DependencyOutageQueue {
           throw new Error("dependency_outage_operation_digest_conflict");
         }
         return fromRow(existing);
+      }
+      if (Date.parse(input.expiresAt) <= Date.parse(observedAt)) {
+        throw new Error("dependency_outage_expired");
       }
       this.db.prepare(`INSERT INTO dependency_outage_operations (
         tenant_id, dependency_kind, provider_id, operation_id, operation_digest,
@@ -597,18 +642,37 @@ export class DependencyOutageQueue {
       }
       const recovering = current.status === "claimed" &&
         current.claim_expires_at !== null && current.claim_expires_at <= input.now;
+      if (current.status === "queued" || recovering) {
+        if (!IDENTITY.test(input.authorityVersion)) {
+          throw new Error("dependency_outage_authority_invalid");
+        }
+        if (current.authority_version === null) {
+          throw new Error("dependency_outage_authority_missing");
+        }
+        if (current.authority_version !== input.authorityVersion) {
+          throw new Error("dependency_outage_authority_mismatch");
+        }
+      }
+      if (current.status === "queued" && current.expires_at <= input.now) {
+        this.db.prepare(`UPDATE dependency_outage_operations SET
+          status = 'failed', standing = 'degraded_failed', circuit_state = 'open',
+          circuit_opened_at = ?, consecutive_failures = consecutive_failures + 1,
+          claim_owner = NULL, claim_expires_at = NULL,
+          last_failure_kind = 'expired', last_failure_reason = 'operation_expired', updated_at = ?
+          WHERE tenant_id = ? AND dependency_kind = ? AND provider_id = ? AND operation_id = ?
+            AND status = 'queued'`)
+          .run(input.now, input.now, input.tenantId, input.dependencyKind,
+            input.providerId, input.operationId);
+        this.append(input, "failed", input.now, Object.freeze({
+          failureKind: "expired",
+          reason: "operation_expired",
+          expiresAt: current.expires_at,
+        }));
+        return null;
+      }
       if ((current.status !== "queued" && !recovering) ||
           current.next_attempt_at > input.now || current.expires_at <= input.now ||
           current.attempts_consumed >= current.retry_budget) return null;
-      if (!IDENTITY.test(input.authorityVersion)) {
-        throw new Error("dependency_outage_authority_invalid");
-      }
-      if (current.authority_version === null) {
-        throw new Error("dependency_outage_authority_missing");
-      }
-      if (current.authority_version !== input.authorityVersion) {
-        throw new Error("dependency_outage_authority_mismatch");
-      }
       const generation = current.claim_generation + 1;
       const expiresAt = new Date(Date.parse(input.now) + input.leaseMs).toISOString();
       this.db.prepare(`UPDATE dependency_outage_operations SET
@@ -680,8 +744,15 @@ export class DependencyOutageQueue {
         current.claim_generation === claim.claimGeneration &&
         current.claim_expires_at !== null && current.claim_expires_at > observedAt;
       if (!active) throw new Error("dependency_outage_claim_fence_lost");
-      const budgetExhausted = current.attempts_consumed >= current.retry_budget;
-      const status: DependencyOutageStatus = budgetExhausted || decision.action === "fail"
+      if (decision.nextAttemptAt !== null && decision.nextAttemptAt < observedAt) {
+        throw new Error("dependency_outage_retry_before_failure");
+      }
+      if (decision.nextAttemptAt !== null && decision.nextAttemptAt >= current.expires_at) {
+        throw new Error("dependency_outage_retry_after_expiry");
+      }
+      const budgetExhausted = (decision.action === "retry" || decision.action === "wait") &&
+        current.attempts_consumed >= current.retry_budget;
+      const status: DependencyOutageStatus = decision.action === "fail" || budgetExhausted
         ? "failed"
         : decision.action === "await_authority" || decision.action === "reconcile"
           ? "blocked"

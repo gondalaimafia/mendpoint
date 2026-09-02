@@ -14,8 +14,8 @@ affects: [01-18, model-runtime-binding, github-delivery-binding, production-read
 
 actuals:
   tokens: 40550
-  tasks: 3
-  commits: 21
+  tasks: 4
+  commits: 22
 
 tech-stack:
   added: []
@@ -60,6 +60,7 @@ key-decisions:
 patterns-established:
   - "Outage authority: tenant, dependency kind, provider, operation identifier, and operation digest form the exact recovery scope."
   - "Recovery: reconcile provider state before every external write and acknowledge completion once behind a lease fence."
+  - "Failure transitions: validate the complete versioned decision before mutation, preserve reconciliation and authority recovery ahead of retry exhaustion, and settle queued expiry exactly once."
 
 requirements-completed: []
 
@@ -127,6 +128,11 @@ status: complete
 - Added the supported database root export, API and worker policy injection, production pipeline composition, and restart plus encrypted backup and restore proof over the primary database.
 - Routed the live checkpointed Fettler model effect through the worker-supplied tenant queue while retaining the checkpoint ledger as completion authority and preserving its unknown-outcome no-repeat rule.
 - Added a bounded authenticated `/dependency-outages` health projection with digest-only operation identity, standing, provider, retry, expiry, circuit, authority-block reason, last transition, stale state, and strict tenant isolation.
+- Closed the failure-decision contract over exact keys, enums, action-to-failure mappings, standings, circuits, and action timestamps before any queue mutation.
+- Preserved completed-effect reconciliation and authentication or permission recovery at the final attempt while limiting retry-budget terminalization to retry-producing actions.
+- Settled expired queued operations transactionally with one immutable terminal history event and stable terminal replay across later runner invocations.
+- Preserved model transport dispatch evidence so refused connections, transient DNS failures, unreachable networks, and connect timeouts remain retryable while uncertain post-dispatch loss remains reconciliation-blocked.
+- Resumed an exact commit-ready GitHub draft at pull request creation without recreating blobs, trees, commits, or references.
 - Removed the legacy branch, commit, and pull-request write sequence from the real pipeline so every customer draft passes through `deliverExactDraft` and durable reconciliation.
 - Enforced exact authority equality before queued, claimed, or expired-lease work can execute, while preserving explicit blocked-operation reactivation after a validated authority rotation.
 - Classified GitHub primary and secondary rate-limit `403` responses as throttling before the generic permission rule, while true permission failures remain permanent.
@@ -147,6 +153,7 @@ status: complete
 11. **Review RED tests for live model reachability and health:** `66407249`
 12. **Live model queue binding and bounded tenant health:** `4bb1af43`
 13. **Failure classification and health redaction:** `4ac0c0d8`
+14. **Exact-head state-machine review repair:** current atomic repair commit
 
 Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/605), open, issue body read back with exact `Owner: Codex` claim.
 
@@ -215,9 +222,17 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - **Verification:** 318 exact-head focused integration tests, six affected typechecks, four complete dependency package suites, the protected-authority suite, and the optimized production build pass.
 - **Committed in:** `66407249`, `4bb1af43`, `4ac0c0d8`
 
+**6. Exact-head review found five coupled state-machine and recovery defects**
+- **Found during:** independent exact-head review of pull request #606 at `e59cc545`
+- **Issue:** Malformed decisions could create retry authority, retry exhaustion erased reconciliation and authority recovery, expired queued work never settled, known pre-dispatch model failures were treated as possibly completed, and commit-ready GitHub delivery repeated Git object writes.
+- **Fix:** Validated the exact decision union before mutation, made action precedence explicit, bounded retry timestamps to the live operation window, settled queued expiry once behind the database transaction, carried transport dispatch evidence into classification, and resumed exact-draft delivery from the existing commit.
+- **Files modified:** durable queue and tests, agent planner transport classification and tests, GitHub App recovery and tests, and this summary.
+- **Verification:** 279 focused tests, all seven affected complete workspace suites, seven scoped type checks, the optimized production build, the complete general availability gate, and diff integrity pass.
+- **Committed in:** current atomic repair commit
+
 ---
 
-**Total deviations:** 5: one architectural correction, one ownership-preserving deferral, and three independently reviewed reliability repairs.
+**Total deviations:** 6: one architectural correction, one ownership-preserving deferral, and four independently reviewed reliability repairs.
 **Impact on plan:** The engineering behavior and both live production call paths are implemented and tested. Requirement promotion still needs exact deployed-revision outage and rollback proof.
 
 ## Issues Encountered
@@ -231,10 +246,13 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - Exact plan commands plus hostile review regressions cover database, agent, GitHub, pipeline, ops, authority rotation, package resolution, and backup recovery.
 - Focused outage, backup, adapter, caller, and resolver matrix: 106 of 106 tests passed.
 - Current exact-head model, visibility, queue, delivery, and worker integration matrix: 318 of 318 tests passed.
+- Final exact-head outage snapshot: 279 of 279 tests passed across operations policy, database queue and export, agent planner and provider classification, GitHub exact-draft recovery, API health projection, and pipeline delivery.
 - Full package regressions: database passed 504 tests, agent passed 364 tests, GitHub passed 195 tests, operations passed 180 tests, and pipeline passed 272 tests.
+- Final affected workspace regressions: database passed 519 tests, agent passed 372 tests, GitHub passed 196 tests, operations passed 181 tests, pipeline passed 272 tests, API passed 706 tests, and worker passed 745 tests with one intentional skip.
 - Protected authority: exact base-interpreted rotation test passed with `package-lock.json` restored to SHA-256 `193181927b3e5813f43471c60c343c0300c6c71540a9b3921968a215cb57cd0d`.
 - TypeScript: ops, database, agent, GitHub, pipeline, API, and worker package checks passed with no errors.
 - Production build: optimized workspace build passed.
+- General availability gate: complete `npm run ga:check` passed, including the product contract, closure structure, configuration, public claims, action pins, architecture, model binding, names, ADR numbering, third-state, evidence reachability, revert obligations, and final GA preflight.
 - Diff integrity: `git diff --check` passed before the repair commit.
 - Current base: `1ae5e9a2c331f35ffbd95ae8f2fd34ba6436c40c`.
 - Current-base rerun: 318 of 318 focused integration tests, all six affected typechecks, 33 of 33 protected-authority tests, database 504 of 504, agent 364 of 364, GitHub 195 of 195, operations 180 of 180, pipeline 272 of 272, optimized 64-page production build, and diff integrity passed.
