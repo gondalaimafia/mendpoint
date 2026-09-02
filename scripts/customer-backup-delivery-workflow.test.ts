@@ -51,20 +51,18 @@ function runController(options: {
   handoffMetadataValid?: boolean;
 }) {
   const dir = mkdtempSync(join(tmpdir(), "customer-backup-delivery-"));
-  const bin = join(dir, "bin");
   const log = join(dir, "gh.log");
   const ledger = join(dir, "delivery.jsonl");
   const dispatched = join(dir, "dispatched");
   const handoffDispatched = join(dir, "handoff-dispatched");
-  mkdirSync(bin, { recursive: true });
   writeFileSync(log, "", "utf8");
-  executable(bin, "sleep", `#!/bin/sh
-exit 0
-`);
-  executable(
-    bin,
-    "gh",
-    `#!/bin/sh
+  // Keep the workflow integration real while avoiding a new shell process for
+  // every simulated GitHub and sleep call. Windows process startup otherwise
+  // makes individual default-timeout tests nondeterministic under host load.
+  const controllerHarness = `sleep() {
+  :
+}
+gh() {
 printf '%s\\n' "$*" >> "$GH_STUB_LOG"
 case "$1 $2" in
   'run list')
@@ -113,25 +111,24 @@ case "$1 $2" in
         if [ "$status" = 0 ] || [ "\${GH_STUB_DISPATCH_ACCEPTED_ON_ERROR:-0}" = 1 ]; then
           : > "$GH_STUB_DISPATCHED"
         fi
-        exit "$status"
+        return "$status"
         ;;
       *customer-backup-delivery.yml*)
         status="\${GH_STUB_HANDOFF_DISPATCH_STATUS:-0}"
         if [ "$status" = 0 ] || [ "\${GH_STUB_HANDOFF_ACCEPTED_ON_ERROR:-0}" = 1 ]; then
           : > "$GH_STUB_HANDOFF_DISPATCHED"
         fi
-        exit "$status"
+        return "$status"
         ;;
     esac
     ;;
 esac
-exit 0
-`,
-  );
+return 0
+}
+`;
   const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const env = {
     ...process.env,
-    PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
     GH_TOKEN: "not-a-real-token",
     GH_REPO: "mendpoint-tests/repository-that-does-not-exist",
     BACKUP_WORKFLOW: "customer-backup.yml",
@@ -170,7 +167,7 @@ exit 0
   };
   const run = (name: string, source: string) => {
     const script = join(dir, `${name}.sh`);
-    writeFileSync(script, source, "utf8");
+    writeFileSync(script, `${controllerHarness}\n${source}`, "utf8");
     return spawnSync(
       "bash",
       ["--noprofile", "--norc", "-e", "-o", "pipefail", script.replaceAll("\\", "/")],

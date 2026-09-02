@@ -90,9 +90,10 @@ jobs:
           CONTROLLER_RUN_ID: ${{ github.run_id }}
           DELIVERY_LEDGER_PATH: test-results/customer-backup-delivery/events.jsonl
           # The complete authority envelope is kept below the one-hour RPO:
-          # pre-dispatch freshness + active age + backup observation + all
-          # successor observations/backoffs + clock/API margin =
-          # 900 + 1200 + 120 + (3 * 120) + 30 + 300 = 2910.
+          # pre-dispatch freshness + active age + two possible cadence delays +
+          # backup observation + all successor observations/backoffs +
+          # clock/API margin =
+          # 900 + 1200 + (2 * 300) + 120 + (3 * 120) + 30 + 300 = 3510.
           DELIVERY_MAX_AGE_SECONDS: "900"
           DELIVERY_RPO_SECONDS: "3600"
           # A backup that remains active for twenty minutes has consumed the
