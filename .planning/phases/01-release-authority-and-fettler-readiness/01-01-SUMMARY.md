@@ -74,7 +74,7 @@ coverage:
         status: pass
     human_judgment: false
 
-duration: 3h
+duration: 3h 20m
 completed: 2026-09-01
 status: complete
 ---
@@ -85,9 +85,9 @@ status: complete
 
 ## Performance
 
-- **Duration:** 3 hours including current-base rebase and full repository verification
+- **Duration:** 3 hours 20 minutes including two current-base rebases and full repository verification
 - **Started:** 2026-09-01T19:13:00-05:00
-- **Completed:** 2026-09-01T22:13:06-05:00
+- **Completed:** 2026-09-01T22:33:00-05:00
 - **Tasks:** 3
 - **Files modified:** 12
 
@@ -100,9 +100,9 @@ status: complete
 
 ## Task Commits
 
-1. **Performance contract TDD:** `a54f021d`, `938ded6a`, `275a4865`, `d66f673c`, `cf3bd54d`
-2. **Migration compute TDD:** `87deb0a3`, `6d79f95b`, `10ecb73e`, `731e27d2`, `d1a9604d`
-3. **Closure artifact and protected release gate:** `1f9d78de`, `9c15fd02`, `cffa6b2b`, `e961fbba`
+1. **Performance contract TDD:** `d98f8f60`, `e7cb2f16`, `ebf25381`, `3c377389`, `08bfa9cd`
+2. **Migration compute TDD:** `b9065e1b`, `5b8616a7`, `fcc4bd70`, `d9f63901`, `fde7f1dc`
+3. **Closure artifact and protected release gate:** `6a779242`, `44216697`, `049e5490`, `00d74874`
 
 ## Files Created or Modified
 
@@ -130,7 +130,7 @@ status: complete
 - **Fix:** Added exact identity, measured concurrency, measured repository shape, and legacy tier normalization at the producer.
 - **Files modified:** `packages/eval/src/performance-runner.ts`, `packages/eval/src/performance-runner.test.ts`
 - **Verification:** Performance contract and runner test matrix passes 16 of 16.
-- **Committed in:** `cf3bd54d`
+- **Committed in:** `08bfa9cd`
 
 **2. [Rule 1 - Bug] Preserved proposal authority while connecting the closure gate**
 - **Found during:** Full repository tests
@@ -138,7 +138,7 @@ status: complete
 - **Fix:** Restored package bytes and invoked closure validation from the already-protected `scripts/ga-check.ts` executable.
 - **Files modified:** `scripts/ga-check.ts`, `scripts/fettler-production-closure.test.ts`
 - **Verification:** Proposal authority assertions pass 36 of 36, focused closure tests pass, and `npm run ga:check` passes.
-- **Committed in:** `cffa6b2b`, `e961fbba`
+- **Committed in:** `049e5490`, `00d74874`
 
 **3. [Rule 2 - Missing Critical] Added a non-test MCU lifecycle caller**
 - **Found during:** Evidence reachability verification
@@ -146,7 +146,7 @@ status: complete
 - **Fix:** The protected closure gate now creates and reconciles a deterministic bounded lifecycle and records only its self-check identity.
 - **Files modified:** `scripts/fettler-production-closure.ts`, `docs/FETTLER_PRODUCTION_REQUIREMENT_CLOSURE.json`
 - **Verification:** Strict evidence reachability passes and no longer reports the migration compute authorities as dead.
-- **Committed in:** `731e27d2`, `d1a9604d`
+- **Committed in:** `d9f63901`, `fde7f1dc`
 
 ---
 
@@ -167,7 +167,7 @@ status: complete
 - Protected `npm run ga:check`: passed.
 - Strict evidence reachability: passed; migration compute runtime is reachable.
 - `git diff --check`: passed.
-- Current base: `origin/main` at `24590c4df96c61da377161b12a5dfdcd7fd08250`.
+- Current base: `origin/main` at `4bf8e1c0fd729922c2203f0339d3befd5f612ad6`.
 
 ## TDD Gate Compliance
 
