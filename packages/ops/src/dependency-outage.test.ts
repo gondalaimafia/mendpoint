@@ -189,10 +189,30 @@ describe("dependency outage decision", () => {
       .toThrow("dependency_outage_tenant_invalid");
     expect(() => classifyDependencyOutage(failure({ operationDigest: "not-a-digest" })))
       .toThrow("dependency_outage_digest_invalid");
+    expect(() => classifyDependencyOutage(failure({
+      failureKind: "quota_exhausted_forever",
+    }) as never)).toThrow("dependency_outage_failure_kind_invalid");
     expect(() => assertDependencyOutageScope(
       { tenantId: "tenant-acme", dependencyKind: "model", providerId: "muse-spark" },
       { tenantId: "tenant-other", dependencyKind: "model", providerId: "muse-spark" },
     )).toThrow("dependency_outage_scope_mismatch");
+  });
+
+  it("keeps every version-one failure kind explicit", () => {
+    const supported = [
+      "timeout",
+      "throttled",
+      "transient",
+      "invalid_response",
+      "authentication",
+      "permission",
+      "permanent",
+      "expired",
+      "completed",
+    ] as const;
+    expect(supported.map((failureKind) =>
+      classifyDependencyOutage(failure({ failureKind })).failureKind
+    )).toEqual(supported);
   });
 });
 
