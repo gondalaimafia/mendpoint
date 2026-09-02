@@ -94,26 +94,27 @@ describe("Warden run input", () => {
     });
   });
 
-  it("accepts an optional missionId and rejects an empty or padded one", () => {
-    expect(parseWardenRunInput(valid({ missionId: "mission-a" }))).toMatchObject({
-      ok: true,
-      value: { missionId: "mission-a" },
+  it("rejects any request carrying missionId now that public Mission binding is removed", () => {
+    for (const missionId of ["mission-a", "", " mission-a", 12]) {
+      expect(parseWardenRunInput(valid({ missionId }))).toEqual({
+        ok: false,
+        error: "missionId is not supported",
+      });
+    }
+  });
+
+  it("parses a request without missionId identically and binds no mission", () => {
+    const result = parseWardenRunInput(valid());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toMatchObject({
+      mode: "repair",
+      goal: "Repair the charges API path.",
+      consumerId: "consumer-a",
+      allowedChangedPaths: ["src/payments.ts"],
+      maxSteps: 20,
     });
-    const omitted = parseWardenRunInput(valid());
-    expect(omitted.ok).toBe(true);
-    if (omitted.ok) expect(omitted.value.missionId).toBeUndefined();
-    expect(parseWardenRunInput(valid({ missionId: "" }))).toEqual({
-      ok: false,
-      error: "missionId must be a nonempty mission id",
-    });
-    expect(parseWardenRunInput(valid({ missionId: " mission-a" }))).toEqual({
-      ok: false,
-      error: "missionId must be a nonempty mission id",
-    });
-    expect(parseWardenRunInput(valid({ missionId: 12 }))).toEqual({
-      ok: false,
-      error: "missionId must be a nonempty mission id",
-    });
+    expect(Object.keys(result.value)).not.toContain("missionId");
   });
 
   it("rejects invalid types and budgets", () => {
