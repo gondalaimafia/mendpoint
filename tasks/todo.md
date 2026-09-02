@@ -94,6 +94,8 @@
 
 Second exact-head review repair: a producer response is now classified as producer evidence before validation, so deadline or abort state can cancel only a still-unresolved probe and can never hide malformed returned evidence. Historical credits use a versioned deterministic allocation group: the root ledger entry retains the approved request, bounded offset and portion entries distribute the debit across the invoice's immutable entitlement and price-version lines, all rows share one finance authorization, and reconciliation reconstructs and verifies the complete group. Hostile coverage includes wrong invocation identity, nonce, timestamp, missing provenance, the response-to-validation abort race, partial and full cumulative credits, excess rejection, exact replay, allocation attribution, and reconciliation.
 
+Repair verification at exact local head: the focused performance and usage matrix passes 50 of 50 tests; the complete database and evaluation matrix passes 81 files and 721 tests; full workspace typecheck passes; the optimized 64-route production build passes; every GA preflight gate passes; and diff integrity is clean. Publication, protected continuous integration, merge, deployment, and production readback remain intentionally pending fresh independent exact-head review.
+
 - [x] RED: add database lifecycle tests for encrypted envelopes, tenant scope, rotation, expiry, retirement, and immutable incident revocation.
 - [x] GREEN: implement the additive secret lifecycle schema and atomic persistence module.
 - [x] RED: add provider and SCM materialization tests for durable lifecycle resolution, fail-closed audit, rotation, revocation, and pre-transport denial.
