@@ -2,15 +2,15 @@
 phase: 01-release-authority-and-fettler-readiness
 plan: 01-04
 subsystem: database tenant isolation
-status: implemented_review_repair
+status: rebase_complete_pending_exact_head_review
 tags:
   - tenant-isolation
   - legacy-migration
   - hostile-tests
 dependency_graph:
   requires:
-    - pull request 625 rebased review base ddd3954d316d4844e7e715fd04e77d47949ceb45
-    - verified omitted-tenant repair head 164b9627a6c8f355b092e66307376eb43448d278
+    - pull request 625 assigned review base d4a5317ffbe51f33b736a50b0621a7a94cf85a23
+    - verified rebased code head 61d079f1587d1f9e3236c2e1875041e7bf5f0db3
     - issue 624 tenant ownership quarantine contract
   provides:
     - immutable attested source identity and ownership
@@ -100,14 +100,15 @@ The repair adds the smallest shared boundary for the review findings:
 
 ## Verification
 
-- Current verified repair head: `164b9627a6c8f355b092e66307376eb43448d278`.
-- Focused tenant migration suite: 40 of 40 tests passed.
-- Full database suite: 60 files and 560 tests passed.
+- Assigned review base: `d4a5317ffbe51f33b736a50b0621a7a94cf85a23`.
+- Rebased code head: `61d079f1587d1f9e3236c2e1875041e7bf5f0db3`.
+- Focused tenant migration suite at the rebased code head: 40 of 40 tests passed.
+- Full database suite at the rebased code head: 60 files and 560 tests passed.
 - Database TypeScript typecheck passed.
 - Diff integrity passed before commit.
 
 The optimized production build and general-availability preflight belong to the
-rebased review base `ddd3954d316d4844e7e715fd04e77d47949ceb45`.
+assigned review base `d4a5317ffbe51f33b736a50b0621a7a94cf85a23`.
 They are inherited base evidence, not current-head proof for the omitted-tenant
 repair.
 
@@ -120,10 +121,13 @@ repair.
 
 ## Remaining Authority
 
-This implementation does not push, merge, or deploy the pull request. The local repair head requires the root-controlled current-main rebase, independent exact-head review, and every protected check.
+The current-main rebase is complete. This subsequent evidence-only commit changes
+the exact review head without changing the tested database code tree, so the root
+release lane still owns independent exact-head review, push, and every protected
+check before merge or deployment.
 
 ## Self-Check
 
 - All four independent review blockers have direct hostile regressions.
-- No remote branch was changed; the root release lane owns rebase and push after reviewing this evidence commit.
+- No remote branch was changed; the root release lane owns exact-head review and push after reviewing this evidence commit.
 - Pull requests 606 and 610 and Plans 01-05 and 01-06 are untouched.
