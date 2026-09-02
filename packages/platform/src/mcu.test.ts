@@ -255,6 +255,40 @@ describe("migration compute units", () => {
     });
   });
 
+  it("rejects a credit that makes its exact invoice allocation negative", () => {
+    const evidence = lifecycle();
+    const reservation = evidence.entries[0]!;
+    evidence.entries = attachFinanceAuthority(rechain([
+      reservation,
+      {
+        ...evidence.entries[1]!,
+        reservedMcuMicrosDelta: -2_000_000,
+        consumedMcuMicrosDelta: 2_000_000,
+        invoiceReference: "invoice-a",
+      },
+      {
+        ...evidence.entries[2]!,
+        entryType: "settlement",
+        idempotencyKey: "settle-2",
+        reservationId: reservation.id,
+        reservedMcuMicrosDelta: -2_000_000,
+        consumedMcuMicrosDelta: 2_000_000,
+        invoiceReference: "invoice-b",
+        actorId: "service-fettler-meter",
+        reasonCode: "task_usage_settled",
+        financeAuthorization: null,
+      },
+      {
+        ...evidence.entries[3]!,
+        consumedMcuMicrosDelta: -2_500_000,
+        invoiceReference: "invoice-a",
+      },
+    ]));
+
+    expect(() => reconcileMcuLedgerLifecycle(evidence))
+      .toThrow("mcu_credit_exceeds_invoice_consumption");
+  });
+
   it("rejects settlement above the reservation units released by that entry", () => {
     const overSettled = lifecycle();
     overSettled.entries[1] = {
