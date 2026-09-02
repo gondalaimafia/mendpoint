@@ -40,7 +40,7 @@
     ".github/workflows/ci.yml": "sha256:af2e34aa2a94375846fc34ba41978598f05dedbe03a68dd161434199a6a975b3",
     "scripts/production-closure-ci-workflow.test.ts": "sha256:5942062f144d6fc9ce4c15c4ba0bc7a38ebc6bbcc793d409fb9faedbe9a63d24",
     "package.json": "sha256:5166abfa08925beec8bbf6cc0078435bf37f1d4165e25524608924d840dd606a",
-    "package-lock.json": "sha256:193181927b3e5813f43471c60c343c0300c6c71540a9b3921968a215cb57cd0d",
+    "package-lock.json": "sha256:61e37bea40726703826869897433710bc659a5c92fc1654fdf96c9c145acac6d",
     "tsconfig.base.json": "sha256:7c157e5eafd2be931e382044c0bdbf7008e111c119c3932f6fd31603a28e8ede",
     "scripts/tsconfig.json": "sha256:8607a9e57b531b9c941819da05b1ba70c991389a5d1b3d13be06d109d49b22e5",
     "scripts/production-closure-proposal-authority.ts": "sha256:d2648ed808e0d257e3d1fa23f7d3c72c04343c77320f64d9b75e598a1f803b7c",

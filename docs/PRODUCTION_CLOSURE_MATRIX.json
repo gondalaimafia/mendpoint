@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-09-02T08:46:05.976Z",
-    "observedMainRevision": "1ae5e9a2c331f35ffbd95ae8f2fd34ba6436c40c",
-    "observationDigest": "sha256:2bc4671c8863a06243bc001a11f68c91980fec227054b4b0f58a8369b1c5d5ae",
+    "observedAt": "2026-09-02T19:15:32.625Z",
+    "observedMainRevision": "4952aefd6a4578345e70eb3062f27db644bbcd8e",
+    "observationDigest": "sha256:8b51e4ee517e6a72078e9cd7699489d6a0a3abca49bb3277565450ae8e3112e8",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 619,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/619",
-      "title": "closure: activate the D1 successor and retire the predecessor (rotation C of 3, activate_successor)",
+      "number": 634,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/634",
+      "title": "deps: bump @xmldom/xmldom to 0.8.15 to clear GHSA-6gmq-8vp8-gcm6 (runtime rotation)",
       "baseBranch": "main",
-      "headBranch": "claude/d1-rotation-c",
+      "headBranch": "claude/audit-xmldom",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2087,24 +2087,12 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260902-021",
-        "kind": "activate_successor",
-        "issuedAt": "2026-09-02T08:46:05.976Z",
-        "expiresAt": "2026-09-03T08:46:05.976Z",
-        "basePolicySha256": "sha256:44a488beb1ed74fdfb40d5fb29af9bca9391ca892fada5cad5cd17e1ea413adf",
-        "proposedPolicySha256": "sha256:35a37e88ffd1250d40666198cae9f4c1ee5d53c66b3774a606eb159d167bac72",
-        "successor": {
-          "templatePath": "config/production-closure-successors/closure-authority-systemic-escalation.yml",
-          "workflowPath": ".github/workflows/closure-authority-systemic-escalation.yml",
-          "workflowSha256": "sha256:955f0df2589cb71181621b8aa29ca4215d3bf4a29684985d74bf391d2b98e422",
-          "externalCheckName": "mendpoint-production-closure-authority-systemic-escalation",
-          "externalCheckAppId": 4718395,
-          "controllerCheckName": "mendpoint-production-closure-controller-systemic-escalation",
-          "controllerCheckAppId": 15368,
-          "controllerStatusCreatorLogin": "github-actions[bot]",
-          "controllerStatusCreatorUserId": 41898282,
-          "activationDeadline": "2026-09-08T06:34:50.583Z"
-        }
+        "rotationId": "rotation-20260902-022",
+        "kind": "runtime",
+        "issuedAt": "2026-09-02T19:15:32.625Z",
+        "expiresAt": "2026-09-03T19:15:32.625Z",
+        "basePolicySha256": "sha256:35a37e88ffd1250d40666198cae9f4c1ee5d53c66b3774a606eb159d167bac72",
+        "proposedPolicySha256": "sha256:d20d8688f709fe50cfa3c790e7522d76a2d630175c3f8ff7c92ae4a0127aef41"
       }
     },
     "pullRequests": [
