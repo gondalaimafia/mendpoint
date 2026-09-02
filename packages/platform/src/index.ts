@@ -128,7 +128,6 @@ export {
   MCU_SCHEDULE_DIGEST,
   MCU_LEDGER_ENTRY_TYPES,
   mcuScheduleDigest,
-  assertMcuScheduleChange,
   calculateMcuV1,
   formatMcu,
 } from "./mcu.js";
