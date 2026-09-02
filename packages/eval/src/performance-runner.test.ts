@@ -24,6 +24,7 @@ const METRICS: readonly PerformanceMetric[] = [
   "campaign_fanout",
 ];
 const EXPECTED_OBSERVATION_LIMIT = 10_000;
+const EXPECTED_RESPONSE_BYTE_LIMIT = 1_048_576;
 
 const temporaryDirectories: string[] = [];
 
@@ -355,7 +356,23 @@ describe("performance runner", () => {
     expect(report.observations).toHaveLength(5);
     expect(report.observations.every((item) => item.durationMs === 1 && !item.success)).toBe(true);
     expect(report.observations.every((item) => item.bindingSource === "request_context")).toBe(true);
+    expect(report.abortReason).toBe("probe_failure_unobserved");
     expect(report.evaluation).toBeNull();
+  });
+
+  it("retains the same internal abort reason for invalid producer measurements", async () => {
+    const report = await runPerformanceProbe({
+      contract: contract(),
+      tierId: "test-tier",
+      mode: "load",
+      ...metadata(),
+      now: () => 0,
+      probe: async () => ({ ...measurement(), metrics: {} }) as PerformanceProbeMeasurement,
+    });
+
+    expect(report.status).toBe("incomplete");
+    expect(report.abortReason).toBe("probe_failure_unobserved");
+    expect(report.observations.every((item) => !item.success)).toBe(true);
   });
 
   it("rejects a producer-observed repository shape that differs from the requested fixture", async () => {
@@ -427,6 +444,7 @@ describe("performance runner", () => {
     expect(signals).toHaveLength(2);
     expect(signals.every((signal) => signal.aborted)).toBe(true);
     expect(report.status).toBe("incomplete");
+    expect(report.abortReason).toBe("duration_elapsed");
     expect(report.cancelledInvocationCount).toBe(2);
     expect(report.observations).toHaveLength(0);
     expect(report.ok).toBe(false);
@@ -604,5 +622,62 @@ describe("performance runner", () => {
       repository: metadata().repository,
       signal: new AbortController().signal,
     })).rejects.toThrow("performance_probe_repository_mismatch");
+  });
+
+  it("rejects an oversized declared response before reading its body", async () => {
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(new TextEncoder().encode(JSON.stringify(measurement())));
+        controller.close();
+      },
+    });
+    const probe = createHttpPerformanceProbe({
+      endpoint: "https://probe.invalid/performance",
+      fetch: async () => new Response(body, {
+        status: 200,
+        headers: { "content-length": String(EXPECTED_RESPONSE_BYTE_LIMIT + 1) },
+      }),
+    });
+
+    await expect(probe({
+      invocationId: "test-tier.load.00000000", sequence: 0, mode: "load",
+      tier: contract().tiers[0]!, repositoryRevision: "a".repeat(40),
+      deploymentRevision: "b".repeat(40), fixtureDigest: "c".repeat(64),
+      tenantId: "tenant-fettler-production", repositoryId: "github-1319732323",
+      correlationId: "corr-fettler-performance", source: "fettler-production-probe",
+      repository: metadata().repository, signal: new AbortController().signal,
+    })).rejects.toThrow("performance_probe_response_too_large");
+    expect(pulls).toBe(0);
+  });
+
+  it("cancels and rejects an undeclared streaming response overrun with a stable code", async () => {
+    let cancelled = 0;
+    let emitted = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (emitted) return;
+        emitted = true;
+        controller.enqueue(new Uint8Array(EXPECTED_RESPONSE_BYTE_LIMIT + 1));
+      },
+      cancel() {
+        cancelled += 1;
+      },
+    });
+    const probe = createHttpPerformanceProbe({
+      endpoint: "https://probe.invalid/performance",
+      fetch: async () => new Response(body, { status: 200 }),
+    });
+
+    await expect(probe({
+      invocationId: "test-tier.load.00000000", sequence: 0, mode: "load",
+      tier: contract().tiers[0]!, repositoryRevision: "a".repeat(40),
+      deploymentRevision: "b".repeat(40), fixtureDigest: "c".repeat(64),
+      tenantId: "tenant-fettler-production", repositoryId: "github-1319732323",
+      correlationId: "corr-fettler-performance", source: "fettler-production-probe",
+      repository: metadata().repository, signal: new AbortController().signal,
+    })).rejects.toThrow("performance_probe_response_too_large");
+    expect(cancelled).toBe(1);
   });
 });

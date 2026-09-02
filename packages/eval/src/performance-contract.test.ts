@@ -204,6 +204,9 @@ describe("Fettler performance contract", () => {
       );
     }
     expect(documentation).toContain("--repository-language-source-lines=typescript:50000");
+    expect(documentation).toContain("--repository-max-file-bytes=1000000");
+    expect(documentation).toContain("10,000 observations");
+    expect(documentation).toContain("2,000 complete probe invocations");
   });
   it("publishes production workload ceilings, language mix, concurrency, and metric quality", () => {
     const validated = validatePerformanceContract(FETTLER_PERFORMANCE_CONTRACT);
@@ -383,6 +386,29 @@ describe("Fettler performance contract", () => {
       "load",
       EVALUATED_AT,
     )).toThrow("performance_repository_shape_exceeds_tier");
+
+    expect(() => evaluatePerformanceRun(
+      contract(),
+      base,
+      binding({
+        repository: {
+          ...binding().repository,
+          maxFileBytes: 1_000_001,
+        } as PerformanceEvidenceBinding["repository"],
+      }),
+      "load",
+      EVALUATED_AT,
+    )).toThrow("performance_repository_file_bytes_exceeds_tier");
+
+    const missingMaximumFileBytes = binding();
+    delete (missingMaximumFileBytes.repository as unknown as Record<string, unknown>).maxFileBytes;
+    expect(() => evaluatePerformanceRun(
+      contract(),
+      base,
+      missingMaximumFileBytes,
+      "load",
+      EVALUATED_AT,
+    )).toThrow("performance_repository_max_file_bytes_invalid");
 
     expect(() => evaluatePerformanceRun(
       FETTLER_PERFORMANCE_CONTRACT,

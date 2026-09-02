@@ -235,6 +235,31 @@ describe("migration compute units", () => {
       .toThrow("mcu_ledger_previous_hash_invalid");
   });
 
+  it("rejects negative adjustments so every consumption reduction is classified as a credit", () => {
+    const mislabeledCredit = lifecycle();
+    mislabeledCredit.entries[2] = {
+      ...mislabeledCredit.entries[2]!,
+      consumedMcuMicrosDelta: -500_000,
+    };
+    mislabeledCredit.entries = rechain(mislabeledCredit.entries);
+
+    expect(() => reconcileMcuLedgerLifecycle(mislabeledCredit))
+      .toThrow("mcu_adjustment_invalid");
+  });
+
+  it("rejects finance mutations without exact durable finance authority", () => {
+    const missingAuthority = lifecycle();
+    for (const entry of missingAuthority.entries) {
+      if (entry.entryType === "adjustment" || entry.entryType === "credit") {
+        delete (entry as unknown as Record<string, unknown>).financeAuthorization;
+      }
+    }
+    missingAuthority.entries = rechain(missingAuthority.entries);
+
+    expect(() => reconcileMcuLedgerLifecycle(missingAuthority))
+      .toThrow("mcu_finance_authority_required");
+  });
+
   it("creates reproducible settled entry identities", () => {
     const first = lifecycle();
     const second = lifecycle();
