@@ -345,12 +345,89 @@ describe("signed invoice exports", () => {
     const creditLines = invoice.lines.filter((line) => line.kind === "credit");
     expect(creditLines).toHaveLength(2);
     expect(creditLines.every((line) => line.mcuMicros < 0 && line.moneyMicros < 0)).toBe(true);
-    expect(invoice.lines.filter((line) => line.mcuMicros > 0 && line.kind !== "usage")
-      .every((line) => line.kind === "adjustment")).toBe(true);
+    expect(invoice.lines.filter((line) => line.mcuMicros > 0 && line.kind !== "usage"))
+      .toEqual([]);
     expect(invoice.subtotalMoneyMicros).toBe(30_000);
     expect(reconcileInvoiceExport(db, "tenant-a", invoice.id, hmacSigner())).toMatchObject({
       complete: true,
       usageChain: { ok: true },
+    });
+  });
+
+  it("prices a late adjustment from its approved historical invoice allocation", () => {
+    const { db } = open();
+    seed(db);
+    createUsagePriceVersion(db, {
+      id: "price-tenant-a-current",
+      tenantId: "tenant-a",
+      formulaVersion: "mcu-v1",
+      currency: "USD",
+      pricePerMcuMoneyMicros: 40_000,
+      effectiveAt: "2026-09-01T00:00:00.000Z",
+      expiresAt: "2026-10-01T00:00:00.000Z",
+      contractReference: "contract-tenant-a-current",
+      createdAt: "2026-09-01T00:00:00.000Z",
+    });
+    createUsageEntitlement(db, {
+      id: "entitlement-tenant-a-current",
+      tenantId: "tenant-a",
+      priceVersionId: "price-tenant-a-current",
+      quotaMcuMicros: 20_000_000,
+      features: ["fettler"],
+      contractReference: "contract-tenant-a-current",
+      periodStart: "2026-09-01T00:00:00.000Z",
+      periodEnd: "2026-10-01T00:00:00.000Z",
+      createdAt: "2026-09-01T00:00:00.000Z",
+    });
+    const authorization = createUsageFinanceAuthorization(db, {
+      id: "finance-late-adjustment-a",
+      tenantId: "tenant-a",
+      approvedByPrincipalId: "actor-a",
+      actorPrincipalId: "actor-a",
+      entryType: "adjustment",
+      invoiceReference: "invoice-a",
+      entryIdempotencyKey: "late-adjustment-a",
+      mcuMicrosDelta: 1_000_000,
+      reason: "late historical correction",
+      approvedAt: "2026-09-02T12:00:00.000Z",
+      expiresAt: "2026-09-02T12:05:00.000Z",
+    });
+    const adjustment = adjustUsage(db, {
+      id: "late-adjustment-a",
+      tenantId: "tenant-a",
+      idempotencyKey: "late-adjustment-a",
+      taskId: "task-a",
+      campaignId: "campaign-a",
+      mcuMicrosDelta: 1_000_000,
+      invoiceReference: "invoice-a",
+      reason: "late historical correction",
+      actorPrincipalId: "actor-a",
+      financeAuthorizationId: authorization.id,
+      financeAuthorizationDigest: authorization.authorizationDigest,
+      createdAt: "2026-09-02T12:01:00.000Z",
+    });
+    expect(adjustment).toMatchObject({
+      entitlementId: "entitlement-tenant-a",
+      priceVersion: "price-tenant-a",
+    });
+    const invoice = createInvoiceExport(db, createInput({
+      id: "invoice-late-adjustment-a",
+      idempotencyKey: "invoice-late-adjustment-a",
+      periodStart: "2026-09-02T00:00:00.000Z",
+      periodEnd: "2026-09-03T00:00:00.000Z",
+      issuedAt: "2026-09-04T00:00:00.000Z",
+    }));
+    expect(invoice.lines).toMatchObject([{
+      usageEntryId: "late-adjustment-a",
+      kind: "adjustment",
+      priceVersionId: "price-tenant-a",
+      mcuMicros: 1_000_000,
+      moneyMicros: 20_000,
+    }]);
+    expect(reconcileGrossMargin(db, "tenant-a")).toMatchObject({
+      adjustedMcuMicros: 1_000_000,
+      adjustmentMoneyMicros: 20_000,
+      netRevenueMoneyMicros: 100_000,
     });
   });
 
@@ -696,6 +773,23 @@ describe("signed invoice exports", () => {
       DROP TABLE usage_ledger_entries;
       ALTER TABLE usage_ledger_entries_legacy RENAME TO usage_ledger_entries;
       DROP TABLE usage_finance_authorizations;
+      CREATE TABLE usage_finance_authorizations (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES tenants(id),
+        kind TEXT NOT NULL CHECK (kind IN ('adjustment', 'credit')),
+        invoice_reference TEXT NOT NULL,
+        actor_principal_id TEXT NOT NULL REFERENCES principals(id),
+        entry_id TEXT NOT NULL,
+        entry_idempotency_key TEXT NOT NULL,
+        mcu_micros_delta INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        intent_digest TEXT NOT NULL,
+        authorization_digest TEXT NOT NULL,
+        approved_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (tenant_id, entry_id),
+        UNIQUE (tenant_id, entry_idempotency_key)
+      );
     `);
     const adjustment = {
       id: "legacy-adjustment-a",
@@ -781,6 +875,21 @@ describe("signed invoice exports", () => {
         entry_hash: legacyUsageEntryHash(credit),
       },
     ]);
+    expect(() => upgraded.raw.prepare(
+      "UPDATE usage_legacy_finance_evidence SET entry_hash = ? WHERE entry_id = ?",
+    ).run("0".repeat(64), "legacy-credit-a"))
+      .toThrow("usage_legacy_finance_evidence_append_only");
+    expect(upgraded.raw.prepare(
+      "PRAGMA table_info(usage_finance_authorizations)",
+    ).all()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "allocation_entitlement_id" }),
+      expect.objectContaining({ name: "allocation_price_version" }),
+    ]));
+    expect(upgraded.raw.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+    ).get("usage_finance_authorizations_allocation_guard_update")).toEqual({
+      name: "usage_finance_authorizations_allocation_guard_update",
+    });
     expect(reconcileUsageLedger(upgraded, "tenant-a")).toMatchObject({
       ok: true,
       legacyUnverifiedFinanceEntryIds: ["legacy-adjustment-a", "legacy-credit-a"],
@@ -807,6 +916,14 @@ describe("signed invoice exports", () => {
       adjustedMcuMicros: 250_000,
       creditedMcuMicros: 100_000,
       netRevenueMoneyMicros: 83_000,
+    });
+    upgraded.raw.exec("DROP TRIGGER usage_legacy_finance_evidence_guard_delete");
+    upgraded.raw.prepare(
+      "DELETE FROM usage_legacy_finance_evidence WHERE entry_id = ?",
+    ).run("legacy-credit-a");
+    expect(reconcileUsageLedger(upgraded, "tenant-a")).toMatchObject({
+      ok: false,
+      error: "usage_finance_authorization_invalid:legacy-credit-a",
     });
   });
 });

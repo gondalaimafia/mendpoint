@@ -33,6 +33,27 @@ function tenantId(context: Context<ApiEnv>): string {
   return principal.tenantId;
 }
 
+function commitWithAudit<T>(db: AppDb, operation: () => T): T {
+  const ownsTransaction = !db.raw.isTransaction;
+  const savepoint = "billing_usage_audit";
+  db.raw.exec(ownsTransaction ? "BEGIN IMMEDIATE" : `SAVEPOINT ${savepoint}`);
+  try {
+    const result = operation();
+    db.raw.exec(ownsTransaction ? "COMMIT" : `RELEASE SAVEPOINT ${savepoint}`);
+    return result;
+  } catch (error) {
+    if (db.raw.isTransaction) {
+      if (ownsTransaction) {
+        db.raw.exec("ROLLBACK");
+      } else {
+        db.raw.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+        db.raw.exec(`RELEASE SAVEPOINT ${savepoint}`);
+      }
+    }
+    throw error;
+  }
+}
+
 export function createBillingUsageFinanceRoutes(
   options: BillingUsageRouteOptions,
 ): Hono<ApiEnv> {
@@ -50,12 +71,16 @@ export function createBillingUsageFinanceRoutes(
       idempotencyKey?: string;
       mcuMicrosDelta?: number;
       reason?: string;
+      allocationEntitlementId?: string;
+      allocationPriceVersion?: string;
     }>().catch(() => ({} as {
       entryType?: unknown;
       invoiceReference?: string;
       idempotencyKey?: string;
       mcuMicrosDelta?: number;
       reason?: string;
+      allocationEntitlementId?: string;
+      allocationPriceVersion?: string;
     }));
     const approvedAt = clock();
     const approvedAtMs = Date.parse(approvedAt);
@@ -63,29 +88,34 @@ export function createBillingUsageFinanceRoutes(
       const actorPrincipalId = context.get("trustPrincipalId");
       if (!actorPrincipalId) return context.json({ error: "forbidden" }, 403);
       const entryType = parseUsageFinanceEntryType(body.entryType);
-      const authorization = createUsageFinanceAuthorization(options.db, {
-        id: makeId(),
-        tenantId: tenantId(context),
-        approvedByPrincipalId: actorPrincipalId,
-        actorPrincipalId,
-        entryType,
-        invoiceReference: body.invoiceReference ?? "",
-        entryIdempotencyKey: body.idempotencyKey ?? "",
-        mcuMicrosDelta: body.mcuMicrosDelta ?? 0,
-        reason: body.reason ?? "",
-        approvedAt,
-        expiresAt: new Date(approvedAtMs + 5 * 60_000).toISOString(),
-      });
-      options.audit(context, {
-        actor: principal.id,
-        action: "billing.usage_finance_authorized",
-        resourceType: "usage_finance_authorization",
-        resourceId: authorization.id,
-        metadata: {
-          entryType: authorization.entryType,
-          invoiceReference: authorization.invoiceReference,
-          entryIdempotencyKey: authorization.entryIdempotencyKey,
-        },
+      const authorization = commitWithAudit(options.db, () => {
+        const created = createUsageFinanceAuthorization(options.db, {
+          id: makeId(),
+          tenantId: tenantId(context),
+          approvedByPrincipalId: actorPrincipalId,
+          actorPrincipalId,
+          entryType,
+          invoiceReference: body.invoiceReference ?? "",
+          entryIdempotencyKey: body.idempotencyKey ?? "",
+          mcuMicrosDelta: body.mcuMicrosDelta ?? 0,
+          reason: body.reason ?? "",
+          allocationEntitlementId: body.allocationEntitlementId,
+          allocationPriceVersion: body.allocationPriceVersion,
+          approvedAt,
+          expiresAt: new Date(approvedAtMs + 5 * 60_000).toISOString(),
+        });
+        options.audit(context, {
+          actor: principal.id,
+          action: "billing.usage_finance_authorized",
+          resourceType: "usage_finance_authorization",
+          resourceId: created.id,
+          metadata: {
+            entryType: created.entryType,
+            invoiceReference: created.invoiceReference,
+            entryIdempotencyKey: created.entryIdempotencyKey,
+          },
+        });
+        return created;
       });
       return context.json(authorization, 201);
     } catch (error) {
@@ -119,26 +149,32 @@ export function createBillingUsageFinanceRoutes(
     }));
     try {
       const operation = kind === "credits" ? creditUsage : adjustUsage;
-      const entry = operation(options.db, {
-        id: makeId(),
-        tenantId: tenantId(context),
-        idempotencyKey: body.idempotencyKey ?? "",
-        taskId: body.taskId ?? "",
-        campaignId: body.campaignId,
-        mcuMicrosDelta: body.mcuMicrosDelta ?? 0,
-        invoiceReference: body.invoiceReference,
-        reason: body.reason ?? "",
-        financeAuthorizationId: body.financeAuthorizationId,
-        financeAuthorizationDigest: body.financeAuthorizationDigest,
-        actorPrincipalId: context.get("trustPrincipalId"),
-        createdAt: clock(),
-      });
-      options.audit(context, {
-        actor: context.get("principal")!.id,
-        action: `billing.usage_${entry.entryType}`,
-        resourceType: "usage_ledger_entry",
-        resourceId: entry.id,
-        metadata: { taskId: entry.taskId, mcuMicros: entry.consumedMcuMicrosDelta },
+      const entry = commitWithAudit(options.db, () => {
+        const committed = operation(options.db, {
+          id: makeId(),
+          tenantId: tenantId(context),
+          idempotencyKey: body.idempotencyKey ?? "",
+          taskId: body.taskId ?? "",
+          campaignId: body.campaignId,
+          mcuMicrosDelta: body.mcuMicrosDelta ?? 0,
+          invoiceReference: body.invoiceReference,
+          reason: body.reason ?? "",
+          financeAuthorizationId: body.financeAuthorizationId,
+          financeAuthorizationDigest: body.financeAuthorizationDigest,
+          actorPrincipalId: context.get("trustPrincipalId"),
+          createdAt: clock(),
+        });
+        options.audit(context, {
+          actor: context.get("principal")!.id,
+          action: `billing.usage_${committed.entryType}`,
+          resourceType: "usage_ledger_entry",
+          resourceId: committed.id,
+          metadata: {
+            taskId: committed.taskId,
+            mcuMicros: committed.consumedMcuMicrosDelta,
+          },
+        });
+        return committed;
       });
       return context.json(entry, 201);
     } catch (error) {

@@ -815,6 +815,10 @@ describe("usage ledger", () => {
       approvedAt: "2026-09-02T12:02:20.000Z",
       expiresAt: "2026-09-02T12:07:20.000Z",
     });
+    expect(() => db.raw.prepare(
+      "UPDATE usage_finance_authorizations SET allocation_price_version = ? WHERE id = ?",
+    ).run("price-a", multiAuthorization.id))
+      .toThrow("usage_finance_authorizations_append_only");
     expect(adjustUsage(db, {
       id: "adjustment-multi",
       tenantId: "tenant_default",
@@ -963,8 +967,7 @@ describe("usage ledger", () => {
       .filter((entry) => entry.financeAuthorizationId === authorization.financeAuthorizationId);
     expect(creditLines.filter((entry) => entry.entryType === "credit")
       .every((entry) => entry.consumedMcuMicrosDelta < 0)).toBe(true);
-    expect(creditLines.filter((entry) => entry.consumedMcuMicrosDelta > 0)
-      .every((entry) => entry.entryType === "adjustment")).toBe(true);
+    expect(creditLines.filter((entry) => entry.consumedMcuMicrosDelta > 0)).toEqual([]);
     const allocationByPrice = Object.fromEntries(creditLines.map((entry) => [
       entry.priceVersion,
       (creditLines.filter((candidate) => candidate.priceVersion === entry.priceVersion)

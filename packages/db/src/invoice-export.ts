@@ -91,7 +91,11 @@ export type InvoiceExport = Readonly<{
 
 export type InvoiceExportReconciliation = Readonly<{
   complete: boolean;
-  usageChain: Readonly<{ ok: boolean; checked: number }>;
+  usageChain: Readonly<{
+    ok: boolean;
+    checked: number;
+    legacyUnverifiedFinanceEntryIds: readonly string[];
+  }>;
   sourceLines: Readonly<{ ok: boolean; checked: number }>;
   lineSums: Readonly<{ ok: boolean }>;
   payload: Readonly<{ ok: boolean }>;
@@ -1018,7 +1022,13 @@ export function reconcileInvoiceExport(
 
   return Object.freeze({
     complete: issues.length === 0,
-    usageChain: Object.freeze({ ok: usage.ok, checked: usage.checked }),
+    usageChain: Object.freeze({
+      ok: usage.ok,
+      checked: usage.checked,
+      legacyUnverifiedFinanceEntryIds: Object.freeze(
+        usage.ok ? [...(usage.legacyUnverifiedFinanceEntryIds ?? [])] : [],
+      ),
+    }),
     sourceLines: Object.freeze({ ok: sourceLinesOk, checked: invoice.lines.length }),
     lineSums: Object.freeze({ ok: lineSumsOk }),
     payload: Object.freeze({ ok: payloadOk }),

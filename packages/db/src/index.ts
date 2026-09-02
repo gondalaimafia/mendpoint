@@ -787,6 +787,8 @@ CREATE TABLE IF NOT EXISTS usage_finance_authorizations (
   entry_idempotency_key TEXT NOT NULL,
   mcu_micros_delta INTEGER NOT NULL,
   reason TEXT NOT NULL,
+  allocation_entitlement_id TEXT,
+  allocation_price_version TEXT,
   intent_digest TEXT NOT NULL,
   authorization_digest TEXT NOT NULL,
   approved_at TEXT NOT NULL,
@@ -823,6 +825,22 @@ END;
 CREATE TRIGGER IF NOT EXISTS usage_finance_authorizations_guard_delete
 BEFORE DELETE ON usage_finance_authorizations BEGIN
   SELECT RAISE(ABORT, 'usage_finance_authorizations_append_only');
+END;
+CREATE TABLE IF NOT EXISTS usage_legacy_finance_evidence (
+  entry_id TEXT PRIMARY KEY REFERENCES usage_ledger_entries(id),
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  entry_hash TEXT NOT NULL,
+  authority_status TEXT NOT NULL CHECK (authority_status = 'legacy_unverified'),
+  migration_version TEXT NOT NULL CHECK (migration_version = 'usage-finance-authority/1'),
+  UNIQUE (tenant_id, entry_id)
+);
+CREATE TRIGGER IF NOT EXISTS usage_legacy_finance_evidence_guard_update
+BEFORE UPDATE ON usage_legacy_finance_evidence BEGIN
+  SELECT RAISE(ABORT, 'usage_legacy_finance_evidence_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_legacy_finance_evidence_guard_delete
+BEFORE DELETE ON usage_legacy_finance_evidence BEGIN
+  SELECT RAISE(ABORT, 'usage_legacy_finance_evidence_append_only');
 END;
 CREATE TRIGGER IF NOT EXISTS usage_entitlements_append_only_update
 BEFORE UPDATE ON usage_entitlements BEGIN
@@ -3195,6 +3213,8 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "api_keys", name: "principal_id", sql: "TEXT" },
     { table: "usage_ledger_entries", name: "finance_authorization_id", sql: "TEXT" },
     { table: "usage_ledger_entries", name: "finance_authorization_digest", sql: "TEXT" },
+    { table: "usage_finance_authorizations", name: "allocation_entitlement_id", sql: "TEXT" },
+    { table: "usage_finance_authorizations", name: "allocation_price_version", sql: "TEXT" },
     { table: "jobs", name: "lease_owner", sql: "TEXT" },
     { table: "jobs", name: "lease_expires_at", sql: "TEXT" },
     { table: "jobs", name: "available_at", sql: "TEXT" },
@@ -3421,6 +3441,30 @@ function migrateProvidersFeedColumns(db: AppDb) {
       run(db, `ALTER TABLE ${column.table} ADD COLUMN ${column.name} ${column.sql}`);
       addedColumns.add(`${column.table}.${column.name}`);
     }
+  }
+  run(
+    db,
+    `CREATE TRIGGER IF NOT EXISTS usage_finance_authorizations_allocation_guard_update
+     BEFORE UPDATE OF allocation_entitlement_id, allocation_price_version
+     ON usage_finance_authorizations BEGIN
+       SELECT RAISE(ABORT, 'usage_finance_authorizations_append_only');
+     END`,
+  );
+  if (
+    addedColumns.has("usage_ledger_entries.finance_authorization_id") ||
+    addedColumns.has("usage_ledger_entries.finance_authorization_digest")
+  ) {
+    run(
+      db,
+      `INSERT INTO usage_legacy_finance_evidence
+         (entry_id, tenant_id, entry_hash, authority_status, migration_version)
+       SELECT id, tenant_id, entry_hash, 'legacy_unverified', 'usage-finance-authority/1'
+         FROM usage_ledger_entries
+        WHERE entry_type IN ('adjustment', 'credit')
+          AND finance_authorization_id IS NULL
+          AND finance_authorization_digest IS NULL
+       ON CONFLICT(entry_id) DO NOTHING`,
+    );
   }
   run(
     db,

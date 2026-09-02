@@ -34,6 +34,8 @@ const errors = [
   { internalCode: "usage_finance_authorization_required", status: 409 },
   { internalCode: "usage_finance_authorization_expired", status: 409 },
   { internalCode: "usage_finance_authorization_consumed", status: 409 },
+  { internalCode: "usage_adjustment_allocation_target_required", status: 409 },
+  { internalCode: "usage_adjustment_allocation_target_invalid", status: 409 },
   { internalCode: "usage_finance_owner_required", status: 403 },
   { internalCode: "usage_finance_owner_inactive", status: 403 },
   { internalCode: "usage_finance_actor_inactive", status: 403 },
@@ -112,7 +114,6 @@ function fixture() {
 
   let observedAt = "2026-09-02T12:00:00.000Z";
   let identifier = 0;
-  let failAuditAction: string | null = null;
   const identities = new Map([
     ["owner.a.jwt", { issuer, subject: "owner-a", tenantId: "tenant-a" }],
     ["admin.a.jwt", { issuer, subject: "admin-a", tenantId: "tenant-a" }],
@@ -141,7 +142,6 @@ function fixture() {
     id: () => `billing-route-${++identifier}`,
     now: () => observedAt,
     audit: (context, input) => {
-      if (input.action === failAuditAction) throw new Error("injected_audit_failure");
       const principal = context.get("principal")!;
       recordAudit(db, {
         ...input,
@@ -156,7 +156,6 @@ function fixture() {
     app,
     db,
     setNow(value: string) { observedAt = value; },
-    failAudit(action: string | null) { failAuditAction = action; },
   };
 }
 
@@ -176,7 +175,7 @@ function request(token: string | null, path: string, body: Record<string, unknow
 
 describe("billing usage finance routes", () => {
   it("rolls back finance authorization and ledger mutations when mandatory audit persistence fails", async () => {
-    const { app, db, failAudit } = fixture();
+    const { app, db } = fixture();
     const authorizationInput = {
       entryType: "credit",
       invoiceReference: "invoice-a",
@@ -184,7 +183,12 @@ describe("billing usage finance routes", () => {
       mcuMicrosDelta: -10,
       reason: "audit atomicity credit",
     };
-    failAudit("billing.usage_finance_authorized");
+    db.raw.exec(`
+      CREATE TRIGGER test_billing_audit_failure
+      BEFORE INSERT ON audit_events BEGIN
+        SELECT RAISE(ABORT, 'injected_audit_failure');
+      END;
+    `);
     const failedAuthorization = request(
       "owner.a.jwt",
       "/billing/usage/finance-authorizations",
@@ -196,7 +200,7 @@ describe("billing usage finance routes", () => {
     ).get(authorizationInput.idempotencyKey)).toEqual({ count: 0 });
     expect(listAudit(db, "tenant-a")).toEqual([]);
 
-    failAudit(null);
+    db.raw.exec("DROP TRIGGER test_billing_audit_failure");
     const create = request("owner.a.jwt", "/billing/usage/finance-authorizations", authorizationInput);
     const createdResponse = await app.request(create.path, create.init);
     expect(createdResponse.status).toBe(201);
@@ -205,7 +209,12 @@ describe("billing usage finance routes", () => {
       authorizationDigest: string;
     };
     const beforeLedger = listUsageLedger(db, "tenant-a");
-    failAudit("billing.usage_credit");
+    db.raw.exec(`
+      CREATE TRIGGER test_billing_audit_failure
+      BEFORE INSERT ON audit_events BEGIN
+        SELECT RAISE(ABORT, 'injected_audit_failure');
+      END;
+    `);
     const credit = request("owner.a.jwt", "/billing/usage/credits", {
       idempotencyKey: authorizationInput.idempotencyKey,
       taskId: "task-a",
@@ -223,6 +232,7 @@ describe("billing usage finance routes", () => {
     expect(listAudit(db, "tenant-a").map((event) => event.action)).toEqual([
       "billing.usage_finance_authorized",
     ]);
+    db.raw.exec("DROP TRIGGER test_billing_audit_failure");
   });
 
   it("enforces human owner, tenant, digest, expiry, replay, and audit boundaries", async () => {
