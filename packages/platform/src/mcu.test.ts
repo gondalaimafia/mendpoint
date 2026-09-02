@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   assertMcuScheduleChange,
@@ -12,6 +13,46 @@ import {
   type McuLedgerEntry,
   type McuLedgerLifecycle,
 } from "./mcu.js";
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+}
+
+function financeAuthorization(
+  entry: McuLedgerEntry,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const content = {
+    schemaVersion: "mcu-finance-authorization-v1",
+    approvalId: `approval-${entry.idempotencyKey}`,
+    approvedByPrincipalId: "finance-owner",
+    approvedByRole: "finance_owner",
+    tenantId: entry.tenantId,
+    invoiceReference: entry.invoiceReference,
+    actorId: entry.actorId,
+    consumedMcuMicrosDelta: entry.consumedMcuMicrosDelta,
+    reasonCode: entry.reasonCode,
+    entryOccurredAt: entry.occurredAt,
+    approvedAt: entry.occurredAt,
+    ...overrides,
+  };
+  return {
+    ...content,
+    authorizationDigest: `sha256:${createHash("sha256").update(canonicalJson(content), "utf8").digest("hex")}`,
+  };
+}
+
+function attachFinanceAuthority(entries: McuLedgerEntry[]): McuLedgerEntry[] {
+  return rechain(entries.map((entry) => (
+    entry.entryType === "adjustment" || entry.entryType === "credit"
+      ? { ...entry, financeAuthorization: financeAuthorization(entry) }
+      : entry
+  )) as McuLedgerEntry[]);
+}
 
 function lifecycle(): McuLedgerLifecycle {
   const entries: McuLedgerEntry[] = [];
@@ -258,6 +299,56 @@ describe("migration compute units", () => {
 
     expect(() => reconcileMcuLedgerLifecycle(missingAuthority))
       .toThrow("mcu_finance_authority_required");
+  });
+
+  it("requires a trusted finance verifier instead of trusting self-asserted role bytes", () => {
+    const fabricated = lifecycle();
+    fabricated.entries = attachFinanceAuthority(fabricated.entries);
+
+    expect(() => reconcileMcuLedgerLifecycle(fabricated, {
+      verifyFinanceAuthorization: () => false,
+    } as never)).toThrow("mcu_finance_authority_rejected");
+  });
+
+  it.each([
+    ["tenant", { tenantId: "tenant-attacker" }],
+    ["invoice", { invoiceReference: "invoice-other" }],
+    ["actor", { actorId: "attacker" }],
+    ["amount", { consumedMcuMicrosDelta: 499_999 }],
+    ["reason", { reasonCode: "unapproved" }],
+    ["time", { entryOccurredAt: "2026-09-02T00:02:01.000Z" }],
+  ])("rejects finance authority whose %s binding differs from the ledger entry", (_label, overrides) => {
+    const drifted = lifecycle();
+    drifted.entries = attachFinanceAuthority(drifted.entries);
+    drifted.entries = drifted.entries.map((entry) => entry.entryType === "adjustment"
+      ? { ...entry, financeAuthorization: financeAuthorization(entry, overrides) }
+      : entry) as McuLedgerEntry[];
+    drifted.entries = rechain(drifted.entries);
+
+    expect(() => reconcileMcuLedgerLifecycle(drifted, {
+      verifyFinanceAuthorization: () => true,
+    } as never)).toThrow("mcu_finance_authority_binding_invalid");
+  });
+
+  it("rejects finance authority whose immutable digest was changed", () => {
+    const tampered = lifecycle();
+    tampered.entries = attachFinanceAuthority(tampered.entries);
+    tampered.entries = tampered.entries.map((entry) => {
+      if (entry.entryType !== "adjustment") return entry;
+      const authority = (entry as unknown as Record<string, unknown>).financeAuthorization as Record<string, unknown>;
+      return {
+        ...entry,
+        financeAuthorization: {
+          ...authority,
+          authorizationDigest: `sha256:${"0".repeat(64)}`,
+        },
+      };
+    }) as McuLedgerEntry[];
+    tampered.entries = rechain(tampered.entries);
+
+    expect(() => reconcileMcuLedgerLifecycle(tampered, {
+      verifyFinanceAuthorization: () => true,
+    } as never)).toThrow("mcu_finance_authority_digest_invalid");
   });
 
   it("creates reproducible settled entry identities", () => {

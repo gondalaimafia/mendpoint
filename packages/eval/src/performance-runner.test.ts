@@ -654,12 +654,15 @@ describe("performance runner", () => {
 
   it("cancels and rejects an undeclared streaming response overrun with a stable code", async () => {
     let cancelled = 0;
-    let emitted = false;
+    let emitted = 0;
     const body = new ReadableStream<Uint8Array>({
       pull(controller) {
-        if (emitted) return;
-        emitted = true;
-        controller.enqueue(new Uint8Array(EXPECTED_RESPONSE_BYTE_LIMIT + 1));
+        emitted += 1;
+        if (emitted === 1) controller.enqueue(new Uint8Array(EXPECTED_RESPONSE_BYTE_LIMIT));
+        else {
+          controller.enqueue(new Uint8Array(1));
+          controller.close();
+        }
       },
       cancel() {
         cancelled += 1;
