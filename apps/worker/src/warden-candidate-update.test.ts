@@ -177,6 +177,50 @@ afterEach(() => {
 });
 
 describe("Warden candidate exact draft update", () => {
+  // SF-D. sourceMissionId's two fail-closed guards had no test: mutating both to
+  // `return null` (an unparseable source payload read as UNBOUND) left the whole
+  // worker suite green, and skipped the upgrade_required check below it. Same
+  // class as the delivery twin - UNKNOWN must never read as "not Mission-bound"
+  // on the path that decides whether the Mission fence runs.
+  it.each([
+    ["does not parse", "{not json"],
+    ["is not a plain object", "[]"],
+  ])("fails closed when the source job payload %s", async (_label, payloadJson) => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?")
+      .run(payloadJson, "repair-agent-job-a", "tenant-a");
+    const updateExactDraft = vi.fn();
+
+    await expect(runWardenCandidateUpdate({
+      db: value.db, job: value.job, updateExactDraft, reconcileExactDraftUpdate: vi.fn(),
+      readApprovalArtifact: () => value.artifact,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:05:00.000Z",
+    })).rejects.toThrow("warden_ci_update_source_invalid");
+    expect(updateExactDraft).not.toHaveBeenCalled();
+  });
+
+  // SF-E. This is the ONLY check binding parsed.missionAuthority to this cycle,
+  // this update, and parsed.missionId. Replacing the throw with a no-op left the
+  // suite green, so an update carrying authority for a DIFFERENT Mission would
+  // have reached GitHub under this cycle's identity.
+  it("refuses an update whose retained authority does not match its own Mission binding", async () => {
+    const value = bindMissionAuthority(fixture());
+    const payload = JSON.parse(getJob(value.db, value.job.id, "tenant-a")!.payload_json);
+    value.db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?")
+      .run(JSON.stringify({ ...payload, missionId: "mission-other" }), value.job.id, "tenant-a");
+    const updateExactDraft = vi.fn();
+
+    await expect(runWardenCandidateUpdate({
+      db: value.db, job: getJob(value.db, value.job.id, "tenant-a")!, updateExactDraft,
+      reconcileExactDraftUpdate: vi.fn(),
+      readApprovalArtifact: () => value.artifact,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:05:00.000Z",
+    })).rejects.toThrow("warden_ci_update_mission_authority_required");
+    expect(updateExactDraft).not.toHaveBeenCalled();
+  });
+
   it("quarantines a legacy mission-bound update without retained authority before GitHub", async () => {
     const value = bindMissionAuthority(fixture());
     value.db.raw.prepare(`UPDATE jobs SET payload_json = ?, status = 'pending', lease_owner = NULL,

@@ -149,10 +149,13 @@ describe("Warden candidate delivery outbox", () => {
   // it as "not Mission-bound" skips the binding check below it and enqueues a
   // delivery with no authority. Both sibling readers already fail closed on this
   // input; restore the swallowing catch here and this test dies.
-  it("fails closed when the source job payload does not parse", () => {
+  it.each([
+    ["does not parse", "{not json"],
+    ["is not a plain object", "[]"],
+  ])("fails closed when the source job payload %s", (_label, payloadJson) => {
     const db = fixture();
     db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1' AND tenant_id = 'tenant-a'")
-      .run("{not json");
+      .run(payloadJson);
 
     expect(() => enqueueWardenCandidateDelivery(db, {
       tenantId: "tenant-a",

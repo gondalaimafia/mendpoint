@@ -637,6 +637,27 @@ describe("worker runtime", () => {
       .toThrow("warden_model_source_policy_incomplete");
   });
 
+  // A Mission/CI mutation fence collision is TRANSIENT: another writer holds the
+  // Mission mid-flight. Classified terminal, the job dead-lettered under a
+  // misleading code and lost its work - a policy deny raised while a delivery for
+  // the same Mission was `dispatching` went unrecorded, because
+  // raiseMissionException runs the mission-wide fence and throws this code (see
+  // packages/db/src/mission-exceptions.test.ts for that collision). Retryable
+  // within the ORDINARY budget only, so a fence that never clears still
+  // terminates. Revert either entry and this dies.
+  it("retries a transient Mission or CI mutation fence collision within the ordinary budget", () => {
+    for (const message of [
+      "mission_mutation_dispatch_in_flight",
+      "warden_ci_mutation_in_flight",
+    ]) {
+      expect(classifyJobFailure(new Error(message))).toMatchObject({
+        errorCode: message,
+        retryable: true,
+        retryPastMaxAttempts: false,
+      });
+    }
+  });
+
   it("does not retry permanent GitHub App authorization and scope failures", () => {
     for (const message of [
       "github_app_installation_revoked",
@@ -679,24 +700,6 @@ describe("worker runtime", () => {
       retryable: false,
       retryPastMaxAttempts: false,
     });
-    // A Mission/CI mutation fence collision is TRANSIENT: another writer holds the
-    // Mission mid-flight. Classified terminal, the job dead-lettered under a
-    // misleading code and lost its work - a policy deny raised while a delivery
-    // for the same Mission was `dispatching` went unrecorded, because
-    // raiseMissionException runs the mission-wide fence and throws this code
-    // (see packages/db/src/mission-exceptions.test.ts for that collision).
-    // Retryable within the ORDINARY budget only, so a fence that never clears
-    // still terminates. Revert either entry and this dies.
-    for (const message of [
-      "mission_mutation_dispatch_in_flight",
-      "warden_ci_mutation_in_flight",
-    ]) {
-      expect(classifyJobFailure(new Error(message))).toMatchObject({
-        errorCode: message,
-        retryable: true,
-        retryPastMaxAttempts: false,
-      });
-    }
     for (const message of [
       "mcu_accounting_persistence_failed",
       "mcu_settlement_persistence_failed",

@@ -184,6 +184,61 @@ describe("Mission mutation dispatch tenant scope", () => {
   });
 });
 
+describe("Mission mutation dispatch fence, unreadable authority", () => {
+  // Plant a dispatch row whose authority_json cannot be read as an authority.
+  function corruptDispatch(db: AppDb, missionId: string, jobId: string, authorityJson: string) {
+    db.raw.prepare(`INSERT INTO mission_mutation_dispatches
+      (id, tenant_id, mission_id, job_id, mutation_kind, aggregate_id, authority_json,
+       intent_digest, state, lease_owner, lease_generation, authorized_at, dispatching_at, updated_at)
+      VALUES (?, 'tenant-a', ?, ?, 'fettler_candidate_delivery', 'agg-corrupt', ?, ?,
+        'dispatching', 'worker-a', 1, ?, ?, ?)`).run(
+      `mission-dispatch:${jobId}`, missionId, jobId, authorityJson, DIGEST, NOW, NOW, NOW,
+    );
+  }
+
+  // THE FAIL-OPEN THIS GUARDS. `authorityTaskId` returning null for a row it
+  // cannot parse is not the same as null meaning "mission-scoped, no task" - and
+  // the task fence filters on `authorityTaskId(row) === taskId`, so an unreadable
+  // `dispatching` row would simply drop out of the match set and STOP FENCING the
+  // task. A remote mutation would then be armed against a Mission task that
+  // already has one in flight. Turning any of the three throws into `return null`
+  // kills one of these.
+  it.each([
+    ["unparseable json", "{not json"],
+    ["not an object", '"a string"'],
+    ["no taskId key", '{"missionId":"mission-a"}'],
+    ["taskId of the wrong type", '{"taskId":42}'],
+    ["blank taskId", '{"taskId":"   "}'],
+  ])("keeps fencing a task when a dispatch row's authority is %s", (_label, authorityJson) => {
+    const { db, a } = fixture();
+    corruptDispatch(db, a.mission.id, "job-corrupt", authorityJson);
+
+    // Fails CLOSED: the caller cannot proceed as though nothing were in flight.
+    expect(() => revokePendingMissionTaskMutationDispatches(
+      db, "tenant-a", a.mission.id, "task-anything", LATER,
+    )).toThrow("mission_mutation_dispatch_authority_invalid");
+
+    // ...and the in-flight row is left exactly as it was, never silently skipped.
+    expect(db.raw.prepare("SELECT state FROM mission_mutation_dispatches WHERE job_id = 'job-corrupt'")
+      .get()).toEqual({ state: "dispatching" });
+  });
+
+  // CONTROL: a legitimately mission-scoped row (taskId null) is NOT an error, and
+  // is correctly excluded from a task-scoped fence. This is the other half of the
+  // third state, and it proves the throws above are about unreadability, not
+  // about null itself.
+  it("treats an explicitly task-less authority as mission-scoped, not unreadable", () => {
+    const { db, a } = fixture();
+    corruptDispatch(db, a.mission.id, "job-taskless", JSON.stringify({ ...a.authority, taskId: null }));
+
+    expect(() => revokePendingMissionTaskMutationDispatches(
+      db, "tenant-a", a.mission.id, "task-anything", LATER,
+    )).not.toThrow();
+    expect(db.raw.prepare("SELECT state FROM mission_mutation_dispatches WHERE job_id = 'job-taskless'")
+      .get()).toEqual({ state: "dispatching" });
+  });
+});
+
 describe("Mission mutation dispatch lease handover", () => {
   // S1: a lost lease is an ordinary handover with no remote call made. Revoking
   // there stranded the delivery for good, because the successor then got
