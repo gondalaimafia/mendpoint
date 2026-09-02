@@ -191,4 +191,20 @@ describe("configuration completeness gate", () => {
         entry.status === "required_when_active",
     )).toBe(true);
   });
+
+  it("registers adapter lifecycle proof authority in one protected activation scope", () => {
+    const runtimeEntries = loadManifest().runtimeEntries ?? [];
+    const proofEntries = runtimeEntries.filter((entry) => entry.activatedBy === "npm run adapter:lifecycle:proof");
+    expect(proofEntries.map((entry) => entry.name).sort()).toEqual([
+      "MENDPOINT_ADAPTER_PROOF_SIGNING_KEY_B64",
+      "MENDPOINT_ADAPTER_PROOF_SIGNING_KEY_ID",
+      "MENDPOINT_ADAPTER_PROOF_VERIFICATION_KEYRING_JSON",
+      "MENDPOINT_API_BASE_URL",
+      "MENDPOINT_API_KEY",
+    ]);
+    expect(proofEntries.every((entry) => entry.scope === "protected_application_environment" && entry.status === "required_when_active")).toBe(true);
+    expect(proofEntries.find((entry) => entry.name === "MENDPOINT_ADAPTER_PROOF_SIGNING_KEY_B64")?.type).toBe("secret");
+    expect(proofEntries.find((entry) => entry.name === "MENDPOINT_ADAPTER_PROOF_VERIFICATION_KEYRING_JSON")?.type).toBe("secret");
+    expect(proofEntries.find((entry) => entry.name === "MENDPOINT_API_KEY")?.type).toBe("secret");
+  });
 });
