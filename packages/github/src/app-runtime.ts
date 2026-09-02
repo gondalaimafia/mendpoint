@@ -2,7 +2,7 @@
  * Production GitHub App runtime for JWT, installation tokens, and multi repository delivery.
  * Works with real credentials when set; unit-tested via injectable signers.
  */
-import { createSign, createPrivateKey } from "node:crypto";
+import { createHash, createSign, createPrivateKey } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Octokit } from "@octokit/rest";
 import type { FileEdit, GitHubDelivery, PullRequestResult } from "./index.js";
@@ -32,6 +32,163 @@ import {
 
 const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
 const GITHUB_FILE_CONCURRENCY = 8;
+
+export type GitHubDependencyFailureKind =
+  | "timeout"
+  | "throttled"
+  | "transient"
+  | "authentication"
+  | "permission"
+  | "permanent"
+  | "completed";
+
+export type GitHubDependencyFailureEvidence = Readonly<{
+  failureKind: GitHubDependencyFailureKind;
+  retryAfterMs?: number;
+}>;
+
+export type GitHubDependencyOutageDecision = Readonly<{
+  schemaVersion: 1;
+  action: "retry" | "wait" | "await_authority" | "fail" | "reconcile";
+  failureKind: string;
+  retryable: boolean;
+  reason: string;
+  nextAttemptAt: string | null;
+  circuitState: "closed" | "open" | "half_open";
+  standing: "healthy" | "degraded_retrying" | "degraded_blocked" | "degraded_failed" | "recovering";
+}>;
+
+export type GitHubDependencyOutageOperation<T> = Readonly<{
+  schemaVersion: 1;
+  tenantId: string;
+  dependencyKind: "scm";
+  providerId: "github";
+  operationId: string;
+  operationDigest: string;
+  workerId: string;
+  retryBudget: number;
+  expiresAt: string;
+  leaseMs: number;
+  authorityVersion?: string;
+  reconcile: () => Promise<Readonly<{ status: "missing" }> |
+    Readonly<{ status: "completed"; value: T; completionDigest: string }>>;
+  execute: () => Promise<Readonly<{ value: T; completionDigest: string }>>;
+  classify: (
+    error: unknown,
+    context: Readonly<{ attempt: number; retryBudget: number; now: string }>,
+  ) => GitHubDependencyOutageDecision;
+}>;
+
+export type GitHubDependencyOutageResult<T> =
+  | Readonly<{ status: "completed" | "recovered"; value: T; [key: string]: unknown }>
+  | Readonly<{
+    status: "deferred" | "blocked" | "failed";
+    decision?: GitHubDependencyOutageDecision;
+    [key: string]: unknown;
+  }>;
+
+/** Structurally implemented by the durable db recovery queue without importing db here. */
+export interface GitHubDependencyOutagePort {
+  run<T>(operation: GitHubDependencyOutageOperation<T>): Promise<GitHubDependencyOutageResult<T>>;
+}
+
+export type GitHubDependencyOutagePolicy = (
+  input: Readonly<{
+    tenantId: string;
+    dependencyKind: "scm";
+    providerId: "github";
+    operationDigest: string;
+    failureKind: GitHubDependencyFailureKind;
+    attempt: number;
+    retryBudget: number;
+    now: string;
+    expiresAt: string;
+    retryAfterMs?: number;
+  }>,
+) => GitHubDependencyOutageDecision;
+
+export type GitHubDependencyOutageOptions = Readonly<{
+  tenantId: string;
+  outage: GitHubDependencyOutagePort;
+  decide: GitHubDependencyOutagePolicy;
+  retryBudget: number;
+  expiresInMs: number;
+  workerId: string;
+  leaseMs?: number;
+  authorityVersion?: string;
+  now?: () => string;
+}>;
+
+function stable(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${stable(record[key])}`).join(",")}}`;
+}
+
+function digest(value: unknown): string {
+  return createHash("sha256").update(stable(value)).digest("hex");
+}
+
+function parseRetryAfter(raw: unknown, now: string): number | undefined {
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(24 * 60 * 60 * 1_000, Math.round(seconds * 1_000));
+  }
+  const parsed = Date.parse(raw);
+  const base = Date.parse(now);
+  if (!Number.isFinite(parsed) || !Number.isFinite(base)) return undefined;
+  return Math.min(24 * 60 * 60 * 1_000, Math.max(0, parsed - base));
+}
+
+/** Map bounded GitHub error evidence into the shared outage vocabulary. */
+export function classifyGitHubDependencyFailure(
+  error: unknown,
+  now = new Date().toISOString(),
+): GitHubDependencyFailureEvidence {
+  const record = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  if (record.remoteSideEffectUncertain === true) {
+    return Object.freeze({ failureKind: "completed" });
+  }
+  const status = typeof record.status === "number" ? record.status : undefined;
+  if (status === 401) return Object.freeze({ failureKind: "authentication" });
+  if (status === 403) return Object.freeze({ failureKind: "permission" });
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const code = typeof record.code === "string" ? record.code : message;
+  if (/ETIMEDOUT|ABORT_ERR|request timeout|timed out/i.test(code)) {
+    return Object.freeze({ failureKind: "timeout" });
+  }
+  if (status === 429) {
+    const response = record.response && typeof record.response === "object"
+      ? record.response as Record<string, unknown> : {};
+    const headers = response.headers && typeof response.headers === "object"
+      ? response.headers as Record<string, unknown> : {};
+    const delay = parseRetryAfter(headers["retry-after"] ?? headers.retryAfter, now);
+    return Object.freeze({
+      failureKind: "throttled",
+      ...(delay === undefined ? {} : { retryAfterMs: delay }),
+    });
+  }
+  if (status === 408 || status === 425 || (status !== undefined && status >= 500 && status <= 599) ||
+      /ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH/i.test(code)) {
+    return Object.freeze({ failureKind: "transient" });
+  }
+  return Object.freeze({ failureKind: "permanent" });
+}
+
+export class GitHubDependencyOutageError extends Error {
+  readonly code = "GITHUB_DEPENDENCY_OUTAGE";
+
+  constructor(
+    readonly status: "deferred" | "blocked" | "failed",
+    readonly decision?: GitHubDependencyOutageDecision,
+  ) {
+    super(`github_dependency_outage_${status}`);
+    this.name = "GitHubDependencyOutageError";
+  }
+}
 
 async function mapWithConcurrency<T, R>(
   values: readonly T[],
@@ -406,6 +563,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
     private installationId: number,
     private fetchToken: TokenFetcher = defaultFetchInstallationToken,
     private repositoryIds?: number[],
+    private readonly dependencyOutage?: GitHubDependencyOutageOptions,
   ) {
     this.tokenCache = new InstallationTokenCache(
       this.creds,
@@ -430,8 +588,58 @@ export class GitHubAppDelivery implements GitHubDelivery {
     }
   }
 
-  deliverExactDraft(input: ExactDraftDeliveryInput): Promise<ExactDraftDeliveryResult> {
-    return this.withAuthRetry((octokit) => deliverExactDraftWithOctokit(octokit, input));
+  async deliverExactDraft(input: ExactDraftDeliveryInput): Promise<ExactDraftDeliveryResult> {
+    if (!this.dependencyOutage) {
+      return this.withAuthRetry((octokit) => deliverExactDraftWithOctokit(octokit, input));
+    }
+    const options = this.dependencyOutage;
+    const now = (options.now ?? (() => new Date().toISOString()))();
+    if (!Number.isSafeInteger(options.retryBudget) || options.retryBudget < 1 ||
+        !Number.isSafeInteger(options.expiresInMs) || options.expiresInMs < 1 ||
+        !Number.isSafeInteger(options.leaseMs ?? 30_000) || (options.leaseMs ?? 30_000) < 1) {
+      throw new Error("github_dependency_outage_configuration_invalid");
+    }
+    const operationDigest = digest(input);
+    const expiresAt = new Date(Date.parse(now) + options.expiresInMs).toISOString();
+    const result = await options.outage.run<ExactDraftDeliveryResult>(Object.freeze({
+      schemaVersion: 1,
+      tenantId: options.tenantId,
+      dependencyKind: "scm",
+      providerId: "github",
+      operationId: `${input.owner}/${input.repo}:${input.branch}`,
+      operationDigest,
+      workerId: options.workerId,
+      retryBudget: options.retryBudget,
+      expiresAt,
+      leaseMs: options.leaseMs ?? 30_000,
+      ...(options.authorityVersion === undefined ? {} : { authorityVersion: options.authorityVersion }),
+      // Exact-draft delivery itself reads the branch and pull request before
+      // every externally visible retry and reuses only exact matching state.
+      // There is no safe result to return without that exact-draft validation.
+      reconcile: async () => Object.freeze({ status: "missing" as const }),
+      execute: async () => {
+        const value = await this.withAuthRetry((octokit) =>
+          deliverExactDraftWithOctokit(octokit, input));
+        return Object.freeze({ value, completionDigest: digest(value) });
+      },
+      classify: (error, context) => {
+        const evidence = classifyGitHubDependencyFailure(error, context.now);
+        return options.decide({
+          tenantId: options.tenantId,
+          dependencyKind: "scm",
+          providerId: "github",
+          operationDigest,
+          failureKind: evidence.failureKind,
+          attempt: context.attempt,
+          retryBudget: context.retryBudget,
+          now: context.now,
+          expiresAt,
+          ...(evidence.retryAfterMs === undefined ? {} : { retryAfterMs: evidence.retryAfterMs }),
+        });
+      },
+    }));
+    if (result.status === "completed" || result.status === "recovered") return result.value;
+    throw new GitHubDependencyOutageError(result.status, result.decision);
   }
 
   observeExactDraft(input: ExactDraftObservationInput): Promise<ExactDraftObservation> {
@@ -725,8 +933,15 @@ export function createAppDelivery(
   installationId: number,
   creds?: AppCredentials | null,
   repositoryIds?: number[],
+  dependencyOutage?: GitHubDependencyOutageOptions,
 ): GitHubAppDelivery {
   const c = creds ?? loadAppCredentials();
   if (!c) throw new Error("GitHub App credentials missing (GITHUB_APP_ID + PRIVATE_KEY)");
-  return new GitHubAppDelivery(c, installationId, defaultFetchInstallationToken, repositoryIds);
+  return new GitHubAppDelivery(
+    c,
+    installationId,
+    defaultFetchInstallationToken,
+    repositoryIds,
+    dependencyOutage,
+  );
 }
