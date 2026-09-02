@@ -16,7 +16,7 @@ affects: [01-02-readiness, 05-economics, 06-final-qualification]
 actuals:
   tokens: 24071
   tasks: 3
-  commits: 25
+  commits: 29
 
 tech-stack:
   added: []
@@ -38,6 +38,7 @@ key-decisions:
   - "Canonical output uses small, medium, and large while documented pilot tier identifiers remain input-only compatibility aliases."
   - "Performance evidence is valid only when exact tenant, repository, deployment, fixture, source, correlation, measured concurrency, repository shape, and nonzero run interval bindings agree."
   - "Every observation must be fresh and carry a runtime-validated boolean outcome; reports publish immutably and authenticated probes never follow redirects or use plaintext transport."
+  - "Observation freshness is evaluated against the authenticated run window plus the metric freshness allowance, and a fixed evidence budget makes high-throughput overflow explicitly incomplete."
   - "The existing protected ga-check executable invokes closure validation so package authority bytes and rotation digests remain unchanged."
 
 patterns-established:
@@ -107,6 +108,7 @@ status: complete
 3. **Closure artifact and protected release gate:** `6a779242`, `44216697`, `049e5490`, `00d74874`
 4. **Exact-head performance review repair:** `89192456`, `b2a16f55`
 5. **Adversarial evidence-boundary repair:** `30ca1a5d`, `7c4f5280`
+6. **Long-run availability and evidence-budget repair:** `288d9bc6`, `7049be3a`, `880bb666`
 
 ## Files Created or Modified
 
@@ -161,9 +163,17 @@ status: complete
 - **Verification:** All ten hostile tests failed before implementation; the repaired evaluator suite passes 33 of 33 and the broader focused matrix passes 46 of 46.
 - **Committed in:** `30ca1a5d`, `7c4f5280`
 
+**5. [Rule 1 - Bug] Made canonical long runs executable without unbounded evidence growth**
+- **Found during:** Independent complete-chain review after the first adversarial repair
+- **Issue:** Fixed five-minute freshness rejected valid early observations in medium and large load runs and every canonical soak, while a fast target could retain observations without a memory or publication bound for up to four hours.
+- **Fix:** Evaluate every observation against the authenticated run duration plus its metric freshness allowance, retain the pre-run and cross-run guards, and stop at a fixed 10,000-observation budget with an explicit incomplete `evidence_budget_exceeded` outcome.
+- **Files modified:** `packages/eval/src/performance-contract.ts`, `packages/eval/src/performance-contract.test.ts`, `packages/eval/src/performance-runner.ts`, `packages/eval/src/performance-runner.test.ts`
+- **Verification:** Four canonical medium and large load and soak regressions plus one high-throughput overflow regression failed before implementation; the repaired evaluator suite passes 38 of 38 and the broader focused matrix passes 51 of 51.
+- **Committed in:** `288d9bc6`, `7049be3a`, `880bb666`
+
 ---
 
-**Total deviations:** 4 auto-fixed, two bugs and two missing correctness seams.
+**Total deviations:** 5 auto-fixed, three bugs and two missing correctness seams.
 **Impact on plan:** All changes are limited to the operating-contract producer, authority, public exports, and protected gate needed to close the six review findings.
 
 ## Issues Encountered
@@ -191,6 +201,10 @@ status: complete
 - Final adversarial repair GREEN proof: evaluator 33 of 33; evaluator, migration compute, and closure matrix 46 of 46; evaluator, platform, and scripts typechecks passed.
 - Final adversarial repair optimized production build: passed, 64 pages generated.
 - Final adversarial repair protected `npm run ga:check`: passed, including strict evidence reachability and revert obligations.
+- Long-run repair RED proof: four canonical full-window load and soak cases failed as stale and the high-throughput run reached the external test guard instead of an internal evidence bound.
+- Long-run repair GREEN proof: evaluator 38 of 38; evaluator, migration compute, and closure matrix 51 of 51; evaluator, platform, and scripts typechecks passed.
+- Long-run repair optimized production build: passed, 64 pages generated.
+- Long-run repair protected `npm run ga:check`: passed, including strict evidence reachability and revert obligations.
 
 ## TDD Gate Compliance
 
@@ -212,7 +226,7 @@ None.
 ## Self-Check: PASSED
 
 - All 14 changed implementation, test, export, gate, and artifact files exist.
-- All 24 implementation, test, and prior evidence commits are present on `codex/601-fettler-operating-contracts`; this repair adds one summary-only successor rather than amending history.
+- All 28 implementation, test, and prior evidence commits are present on `codex/601-fettler-operating-contracts`; this repair adds one summary-only successor rather than amending history.
 - The tested implementation head is based on current `origin/main`; the returned release-update head is its summary-only successor.
 
 ---
