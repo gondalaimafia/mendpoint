@@ -3,6 +3,10 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { CORE_DISASTER_RECOVERY_POLICY } from "@mendpoint/ops";
+import {
+  customerBackupIntervalMs,
+  customerBackupOperationTimeoutMs,
+} from "./customer-backup-scheduler.js";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
@@ -448,11 +452,15 @@ describe("customer backup watchdog workflow", () => {
     expect(resolveStep.run).toContain("gh issue close");
   });
 
-  it("leaves the existing backup workflow's schedule, RPO and alert untouched", () => {
+  it("leaves the backup workflow's fallback schedule, RPO and alert untouched", () => {
     const backup = parse(
       readFileSync(resolve(root, ".github/workflows/customer-backup.yml"), "utf8"),
     ) as Record<string, any>;
-    expect(backup.on.schedule).toEqual([{ cron: "*/30 * * * *" }]);
+    // The cron is now the dead-machine fallback, not the primary trigger. What
+    // this watchdog needs from it is unchanged: it still exists, it is still
+    // dispatchable, and it still alerts when a run fails.
+    expect(backup.on.schedule).toEqual([{ cron: "47 * * * *" }]);
+    expect(backup.on).toHaveProperty("workflow_dispatch");
     const alert = (backup.jobs.backup.steps as Record<string, any>[]).find(
       (candidate) => candidate.name === "Alert on backup failure",
     );
@@ -1149,18 +1157,35 @@ exit 0
     expect(freshness.permissions).toMatchObject({ "actions": "write", "issues": "write" });
   });
 
-  it("leaves the backup workflow's own schedule, RPO and alert untouched", () => {
-    // The fix must not be a relaxation. The `*/30` cron is free when it fires
-    // and is still there; the RPO is still the one the readiness check uses.
+  it("cannot be relaxed: the effective backup interval still fits inside the RPO", () => {
+    // THE ANTI-RELAXATION GUARD. It was written against the `*/30` cron because
+    // the cron was then the only thing that decided how often a backup happened.
+    // It is not about the cron; it is about the one property that must never be
+    // widened -- that the gap between backups, plus the time one is allowed to
+    // take, cannot exceed the recovery commitment the readiness check enforces.
+    //
+    // The trigger moved on-machine, so the guard moves with it, onto the
+    // scheduler's derived interval. Flipping a cron string can no longer satisfy
+    // it, and neither can widening the interval or the per-run budget.
+    const rpoMs = CORE_DISASTER_RECOVERY_POLICY.rpoSeconds * 1_000;
+    const intervalMs = customerBackupIntervalMs();
+    const operationMs = customerBackupOperationTimeoutMs();
+    expect(intervalMs).toBeLessThanOrEqual(rpoMs - operationMs);
+    // Half the RPO or better, so a whole run can be dropped and the evidence is
+    // still current when the next one lands.
+    expect(intervalMs * 2).toBeLessThanOrEqual(rpoMs);
+    // A run can never still be going when the next one is due.
+    expect(operationMs).toBeLessThan(intervalMs);
+    // The readiness check and the scheduler must read the same RPO.
+    expect(resolveBackupRpoSeconds()).toBe(CORE_DISASTER_RECOVERY_POLICY.rpoSeconds);
+
     const backup = parse(
       readFileSync(resolve(root, ".github/workflows/customer-backup.yml"), "utf8"),
     ) as Record<string, any>;
-    expect(backup.on.schedule).toEqual([{ cron: "*/30 * * * *" }]);
     expect(backup.on).toHaveProperty("workflow_dispatch");
     expect(backup.concurrency).toMatchObject({
       group: "customer-production-backup",
       "cancel-in-progress": false,
     });
-    expect(resolveBackupRpoSeconds()).toBe(CORE_DISASTER_RECOVERY_POLICY.rpoSeconds);
   });
 });
