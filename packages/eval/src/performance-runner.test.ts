@@ -9,6 +9,7 @@ import type {
 import { FETTLER_PERFORMANCE_CONTRACT } from "./performance-contract.js";
 import {
   createHttpPerformanceProbe,
+  parsePerformanceCliArguments,
   persistPerformanceProbeReport,
   runPerformanceProbe,
   type PerformanceProbeMeasurement,
@@ -102,6 +103,51 @@ function metadata() {
 }
 
 describe("performance runner", () => {
+  it("parses every canonical operator binding including measured language distribution", () => {
+    expect(parsePerformanceCliArguments([
+      "--mode=load",
+      "--tier=small",
+      "--endpoint=https://deployment.example/internal/performance-probe",
+      "--tenant-id=tenant-example",
+      "--repository-id=repository-example",
+      `--repository-revision=${"a".repeat(40)}`,
+      `--deployment-revision=${"b".repeat(40)}`,
+      `--fixture-digest=sha256:${"c".repeat(64)}`,
+      "--correlation-id=correlation-example",
+      "--probe-source=fettler-production-probe",
+      "--repository-files=1000",
+      "--repository-source-lines=50000",
+      "--repository-bytes=25000000",
+      "--repository-languages=typescript",
+      "--repository-language-source-lines=typescript:50000",
+      "--output=runs/performance/load.json",
+    ])).toMatchObject({
+      mode: "load",
+      tierId: "small",
+      repositoryRevision: "a".repeat(40),
+      source: "fettler-production-probe",
+      repository: {
+        files: 1_000,
+        sourceLines: 50_000,
+        bytes: 25_000_000,
+        languages: ["typescript"],
+        languageSourceLines: { typescript: 50_000 },
+      },
+    });
+  });
+
+  it("rejects a CLI language set that differs from its measured distribution", () => {
+    expect(() => parsePerformanceCliArguments([
+      "--mode=load", "--tier=small", "--endpoint=https://deployment.example/probe",
+      "--tenant-id=tenant-example", "--repository-id=repository-example",
+      `--repository-revision=${"a".repeat(40)}`, `--deployment-revision=${"b".repeat(40)}`,
+      `--fixture-digest=sha256:${"c".repeat(64)}`, "--correlation-id=correlation-example",
+      "--probe-source=fettler-production-probe", "--repository-files=1000",
+      "--repository-source-lines=50000", "--repository-bytes=25000000",
+      "--repository-languages=typescript", "--repository-language-source-lines=javascript:50000",
+      "--output=runs/performance/load.json",
+    ])).toThrow("performance_repository_language_distribution_invalid");
+  });
   it("accepts documented legacy pilot tier identifiers and reports canonical identities", async () => {
     let now = 0;
     const small = FETTLER_PERFORMANCE_CONTRACT.tiers.find((tier) => tier.id === "small")!;

@@ -10,7 +10,7 @@ The executable source of truth is `FETTLER_PERFORMANCE_CONTRACT` in `packages/ev
 | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
 | `small` | 1,000 files, 50,000 source lines, 25 MB | 2,000 files, 100,000 source lines, 50 MB | TypeScript at least 100% | 2 | 100 per metric | 5 minutes | 1 hour |
 | `medium` | 10,000 files, 500,000 source lines, 250 MB | 20,000 files, 1,000,000 source lines, 500 MB | JavaScript, Python, and TypeScript at least 20% each | 4 | 100 per metric | 10 minutes | 2 hours |
-| `large` | 50,000 files, 2,500,000 source lines, 1.25 GB | 100,000 files, 5,000,000 source lines, 2.5 GB | Go, Java, JavaScript, Python, Ruby, and TypeScript at least 10% each | 8 | 100 per metric | 20 minutes | 4 hours |
+| `large` | 50,000 files, 2,500,000 source lines, 1.25 GB | 100,000 files, 5,000,000 source lines, 2.5 GB | Go, Java, JavaScript, Python, Ruby, and TypeScript at least 10% each | 8 | 100 per metric | 15 minutes | 4 hours |
 
 The measured repository must fall within every floor and ceiling. Its per-language source-line counts must add exactly to the measured total and satisfy each minimum distribution. A smaller, oversized, or unrepresentative fixture fails closed. The legacy command inputs `pilot-small`, `pilot-medium`, and `pilot-large` remain accepted as compatibility aliases, but reports and new documentation always emit `small`, `medium`, or `large`.
 
@@ -19,20 +19,20 @@ The measured repository must fall within every floor and ceiling. Its per-langua
 | Tier | Metric | p50 | p95 | p99 |
 | --- | --- | ---: | ---: | ---: |
 | small | First result | 30 seconds | 90 seconds | 3 minutes |
-| small | Complete scan | 2 minutes | 6 minutes | 12 minutes |
-| small | Verification | 1 minute | 4 minutes | 8 minutes |
-| small | Queue wait | 2 seconds | 10 seconds | 30 seconds |
-| small | Campaign fanout | 15 seconds | 1 minute | 2 minutes |
-| medium | First result | 60 seconds | 3 minutes | 5 minutes |
-| medium | Complete scan | 5 minutes | 15 minutes | 30 minutes |
-| medium | Verification | 2 minutes | 10 minutes | 20 minutes |
-| medium | Queue wait | 5 seconds | 30 seconds | 60 seconds |
-| medium | Campaign fanout | 30 seconds | 2 minutes | 5 minutes |
-| large | First result | 2 minutes | 6 minutes | 10 minutes |
-| large | Complete scan | 10 minutes | 30 minutes | 60 minutes |
-| large | Verification | 5 minutes | 20 minutes | 40 minutes |
-| large | Queue wait | 10 seconds | 60 seconds | 2 minutes |
-| large | Campaign fanout | 1 minute | 5 minutes | 10 minutes |
+| small | Complete scan | 2 minutes | 5 minutes | 8 minutes |
+| small | Verification | 5 minutes | 15 minutes | 25 minutes |
+| small | Queue wait | 5 seconds | 30 seconds | 1 minute |
+| small | Campaign fanout | 30 seconds | 2 minutes | 5 minutes |
+| medium | First result | 90 seconds | 4 minutes | 8 minutes |
+| medium | Complete scan | 10 minutes | 25 minutes | 40 minutes |
+| medium | Verification | 15 minutes | 40 minutes | 60 minutes |
+| medium | Queue wait | 10 seconds | 1 minute | 2 minutes |
+| medium | Campaign fanout | 1 minute | 4 minutes | 10 minutes |
+| large | First result | 4 minutes | 10 minutes | 20 minutes |
+| large | Complete scan | 35 minutes | 75 minutes | 120 minutes |
+| large | Verification | 45 minutes | 120 minutes | 180 minutes |
+| large | Queue wait | 30 seconds | 2 minutes | 5 minutes |
+| large | Campaign fanout | 2 minutes | 10 minutes | 20 minutes |
 
 ## Producer-observed evidence
 
@@ -75,7 +75,7 @@ Each metric dictionary entry owns an `eventSource`. Observations must carry that
 Run the canonical small load gate with all authority bindings:
 
 ```text
-npm run eval:performance -- --mode=load --tier=small --endpoint=https://deployment.example/internal/performance-probe --tenant-id=tenant-example --repository-id=repository-example --repository-revision=<immutable-source-revision> --deployment-revision=<immutable-deployment-revision> --fixture-digest=sha256:<fixture-digest> --correlation-id=<unique-correlation> --probe-source=fettler-production-probe --output=runs/performance/load.json
+npm run eval:performance -- --mode=load --tier=small --endpoint=https://deployment.example/internal/performance-probe --tenant-id=tenant-example --repository-id=repository-example --repository-revision=<immutable-source-revision> --deployment-revision=<immutable-deployment-revision> --fixture-digest=sha256:<fixture-digest> --correlation-id=<unique-correlation> --probe-source=fettler-production-probe --repository-files=1000 --repository-source-lines=50000 --repository-bytes=25000000 --repository-languages=typescript --repository-language-source-lines=typescript:50000 --output=runs/performance/load.json
 ```
 
 Use `mode=soak` for the soak gate. The runner uses the tier's fixed concurrency and duration, sends the expected repository shape to the probe, aborts in-flight requests at the deadline, and writes the report atomically. Set `MENDPOINT_PERFORMANCE_BEARER_TOKEN` when the internal endpoint requires bearer authentication.

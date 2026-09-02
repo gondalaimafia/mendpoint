@@ -524,8 +524,11 @@ function validateEvidenceBinding(
       fail("performance_repository_language_distribution_invalid");
     }
     const distributionEntries = Object.entries(languageSourceLines);
+    const declaredLanguages = new Set(evidence.repository.languages);
     if (
       distributionEntries.length !== tier.repository.languages.length ||
+      declaredLanguages.size !== distributionEntries.length ||
+      distributionEntries.some(([language]) => !declaredLanguages.has(language)) ||
       distributionEntries.some(([language, lines]) =>
         !tier.repository.languages.includes(language) || !Number.isSafeInteger(lines) || lines < 1) ||
       distributionEntries.reduce((sum, [, lines]) => sum + lines, 0) !== evidence.repository.sourceLines ||

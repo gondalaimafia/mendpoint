@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   evaluatePerformanceRun,
@@ -12,6 +14,12 @@ import {
 } from "./performance-contract.js";
 
 const EVALUATED_AT = "2026-09-02T00:01:10.000Z";
+
+function documentedDuration(milliseconds: number): string {
+  if (milliseconds >= 120_000 && milliseconds % 60_000 === 0) return `${milliseconds / 60_000} minutes`;
+  if (milliseconds === 60_000) return "1 minute";
+  return `${milliseconds / 1_000} seconds`;
+}
 
 function contract(): PerformanceContract {
   return {
@@ -127,6 +135,22 @@ function completeObservations(): PerformanceObservation[] {
 }
 
 describe("Fettler performance contract", () => {
+  it("keeps every documented objective equal to the executable authority", () => {
+    const documentation = readFileSync(resolve("docs/PERFORMANCE_CONTRACT.md"), "utf8");
+    const labels = {
+      first_result: "First result",
+      complete_scan: "Complete scan",
+      verification: "Verification",
+      queue_wait: "Queue wait",
+      campaign_fanout: "Campaign fanout",
+    } as const;
+    for (const objective of FETTLER_PERFORMANCE_CONTRACT.objectives) {
+      expect(documentation).toContain(
+        `| ${objective.tierId} | ${labels[objective.metric]} | ${documentedDuration(objective.p50Ms)} | ${documentedDuration(objective.p95Ms)} | ${documentedDuration(objective.p99Ms)} |`,
+      );
+    }
+    expect(documentation).toContain("--repository-language-source-lines=typescript:50000");
+  });
   it("publishes production workload ceilings, language mix, concurrency, and metric quality", () => {
     const validated = validatePerformanceContract(FETTLER_PERFORMANCE_CONTRACT);
 
@@ -288,6 +312,25 @@ describe("Fettler performance contract", () => {
           bytes: 250_000_000,
           languages: ["javascript", "python", "typescript"],
           languageSourceLines: { javascript: 499_998, python: 1, typescript: 1 },
+        },
+      }),
+      "load",
+      EVALUATED_AT,
+    )).toThrow("performance_repository_language_distribution_invalid");
+
+    expect(() => evaluatePerformanceRun(
+      { ...FETTLER_PERFORMANCE_CONTRACT, tiers: [medium], objectives: FETTLER_PERFORMANCE_CONTRACT.objectives.filter((item) => item.tierId === "medium") },
+      base.map((item) => ({ ...item, tierId: "medium" })),
+      binding({
+        tierId: "medium",
+        measuredConcurrency: 4,
+        endedAt: "2026-09-02T00:10:00.000Z",
+        repository: {
+          files: 10_000,
+          sourceLines: 500_000,
+          bytes: 250_000_000,
+          languages: ["javascript"],
+          languageSourceLines: { javascript: 200_000, python: 150_000, typescript: 150_000 },
         },
       }),
       "load",

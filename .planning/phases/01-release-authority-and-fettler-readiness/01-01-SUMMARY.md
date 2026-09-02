@@ -16,7 +16,7 @@ affects: [01-02-readiness, 05-economics, 06-final-qualification]
 actuals:
   tokens: 24071
   tasks: 3
-  commits: 16
+  commits: 20
 
 tech-stack:
   added: []
@@ -51,7 +51,7 @@ coverage:
     requirement: ME-FND-006
     verification:
       - kind: unit
-        ref: packages/eval/src/performance-contract.test.ts and performance-runner.test.ts, 16 tests
+        ref: packages/eval/src/performance-contract.test.ts and performance-runner.test.ts, 22 tests
         status: pass
     human_judgment: false
   - id: D2
@@ -89,7 +89,7 @@ status: complete
 - **Started:** 2026-09-01T19:13:00-05:00
 - **Completed:** 2026-09-01T22:33:00-05:00
 - **Tasks:** 3
-- **Files modified:** 12
+- **Files modified:** 14
 
 ## Accomplishments
 
@@ -162,7 +162,7 @@ status: complete
 
 ## Verification
 
-- Focused hostile matrix: 29 of 29 passed.
+- Focused hostile matrix: 35 of 35 passed.
 - Migration compute plus closure rerun: 13 of 13 passed.
 - Proposal authority functional assertions: 36 of 36 passed.
 - Full workspace typecheck: passed.
@@ -170,7 +170,7 @@ status: complete
 - Protected `npm run ga:check`: passed.
 - Strict evidence reachability: passed; migration compute runtime is reachable.
 - `git diff --check`: passed.
-- Current base: `origin/main` at `4bf8e1c0fd729922c2203f0339d3befd5f612ad6`.
+- Current base: `origin/main` at `92e6f4268de54e6ce9ef53f2556a140063951b36`.
 
 ## TDD Gate Compliance
 
@@ -191,8 +191,8 @@ None.
 
 ## Self-Check: PASSED
 
-- All 12 changed implementation, test, export, gate, and artifact files exist.
-- All 14 task commits are present on `codex/601-fettler-operating-contracts`.
+- All 14 changed implementation, test, export, gate, and artifact files exist.
+- All 20 task commits are present on `codex/601-fettler-operating-contracts` after this repair commit.
 - The exact head is based on current `origin/main`, with no uncommitted implementation changes.
 
 ---

@@ -520,9 +520,9 @@ export function persistPerformanceProbeReport(
   return target;
 }
 
-function option(name: string): string | undefined {
+function option(args: readonly string[], name: string): string | undefined {
   const prefix = `--${name}=`;
-  return process.argv.find((value) => value.startsWith(prefix))?.slice(prefix.length);
+  return args.find((value) => value.startsWith(prefix))?.slice(prefix.length);
 }
 
 function repositoryRevision(): string {
@@ -545,53 +545,15 @@ function dependencyVersions(lockPath: string): Record<string, string> {
 }
 
 async function main(): Promise<void> {
-  const mode = option("mode") as PerformanceMode | undefined;
-  const tierId = option("tier");
-  const endpoint = option("endpoint");
-  const deploymentRevision = option("deployment-revision");
-  const fixtureDigest = option("fixture-digest");
-  const output = option("output");
-  const tenantId = option("tenant-id");
-  const repositoryId = option("repository-id");
-  const correlationId = option("correlation-id");
-  const source = option("source");
-  const repositoryFiles = Number(option("repository-files"));
-  const repositorySourceLines = Number(option("repository-source-lines"));
-  const repositoryBytes = Number(option("repository-bytes"));
-  const repositoryLanguages = option("repository-languages")?.split(",").map((value) => value.trim()).filter(Boolean);
-  if (
-    !mode || !tierId || !endpoint || !deploymentRevision || !fixtureDigest || !output ||
-    !tenantId || !repositoryId || !correlationId || !source || !repositoryLanguages
-  ) {
-    throw new Error(
-      "usage: --mode=load|soak --tier=<tier> --endpoint=<url> " +
-      "--tenant-id=<tenant> --repository-id=<repository> --correlation-id=<correlation> " +
-      "--source=<source> --repository-files=<count> --repository-source-lines=<count> " +
-      "--repository-bytes=<count> --repository-languages=<comma-list> " +
-      "--deployment-revision=<immutable-id> --fixture-digest=<sha256> --output=<path>",
-    );
-  }
+  const parsed = parsePerformanceCliArguments(process.argv.slice(2), repositoryRevision());
+  const { endpoint, output, ...probeOptions } = parsed;
   const controller = new AbortController();
   const stop = () => controller.abort("operator_signal");
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   try {
     const report = await runPerformanceProbe({
-      tierId,
-      mode,
-      tenantId,
-      repositoryId,
-      correlationId,
-      source,
-      repository: {
-        files: repositoryFiles,
-        sourceLines: repositorySourceLines,
-        bytes: repositoryBytes,
-        languages: repositoryLanguages,
-      },
-      repositoryRevision: repositoryRevision(),
-      deploymentRevision,
-      fixtureDigest,
+      ...probeOptions,
       dependencyVersions: dependencyVersions(resolve("package-lock.json")),
       probe: createHttpPerformanceProbe({
         endpoint,
@@ -606,6 +568,75 @@ async function main(): Promise<void> {
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);
   }
+}
+
+export function parsePerformanceCliArguments(
+  args: readonly string[],
+  defaultRepositoryRevision?: string,
+): Omit<RunPerformanceProbeOptions, "dependencyVersions" | "probe" | "signal" | "now" | "contract"> & Readonly<{
+  endpoint: string;
+  output: string;
+}> {
+  const mode = option(args, "mode") as PerformanceMode | undefined;
+  const tierId = option(args, "tier");
+  const endpoint = option(args, "endpoint");
+  const deploymentRevision = option(args, "deployment-revision");
+  const fixtureDigest = option(args, "fixture-digest");
+  const output = option(args, "output");
+  const tenantId = option(args, "tenant-id");
+  const repositoryId = option(args, "repository-id");
+  const correlationId = option(args, "correlation-id");
+  const source = option(args, "probe-source") ?? option(args, "source");
+  const explicitRepositoryRevision = option(args, "repository-revision");
+  const repositoryFiles = Number(option(args, "repository-files"));
+  const repositorySourceLines = Number(option(args, "repository-source-lines"));
+  const repositoryBytes = Number(option(args, "repository-bytes"));
+  const repositoryLanguages = option(args, "repository-languages")?.split(",").map((value) => value.trim()).filter(Boolean);
+  const distribution = option(args, "repository-language-source-lines");
+  if (
+    (mode !== "load" && mode !== "soak") || !tierId || !endpoint || !deploymentRevision || !fixtureDigest || !output ||
+    !tenantId || !repositoryId || !correlationId || !source || !repositoryLanguages?.length || !distribution ||
+    !(explicitRepositoryRevision ?? defaultRepositoryRevision)
+  ) {
+    throw new Error(
+      "usage: --mode=load|soak --tier=<tier> --endpoint=<url> " +
+      "--tenant-id=<tenant> --repository-id=<repository> --correlation-id=<correlation> " +
+      "--probe-source=<source> --repository-revision=<immutable-id> " +
+      "--repository-files=<count> --repository-source-lines=<count> " +
+      "--repository-bytes=<count> --repository-languages=<comma-list> " +
+      "--repository-language-source-lines=<language:count,...> " +
+      "--deployment-revision=<immutable-id> --fixture-digest=<sha256> --output=<path>",
+    );
+  }
+  const languageSourceLines: Record<string, number> = {};
+  for (const entry of distribution.split(",")) {
+    const [language, rawLines, ...rest] = entry.split(":");
+    const lines = Number(rawLines);
+    if (!language || rest.length || language in languageSourceLines || !Number.isSafeInteger(lines) || lines < 1) {
+      invalid("performance_repository_language_distribution_invalid");
+    }
+    languageSourceLines[language] = lines;
+  }
+  if (
+    !Number.isSafeInteger(repositoryFiles) || repositoryFiles < 1 ||
+    !Number.isSafeInteger(repositorySourceLines) || repositorySourceLines < 1 ||
+    !Number.isSafeInteger(repositoryBytes) || repositoryBytes < 1 ||
+    Object.keys(languageSourceLines).length !== repositoryLanguages.length ||
+    repositoryLanguages.some((language) => !(language in languageSourceLines)) ||
+    Object.values(languageSourceLines).reduce((sum, lines) => sum + lines, 0) !== repositorySourceLines
+  ) invalid("performance_repository_language_distribution_invalid");
+  return {
+    mode, tierId, endpoint, deploymentRevision, fixtureDigest, output, tenantId,
+    repositoryId, correlationId, source,
+    repositoryRevision: explicitRepositoryRevision ?? defaultRepositoryRevision!,
+    repository: {
+      files: repositoryFiles,
+      sourceLines: repositorySourceLines,
+      bytes: repositoryBytes,
+      languages: repositoryLanguages,
+      languageSourceLines,
+    },
+  };
 }
 
 const isMain = process.argv[1]?.replace(/\\/g, "/").endsWith("performance-runner.ts") ||
