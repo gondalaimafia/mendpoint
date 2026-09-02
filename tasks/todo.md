@@ -4859,11 +4859,13 @@ Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, ba
 
 ## 2026-09-02 Pull request 625 same-tenant attested upsert repair
 
-- [ ] Add a regression proving an attested legacy repair session can progress under its unchanged identifier and tenant while ownership mutation, identifier mutation, and deletion remain rejected.
-- [ ] Narrow the source trigger to reject actual identifier or ownership changes rather than every statement naming those columns.
-- [ ] Run focused and full database tests, database typecheck, diff integrity, and exact-head verification.
+- [x] Add a regression proving an attested legacy repair session can progress under its unchanged identifier and tenant while ownership mutation, identifier mutation, and deletion remain rejected.
+- [x] Narrow the source trigger to reject actual identifier or ownership changes rather than every statement naming those columns.
+- [x] Run focused and full database tests, database typecheck, diff integrity, and exact-head verification.
 
 ### Review
 
 - RED: the focused regression failed at `insertRepairSession` with `legacy_tenant_ownership_source_immutable` before the same-tenant status transition; 1 failed and 34 skipped.
-- GREEN verification pending.
+- GREEN: the isolated regression passed with its same-tenant lifecycle transition and hostile ownership, identifier, and deletion assertions. The complete focused set passed 2 files and 88 tests.
+- The full database suite passed 59 files and 514 tests. Database TypeScript typecheck exited 0.
+- The trigger remains limited to scoped or quarantined rows and now raises only when `OLD.id IS NOT NEW.id` or `OLD.tenant_id IS NOT NEW.tenant_id`; the delete guard is unchanged.

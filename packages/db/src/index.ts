@@ -4168,12 +4168,15 @@ function installLegacyTenantOwnershipSourceGuards(db: AppDb): void {
         DROP TRIGGER IF EXISTS ${table}_legacy_tenant_ownership_update;
         CREATE TRIGGER ${table}_legacy_tenant_ownership_update
         BEFORE UPDATE OF id, tenant_id ON ${table}
-        WHEN EXISTS (
-          SELECT 1 FROM legacy_tenant_ownership_reconciliation_scope scope
-          WHERE scope.table_name = '${table}' AND scope.row_id = OLD.id
-        ) OR EXISTS (
-          SELECT 1 FROM legacy_tenant_ownership_quarantine_scope quarantine
-          WHERE quarantine.table_name = '${table}' AND quarantine.row_id = OLD.id
+        WHEN (OLD.id IS NOT NEW.id OR OLD.tenant_id IS NOT NEW.tenant_id)
+        AND (
+          EXISTS (
+            SELECT 1 FROM legacy_tenant_ownership_reconciliation_scope scope
+            WHERE scope.table_name = '${table}' AND scope.row_id = OLD.id
+          ) OR EXISTS (
+            SELECT 1 FROM legacy_tenant_ownership_quarantine_scope quarantine
+            WHERE quarantine.table_name = '${table}' AND quarantine.row_id = OLD.id
+          )
         )
         BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_source_immutable'); END;
         DROP TRIGGER IF EXISTS ${table}_legacy_tenant_ownership_delete;
