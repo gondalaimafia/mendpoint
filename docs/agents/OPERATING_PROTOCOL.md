@@ -278,7 +278,7 @@ The current `CI` workflow exposes these pull request check names:
 - `container-builds`
 - `deployment-e2e`
 
-The `deploy` job runs only after a push to `main`. It MUST NOT be configured as a pull request requirement because it does not exist on pull request runs.
+The `deploy-customer-production` job runs only on a push to `main` (and on a deliberate `workflow_dispatch` on `refs/heads/main`), never on `pull_request`. It MUST NOT be configured as a pull request requirement because it does not exist on pull request runs.
 
 ## 11. Reciprocal Peer Review
 
@@ -295,7 +295,11 @@ If the GitHub integrations do not support those exact triggers in the installed 
 
 Do not describe either trigger as operational until the requested reviewer posts an attributable review or acknowledgement on the pull request. A comment without an integration response is not review evidence.
 
+Author and reviewer can post from the same GitHub account (or App), so an attributable comment alone cannot distinguish an independent review from the author reviewing its own work. Every review comment an agent posts MUST identify the reviewing run: the agent name and its run or session id (for Cursor Cloud, the run URL and `bcId`). A review comment that does not name its run is not review evidence.
+
 The author may self-review before opening the PR, but self-review does not satisfy peer review.
+
+`CHANGES REQUIRED` (equivalently `NEEDS FIXES`) is a stop-the-line: it halts merge work on that PR until the author pushes the fix and the exact fixed head is re-reviewed. A prior approval does not carry to a new head.
 
 ## 12. Reviewer Independence
 
@@ -347,10 +351,14 @@ Neither coding agent may independently merge a material PR merely because the op
 Merge requires:
 
 - peer review complete
-- required CI green
+- all required status checks per branch protection are green
 - review conversations resolved
 - branch/current-base requirements satisfied
 - human merge decision unless explicitly delegated by repository policy
+
+`main` branch protection requires closure-authority and closure-controller status contexts in addition to the CI checks. Do not hardcode their names — they rotate by design (successor workflows). Read the live list with `gh api repos/<owner>/<repo>/branches/main/protection --jq '.required_status_checks.contexts'`. A red closure context is a **merge gate**, not advisory noise: it fails closed (for example `GITHUB_AUTHORITY_UNAVAILABLE` when the GitHub App credentials are missing), and that failure is ops rather than a code defect — but it still blocks merge. When a closure context is red, merge is an operator action; agents MUST escalate and MUST NOT request or use an admin override.
+
+Every PR carries exactly one `release-owner:<actor>` label. The closure authority resolves that label to the release owner and builds its trusted-reviewer set by excluding the owner's own actor (`trustedReviewerIdentities` / the owner-skip in `scripts/production-closure-github-authority.ts`), so an exact-head approval counts only from a bound reviewer whose actor differs from the release owner. `config/production-closure-authority.json` currently binds reviewer identities under a single actor, so a PR whose `release-owner:` label names that same actor empties the trusted set: a Claude-authored PR labelled `release-owner:claude` can never satisfy the exact-head review requirement. Per the operator's standing instruction, Claude-authored PRs are labelled for the Codex lane, and the reciprocal Codex peer review (§11) is the independent second look.
 
 ### 14.1 Check for stacked PRs before deleting a merged branch
 
@@ -417,7 +425,7 @@ A task is complete only when:
 - peer review is complete
 - substantive findings are resolved or explicitly escalated
 - documentation/ADRs are updated where required
-- CI is green
+- all required status checks per branch protection are green
 - PR is merge-ready
 
 Working code without peer review is not complete.

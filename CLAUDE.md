@@ -48,6 +48,7 @@ When reviewing a Codex-authored PR:
 - verify product/architecture contracts
 - identify concrete, evidence-backed findings
 - re-review after substantive changes
+- post the outcome on the PR, including this reviewing run's identity (agent name + run/session id)
 
 ## Reciprocal review
 
@@ -115,4 +116,4 @@ Always:
 7. list unresolved risks
 8. open/update the PR
 9. request Codex peer review
-10. do not merge a material PR solely on your own authority
+10. do not merge a material PR solely on your own authority. Treat `CHANGES REQUIRED` as a stop-the-line: no merge until the exact fixed head is re-reviewed. The closure contexts required on `main` are a merge gate; when one is red, merge is an operator action — escalate, never request or use an admin override.
