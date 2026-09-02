@@ -16,7 +16,7 @@ affects: [01-02-readiness, 05-economics, 06-final-qualification]
 actuals:
   tokens: 24071
   tasks: 3
-  commits: 22
+  commits: 25
 
 tech-stack:
   added: []
@@ -37,6 +37,7 @@ key-files:
 key-decisions:
   - "Canonical output uses small, medium, and large while documented pilot tier identifiers remain input-only compatibility aliases."
   - "Performance evidence is valid only when exact tenant, repository, deployment, fixture, source, correlation, measured concurrency, repository shape, and nonzero run interval bindings agree."
+  - "Every observation must be fresh and carry a runtime-validated boolean outcome; reports publish immutably and authenticated probes never follow redirects or use plaintext transport."
   - "The existing protected ga-check executable invokes closure validation so package authority bytes and rotation digests remain unchanged."
 
 patterns-established:
@@ -105,6 +106,7 @@ status: complete
 2. **Migration compute TDD:** `b9065e1b`, `5b8616a7`, `fcc4bd70`, `d9f63901`, `fde7f1dc`
 3. **Closure artifact and protected release gate:** `6a779242`, `44216697`, `049e5490`, `00d74874`
 4. **Exact-head performance review repair:** `89192456`, `b2a16f55`
+5. **Adversarial evidence-boundary repair:** `30ca1a5d`, `7c4f5280`
 
 ## Files Created or Modified
 
@@ -151,9 +153,17 @@ status: complete
 - **Verification:** Strict evidence reachability passes and no longer reports the migration compute authorities as dead.
 - **Committed in:** `d9f63901`, `fde7f1dc`
 
+**4. [Rule 1 - Bug] Closed four exact-head performance evidence vulnerabilities**
+- **Found during:** Independent exact-head review at `dcc854b33704411789fe3ced8cb86da0c4860242`
+- **Issue:** One fresh sample could launder stale samples, malformed success values used JavaScript truthiness, report publication replaced earlier evidence, and authenticated probes could use plaintext transport or follow redirects.
+- **Fix:** Validate every sample's freshness and boolean outcome, publish reports with exclusive immutable linking plus byte-identical replay, require secure authenticated endpoints, reject embedded credentials, and disable redirects.
+- **Files modified:** `packages/eval/src/performance-contract.ts`, `packages/eval/src/performance-contract.test.ts`, `packages/eval/src/performance-runner.ts`, `packages/eval/src/performance-runner.test.ts`
+- **Verification:** All ten hostile tests failed before implementation; the repaired evaluator suite passes 33 of 33 and the broader focused matrix passes 46 of 46.
+- **Committed in:** `30ca1a5d`, `7c4f5280`
+
 ---
 
-**Total deviations:** 3 auto-fixed, one bug and two missing correctness seams.
+**Total deviations:** 4 auto-fixed, two bugs and two missing correctness seams.
 **Impact on plan:** All changes are limited to the operating-contract producer, authority, public exports, and protected gate needed to close the six review findings.
 
 ## Issues Encountered
@@ -177,6 +187,10 @@ status: complete
 - Release-update optimized production build: passed, 64 pages generated.
 - Release-update protected `npm run ga:check`: passed on the current base.
 - Release-update diff integrity: passed across the exact 14 plan-owned files.
+- Final adversarial repair RED proof: 10 expected failures covering mixed stale and fresh observations, malformed outcome types, report replacement, plaintext authenticated endpoints, embedded credentials, and redirect behavior.
+- Final adversarial repair GREEN proof: evaluator 33 of 33; evaluator, migration compute, and closure matrix 46 of 46; evaluator, platform, and scripts typechecks passed.
+- Final adversarial repair optimized production build: passed, 64 pages generated.
+- Final adversarial repair protected `npm run ga:check`: passed, including strict evidence reachability and revert obligations.
 
 ## TDD Gate Compliance
 
@@ -198,7 +212,7 @@ None.
 ## Self-Check: PASSED
 
 - All 14 changed implementation, test, export, gate, and artifact files exist.
-- All 21 task commits are present on `codex/601-fettler-operating-contracts`; this release update adds one metadata commit rather than amending history.
+- All 24 implementation, test, and prior evidence commits are present on `codex/601-fettler-operating-contracts`; this repair adds one summary-only successor rather than amending history.
 - The tested implementation head is based on current `origin/main`; the returned release-update head is its summary-only successor.
 
 ---
