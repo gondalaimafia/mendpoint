@@ -451,6 +451,28 @@ describe("Fettler/Regauge logical database names", () => {
     }
   });
 
+  it("converges Mission authority columns from a genuine pre-rename schema", () => {
+    const path = join(newDir("rename-mission-authority"), "legacy.sqlite");
+    buildVolume(path, new Set(NEW_TABLES));
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      ALTER TABLE warden_candidate_deliveries DROP COLUMN mission_authority_json;
+      ALTER TABLE warden_ci_cycles DROP COLUMN mission_authority_json;
+      ALTER TABLE warden_ci_updates DROP COLUMN mission_authority_json;
+    `);
+    legacy.close();
+
+    const migrated = boot(path);
+    const fresh = boot(join(newDir("rename-mission-authority-fresh"), "fresh.sqlite"));
+    expect(dumpSchema(migrated)).toEqual(dumpSchema(fresh));
+    expect(migrated.raw.prepare(`SELECT mission_authority_json FROM fettler_candidate_deliveries
+      WHERE id = 'del1'`).get()).toEqual({ mission_authority_json: null });
+    expect(migrated.raw.prepare(`SELECT mission_authority_json FROM fettler_ci_cycles
+      WHERE id = 'cyc1'`).get()).toEqual({ mission_authority_json: null });
+    expect(migrated.raw.prepare(`SELECT mission_authority_json FROM fettler_ci_updates
+      WHERE id = 'upd1'`).get()).toEqual({ mission_authority_json: null });
+  });
+
   it("leaves the exact current predecessor rename startup with no pending old tables", () => {
     const path = join(newDir("rename-predecessor-rollback"), "rollback.sqlite");
     buildVolume(path, new Set(NEW_TABLES));

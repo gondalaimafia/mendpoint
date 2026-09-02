@@ -1,4 +1,4 @@
-name: Production Closure Authority
+name: Production Closure Authority (systemic escalation)
 
 on:
   push:
@@ -31,7 +31,7 @@ permissions:
 # Collapse bursts: during a merge storm five queued full sweeps all validate the same state,
 # so only the newest matters. PR-triggered runs collapse per PR instead of against the sweep.
 concurrency:
-  group: closure-authority-${{ github.event_name == 'pull_request_target' && format('pr-{0}', github.event.pull_request.number) || 'sweep' }}
+  group: closure-authority-systemic-escalation-${{ github.event_name == 'pull_request_target' && format('pr-{0}', github.event.pull_request.number) || 'sweep' }}
   cancel-in-progress: true
 
 jobs:
@@ -91,7 +91,7 @@ jobs:
       matrix:
         pull_request: ${{ fromJSON(needs.discover.outputs.pull_requests) }}
     concurrency:
-      group: production-closure-authority-invalidation-${{ matrix.pull_request }}
+      group: production-closure-authority-systemic-escalation-invalidation-${{ matrix.pull_request }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -121,7 +121,7 @@ jobs:
           set -euo pipefail
           gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
             -f state=pending \
-            -f context=mendpoint-production-closure-controller-quiet-sweep \
+            -f context=mendpoint-production-closure-controller-systemic-escalation \
             -f description="Protected closure authority is being reevaluated" \
             -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
         env:
@@ -139,7 +139,7 @@ jobs:
       matrix:
         pull_request: ${{ fromJSON(needs.discover.outputs.pull_requests) }}
     concurrency:
-      group: production-closure-authority-${{ matrix.pull_request }}
+      group: production-closure-authority-systemic-escalation-${{ matrix.pull_request }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     environment: production-closure-authority
@@ -179,7 +179,7 @@ jobs:
             --jq '.id')"
           echo "check_id=${check_id}" >> "$GITHUB_OUTPUT"
         env:
-          CHECK_NAME: mendpoint-production-closure-authority-quiet-sweep
+          CHECK_NAME: mendpoint-production-closure-authority-systemic-escalation
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
       - name: Checkout exact immutable main authority
@@ -338,7 +338,7 @@ jobs:
           fi
           gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${PR_HEAD_SHA}" \
             -f state="$state" \
-            -f context=mendpoint-production-closure-controller-quiet-sweep \
+            -f context=mendpoint-production-closure-controller-systemic-escalation \
             -f description="Protected closure authority verdict" \
             -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
         env:
@@ -370,12 +370,37 @@ jobs:
           if [ "$APP_IDENTITY_OUTCOME" = success ] && [ "$BRANCH_PROTECTION_OUTCOME" = success ] && [ "$PROPOSAL_OUTCOME" = success ] && [ "$MATRIX_OUTCOME" = success ] && [ "$GITHUB_OUTCOME" = success ]; then
             conclusion=success
           fi
-          if [ "$GITHUB_EVENT_NAME" = schedule ] || [ "$GITHUB_EVENT_NAME" = push ]; then
-            echo "::notice::closure-authority verdict for PR #${PR_NUMBER} is ${conclusion}; recorded on the PR check-run (sweep (push/schedule) does not fail the run for per-PR verdicts)"
+          # A per-PR verdict is ENFORCED by the two contexts this job already
+          # published: the App check-run and the controller commit status, which
+          # are what branch protection requires. The workflow RUN's own conclusion
+          # is not a required context, so failing the run for a per-PR verdict adds
+          # no enforcement whatsoever - it only emails the owner, on every push to
+          # any head that is not yet attested. That is the single largest source of
+          # production-failure email, and it is pure noise: the merge is already
+          # blocked by the contexts above.
+          #
+          # So every event that judges an individual pull request records the
+          # verdict and exits 0: schedule and push (the sweep, unchanged) and now
+          # pull_request_target. A failing verdict is a ::warning so it stays
+          # visible in the run log and the annotations, without a red run.
+          #
+          # This does NOT quiet anything else. Genuine infrastructure failures still
+          # fail the run: the publish guard above (verdict could not be recorded)
+          # exits 1 before this point, and the installation budget guard in the
+          # discover job exits 1 independently. Systemic breakage stays loud through
+          # the systemic-escalation job, which fails the run when a shared cause
+          # takes down most open pull requests at once.
+          if [ "$GITHUB_EVENT_NAME" = schedule ] || [ "$GITHUB_EVENT_NAME" = push ] || [ "$GITHUB_EVENT_NAME" = pull_request_target ]; then
+            if [ "$conclusion" = success ]; then
+              echo "::notice::closure-authority verdict for PR #${PR_NUMBER} is success; recorded on the PR check-run and controller status (per-PR verdicts do not fail the run; branch protection enforces them)"
+            else
+              echo "::warning::closure-authority verdict for PR #${PR_NUMBER} is ${conclusion}; recorded on the PR check-run and controller status, which block the merge (per-PR verdicts do not fail the run)"
+            fi
             exit 0
           fi
-          # Every non-schedule event keeps the original hard-fail behavior: the run
-          # is red unless the recorded verdict is a pass.
+          # Any remaining event (workflow_dispatch, a deliberate manual request for
+          # a verdict) keeps the original hard-fail behavior: the run is red unless
+          # the recorded verdict is a pass.
           if [ "$conclusion" != success ]; then
             echo "::error::closure-authority verdict for PR #${PR_NUMBER} is ${conclusion}"
             exit 1

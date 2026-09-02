@@ -1067,7 +1067,7 @@ describe("production closure proposal authority", () => {
 
   it("accepts a normal product proposal after successor activation removed the predecessor", async () => {
     const client = new FixtureClient();
-    const predecessorPath = ".github/workflows/closure-authority-quiet-sweep.yml";
+    const predecessorPath = ".github/workflows/closure-authority-systemic-escalation.yml";
     const successorPath = ".github/workflows/closure-authority-v2.yml";
     const workflowBytes = client.blobs.get(client.pathToSha.get(predecessorPath)!)!;
     const activePolicy = policy();
@@ -1127,7 +1127,7 @@ describe("production closure proposal authority", () => {
 
   it("exempts the newly-active successor from the controller-surface collision while an unrelated extra controller workflow still collides", async () => {
     const client = new FixtureClient();
-    const activePath = ".github/workflows/closure-authority-quiet-sweep.yml";
+    const activePath = ".github/workflows/closure-authority-systemic-escalation.yml";
     const successorPath = ".github/workflows/closure-authority-v3.yml";
     const roguePath = ".github/workflows/closure-authority-rogue.yml";
     // Controller-surface bytes: statuses: write + environment: production-closure-authority.

@@ -1,5 +1,6 @@
 import type { AppDb } from "./index.js";
 import { appendDomainEvent } from "./trust.js";
+import { revokePendingMissionMutationDispatches } from "./mission-mutation-dispatch-fence.js";
 import {
   all,
   assertMissionScope,
@@ -224,7 +225,9 @@ function insertException(db: AppDb, input: {
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
-    const existing = one<MissionExceptionRow>(db, `SELECT * FROM mission_exceptions WHERE id = ?`, [digest]);
+    // Tenant-scoped by predicate, like every sibling lookup in this module.
+    const existing = one<MissionExceptionRow>(db,
+      `SELECT * FROM mission_exceptions WHERE id = ? AND tenant_id = ?`, [digest, input.tenantId]);
     if (existing) {
       const value = hydrate(existing);
       if (owns) db.raw.exec("COMMIT");
@@ -258,7 +261,8 @@ function insertException(db: AppDb, input: {
       },
       createdAt: input.createdAt,
     });
-    const value = hydrate(one<MissionExceptionRow>(db, `SELECT * FROM mission_exceptions WHERE id = ?`, [digest])!);
+    const value = hydrate(one<MissionExceptionRow>(db,
+      `SELECT * FROM mission_exceptions WHERE id = ? AND tenant_id = ?`, [digest, input.tenantId])!);
     if (owns) db.raw.exec("COMMIT");
     return value;
   } catch (error) {
@@ -297,7 +301,7 @@ export function raiseMissionException(db: AppDb, input: {
   assertMissionScope(db, input.tenantId, input.missionId);
   assertRecordPrincipal(db, input.tenantId, input.ownerPrincipalId, "mission_exception_owner_tenant_mismatch");
   const bound = input.observedAgainst ? resolveObservedSnapshot(db, input.tenantId, input.observedAgainst) : null;
-  return insertException(db, {
+  const record = {
     tenantId: input.tenantId,
     missionId: input.missionId,
     reason,
@@ -305,7 +309,7 @@ export function raiseMissionException(db: AppDb, input: {
     ownerPrincipalId: input.ownerPrincipalId,
     resolutionPath,
     blocking: input.blocking,
-    status: "open",
+    status: "open" as const,
     observedSnapshotId: bound?.snapshotId ?? null,
     observedResolvedSha: bound?.resolvedSha ?? null,
     supersedesId: null,
@@ -316,7 +320,32 @@ export function raiseMissionException(db: AppDb, input: {
     createdAt,
     taskId: input.taskId ?? null,
     category: input.category ?? null,
-  });
+  };
+  const recordId = contentDigest(exceptionDigestBody(record));
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    // Tenant-scoped by predicate, not by the shape of the id. `recordId` is a
+    // digest that happens to include the tenant today, so an unscoped lookup is
+    // safe only for as long as that stays true. Scope it here so the guarantee
+    // does not rest on a comment about how the digest is built.
+    const existing = one<MissionExceptionRow>(db,
+      `SELECT * FROM mission_exceptions WHERE id = ? AND tenant_id = ?`, [recordId, input.tenantId]);
+    if (existing) {
+      const value = hydrate(existing);
+      if (owns) db.raw.exec("COMMIT");
+      return value;
+    }
+    if (input.blocking) revokePendingMissionMutationDispatches(
+      db, input.tenantId, input.missionId, createdAt,
+    );
+    const value = insertException(db, record);
+    if (owns) db.raw.exec("COMMIT");
+    return value;
+  } catch (error) {
+    if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function loadHead(db: AppDb, tenantId: string, priorId: string): MissionExceptionRow {
@@ -347,6 +376,11 @@ function transition(db: AppDb, input: {
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
     const prior = loadHead(db, input.tenantId, input.priorExceptionId);
+    if (input.status === "open" && input.blocking) {
+      revokePendingMissionMutationDispatches(
+        db, input.tenantId, prior.mission_id, input.createdAt,
+      );
+    }
     // A resolution/withdrawal records the resolver's note on the resolution_path
     // so the chain carries how it was closed; a re-affirmation keeps the prior
     // resolution_path unchanged.

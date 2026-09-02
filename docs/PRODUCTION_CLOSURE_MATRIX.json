@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-09-02T04:55:25.240Z",
-    "observedMainRevision": "e69d997b7eef88ffcc7786a3e51da46eb1e677d4",
-    "observationDigest": "sha256:7eb0796730a78fdac12b47e83e13d61b20f8f27c3ebb6d77fa7fe1c795fa20b0",
+    "observedAt": "2026-09-02T19:15:32.625Z",
+    "observedMainRevision": "4952aefd6a4578345e70eb3062f27db644bbcd8e",
+    "observationDigest": "sha256:8b51e4ee517e6a72078e9cd7699489d6a0a3abca49bb3277565450ae8e3112e8",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 461,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/461",
-      "title": "claims: detect stale claims whose audited surface changed (mechanism half of #284)",
+      "number": 634,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/634",
+      "title": "deps: bump @xmldom/xmldom to 0.8.15 to clear GHSA-6gmq-8vp8-gcm6 (runtime rotation)",
       "baseBranch": "main",
-      "headBranch": "claims-staleness-mechanism",
+      "headBranch": "claude/audit-xmldom",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2083,18 +2083,16 @@
         "pullRequests": [],
         "branches": []
       },
-      "requirementIds": [
-        "ME-GTM-003"
-      ],
+      "requirementIds": [],
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260902-015",
+        "rotationId": "rotation-20260902-022",
         "kind": "runtime",
-        "issuedAt": "2026-09-02T04:55:25.240Z",
-        "expiresAt": "2026-09-03T04:55:25.240Z",
-        "basePolicySha256": "sha256:152c1b9eb0f12e4a98bf766c18f6a00505bb9c07cfc3108df6a2b207e0d9e407",
-        "proposedPolicySha256": "sha256:a679465f62ea507187d890dd7c163bebffb5e95dc14eb184e6836db5c6896a13"
+        "issuedAt": "2026-09-02T19:15:32.625Z",
+        "expiresAt": "2026-09-03T19:15:32.625Z",
+        "basePolicySha256": "sha256:35a37e88ffd1250d40666198cae9f4c1ee5d53c66b3774a606eb159d167bac72",
+        "proposedPolicySha256": "sha256:d20d8688f709fe50cfa3c790e7522d76a2d630175c3f8ff7c92ae4a0127aef41"
       }
     },
     "pullRequests": [
@@ -2112,9 +2110,7 @@
         },
         "disposition": "superseded",
         "dependencies": {
-          "pullRequests": [
-            461
-          ],
+          "pullRequests": [],
           "branches": []
         },
         "requirementIds": [

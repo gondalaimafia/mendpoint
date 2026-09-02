@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import type { AppDb } from "./index.js";
 import { appendDomainEvent } from "./trust.js";
+import { revokePendingMissionMutationDispatches } from "./mission-mutation-dispatch-fence.js";
 
 // Deterministic App-DB mission id for a ReGauge/Transformer control-plane
 // campaign. Shared so that every writer that create-or-binds the mission for a
@@ -187,6 +188,7 @@ export function transitionMission(db: AppDb, input: {
     if (!current) throw new Error("mission_not_found");
     if (current.revision !== input.expectedRevision) throw new Error("mission_revision_conflict");
     if (!missionTransitions[current.state].includes(input.to)) throw new Error("mission_transition_invalid");
+    revokePendingMissionMutationDispatches(db, input.tenantId, input.missionId, input.createdAt);
     const changed = db.raw.prepare(`UPDATE mission SET state = ?, revision = revision + 1, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND revision = ?`).run(input.to, input.createdAt, input.missionId,
         input.tenantId, input.expectedRevision);
@@ -236,6 +238,7 @@ export function bindMissionScope(db: AppDb, input: {
       return mission(current);
     }
     if (current.repository_id !== null || current.snapshot_id !== null) throw new Error("mission_scope_conflict");
+    revokePendingMissionMutationDispatches(db, input.tenantId, input.missionId, input.createdAt);
     const changed = db.raw.prepare(`UPDATE mission
       SET repository_id = ?, snapshot_id = ?, revision = revision + 1, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND revision = ?
@@ -282,6 +285,7 @@ function bindMissionExecutionVersion(db: AppDb, input: {
     const existingValue = current[input.column];
     if (existingValue === value) { db.raw.exec("COMMIT"); return mission(current); }
     if (existingValue !== null) throw new Error(input.conflictError);
+    revokePendingMissionMutationDispatches(db, input.tenantId, input.missionId, input.createdAt);
     const changed = db.raw.prepare(`UPDATE mission
       SET ${input.column} = ?, revision = revision + 1, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND revision = ? AND ${input.column} IS NULL`).run(
@@ -379,6 +383,7 @@ export function advanceMissionPolicyEnvelopeVersion(db: AppDb, input: {
     if (current.policy_envelope_version !== expected) {
       throw new Error("mission_policy_envelope_version_conflict");
     }
+    revokePendingMissionMutationDispatches(db, input.tenantId, input.missionId, input.createdAt);
     const changed = db.raw.prepare(`UPDATE mission
       SET policy_envelope_version = ?, revision = revision + 1, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND revision = ? AND policy_envelope_version = ?`).run(

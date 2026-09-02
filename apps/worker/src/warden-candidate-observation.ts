@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { redactSourceForModel } from "@mendpoint/agent";
 import {
+  assertMissionMutationAuthority,
   completeJob,
   enqueueJob,
   failJob,
@@ -13,6 +14,7 @@ import {
   insertEvidenceRecord,
   pauseWardenCiCycle,
   recordWardenCiObservation,
+  replayWardenCandidateDeliveryMergedOutcome,
   type AppDb,
   type JobRow,
 } from "@mendpoint/db";
@@ -484,6 +486,12 @@ export async function runWardenCandidateObservation(input: WardenCandidateObserv
       !SHA256.test(persisted.digest)) {
     throw new Error("warden_ci_observation_evidence_mismatch");
   }
+  if (cycle.missionAuthority) {
+    assertMissionMutationAuthority(input.db, cycle.tenantId, cycle.missionAuthority, {
+      allowClaimedTask: true,
+      requireNoBlocking: true,
+    });
+  }
   input.db.raw.exec("BEGIN IMMEDIATE");
   try {
     const saved = recordWardenCiObservation(input.db, {
@@ -509,6 +517,9 @@ export async function runWardenCandidateObservation(input: WardenCandidateObserv
         evidenceBytes: bytes,
         observedAt,
       });
+      replayWardenCandidateDeliveryMergedOutcome(
+        input.db, cycle.tenantId, cycle.deliveryId, observedAt,
+      );
     }
     const completed = completeJob(input.db, input.job.id, {
       cycleId: cycle.id,
