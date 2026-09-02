@@ -16,7 +16,7 @@ affects: [01-02-readiness, 05-economics, 06-final-qualification]
 actuals:
   tokens: 25292
   tasks: 3
-  commits: 36
+  commits: 40
 
 tech-stack:
   added: []
@@ -101,6 +101,7 @@ status: complete
 - Made performance proof fail closed unless producer-observed repository shape, representative tier floors and language distribution, measured concurrency, run interval, metric event source, and all exact execution identities are present and consistent.
 - Retained same-tick pre-observation probe failures as nonzero failed samples while preventing them from qualifying a report.
 - Prevented settlement beyond released reservation and retained a contiguous, deterministic, tamper-evident ledger through invoice entry identifiers.
+- Made the existing append-only `usage_ledger_entries` path the sole production storage authority; the protected closure check now exercises the same reservation, settlement, reconciliation, and invoice data used by the API and invoice export.
 - Exported the performance and migration compute authorities and exercised them from the protected general availability preflight without changing protected package authority bytes.
 
 ## Task Commits
@@ -112,6 +113,8 @@ status: complete
 5. **Adversarial evidence-boundary repair:** `30ca1a5d`, `7c4f5280`
 6. **Long-run availability and evidence-budget repair:** `288d9bc6`, `7049be3a`, `880bb666`
 7. **Finance authority, producer limits, and bounded response repair:** `d74df5ae`, `e60f3a90`, `701757be`
+8. **Destination and approval replay repair:** `489489c6`, `9274799e`
+9. **Live ledger authority repair:** `de16cca7`, `338b308b`
 
 ## Files Created or Modified
 
@@ -182,9 +185,25 @@ status: complete
 - **Verification:** The hostile RED suite exposed every gap. The repaired focused matrix passes 64 of 64, full workspace typecheck and optimized build pass, the protected general availability checks pass, the 19-test revert suite passes serially with a 30-second per-test allowance, and diff integrity passes.
 - **Committed in:** `d74df5ae`, `e60f3a90`, `701757be`
 
+**7. [Rule 1 - Bug] Closed embedded-address and finance-approval replay paths**
+- **Found during:** Independent exact-head review of pull request 610 at `c469ffa1d70e526eacb70e6270754fdb5992a492`
+- **Issue:** IPv4-compatible and translation-prefix IPv6 spellings could reach a credentialed pinned request, and one finance approval could authorize two distinct credit entries.
+- **Fix:** Reject embedded IPv4 destinations before credential attachment, bind finance approval to the exact entry idempotency key and entry facts, and enforce one-time approval and authorization-digest consumption across reconciliation.
+- **Files modified:** `packages/eval/src/performance-runner.ts`, `packages/eval/src/performance-runner.test.ts`, `packages/platform/src/mcu.ts`, `packages/platform/src/mcu.test.ts`
+- **Verification:** The evaluator matrix passes 48 of 48 and the migration-compute matrix passes 22 of 22.
+- **Committed in:** `489489c6`, `9274799e`
+
+**8. [Rule 2 - Missing Critical] Removed the duplicate production MCU ledger authority**
+- **Found during:** Independent exact-head review of pull request 610 at `c469ffa1d70e526eacb70e6270754fdb5992a492`
+- **Issue:** The protected closure check exercised an in-memory lifecycle while the API, invoice export, and gross-margin paths used the append-only database ledger, leaving two selectable authorities for the same economic events.
+- **Fix:** Run the protected closure self-check through `createDb`, `reserveUsage`, `settleUsageReservation`, `reconcileUsageLedger`, and `listUsageLedger`; publish the durable table and ledger-head identity; and remove the in-memory lifecycle from the public platform barrel.
+- **Files modified:** `scripts/fettler-production-closure.ts`, `scripts/fettler-production-closure.test.ts`, `packages/platform/src/index.ts`, `packages/platform/src/mcu.ts`, `docs/FETTLER_PRODUCTION_REQUIREMENT_CLOSURE.json`
+- **Verification:** The RED test proved the synthetic lifecycle was still selected. The repaired closure suite passes 3 of 3, the complete platform suite passes 271 of 271, and platform, database, and scripts typechecks pass.
+- **Committed in:** `de16cca7`, `338b308b`
+
 ---
 
-**Total deviations:** 6 auto-fixed, four bugs and three missing correctness seams across the six repair rounds.
+**Total deviations:** 8 auto-fixed, six bugs and four missing correctness seams across the eight repair rounds.
 **Impact on plan:** All changes are limited to the operating-contract producer, authority, public exports, operator contract, and protected gate needed to close the review findings.
 
 ## Issues Encountered
