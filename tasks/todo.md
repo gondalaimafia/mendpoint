@@ -4216,6 +4216,47 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - `subjectKey` components are escaped so a colon inside one component cannot collide with a different component split. Both values are enum-ish today, so this is a structural guard, not a live defect.
 - Not changed here, and routed to the schema owner instead: revoking governed-learning consent is forward-looking and does not retract already-projected candidates. That matches the append-only learning-corpus model and is a consent-policy decision, not a defect in this plan.
 
+## 2026-08-30 GSD Plan 10-04: recovery qualification collector
+
+Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, backup, restore, migration, rollback, regional failure, and recurring drills across the database, graph, artifacts, change-source state, ReGauge control plane, ReGauge execution state, and configuration. Production backup-provider, cross-region, and real regional-failover observations remain an explicit external leaf.
+
+- [x] RED: specify one bounded production recovery qualification caller that consumes an authenticated object-backup receipt, restores all seven resources to an isolated target, opens the restored stores through their current schema convergence paths, and records exact pre-upgrade and post-upgrade identities without mutating the source or active deployment.
+- [x] GREEN: publish one create-only, authenticated evidence envelope binding the backup, key identifier, object commit, exact deployed and repository revisions, resource digests, schema convergence, semantic canaries, measured RTO and RPO, rollback digest, recovery-region identity, and the external-proof state.
+- [x] RED: prove wrong tenant or backup identity, receipt or object tampering, unsupported prior schema, partial restore, live-target overlap, symlink or path escape, duplicate output, missed objective, canary failure, migration failure, rollback drift, dependency outage, and interrupted replay cannot publish passing evidence.
+- [x] GREEN: make an exact completed proof replay without another download or restore, and leave failed or externally incomplete evidence distinct from a passing synthetic or local drill.
+- [ ] Verify focused recovery tests, prior-schema convergence suites, Ops and scripts typechecks, full tests and typecheck, optimized build, GA gates, dependency audit, and diff integrity.
+- [ ] Obtain independent exact-head review, current-base protected CI, protected merge, exact-revision deployment, and a live collector run. Keep `ME-ENT-007` below GA until the production provider, approved cross-region target, and real regional-failure drill are attributable.
+
+### Files and interfaces
+
+- `scripts/production-recovery-proof.ts`: protected recovery proof caller and create-only evidence publication.
+- `scripts/production-recovery-proof.test.ts`: exact replay, hostile receipt, prior-schema, failure, rollback, and third-state matrix.
+- `package.json`: operator command only. Reuse the existing object-backup, restore, schema, and measured-drill contracts; do not create a second backup format.
+
+### Threats and rollback
+
+- Secret material remains environment-only and is never persisted in inputs, output, logs, digests, or errors. The evidence envelope retains key identifiers and authenticated receipt digests only.
+- The caller accepts only an isolated empty target and a distinct rollback target, rejects active data roots and filesystem redirects, and holds the existing mutation fence through store convergence and canary reads.
+- A local or synthetic drill can prove engineering behavior but cannot set `productionProven`, satisfy the external evidence leaf, or promote a public recovery claim.
+- Rollback removes only the operator caller and command. Existing backup formats, receipts, scheduled jobs, retained objects, source state, and production recovery authority remain unchanged.
+
+### Review
+
+- The bounded engineering collector reuses the authenticated object-backup receipt and manifest, customer object-store download, atomic restore, mutation fence, current store constructors, and measured recovery contracts. It creates one authenticated evidence envelope for all seven resources and never introduces a second backup format.
+- Exact completed replay authenticates the existing envelope and returns before download, restore, convergence, canaries, or rollback. Retained failure, tenant or receipt mismatch, tamper, unsafe paths, partial restore, unsupported schema, missed objectives, canary failure, migration failure, and rollback drift fail closed.
+- Local, synthetic, and production-targeted runs all retain `productionProven: false` with an explicit pending external observation. `ME-ENT-007` remains below GA until a protected exact-revision run supplies attributable provider, approved cross-region, and real regional-failure evidence.
+- Focused verification passes 21 recovery tests. Remaining repository gates and protected shipping evidence are recorded by the release owner after this bounded slice is integrated.
+
+### Review (exact-head follow-up)
+
+- `revisions.deployed` was an operator label compared against another operator label. Both `MENDPOINT_RECOVERY_REPOSITORY_REVISION` and `MENDPOINT_RECOVERY_DEPLOYED_REVISION` came from the same environment, so the production guard proved only that one person typed the same string twice: the field meant to bind the artifact to a specific production deploy was never checked against a deploy. A production-targeted run now reads `revision` from the running target's `/version` and publishes only when the observation matches the expectation. An unreachable or unreadable target fails the run. `revisions.deployed` carries three states rather than two, so "we did not look" cannot be read as "we looked and it matched", and only `non_production_environment` can accompany a passing proof.
+- `manifestSha256` sat beside `restoredSha256` and read as an expected-versus-observed pair. They are incomparable and were never compared: the manifest value digests the backup's encrypted-file metadata, the restored value digests the decrypted tree, and they differ on every successful run. Both are retained under names that say which object each identifies.
+- The restored-tree guard compared this file's tree digest against the one the restore reported. It is unreachable from an end-to-end run, so nothing died when it was deleted. It is now a named exported guard with a test of its own. The tree walker stays deliberately separate from `packages/ops/src/disaster-recovery.ts:556`: this one rejects a symlink anywhere in the ancestor chain and rejects a non-regular entry outright, and collapsing onto the shared implementation would drop both checks on the path that decides whether evidence is published.
+- `safeFailureCode` allowlisted by charset, so sixty-four hex characters passed to stderr and into signed evidence verbatim. No path interpolates key material into a message, which is the only reason that was not already a leak. It now echoes only codes this module or its own transport raises, with a bounded detail suffix; anything else reports as a dependency failure.
+- `main()` had no test and no invocation, and the thirteen names it reads were undeclared, invisible to `config:check` because that gate scans only the workflow directory. Every name `main()` reads through `requiredEnv` is declared `required_when_active` in `config/required-configuration.json` with its activation gate, a test drives `main()` against fake environment values to named failures, and a source scan fails if a name is read but not declared. `MENDPOINT_BACKUP_KEY`, `MENDPOINT_DEPLOYMENT_PROFILE`, and the object-store variables belong to the customer-backup subsystem and stay undeclared here rather than being claimed by this plan.
+- NOT CONTINUOUS, deliberately: no workflow runs `recovery:proof`, so the RPO check does not fire on a schedule and cannot catch backups that silently stop. Wiring it into `customer-backup.yml` was considered and rejected on two grounds. That workflow executes on the customer machine through `flyctl ssh console`, where the proof would contend for the same mutation fence as the backup it is meant to verify; and it would need a full restore plus a rollback copy of production data on the production host. The proof stays operator-run, and continuous RPO monitoring remains owed work under `ME-ENT-007`.
+- Twenty-one heavy tests ran real AES-GCM, SQLite, and whole-tree copies under the 5000ms default; twelve failed on timeout on a Windows host while CI stayed green. The genuinely heavy cases carry per-test budgets in the existing repository idiom rather than a suite-wide override, so a real hang in a fast test still fails fast.
+- Not changed: `tenantId` was reported as bound only into `requestDigest`. It is a top-level field of both the passing and failed envelopes, covered by the HMAC that `signEvidence` computes over the whole unsigned object, and re-checked against the caller on replay, so editing it in a retained file already fails authentication. No cryptographic binding can stop an operator from labelling their own single-tenant run, so nothing was added.
 ## 2026-08-30 GSD Plan 10-02: tenant isolation and governed audit runtime
 
 - [x] RED: prove the production launch gate rejects a missing or unscoped tenant boundary across API, database, graph, workspace, artifact, cache, queue, mission, learning, backup, export, and observability.
