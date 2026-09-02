@@ -31,20 +31,20 @@ key-files:
 key-decisions:
   - Contract definitions and measured production evidence remain separate; absent observations are recorded as not_observed.
   - Performance and MCU contracts are consumed through canonical content digests rather than copied constants.
-  - The package script binding remains deferred because package.json overlaps newer origin/main and open pull request 592.
+  - The package script binding was added only after pull request 592 merged and the plan was restaged from current origin/main.
 metrics:
   duration: 55m
   completed: 2026-09-02
-status: halted
+status: complete
 actuals:
   tokens: 14077
-  tasks: 2
-  commits: 6
+  tasks: 3
+  commits: 8
 ---
 
 # Phase 01 Plan 01: Fettler Executable Operating Contracts Summary
 
-Fettler now has executable, digest-bound performance and migration-compute authorities plus reproducible closure bytes, while the one overlapping package-script edit remains explicitly uncommitted.
+Fettler now has executable, digest-bound performance and migration-compute authorities, reproducible closure bytes, and a canonical workspace command that checks those bytes.
 
 ## Accomplishments
 
@@ -53,17 +53,20 @@ Fettler now has executable, digest-bound performance and migration-compute autho
 - Bound the MCU schedule to reservation, settlement, release, adjustment, credit, reconciliation, invoice mapping, idempotency, and safe-integer arithmetic.
 - Added one canonical closure artifact that consumes both contract digests and records production measurements and ledger evidence as `not_observed` instead of inferring success.
 - Added exact-byte generation and checking with stable failures for missing and stale artifacts.
+- Exposed the exact-byte check as `npm run fettler:closure:check` after the protected package-file overlap cleared.
 
 ## Task Commits
 
 | Task | Commit | Result |
 |---|---|---|
-| Task 1 RED | `05163ae8` | Failing performance and closure tests established. |
-| Task 1 GREEN | `7fe64493` | Performance contract, metric dictionary, canonical digests, and closure binding implemented. |
-| Task 2 RED | `1f1d5c60` | Failing MCU lifecycle and closure tests established. |
-| Task 2 GREEN | `2a0304af` | Ordered MCU ledger reconciliation and closure binding implemented. |
-| Task 3 safe portion | `b557c5b3` | Generator, exact-byte checker, tests, and committed artifact implemented. |
-| Full-gate repair | `8dc4bb01` | Test typing made explicit after the full workspace typecheck exposed optional-field narrowing. |
+| Task 1 RED | `11af4d37` | Failing performance and closure tests established on current main. |
+| Task 1 GREEN | `04a5ef96` | Performance contract, metric dictionary, canonical digests, and closure binding implemented. |
+| Task 2 RED | `f87cae7f` | Failing MCU lifecycle and closure tests established. |
+| Task 2 GREEN | `7af1d5c0` | Ordered MCU ledger reconciliation and closure binding implemented. |
+| Task 3 artifact | `b42220b6` | Generator, exact-byte checker, tests, and committed artifact implemented. |
+| Full-gate repair | `b1067012` | Test typing made explicit after the full workspace typecheck exposed optional-field narrowing. |
+| Task 3 command RED | `06d2b3c9` | Proved the required workspace command was absent. |
+| Task 3 command GREEN | `9c7286d8` | Added the canonical workspace command after the overlap cleared. |
 
 ## Verification
 
@@ -71,27 +74,21 @@ Fettler now has executable, digest-bound performance and migration-compute autho
 |---|---|
 | `npm test -w @mendpoint/eval -- src/performance-contract.test.ts` | Passed, 5 tests. |
 | `npm test -w @mendpoint/platform -- src/mcu.test.ts` | Passed, 7 tests. |
-| `npx vitest run scripts/fettler-production-closure.test.ts` | Passed, 2 tests. |
+| `npx vitest run scripts/fettler-production-closure.test.ts` | Passed, 3 tests. |
 | Affected workspace and scripts typechecks | Passed. |
-| `npx tsx scripts/fettler-production-closure.ts` | Passed exact committed-byte check. |
+| `npm run fettler:closure:check` | Passed exact committed-byte check through the canonical workspace command. |
 | `npm run spec:check` | Passed, 101 canonical requirements across 3 register sets. |
 | `npm run typecheck` | Passed across the full workspace. |
 | `npm run build` | Passed optimized Next.js production build, 64 static pages generated. |
 | `git diff --check` | Passed. |
 | Scope, banned-language, secret-pattern, and requirement-status scans | Passed; package.json and requirement status remained unchanged. |
-| `npm test` | Completed but exited 1 from unrelated timing-sensitive suites under the concurrent full-gate load. Every one of the 11 exact failing assertions passed when rerun alone. No Plan 01-01 focused test failed. |
+| `npm test` | Passed the full workspace and root script suites on the current-main successor. |
 
 The local host used Node.js 24.14.1. The repository continuous-integration environment remains responsible for the project-pinned Node.js 22 proof.
 
-## Incomplete Work
+## Integration Completion
 
-Task 3 is not complete. The required package script was deliberately not added:
-
-```json
-"fettler:closure:check": "tsx scripts/fettler-production-closure.ts"
-```
-
-`package.json` changed on `origin/main` after the assigned base and is also owned by open pull request 592. Per the protected-work constraint, this exact edit is parked until the release owner integrates it against the current package file. Consequently, `npm run fettler:closure:check` was not runnable; its direct command equivalent passed.
+Pull request 592 merged before this successor was created. The seven safe Plan 01-01 commits were transplanted onto current `origin/main`, the missing package command was first proved absent by a RED regression, and the one-line binding was then added and executed successfully. No release-control or Claude-owned file was overwritten.
 
 ## Deviations from Plan
 
@@ -111,10 +108,11 @@ Task 3 is not complete. The required package script was deliberately not added:
 - **Files modified:** `packages/eval/src/performance-contract.test.ts`
 - **Commit:** `8dc4bb01`
 
-### Protected Overlap
+### Resolved Protected Overlap
 
-- `package.json` was left byte-identical to base because newer `origin/main` work and pull request 592 both own it.
-- No Claude-owned or unrelated bytes were staged, reverted, rebased, or absorbed.
+- The conflicted merge attempt was aborted without committing any conflict resolution.
+- The plan was restaged from current `origin/main` after pull request 592 merged.
+- Only the eight plan commits and this summary update were added; no Claude-owned or unrelated bytes were staged, reverted, or overwritten.
 
 ## Known Stubs
 
@@ -124,8 +122,8 @@ None.
 
 - Preserve the historical `WARDEN_PERFORMANCE_CONTRACT` export only as a compatibility alias; canonical authority and all new identifiers use Fettler.
 - Treat absent production measurement and ledger evidence as explicit `not_observed` results rather than allowing contract definitions to imply operational proof.
-- Stop the plan at the exact protected overlap while leaving every safe executable contract committed and verified.
+- Complete the package binding only on a clean current-main successor after the protected overlap clears.
 
 ## Self-Check: PASSED
 
-All seven implementation and artifact files, this summary, and all six recorded commits were found in the assigned worktree. The only untracked file before summary commit was this required summary.
+All eight implementation, test, artifact, and manifest files, this summary, and all eight recorded task commits exist in the current-main successor worktree. Focused tests, full typecheck, optimized production build, GA gate, and diff integrity pass. Independent exact-head review remains required before push or merge.
