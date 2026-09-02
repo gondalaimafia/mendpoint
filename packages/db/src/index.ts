@@ -8,6 +8,7 @@ import { settleExpiredWardenModelReservations } from "./warden-model-accounting.
 import { assertTenantScope } from "./tenant-scope.js";
 import { createTenantMembership, getTenantMembership } from "./identity.js";
 import { insertPrincipal } from "./trust.js";
+import { ensureAuditGovernanceSchema } from "./audit-governance-store.js";
 import type {
   ApiChange,
   ApiKeyRow,
@@ -55,6 +56,7 @@ export * from "./mission-task.js";
 export * from "./policy-envelope.js";
 export * from "./task-ownership.js";
 export * from "./secret-lifecycle.js";
+export * from "./audit-governance-store.js";
 
 export type AppDb = {
   raw: DatabaseSync;
@@ -2459,6 +2461,7 @@ export function createDb(urlOrPath?: string): AppDb {
     raw.exec("PRAGMA busy_timeout = 5000;");
     raw.exec("PRAGMA temp_store = MEMORY;");
     raw.exec(DDL);
+    ensureAuditGovernanceSchema({ raw });
     migrateTenantMembershipUserNameUniqueness({ raw });
     validateIdentitySessionPrincipalAuthority({ raw });
     migrateRepositorySnapshotIdentity({ raw });

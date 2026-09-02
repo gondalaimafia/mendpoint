@@ -10,6 +10,12 @@ export const REQUIRED_TENANT_BOUNDARIES = [
   "workspace",
   "artifact",
   "cache",
+  "queue",
+  "mission",
+  "learning",
+  "backup",
+  "export",
+  "observability",
 ] as const;
 
 export type TenantBoundary = (typeof REQUIRED_TENANT_BOUNDARIES)[number];

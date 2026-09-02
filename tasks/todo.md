@@ -4128,7 +4128,6 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The complete matrix recomputation produced issue-authority digest `sha256:87e9f68ce12947e833983dd4bf68bc97e070b0c08a3b249105f3c0d967c21083`. The release-train digest remains `sha256:f4666ff849eca0a74d939d6a1f918042bc8e1091a7f6ae476bcdc1d5a7abf2c1` because no release-train record changed.
 - `npm run spec:check`, `npm run closure:check`, `npm run ledger:check`, and `npm run ga:check` pass. The focused GitHub authority, closure-matrix, and proposal-authority suite passes all 127 tests. `git diff --check` passes.
 - Review found no requirement, availability, public-claim, issue ownership, issue title, issue URL, requirement mapping, release-train, workflow, policy, credential, or runtime change. Protected GitHub authority and production acceptance remain pending until this exact change is reviewed, merged normally, and observed on the deployed main revision.
-
 ## 2026-08-30 Plan 05-03A final authority repair
 
 - [x] Restrict complete-graph short-circuiting to change classes the endpoint projection can represent, and materialize direct, wrapper, and test sites from graph evidence.
@@ -4217,6 +4216,30 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - `subjectKey` components are escaped so a colon inside one component cannot collide with a different component split. Both values are enum-ish today, so this is a structural guard, not a live defect.
 - Not changed here, and routed to the schema owner instead: revoking governed-learning consent is forward-looking and does not retract already-projected candidates. That matches the append-only learning-corpus model and is a consent-policy decision, not a defect in this plan.
 
+## 2026-08-30 GSD Plan 10-02: tenant isolation and governed audit runtime
+
+- [x] RED: prove the production launch gate rejects a missing or unscoped tenant boundary across API, database, graph, workspace, artifact, cache, queue, mission, learning, backup, export, and observability.
+- [x] GREEN: mount the complete boundary registry in API startup and bind every registration to an attributable adversarial test contract.
+- [x] RED: specify durable tenant-owned legal-hold transitions, export destinations, redaction, source-chain anchoring, replay verification, and cross-tenant denial.
+- [x] GREEN: add append-only legal-hold and export-manifest persistence and authenticated owner/admin API routes over the existing audit hash chain.
+- [x] Verify fresh and upgrade database convergence, mutation and replay failures, focused DB/API/contract tests, affected typechecks, optimized build, GA checks, dependency audit, and diff integrity.
+- [ ] Obtain independent exact-head review, current-base protected CI, protected merge, exact-revision deployment, and live health proof.
+
+### Threats and rollback
+
+- A governed export must first verify the exact tenant audit source chain, must never accept another tenant's destination or records, and must persist only immutable destination and manifest evidence rather than transport credentials.
+- Legal holds are append-only transitions. Releasing a hold does not rewrite its creation evidence, and retention evaluation never deletes audit history in this slice.
+- Production launch fails closed if a required boundary is missing, optional but enabled without tenant scope, or lacks its named adversarial proof contract.
+- Rollback removes the new routes and startup caller while leaving existing append-only audit events untouched. New governance rows are additive and inert on an older binary.
+
+### Review
+
+- API startup now verifies all twelve required tenant boundary registrations and rejects missing, duplicate, unscoped, or unattributed registrations before serving traffic.
+- Legal holds, export destinations, and export manifests are tenant scoped, append only, hash bound, idempotent, source-chain verified, redacted, and replay verifiable. The legacy raw audit export endpoint now returns 410 and points callers to the governed flow.
+- The worker verifies both the source audit chain and governance chains for every tenant and emits a critical alert for tampering. Hostile tests cover cross-tenant access, revoked destinations, append-only trigger defeat, source and manifest tampering, governance tampering, exact replay, and fresh/reopen database convergence.
+- Verification passed: 13 focused DB/API/worker tests, 176 contract tests, 103 shared tests, the full workspace test matrix including 475 root-script assertions, full workspace typecheck, optimized 50-route production build, GA checks, production dependency audit with zero vulnerabilities, and diff integrity.
+- Independent exact-head review, protected CI, protected merge, exact-revision deployment, and live health proof remain pending. No requirement or public claim was promoted by this slice.
+- After rebasing onto current main `d232a27c`, the combined database initializer preserves both the current secrets lifecycle migrations and the governed audit schema. The exact 31-test API, worker, contract, and database matrix, full workspace typecheck, optimized 64-route production build, every GA gate, zero-vulnerability production audit, and diff integrity pass on the rebased tree.
 ## 2026-09-02 Issue authority refresh for #433
 
 - [x] Bind issue-authority record #433 to its exact live GitHub state and `updatedAt` value without changing requirement status, availability, or claims.

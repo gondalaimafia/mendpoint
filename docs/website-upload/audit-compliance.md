@@ -44,6 +44,16 @@ Run one authenticated mutation and use its request identity to inspect the resul
 | --- | --- | --- |
 | GET /audit | API | Read tenant scoped audit records. |
 | GET /audit/export | API | Export the governed tenant evidence set. |
+| GET /audit-governance/legal-holds | API | List active and released legal holds. |
+| POST /audit-governance/legal-holds | API | Place a legal hold over audit records. |
+| POST /audit-governance/legal-holds/:id/release | API | Release a legal hold. |
+| GET /audit-governance/destinations | API | List registered export destinations. |
+| POST /audit-governance/destinations | API | Register an export destination. |
+| POST /audit-governance/destinations/:id/revoke | API | Revoke an export destination. |
+| GET /audit-governance/retention | API | Evaluate retention disposition for tenant audit records. |
+| POST /audit-governance/exports | API | Create a redacted replay verifiable export manifest. |
+| GET /audit-governance/exports/:id | API | Read one export manifest and its bundle. |
+| GET /audit-governance/exports/:id/replay | API | Replay verify one stored export. |
 | Audit chain | Artifact | Append only attributable transition records. |
 | Compliance evidence package | Artifact | Engineering controls plus separately supplied legal and assessor evidence. |
 
