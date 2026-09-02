@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-09-02T19:15:32.625Z",
-    "observedMainRevision": "4952aefd6a4578345e70eb3062f27db644bbcd8e",
-    "observationDigest": "sha256:8b51e4ee517e6a72078e9cd7699489d6a0a3abca49bb3277565450ae8e3112e8",
+    "observedAt": "2026-09-02T20:56:13.273Z",
+    "observedMainRevision": "cda4fd8ff266dbeaf31f40cd8b61d197e1b39db8",
+    "observationDigest": "sha256:b08a1ccdb13e55bb16c16b26784a78c15e5c2f471b6b593d414fdb6172609f46",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 634,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/634",
-      "title": "deps: bump @xmldom/xmldom to 0.8.15 to clear GHSA-6gmq-8vp8-gcm6 (runtime rotation)",
+      "number": 640,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/640",
+      "title": "closure: bootstrap exemption for PR_DEPENDENCY_UNTRACKED (authority rotation)",
       "baseBranch": "main",
-      "headBranch": "claude/audit-xmldom",
+      "headBranch": "claude/dependency-bootstrap-exemption",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2087,12 +2087,12 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260902-022",
+        "rotationId": "rotation-20260902-023",
         "kind": "runtime",
-        "issuedAt": "2026-09-02T19:15:32.625Z",
-        "expiresAt": "2026-09-03T19:15:32.625Z",
-        "basePolicySha256": "sha256:35a37e88ffd1250d40666198cae9f4c1ee5d53c66b3774a606eb159d167bac72",
-        "proposedPolicySha256": "sha256:d20d8688f709fe50cfa3c790e7522d76a2d630175c3f8ff7c92ae4a0127aef41"
+        "issuedAt": "2026-09-02T20:56:13.273Z",
+        "expiresAt": "2026-09-03T20:56:13.273Z",
+        "basePolicySha256": "sha256:d20d8688f709fe50cfa3c790e7522d76a2d630175c3f8ff7c92ae4a0127aef41",
+        "proposedPolicySha256": "sha256:b4f7912e3f2f7d99164c6c4196d58a45f49de422a4e6004da6b43480d8ddef0e"
       }
     },
     "pullRequests": [
