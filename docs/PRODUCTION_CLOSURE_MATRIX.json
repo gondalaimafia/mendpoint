@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-09-02T20:08:44.376Z",
-    "observedMainRevision": "0017dcf4730a5a2a4f75da877e26ac0a1f06598b",
-    "observationDigest": "sha256:af4852e7af7a8a2987e27458e46880ff1b1d7ae701cea2a123765fdce5d79313",
+    "observedAt": "2026-09-02T21:12:47.194Z",
+    "observedMainRevision": "65adf7cbd5fcfd6f382be155d1b69237ff35235a",
+    "observationDigest": "sha256:0540f77f3bdc03741dd46b37ef416950f0e4e6cb110cf58691974342271c3bd7",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 461,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/461",
-      "title": "claims: detect stale claims whose audited surface changed (mechanism half of #284)",
+      "number": 640,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/640",
+      "title": "closure: bootstrap exemption for PR_DEPENDENCY_UNTRACKED (authority rotation)",
       "baseBranch": "main",
-      "headBranch": "claims-staleness-mechanism",
+      "headBranch": "claude/dependency-bootstrap-exemption",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2083,18 +2083,16 @@
         "pullRequests": [],
         "branches": []
       },
-      "requirementIds": [
-        "ME-GTM-003"
-      ],
+      "requirementIds": [],
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
         "rotationId": "rotation-20260902-023",
         "kind": "runtime",
-        "issuedAt": "2026-09-02T20:08:44.376Z",
-        "expiresAt": "2026-09-03T20:08:44.376Z",
+        "issuedAt": "2026-09-02T21:12:47.194Z",
+        "expiresAt": "2026-09-03T21:12:47.194Z",
         "basePolicySha256": "sha256:d20d8688f709fe50cfa3c790e7522d76a2d630175c3f8ff7c92ae4a0127aef41",
-        "proposedPolicySha256": "sha256:c39797b0b79e32f31af02795a4ade470bc2c1adac2717a4af3e88e586230717e"
+        "proposedPolicySha256": "sha256:b4f7912e3f2f7d99164c6c4196d58a45f49de422a4e6004da6b43480d8ddef0e"
       }
     },
     "pullRequests": [
@@ -3667,6 +3665,56 @@
           {
             "priority": "P1",
             "summary": "the API crash loops on upgrade while the required artifact backend production binding is absent"
+          }
+        ]
+      },
+      {
+        "number": 461,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/461",
+        "title": "claims: detect stale claims whose audited surface changed (mechanism half of #284)",
+        "headBranch": "claims-staleness-mechanism",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Claude",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-GTM-003"
+        ],
+        "checkState": "behind",
+        "headRevision": "a025063315e570c3ea6b16eec7c9838274bfa84f",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "historical claimed surfaces can be removed or retargeted before stale-claim comparison, bypassing the required re-audit"
+          },
+          {
+            "priority": "P1",
+            "summary": "the branch changes two pinned public-claims authority surfaces without a sanctioned runtime rotation"
+          },
+          {
+            "priority": "P1",
+            "summary": "the provisional Claude owner is not supported by an agent-prefixed branch or a provider-bound owner label"
           }
         ]
       },

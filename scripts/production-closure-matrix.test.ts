@@ -51,6 +51,29 @@ function ensureBootstrap(matrix: ProductionClosureMatrix) {
   return matrix.releaseTrain.currentPullRequestBootstrap;
 }
 
+/** Promote a base-tracked record into the bootstrap slot: remove its static record
+ *  (CURRENT_PR_BOOTSTRAP_DUPLICATE forbids keeping it) and write a production-shaped
+ *  bootstrap for the same number carrying its requirement bindings. */
+function promoteIntoBootstrap(matrix: ProductionClosureMatrix, number: number) {
+  const index = matrix.releaseTrain.pullRequests.findIndex((pr) => pr.number === number);
+  expect(index).toBeGreaterThanOrEqual(0);
+  const [promoted] = matrix.releaseTrain.pullRequests.splice(index, 1);
+  const bootstrap = ensureBootstrap(matrix);
+  bootstrap.number = promoted.number;
+  bootstrap.url = `https://github.com/gondalaimafia/mendpoint/pull/${promoted.number}`;
+  bootstrap.headBranch = promoted.headBranch;
+  bootstrap.requirementIds = [...promoted.requirementIds];
+  return promoted;
+}
+
+/** Remove a static record WITHOUT promoting it, asserting it existed so a fixture that
+ *  lost the record fails here instead of splicing the last entry and passing vacuously. */
+function removeRecord(matrix: ProductionClosureMatrix, number: number) {
+  const index = matrix.releaseTrain.pullRequests.findIndex((pr) => pr.number === number);
+  expect(index).toBeGreaterThanOrEqual(0);
+  return matrix.releaseTrain.pullRequests.splice(index, 1)[0];
+}
+
 function codes(
   manifest: ProductRequirementManifest,
   matrix: ProductionClosureMatrix,
@@ -871,5 +894,117 @@ describe("production closure matrix", () => {
     bootstrap.dependencies.pullRequests = [closed.number];
 
     expect(codes(manifest, matrix)).toContain("CURRENT_PR_DEPENDENCY_UNSATISFIED");
+  });
+
+  // A base-tracked pull request that promotes itself into currentPullRequestBootstrap
+  // must vacate its static record (CURRENT_PR_BOOTSTRAP_DUPLICATE), so every OTHER
+  // record's dependency edge to that number pointed at a now-absent record and used to
+  // report PR_DEPENDENCY_UNTRACKED. The edge now resolves against the slot, exactly as
+  // requirement bindings do.
+  it("does not flag a dependency edge to a base-tracked pull request that promotes itself into the bootstrap slot", () => {
+    const manifest = loadManifest();
+    const facts = loadMatrix();
+    const p379 = facts.releaseTrain.pullRequests.find((pr) => pr.number === 379)!;
+    const p381 = facts.releaseTrain.pullRequests.find((pr) => pr.number === 381)!;
+    expect(p379.state).toBe("open");
+    expect(p381.state).toBe("open");
+    expect(p381.dependencies.pullRequests).toContain(379);
+
+    // CONTROL: remove #379 WITHOUT promoting it. Its dependent #381 must flag the edge as
+    // untracked, proving the exemption below is what silences it, not a dead check.
+    const control = loadMatrix();
+    removeRecord(control, 379);
+    const controlUntracked = validateProductionClosureMatrix(manifest, control, {}).filter(
+      (issue) => issue.code === "PR_DEPENDENCY_UNTRACKED" && issue.subject === "381",
+    );
+    expect(controlUntracked, JSON.stringify(controlUntracked, null, 2)).not.toEqual([]);
+
+    // Promoting #379 into the bootstrap slot resolves #381's edge on the closure:check
+    // path (no CI number)...
+    const promoted = loadMatrix();
+    promoteIntoBootstrap(promoted, 379);
+    const noOptions = validateProductionClosureMatrix(manifest, promoted, {}).filter(
+      (issue) => issue.code === "PR_DEPENDENCY_UNTRACKED" && issue.subject === "381",
+    );
+    expect(noOptions, JSON.stringify(noOptions, null, 2)).toEqual([]);
+
+    // ...and on the CI-attested path when the supplied number matches the declaration.
+    const withCi = validateProductionClosureMatrix(manifest, promoted, {
+      currentPullRequestNumber: 379,
+    }).filter((issue) => issue.code === "PR_DEPENDENCY_UNTRACKED" && issue.subject === "381");
+    expect(withCi, JSON.stringify(withCi, null, 2)).toEqual([]);
+  });
+
+  it("still flags a dependency edge to any other record removed alongside a self-bootstrap promotion", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const p330 = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 330)!;
+    const p387 = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 387)!;
+    expect(p387.state).toBe("merged");
+    expect(p330.dependencies.pullRequests).toContain(387);
+
+    // #379 promotes itself into the slot; #387 is removed WITHOUT promotion. The
+    // exemption is exactly one number, so #330 -> #387 still flags and #381 -> #379 does
+    // not.
+    promoteIntoBootstrap(matrix, 379);
+    removeRecord(matrix, 387);
+
+    const untracked = validateProductionClosureMatrix(manifest, matrix, {}).filter(
+      (issue) => issue.code === "PR_DEPENDENCY_UNTRACKED",
+    );
+    const subjects = untracked.map((issue) => issue.subject);
+    expect(subjects, JSON.stringify(untracked, null, 2)).toContain("330");
+    expect(subjects, JSON.stringify(untracked, null, 2)).not.toContain("381");
+  });
+
+  it("keys the dependency exemption on the CI-attested number, not a forged bootstrap number", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const p331 = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 331)!;
+    const p381 = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 381)!;
+    expect(p381.dependencies.pullRequests).toContain(379);
+    expect(p331.dependencies.pullRequests).toEqual([]);
+
+    // #379 leaves the static list, but the bootstrap slot is FORGED to a different,
+    // well-formed number. The CI-attested number (379) unlocks #381's edge; the forged
+    // slot number (999999) unlocks nothing.
+    removeRecord(matrix, 379);
+    const bootstrap = ensureBootstrap(matrix);
+    bootstrap.number = 999999;
+    bootstrap.url = "https://github.com/gondalaimafia/mendpoint/pull/999999";
+    p331.dependencies.pullRequests = [999999];
+
+    const untracked = validateProductionClosureMatrix(manifest, matrix, {
+      currentPullRequestNumber: 379,
+    }).filter((issue) => issue.code === "PR_DEPENDENCY_UNTRACKED");
+    const subjects = untracked.map((issue) => issue.subject);
+    // The CI-attested PR's edge resolves even though the slot names another number...
+    expect(subjects, JSON.stringify(untracked, null, 2)).not.toContain("381");
+    // ...and the forged slot number grants nothing: #331 -> #999999 still flags. Had the
+    // exemption keyed on the declared bootstrap number, 381 would flag and 331 would not.
+    expect(subjects, JSON.stringify(untracked, null, 2)).toContain("331");
+  });
+
+  it("treats the promoted bootstrap as an unmerged dependency for release eligibility", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const p333 = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 333)!;
+    expect(p333.state).toBe("merged");
+
+    // #379 promotes into the in-flight slot; #333 is merged and now depends on it. The
+    // slot is UNMERGED, so a merged dependent is release-ineligible: UNSATISFIED, not
+    // UNTRACKED, mirroring the static predicate for an unmerged tracked dependency.
+    promoteIntoBootstrap(matrix, 379);
+    p333.dependencies.pullRequests = [379];
+
+    const issues = validateProductionClosureMatrix(manifest, matrix, {});
+    const unsatisfied = issues.filter(
+      (issue) => issue.code === "PR_DEPENDENCY_UNSATISFIED" && issue.subject === "333",
+    );
+    const untracked = issues.filter(
+      (issue) => issue.code === "PR_DEPENDENCY_UNTRACKED" && issue.subject === "333",
+    );
+    expect(unsatisfied, JSON.stringify(issues, null, 2)).not.toEqual([]);
+    expect(untracked, JSON.stringify(issues, null, 2)).toEqual([]);
   });
 });
