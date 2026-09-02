@@ -71,6 +71,7 @@ export type McuFinanceAuthorization = Readonly<{
   approvedByRole: "finance_owner";
   tenantId: string;
   invoiceReference: string;
+  entryIdempotencyKey: string;
   actorId: string;
   consumedMcuMicrosDelta: number;
   reasonCode: string;
@@ -237,6 +238,7 @@ function validateFinanceAuthorization(
   requiredLedgerId(authorization.approvedByPrincipalId, "mcu_finance_principal_id");
   requiredLedgerId(authorization.tenantId, "mcu_finance_tenant_id");
   requiredLedgerId(authorization.invoiceReference, "mcu_finance_invoice_reference");
+  requiredLedgerId(authorization.entryIdempotencyKey, "mcu_finance_entry_idempotency_key");
   requiredLedgerId(authorization.actorId, "mcu_finance_actor_id");
   requiredLedgerId(authorization.reasonCode, "mcu_finance_reason_code");
   ledgerMicros(authorization.consumedMcuMicrosDelta, "mcu_finance_consumed_micros");
@@ -257,6 +259,7 @@ function validateFinanceAuthorization(
   if (
     authorization.tenantId !== entry.tenantId ||
     authorization.invoiceReference !== entry.invoiceReference ||
+    authorization.entryIdempotencyKey !== entry.idempotencyKey ||
     authorization.actorId !== entry.actorId ||
     authorization.consumedMcuMicrosDelta !== entry.consumedMcuMicrosDelta ||
     authorization.reasonCode !== entry.reasonCode ||
@@ -278,6 +281,25 @@ function validateFinanceAuthorization(
   if (!authorized) throw new Error("mcu_finance_authority_rejected");
 }
 
+function consumeFinanceAuthorization(
+  entry: McuLedgerEntry,
+  verifier: McuFinanceAuthorizationVerifier | undefined,
+  approvalIds: Set<string>,
+  authorizationDigests: Set<string>,
+): void {
+  const authorization = entry.financeAuthorization;
+  if (
+    authorization &&
+    (approvalIds.has(authorization.approvalId) ||
+      authorizationDigests.has(authorization.authorizationDigest))
+  ) {
+    throw new Error("mcu_finance_authority_reused");
+  }
+  validateFinanceAuthorization(entry, verifier);
+  approvalIds.add(entry.financeAuthorization!.approvalId);
+  authorizationDigests.add(entry.financeAuthorization!.authorizationDigest);
+}
+
 export function reconcileMcuLedgerLifecycle(
   lifecycle: McuLedgerLifecycle,
   options: Readonly<{
@@ -297,6 +319,8 @@ export function reconcileMcuLedgerLifecycle(
   if (lifecycle.entries[0] !== reservation) throw new Error("mcu_reservation_must_be_first");
   const ids = new Set<string>();
   const idempotencyKeys = new Set<string>();
+  const financeApprovalIds = new Set<string>();
+  const financeAuthorizationDigests = new Set<string>();
   let previousSequence = 0;
   let previousEntry: McuLedgerEntry | null = null;
   let previousOccurredAt = 0;
@@ -422,11 +446,21 @@ export function reconcileMcuLedgerLifecycle(
       }
       if (entry.entryType === "adjustment") {
         if (entry.consumedMcuMicrosDelta <= 0) throw new Error("mcu_adjustment_invalid");
-        validateFinanceAuthorization(entry, options.verifyFinanceAuthorization);
+        consumeFinanceAuthorization(
+          entry,
+          options.verifyFinanceAuthorization,
+          financeApprovalIds,
+          financeAuthorizationDigests,
+        );
         adjusted = safeLedgerSum([adjusted, entry.consumedMcuMicrosDelta]);
       } else if (entry.entryType === "credit") {
         if (entry.consumedMcuMicrosDelta >= 0) throw new Error("mcu_credit_invalid");
-        validateFinanceAuthorization(entry, options.verifyFinanceAuthorization);
+        consumeFinanceAuthorization(
+          entry,
+          options.verifyFinanceAuthorization,
+          financeApprovalIds,
+          financeAuthorizationDigests,
+        );
         credited = safeLedgerSum([credited, -entry.consumedMcuMicrosDelta]);
       } else {
         throw new Error("mcu_reservation_duplicate");

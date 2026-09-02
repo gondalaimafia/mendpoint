@@ -49,7 +49,8 @@ for (const [address, prefix] of [
   PERFORMANCE_DESTINATION_BLOCK_LIST.addSubnet(address, prefix, "ipv4");
 }
 for (const [address, prefix] of [
-  ["::", 128], ["::1", 128], ["100::", 64], ["2001:db8::", 32],
+  ["::", 96], ["64:ff9b::", 96], ["64:ff9b:1::", 48], ["100::", 64],
+  ["2001:db8::", 32], ["2002::", 16],
   ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
 ] as const) {
   PERFORMANCE_DESTINATION_BLOCK_LIST.addSubnet(address, prefix, "ipv6");
