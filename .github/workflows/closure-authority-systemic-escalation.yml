@@ -1,0 +1,561 @@
+name: Production Closure Authority (systemic escalation)
+
+on:
+  push:
+    branches: [main]
+  pull_request_target:
+    branches: [main]
+    # Trimmed to types that change a validated input (proposal bytes / head sha). Removed
+    # edited/labeled/unlabeled/closed: none change validated inputs, and closed in particular
+    # triggered full sweeps for PRs the discover step then excludes anyway. Cron is the drift backstop.
+    types: [opened, synchronize, reopened]
+  # Removed workflow_run on CI: CI completion changes none of this workflow's validated inputs
+  # (proposal bytes, config, branch protection) and it fired on every branch, not just main.
+  # Removed pull_request_review: review submit/edit/dismiss changes no validated input; merges are
+  # gated by the status/check this workflow writes, not by review events.
+  # Removed issues: issue-state drift is covered by the cron backstop within 30 minutes; issue
+  # events do not gate merges.
+  schedule:
+    # */5 -> */30: event triggers cover the reactive cases; the cron is only drift repair.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  issues: read
+  pull-requests: read
+  statuses: write
+
+# Collapse bursts: during a merge storm five queued full sweeps all validate the same state,
+# so only the newest matters. PR-triggered runs collapse per PR instead of against the sweep.
+concurrency:
+  group: closure-authority-systemic-escalation-${{ github.event_name == 'pull_request_target' && format('pr-{0}', github.event.pull_request.number) || 'sweep' }}
+  cancel-in-progress: true
+
+jobs:
+  discover:
+    environment: production-closure-authority
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      main_sha: ${{ steps.state.outputs.main_sha }}
+      pull_requests: ${{ steps.state.outputs.pull_requests }}
+    steps:
+      - name: Create dedicated authority App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.MENDPOINT_CLOSURE_GITHUB_APP_ID }}
+          private-key: ${{ secrets.MENDPOINT_CLOSURE_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+      - name: Discover the current protected release set
+        id: state
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Cheap early guard (1 call): if the installation budget is nearly gone, fail with a
+          # named cause instead of a cryptic mid-call rate-limit error. This must still FAIL (red):
+          # an unevaluated authority must never read as evaluated.
+          remaining="$(gh api rate_limit --jq '.resources.core.remaining')"
+          if [ "${remaining:-0}" -lt 200 ]; then
+            echo "::error::closure-authority skipped: installation API budget exhausted (${remaining} remaining)"
+            exit 1
+          fi
+          main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [ "$GITHUB_EVENT_NAME" = pull_request_target ]; then
+            # Scope PR-triggered runs to just the triggering PR: the number comes from the event
+            # payload, so building this list costs zero API calls. Full sweeps (push / schedule /
+            # workflow_dispatch) still paginate every open PR below, where a sweep is the point.
+            pull_requests="$(jq --compact-output --null-input --argjson number "$EVENT_PR_NUMBER" '[$number]')"
+          else
+            pull_requests="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" --jq '.[].number' | jq --compact-output --slurp '.')"
+          fi
+          echo "main_sha=${main_sha}" >> "$GITHUB_OUTPUT"
+          echo "pull_requests=${pull_requests}" >> "$GITHUB_OUTPUT"
+        env:
+          # Reads ride the closure App pool (5,000/hr) so a sweep cannot starve the
+          # 1,000/hr Actions GITHUB_TOKEN pool. This job performs only reads.
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+
+  invalidate-authority:
+    environment: production-closure-authority
+    needs: discover
+    if: needs.discover.outputs.pull_requests != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        pull_request: ${{ fromJSON(needs.discover.outputs.pull_requests) }}
+    concurrency:
+      group: production-closure-authority-systemic-escalation-invalidation-${{ matrix.pull_request }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Create dedicated authority App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.MENDPOINT_CLOSURE_GITHUB_APP_ID }}
+          private-key: ${{ secrets.MENDPOINT_CLOSURE_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+      - name: Read the pull request head sha
+        id: head
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "head_sha=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')" >> "$GITHUB_OUTPUT"
+        env:
+          # Read rides the closure App pool (5,000/hr) so a sweep cannot starve the
+          # 1,000/hr Actions GITHUB_TOKEN pool.
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ matrix.pull_request }}
+      - name: Invalidate controller authority before protected credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+            -f state=pending \
+            -f context=mendpoint-production-closure-controller-systemic-escalation \
+            -f description="Protected closure authority is being reevaluated" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        env:
+          # Write keeps its pinned controller identity (app id 15368) on GITHUB_TOKEN;
+          # switching this token would break the branch-protection binding. Do not change.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ steps.head.outputs.head_sha }}
+
+  closure-authority:
+    needs: [discover, invalidate-authority]
+    if: needs.discover.outputs.pull_requests != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        pull_request: ${{ fromJSON(needs.discover.outputs.pull_requests) }}
+    concurrency:
+      group: production-closure-authority-systemic-escalation-${{ matrix.pull_request }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    environment: production-closure-authority
+    timeout-minutes: 15
+    steps:
+      - name: Read exact live pull request identity
+        id: pull-request
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pull-request.json"
+          echo "head_sha=$(jq --raw-output '.head.sha' "$RUNNER_TEMP/pull-request.json")" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$(jq --raw-output '.head.ref' "$RUNNER_TEMP/pull-request.json")" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$(jq --raw-output '.base.sha' "$RUNNER_TEMP/pull-request.json")" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$(jq --raw-output '.base.ref' "$RUNNER_TEMP/pull-request.json")" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ matrix.pull_request }}
+      - name: Create dedicated authority App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.MENDPOINT_CLOSURE_GITHUB_APP_ID }}
+          private-key: ${{ secrets.MENDPOINT_CLOSURE_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+      - name: Invalidate prior external authority result
+        id: external-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          check_id="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/check-runs" \
+            -f name="$CHECK_NAME" \
+            -f head_sha="$PR_HEAD_SHA" \
+            -f status=in_progress \
+            -f details_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --jq '.id')"
+          echo "check_id=${check_id}" >> "$GITHUB_OUTPUT"
+        env:
+          CHECK_NAME: mendpoint-production-closure-authority-systemic-escalation
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
+      - name: Checkout exact immutable main authority
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.discover.outputs.main_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install immutable authority dependencies
+        run: npm ci
+      - name: Validate exact proposal bytes with immutable authority
+        id: proposal
+        continue-on-error: true
+        run: npm run closure:proposal:check
+        env:
+          # closure:proposal:check performs only reads (git trees/blobs/commits/compare),
+          # so it rides the closure App pool (5,000/hr) instead of the 1,000/hr GITHUB_TOKEN.
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          MENDPOINT_AUTHORITY_BASE_SHA: ${{ needs.discover.outputs.main_sha }}
+          MENDPOINT_PROPOSAL_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
+          MENDPOINT_PROPOSAL_OBSERVATION_PATH: ${{ runner.temp }}/production-closure-proposal-authority.json
+      - name: Verify dedicated authority App identity
+        id: app-identity
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_app_id="$(gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "repos/${GITHUB_REPOSITORY}/contents/config/production-closure-authority.json?ref=${PR_HEAD_SHA}" \
+            | jq -er '.externalCheckAppId | select(type == "number" and . > 0)')"
+          observed_app_id="$(gh api "repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_ID}" --jq '.app.id')"
+          test "$observed_app_id" = "$expected_app_id"
+        env:
+          CHECK_ID: ${{ steps.external-check.outputs.check_id }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
+      - name: Verify live protected branch authority bindings
+        id: branch-protection
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "repos/${GITHUB_REPOSITORY}/contents/config/production-closure-authority.json?ref=${PR_HEAD_SHA}" \
+            > "$RUNNER_TEMP/proposed-closure-authority-policy.json"
+          external_name="$(jq -er '.externalCheckName' "$RUNNER_TEMP/proposed-closure-authority-policy.json")"
+          external_app_id="$(jq -er '.externalCheckAppId | select(type == "number" and . > 0)' "$RUNNER_TEMP/proposed-closure-authority-policy.json")"
+          controller_name="$(jq -er '.controllerCheckName' "$RUNNER_TEMP/proposed-closure-authority-policy.json")"
+          controller_app_id="$(jq -er '.controllerCheckAppId | select(type == "number" and . > 0)' "$RUNNER_TEMP/proposed-closure-authority-policy.json")"
+          test "$(jq -er '.protectionMode' "$RUNNER_TEMP/proposed-closure-authority-policy.json")" = classic_branch
+          branch="$(jq -er '.protectionBranch' "$RUNNER_TEMP/proposed-closure-authority-policy.json")"
+          gh api "repos/${GITHUB_REPOSITORY}/branches/${branch}/protection/required_status_checks" \
+            > "$RUNNER_TEMP/required-status-checks.json"
+          jq -e '.strict == true' "$RUNNER_TEMP/required-status-checks.json"
+          jq -e --arg context "$external_name" --argjson app_id "$external_app_id" \
+            '[.checks[] | select(.context == $context and .app_id == $app_id)] | length == 1' \
+            "$RUNNER_TEMP/required-status-checks.json"
+          jq -e --arg context "$controller_name" --argjson app_id "$controller_app_id" \
+            '[.checks[] | select(.context == $context and .app_id == $app_id)] | length == 1' \
+            "$RUNNER_TEMP/required-status-checks.json"
+          rotation_kind="$(gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "repos/${GITHUB_REPOSITORY}/contents/docs/PRODUCTION_CLOSURE_MATRIX.json?ref=${PR_HEAD_SHA}" \
+            | jq -r '.releaseTrain.currentPullRequestBootstrap.authorityRotation.kind // "runtime"')"
+          if [ "$rotation_kind" = activate_successor ]; then
+            predecessor_external_name="$(jq -er '.externalCheckName' config/production-closure-authority.json)"
+            predecessor_external_app_id="$(jq -er '.externalCheckAppId | select(type == "number" and . > 0)' config/production-closure-authority.json)"
+            predecessor_controller_name="$(jq -er '.controllerCheckName' config/production-closure-authority.json)"
+            predecessor_controller_app_id="$(jq -er '.controllerCheckAppId | select(type == "number" and . > 0)' config/production-closure-authority.json)"
+            jq -e --arg context "$predecessor_external_name" --argjson app_id "$predecessor_external_app_id" \
+              '[.checks[] | select(.context == $context and .app_id == $app_id)] | length == 1' \
+              "$RUNNER_TEMP/required-status-checks.json"
+            jq -e --arg context "$predecessor_controller_name" --argjson app_id "$predecessor_controller_app_id" \
+              '[.checks[] | select(.context == $context and .app_id == $app_id)] | length == 1' \
+              "$RUNNER_TEMP/required-status-checks.json"
+          fi
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
+      - name: Read proposed matrix as exact immutable data
+        id: matrix
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "repos/${GITHUB_REPOSITORY}/contents/docs/PRODUCTION_CLOSURE_MATRIX.json?ref=${PR_HEAD_SHA}" \
+            > "$RUNNER_TEMP/proposed-production-closure-matrix.json"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
+      - name: Verify live GitHub release authority
+        id: github
+        continue-on-error: true
+        run: npm run closure:github:check
+        env:
+          # closure:github:check performs only reads (git ref, pulls, check-runs, workflow
+          # runs, jobs, issues), so it rides the closure App pool (5,000/hr) not GITHUB_TOKEN.
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          MENDPOINT_CLOSURE_AUTHORITY_SHA: ${{ needs.discover.outputs.main_sha }}
+          MENDPOINT_CLOSURE_EVENT_NAME: pull_request
+          MENDPOINT_CLOSURE_MATRIX_PATH: ${{ runner.temp }}/proposed-production-closure-matrix.json
+          MENDPOINT_CLOSURE_OBSERVATION_PATH: ${{ runner.temp }}/production-closure-github-authority.json
+          MENDPOINT_CLOSURE_PR_NUMBER: ${{ matrix.pull_request }}
+          MENDPOINT_CLOSURE_PR_BASE_REF: ${{ steps.pull-request.outputs.base_ref }}
+          MENDPOINT_CLOSURE_PR_BASE_SHA: ${{ steps.pull-request.outputs.base_sha }}
+          MENDPOINT_CLOSURE_PR_HEAD_REF: ${{ steps.pull-request.outputs.head_ref }}
+          MENDPOINT_CLOSURE_PR_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
+      - name: Upload secret-free authority evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: production-closure-authority-${{ matrix.pull_request }}
+          path: |
+            ${{ runner.temp }}/production-closure-proposal-authority.json
+            ${{ runner.temp }}/production-closure-github-authority.json
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Publish dedicated authority App verdict
+        id: publish-external
+        if: always() && steps.external-check.outputs.check_id != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          conclusion=failure
+          if [ "$APP_IDENTITY_OUTCOME" = success ] && [ "$BRANCH_PROTECTION_OUTCOME" = success ] && [ "$PROPOSAL_OUTCOME" = success ] && [ "$MATRIX_OUTCOME" = success ] && [ "$GITHUB_OUTCOME" = success ]; then
+            conclusion=success
+          fi
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_ID}" \
+            -f status=completed \
+            -f conclusion="$conclusion" \
+            -f details_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        env:
+          CHECK_ID: ${{ steps.external-check.outputs.check_id }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_IDENTITY_OUTCOME: ${{ steps.app-identity.outcome }}
+          BRANCH_PROTECTION_OUTCOME: ${{ steps.branch-protection.outcome }}
+          GITHUB_OUTCOME: ${{ steps.github.outcome }}
+          MATRIX_OUTCOME: ${{ steps.matrix.outcome }}
+          PROPOSAL_OUTCOME: ${{ steps.proposal.outcome }}
+      - name: Publish controller authority verdict
+        id: publish-controller
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          state=failure
+          if [ "$APP_IDENTITY_OUTCOME" = success ] && [ "$BRANCH_PROTECTION_OUTCOME" = success ] && [ "$PROPOSAL_OUTCOME" = success ] && [ "$MATRIX_OUTCOME" = success ] && [ "$GITHUB_OUTCOME" = success ]; then
+            state=success
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${PR_HEAD_SHA}" \
+            -f state="$state" \
+            -f context=mendpoint-production-closure-controller-systemic-escalation \
+            -f description="Protected closure authority verdict" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        env:
+          APP_IDENTITY_OUTCOME: ${{ steps.app-identity.outcome }}
+          BRANCH_PROTECTION_OUTCOME: ${{ steps.branch-protection.outcome }}
+          # Controller status write keeps its pinned identity (app id 15368) on GITHUB_TOKEN;
+          # switching this token would break the branch-protection binding. Do not change.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_OUTCOME: ${{ steps.github.outcome }}
+          MATRIX_OUTCOME: ${{ steps.matrix.outcome }}
+          PROPOSAL_OUTCOME: ${{ steps.proposal.outcome }}
+          PR_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
+      - name: Record per-PR verdict for systemic aggregation
+        id: record-verdict
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Record the SAME recorded verdict the two publish steps wrote, so the
+          # final systemic-escalation job can tell "a few PRs individually broken"
+          # (correctly quiet) from "one shared cause broke every open PR" (must
+          # escalate). A verdict this per-PR job could not record (either publish
+          # step not success) is failure, never success: a missing verdict must
+          # never read as evaluated.
+          conclusion=failure
+          if [ "$APP_IDENTITY_OUTCOME" = success ] && [ "$BRANCH_PROTECTION_OUTCOME" = success ] && [ "$PROPOSAL_OUTCOME" = success ] && [ "$MATRIX_OUTCOME" = success ] && [ "$GITHUB_OUTCOME" = success ] && [ "$PUBLISH_EXTERNAL_OUTCOME" = success ] && [ "$PUBLISH_CONTROLLER_OUTCOME" = success ]; then
+            conclusion=success
+          fi
+          mkdir -p "$RUNNER_TEMP/verdict"
+          printf '%s' "$conclusion" > "$RUNNER_TEMP/verdict/verdict-${PR_NUMBER}.txt"
+        env:
+          APP_IDENTITY_OUTCOME: ${{ steps.app-identity.outcome }}
+          BRANCH_PROTECTION_OUTCOME: ${{ steps.branch-protection.outcome }}
+          GITHUB_OUTCOME: ${{ steps.github.outcome }}
+          MATRIX_OUTCOME: ${{ steps.matrix.outcome }}
+          PROPOSAL_OUTCOME: ${{ steps.proposal.outcome }}
+          PUBLISH_CONTROLLER_OUTCOME: ${{ steps.publish-controller.outcome }}
+          PUBLISH_EXTERNAL_OUTCOME: ${{ steps.publish-external.outcome }}
+          PR_NUMBER: ${{ matrix.pull_request }}
+      - name: Upload per-PR verdict for systemic aggregation
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: production-closure-verdict-${{ matrix.pull_request }}
+          path: ${{ runner.temp }}/verdict/verdict-${{ matrix.pull_request }}.txt
+          if-no-files-found: error
+          retention-days: 30
+      - name: Enforce protected authority verdict
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The two publish steps above are what record the per-PR verdict onto the
+          # pull request's own check-run (dedicated App) and commit status (controller).
+          # If either did not run to success the verdict was NOT recorded, and a
+          # missing verdict must never read as success in any event type.
+          if [ "$PUBLISH_EXTERNAL_OUTCOME" != success ] || [ "$PUBLISH_CONTROLLER_OUTCOME" != success ]; then
+            echo "::error::closure-authority could not record the verdict for PR #${PR_NUMBER} (external publish: ${PUBLISH_EXTERNAL_OUTCOME}, controller publish: ${PUBLISH_CONTROLLER_OUTCOME})"
+            exit 1
+          fi
+          # The verdict was recorded on the PR check-run. Recompute the recorded
+          # conclusion from the same five gate outcomes the publish steps used.
+          conclusion=failure
+          if [ "$APP_IDENTITY_OUTCOME" = success ] && [ "$BRANCH_PROTECTION_OUTCOME" = success ] && [ "$PROPOSAL_OUTCOME" = success ] && [ "$MATRIX_OUTCOME" = success ] && [ "$GITHUB_OUTCOME" = success ]; then
+            conclusion=success
+          fi
+          # A per-PR verdict is ENFORCED by the two contexts this job already
+          # published: the App check-run and the controller commit status, which
+          # are what branch protection requires. The workflow RUN's own conclusion
+          # is not a required context, so failing the run for a per-PR verdict adds
+          # no enforcement whatsoever - it only emails the owner, on every push to
+          # any head that is not yet attested. That is the single largest source of
+          # production-failure email, and it is pure noise: the merge is already
+          # blocked by the contexts above.
+          #
+          # So every event that judges an individual pull request records the
+          # verdict and exits 0: schedule and push (the sweep, unchanged) and now
+          # pull_request_target. A failing verdict is a ::warning so it stays
+          # visible in the run log and the annotations, without a red run.
+          #
+          # This does NOT quiet anything else. Genuine infrastructure failures still
+          # fail the run: the publish guard above (verdict could not be recorded)
+          # exits 1 before this point, and the installation budget guard in the
+          # discover job exits 1 independently. Systemic breakage stays loud through
+          # the systemic-escalation job, which fails the run when a shared cause
+          # takes down most open pull requests at once.
+          if [ "$GITHUB_EVENT_NAME" = schedule ] || [ "$GITHUB_EVENT_NAME" = push ] || [ "$GITHUB_EVENT_NAME" = pull_request_target ]; then
+            if [ "$conclusion" = success ]; then
+              echo "::notice::closure-authority verdict for PR #${PR_NUMBER} is success; recorded on the PR check-run and controller status (per-PR verdicts do not fail the run; branch protection enforces them)"
+            else
+              echo "::warning::closure-authority verdict for PR #${PR_NUMBER} is ${conclusion}; recorded on the PR check-run and controller status, which block the merge (per-PR verdicts do not fail the run)"
+            fi
+            exit 0
+          fi
+          # Any remaining event (workflow_dispatch, a deliberate manual request for
+          # a verdict) keeps the original hard-fail behavior: the run is red unless
+          # the recorded verdict is a pass.
+          if [ "$conclusion" != success ]; then
+            echo "::error::closure-authority verdict for PR #${PR_NUMBER} is ${conclusion}"
+            exit 1
+          fi
+        env:
+          APP_IDENTITY_OUTCOME: ${{ steps.app-identity.outcome }}
+          BRANCH_PROTECTION_OUTCOME: ${{ steps.branch-protection.outcome }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_OUTCOME: ${{ steps.github.outcome }}
+          MATRIX_OUTCOME: ${{ steps.matrix.outcome }}
+          PR_NUMBER: ${{ matrix.pull_request }}
+          PROPOSAL_OUTCOME: ${{ steps.proposal.outcome }}
+          PUBLISH_CONTROLLER_OUTCOME: ${{ steps.publish-controller.outcome }}
+          PUBLISH_EXTERNAL_OUTCOME: ${{ steps.publish-external.outcome }}
+
+  systemic-escalation:
+    # A sweep (schedule/push) deliberately quiets INDIVIDUAL per-PR verdict
+    # failures on each PR's own check-run so that a handful of independently
+    # broken PRs cannot storm email. That quiet path is per-PR and cannot see the
+    # aggregate, so it cannot tell "a few PRs broken" from "one shared cause broke
+    # every open PR at once" (the poisoned-matrix incident: sweep run
+    # 33180344596 reported success while publishing GITHUB_OUTCOME: failure onto
+    # ~25 jobs / 75 verdicts, every open PR red on branch protection, no email).
+    # This final aggregation job restores loudness for exactly that systemic case,
+    # and only for the two events the per-PR step quiets (schedule, push): every
+    # other event already hard-fails per PR. It reads only the per-PR verdict
+    # artifacts this same run produced and the discover open-set, so it adds no
+    # installation API calls.
+    needs: [discover, closure-authority]
+    if: >-
+      always() &&
+      needs.discover.result == 'success' &&
+      needs.discover.outputs.pull_requests != '[]' &&
+      (github.event_name == 'schedule' || github.event_name == 'push')
+    runs-on: ubuntu-latest
+    environment: production-closure-authority
+    timeout-minutes: 5
+    steps:
+      - name: Download per-PR verdicts
+        continue-on-error: true
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          pattern: production-closure-verdict-*
+          merge-multiple: true
+          path: verdicts
+      - name: Escalate systemic authority failure
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p verdicts
+          judged=0
+          failed=0
+          failing=""
+          while IFS= read -r pr; do
+            [ -n "$pr" ] || continue
+            judged=$((judged + 1))
+            file="verdicts/verdict-${pr}.txt"
+            verdict=missing
+            if [ -f "$file" ]; then
+              verdict="$(tr -d '[:space:]' < "$file")"
+            fi
+            # A verdict that was never recorded is not a pass: an unevaluated
+            # authority must never read as evaluated.
+            if [ "$verdict" != success ]; then
+              failed=$((failed + 1))
+              failing="${failing} #${pr}(${verdict})"
+            fi
+          done < <(printf '%s' "$PULL_REQUESTS" | jq -r '.[]')
+          echo "::notice::systemic aggregation: ${failed} of ${judged} judged open PRs failed the protected closure verdict"
+          # Systemic escalation rule (documented in the PR body): fail the RUN when
+          # at least 3 open PRs were judged AND at least 80% of them failed. Unanimous
+          # failure (every judged PR red) is the strict subset this single threshold
+          # captures; the >=3 floor keeps a couple of independently broken PRs quiet.
+          if [ "$judged" -ge 3 ] && [ $((failed * 5)) -ge $((judged * 4)) ]; then
+            echo "::error::SYSTEMIC closure-authority failure: ${failed} of ${judged} open PRs failed the protected verdict (>=80%). A single shared cause is silently blocking every open release on branch protection. Failing:${failing}"
+            exit 1
+          fi
+          echo "::notice::closure-authority per-PR failures look individual (${failed}/${judged}); the sweep stays quiet"
+        env:
+          PULL_REQUESTS: ${{ needs.discover.outputs.pull_requests }}
+
+  main-authority-observation:
+    environment: production-closure-authority
+    needs: discover
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Create dedicated authority App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.MENDPOINT_CLOSURE_GITHUB_APP_ID }}
+          private-key: ${{ secrets.MENDPOINT_CLOSURE_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+      - name: Checkout exact pushed main revision
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.discover.outputs.main_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install immutable authority dependencies
+        run: npm ci
+      - name: Verify merged main authority
+        run: npm run closure:github:check
+        env:
+          # closure:github:check performs only reads, so it rides the closure App pool
+          # (5,000/hr) instead of the 1,000/hr Actions GITHUB_TOKEN pool.
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          MENDPOINT_CLOSURE_EVENT_NAME: push
+          MENDPOINT_CLOSURE_OBSERVATION_PATH: ${{ runner.temp }}/production-closure-main-authority.json
+      - name: Upload secret-free merged authority evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: production-closure-main-authority-${{ github.sha }}
+          path: ${{ runner.temp }}/production-closure-main-authority.json
+          if-no-files-found: warn
+          retention-days: 30

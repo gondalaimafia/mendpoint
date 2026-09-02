@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-09-02T06:07:09.819Z",
-    "observedMainRevision": "f8d09056f713925baf585d99fc35aca79242108c",
-    "observationDigest": "sha256:5b624ba1355ed967e81593c52e23e1e4d56090d4f758dc4864c13353f9995679",
+    "observedAt": "2026-09-02T06:34:50.583Z",
+    "observedMainRevision": "e1d5b7483c057578c9cc8c8b795cfa633f53878f",
+    "observationDigest": "sha256:2850e2b72a2479eb2de5fd0a08adc184564dc602bfff0d5837685b3592487821",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 617,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/617",
-      "title": "closure: quiet per-PR verdicts on pull_request_target (rotation A of 3, template repin)",
+      "number": 618,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/618",
+      "title": "closure: stage the D1 successor workflow (rotation B of 3, stage_successor)",
       "baseBranch": "main",
-      "headBranch": "claude/d1-rotation-a",
+      "headBranch": "claude/d1-rotation-b",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2087,12 +2087,24 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260902-016",
-        "kind": "runtime",
-        "issuedAt": "2026-09-02T06:07:09.819Z",
-        "expiresAt": "2026-09-03T06:07:09.819Z",
-        "basePolicySha256": "sha256:152c1b9eb0f12e4a98bf766c18f6a00505bb9c07cfc3108df6a2b207e0d9e407",
-        "proposedPolicySha256": "sha256:69ef2aa18463d441b363fe537f690e194c86e684a891bb7180cfe38b5a7c0d0a"
+        "rotationId": "rotation-20260902-017",
+        "kind": "stage_successor",
+        "issuedAt": "2026-09-02T06:34:50.583Z",
+        "expiresAt": "2026-09-03T06:34:50.583Z",
+        "basePolicySha256": "sha256:69ef2aa18463d441b363fe537f690e194c86e684a891bb7180cfe38b5a7c0d0a",
+        "proposedPolicySha256": "sha256:b01e56a307820b2eb020ec85408d735159e4c3993d9a9b5829916d6fa617751e",
+        "successor": {
+          "templatePath": "config/production-closure-successors/closure-authority-systemic-escalation.yml",
+          "workflowPath": ".github/workflows/closure-authority-systemic-escalation.yml",
+          "workflowSha256": "sha256:6515535ee7a2c8b1da5be04560fc507a2ab1cb85271f209d393d09e6aecad02e",
+          "externalCheckName": "mendpoint-production-closure-authority-systemic-escalation",
+          "externalCheckAppId": 4718395,
+          "controllerCheckName": "mendpoint-production-closure-controller-systemic-escalation",
+          "controllerCheckAppId": 15368,
+          "controllerStatusCreatorLogin": "github-actions[bot]",
+          "controllerStatusCreatorUserId": 41898282,
+          "activationDeadline": "2026-09-08T06:34:50.583Z"
+        }
       }
     },
     "pullRequests": [
