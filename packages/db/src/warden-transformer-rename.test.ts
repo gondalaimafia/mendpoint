@@ -804,6 +804,107 @@ describe("Fettler/Regauge logical database names", () => {
     }
   });
 
+  it("never publishes a partial recovery-guard state to another connection", () => {
+    const path = join(newDir("tenant-recovery-guard-atomicity"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyReleasedFallbackBackfill(path);
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    attestExactReconciliationScope(path);
+
+    const ledgerTables = [
+      "legacy_tenant_ownership_reconciliation_scope",
+      "legacy_tenant_ownership_reconciliation_state",
+      "legacy_tenant_ownership_reconciliation_discovery_state",
+      "legacy_tenant_ownership_quarantine_scope",
+      "legacy_tenant_ownership_quarantine_state",
+    ] as const;
+    const requiredGuards = [
+      ...LEGACY_OWNERSHIP_TABLES.flatMap((table) => [
+        `${table}_tenant_required_insert`,
+        `${table}_tenant_required_update`,
+        `${table}_tenant_nonblank_insert`,
+        `${table}_tenant_nonblank_update`,
+        `${table}_legacy_tenant_ownership_update`,
+        `${table}_legacy_tenant_ownership_delete`,
+      ]),
+      ...ledgerTables.flatMap((table) => [
+        `${table}_append_only_update`,
+        `${table}_append_only_delete`,
+      ]),
+      "legacy_tenant_ownership_reconciliation_scope_append_only_insert",
+      "legacy_tenant_ownership_quarantine_scope_append_only_insert",
+    ];
+    const predecessor = new DatabaseSync(path);
+    for (const trigger of requiredGuards) {
+      predecessor.exec(`DROP TRIGGER IF EXISTS "${trigger}"`);
+    }
+    predecessor.close();
+
+    const originalExec = Object.getOwnPropertyDescriptor(DatabaseSync.prototype, "exec");
+    if (!originalExec || typeof originalExec.value !== "function") {
+      throw new Error("database_sync_exec_unavailable");
+    }
+    const partialSnapshots: string[][] = [];
+    let racedWriteSucceeded = false;
+    Object.defineProperty(DatabaseSync.prototype, "exec", {
+      ...originalExec,
+      value: function (this: DatabaseSync, sql: string): void {
+        originalExec.value.call(this, sql);
+        if (sql.trim() !== "COMMIT" || racedWriteSucceeded) return;
+
+        const observer = new DatabaseSync(path);
+        try {
+          const published = new Set(
+            (observer.prepare(
+              "SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
+            ).all() as Array<{ name: string }>).map(({ name }) => name),
+          );
+          const nonblankPublished = LEGACY_OWNERSHIP_TABLES.every((table) =>
+            published.has(`${table}_tenant_nonblank_insert`) &&
+            published.has(`${table}_tenant_nonblank_update`),
+          );
+          const missing = requiredGuards.filter((trigger) => !published.has(trigger));
+          if (nonblankPublished && missing.length > 0) {
+            partialSnapshots.push(missing);
+            observer.prepare(
+              "UPDATE jobs SET tenant_id = 'tenant_other' WHERE id = 'jobs-empty'",
+            ).run();
+            racedWriteSucceeded = true;
+          }
+        } finally {
+          observer.close();
+        }
+      },
+    });
+
+    let recoveryError: unknown;
+    try {
+      boot(path);
+    } catch (error) {
+      recoveryError = error;
+    } finally {
+      Object.defineProperty(DatabaseSync.prototype, "exec", originalExec);
+    }
+
+    expect.soft(recoveryError).toBeUndefined();
+    expect.soft(partialSnapshots).toEqual([]);
+    expect.soft(racedWriteSucceeded).toBe(false);
+    const observed = new DatabaseSync(path);
+    try {
+      expect(observed.prepare(
+        "SELECT tenant_id FROM jobs WHERE id = 'jobs-empty'",
+      ).get()).toEqual({ tenant_id: "tenant_default" });
+      const published = new Set(
+        (observed.prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
+        ).all() as Array<{ name: string }>).map(({ name }) => name),
+      );
+      expect(requiredGuards.every((trigger) => published.has(trigger))).toBe(true);
+    } finally {
+      observed.close();
+    }
+  });
+
   it("prevents a scoped primary-key rename from escaping attestation through identifier reuse", () => {
     const path = join(newDir("tenant-attested-source-identity-immutable"), "legacy.sqlite");
     buildLegacyOwnershipVolume(path);
