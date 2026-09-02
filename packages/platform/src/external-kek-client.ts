@@ -9,6 +9,10 @@ const MAX_REQUEST_BYTES = 128 * 1_024;
 const MAX_TIMEOUT_MS = 120_000;
 const MAX_RESPONSE_BYTES = 64 * 1_024 * 1_024;
 const MAX_RESOLVED_ADDRESSES = 64;
+const MAX_WRAPPED_DATA_KEY_BYTES = 64 * 1_024;
+const MAX_WRAPPED_DATA_KEY_BASE64_LENGTH = Math.ceil(MAX_WRAPPED_DATA_KEY_BYTES / 3) * 4;
+const EXTERNAL_KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
+const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 const PRIVATE_IPV4 = new BlockList();
 for (const [network, prefix] of [
@@ -116,6 +120,53 @@ export type HttpsExternalKeyTransportConfig = Readonly<{
 
 function boundedInteger(value: number, maximum: number): boolean {
   return Number.isSafeInteger(value) && value >= 1 && value <= maximum;
+}
+
+function invalidExternalKeyRequest(): never {
+  throw new Error("external_kek_request_failed");
+}
+
+function assertExternalKeyLocator(key: unknown, tenantId: unknown): asserts key is EnvelopeKeyLocator {
+  if (
+    !key
+    || typeof key !== "object"
+    || typeof tenantId !== "string"
+    || !EXTERNAL_KEY_ID.test(tenantId)
+  ) invalidExternalKeyRequest();
+  const candidate = key as Partial<EnvelopeKeyLocator>;
+  if (
+    typeof candidate.provider !== "string"
+    || !EXTERNAL_KEY_ID.test(candidate.provider)
+    || typeof candidate.keyId !== "string"
+    || !EXTERNAL_KEY_ID.test(candidate.keyId)
+    || typeof candidate.version !== "string"
+    || !EXTERNAL_KEY_ID.test(candidate.version)
+  ) invalidExternalKeyRequest();
+}
+
+function assertCustomerManagedKey(
+  key: unknown,
+  tenantId: unknown,
+): asserts key is EnvelopeKeyReference {
+  assertExternalKeyLocator(key, tenantId);
+  if ((key as Partial<EnvelopeKeyReference>).customerManaged !== true) {
+    invalidExternalKeyRequest();
+  }
+}
+
+function assertCanonicalWrappedDataKey(value: unknown): asserts value is string {
+  if (
+    typeof value !== "string"
+    || value.length === 0
+    || value.length > MAX_WRAPPED_DATA_KEY_BASE64_LENGTH
+    || !CANONICAL_BASE64.test(value)
+  ) invalidExternalKeyRequest();
+  const decoded = Buffer.from(value, "base64");
+  if (
+    decoded.length === 0
+    || decoded.length > MAX_WRAPPED_DATA_KEY_BYTES
+    || decoded.toString("base64") !== value
+  ) invalidExternalKeyRequest();
 }
 
 function normalizedIpAddress(value: string): string | undefined {
@@ -425,8 +476,9 @@ export class HttpsExternalKeyTransport implements ExternalKeyTransport {
     }
   }
 
-  attestKey(key: EnvelopeKeyLocator, tenantId: string): Promise<unknown> {
-    return this.#post("v1/keys/attest", {
+  async attestKey(key: EnvelopeKeyLocator, tenantId: string): Promise<unknown> {
+    assertExternalKeyLocator(key, tenantId);
+    return await this.#post("v1/keys/attest", {
       provider: key.provider,
       keyId: key.keyId,
       version: key.version,
@@ -434,12 +486,16 @@ export class HttpsExternalKeyTransport implements ExternalKeyTransport {
     });
   }
 
-  wrapDataKey(
+  async wrapDataKey(
     key: EnvelopeKeyReference,
     tenantId: string,
     dataKey: Uint8Array,
   ): Promise<unknown> {
-    return this.#post("v1/keys/wrap", {
+    assertCustomerManagedKey(key, tenantId);
+    if (!(dataKey instanceof Uint8Array) || dataKey.byteLength !== 32) {
+      invalidExternalKeyRequest();
+    }
+    return await this.#post("v1/keys/wrap", {
       provider: key.provider,
       keyId: key.keyId,
       version: key.version,
@@ -449,12 +505,14 @@ export class HttpsExternalKeyTransport implements ExternalKeyTransport {
     });
   }
 
-  unwrapDataKey(
+  async unwrapDataKey(
     key: EnvelopeKeyReference,
     tenantId: string,
     wrappedDataKey: string,
   ): Promise<unknown> {
-    return this.#post("v1/keys/unwrap", {
+    assertCustomerManagedKey(key, tenantId);
+    assertCanonicalWrappedDataKey(wrappedDataKey);
+    return await this.#post("v1/keys/unwrap", {
       provider: key.provider,
       keyId: key.keyId,
       version: key.version,
