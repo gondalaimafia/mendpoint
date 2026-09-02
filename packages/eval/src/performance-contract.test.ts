@@ -139,12 +139,13 @@ function canonicalRunEvidence(tierId: "medium" | "large", mode: "load" | "soak")
   const startedAt = "2026-09-02T00:00:00.000Z";
   const startedAtMs = Date.parse(startedAt);
   const endedAt = new Date(startedAtMs + durationSeconds * 1_000).toISOString();
+  const sourceLines = tier.repository.sourceLines!;
   const languageSourceLines = Object.fromEntries(
     tier.repository.languages.map((language, index) => [
       language,
       index === 0
-        ? tier.repository.sourceLines - Math.floor(tier.repository.sourceLines / tier.repository.languages.length) * (tier.repository.languages.length - 1)
-        : Math.floor(tier.repository.sourceLines / tier.repository.languages.length),
+        ? sourceLines - Math.floor(sourceLines / tier.repository.languages.length) * (tier.repository.languages.length - 1)
+        : Math.floor(sourceLines / tier.repository.languages.length),
     ]),
   );
   const evidence: PerformanceEvidenceBinding = {
@@ -153,7 +154,7 @@ function canonicalRunEvidence(tierId: "medium" | "large", mode: "load" | "soak")
     measuredConcurrency: tier.concurrency,
     repository: {
       files: tier.repository.files,
-      sourceLines: tier.repository.sourceLines,
+      sourceLines,
       bytes: tier.repository.bytes,
       languages: [...tier.repository.languages],
       languageSourceLines,
