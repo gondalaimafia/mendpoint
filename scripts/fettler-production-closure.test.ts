@@ -1,7 +1,12 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildFettlerProductionClosure,
+  checkFettlerProductionClosureArtifact,
   serializeFettlerProductionClosure,
+  writeFettlerProductionClosureArtifact,
 } from "./fettler-production-closure.js";
 
 describe("Fettler production closure operating contracts", () => {
@@ -43,5 +48,24 @@ describe("Fettler production closure operating contracts", () => {
     expect(serializeFettlerProductionClosure()).toBe(
       `${JSON.stringify(closure, null, 2)}\n`,
     );
+  });
+
+  it("rejects missing and stale bytes and reproduces the validated artifact exactly", () => {
+    const directory = mkdtempSync(join(tmpdir(), "fettler-closure-"));
+    const artifactPath = join(directory, "closure.json");
+    try {
+      expect(() => checkFettlerProductionClosureArtifact(artifactPath))
+        .toThrow("fettler_production_closure_artifact_missing");
+
+      writeFileSync(artifactPath, "{}\n", "utf8");
+      expect(() => checkFettlerProductionClosureArtifact(artifactPath))
+        .toThrow("fettler_production_closure_artifact_stale");
+
+      writeFettlerProductionClosureArtifact(artifactPath);
+      expect(readFileSync(artifactPath, "utf8")).toBe(serializeFettlerProductionClosure());
+      expect(() => checkFettlerProductionClosureArtifact(artifactPath)).not.toThrow();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

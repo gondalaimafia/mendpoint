@@ -1,3 +1,6 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   FETTLER_PERFORMANCE_CONTRACT,
   metricDictionaryDigest,
@@ -12,6 +15,9 @@ import {
 
 export const FETTLER_PRODUCTION_CLOSURE_SCHEMA_VERSION =
   "fettler-production-requirement-closure/1" as const;
+export const FETTLER_PRODUCTION_CLOSURE_ARTIFACT_PATH = fileURLToPath(
+  new URL("../docs/FETTLER_PRODUCTION_REQUIREMENT_CLOSURE.json", import.meta.url),
+);
 
 export function buildFettlerProductionClosure() {
   const performance = validatePerformanceContract(FETTLER_PERFORMANCE_CONTRACT);
@@ -46,4 +52,44 @@ export function buildFettlerProductionClosure() {
 
 export function serializeFettlerProductionClosure(): string {
   return `${JSON.stringify(buildFettlerProductionClosure(), null, 2)}\n`;
+}
+
+export function checkFettlerProductionClosureArtifact(
+  artifactPath = FETTLER_PRODUCTION_CLOSURE_ARTIFACT_PATH,
+): void {
+  const expected = serializeFettlerProductionClosure();
+  let actual: string;
+  try {
+    actual = readFileSync(artifactPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("fettler_production_closure_artifact_missing");
+    }
+    throw error;
+  }
+  if (actual !== expected) throw new Error("fettler_production_closure_artifact_stale");
+}
+
+export function writeFettlerProductionClosureArtifact(
+  artifactPath = FETTLER_PRODUCTION_CLOSURE_ARTIFACT_PATH,
+): void {
+  const validatedBytes = serializeFettlerProductionClosure();
+  writeFileSync(artifactPath, validatedBytes, "utf8");
+  checkFettlerProductionClosureArtifact(artifactPath);
+}
+
+export function main(args = process.argv.slice(2)): void {
+  if (args.length === 0) {
+    checkFettlerProductionClosureArtifact();
+    return;
+  }
+  if (args.length === 1 && args[0] === "--write") {
+    writeFettlerProductionClosureArtifact();
+    return;
+  }
+  throw new Error("fettler_production_closure_arguments_invalid");
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+  main();
 }
