@@ -685,6 +685,113 @@ describe("usage ledger", () => {
     });
   });
 
+  it("atomically allocates one historical credit across every immutable invoice allocation", () => {
+    const db = setup();
+    const august = reserveUsage(db, {
+      id: "reservation-split-august",
+      tenantId: "tenant_default",
+      idempotencyKey: "reserve-split-august",
+      taskId: "task-split",
+      mcuMicros: 60,
+      reason: "first invoice allocation",
+      createdAt: "2026-08-01T12:00:00.000Z",
+    });
+    settleUsageReservation(db, {
+      id: "settlement-split-august",
+      tenantId: "tenant_default",
+      idempotencyKey: "settle-split-august",
+      reservationId: august.id,
+      actualMcuMicros: 60,
+      invoiceReference: "invoice-split",
+      reason: "first invoice allocation",
+      createdAt: "2026-08-01T12:01:00.000Z",
+    });
+    createUsagePriceVersion(db, {
+      id: "price-split-b",
+      tenantId: "tenant_default",
+      formulaVersion: "mcu-v1",
+      currency: "USD",
+      pricePerMcuMoneyMicros: 30_000,
+      effectiveAt: "2026-09-01T00:00:00.000Z",
+      expiresAt: "2026-10-01T00:00:00.000Z",
+      contractReference: "contract-split-b",
+      createdAt: "2026-09-01T00:00:00.000Z",
+    });
+    createUsageEntitlement(db, {
+      id: "entitlement-split-b",
+      tenantId: "tenant_default",
+      priceVersionId: "price-split-b",
+      quotaMcuMicros: 10_000,
+      features: ["fettler"],
+      contractReference: "contract-split-b",
+      periodStart: "2026-09-01T00:00:00.000Z",
+      periodEnd: "2026-10-01T00:00:00.000Z",
+      createdAt: "2026-09-01T00:00:00.000Z",
+    });
+    const september = reserveUsage(db, {
+      id: "reservation-split-september",
+      tenantId: "tenant_default",
+      idempotencyKey: "reserve-split-september",
+      taskId: "task-split",
+      mcuMicros: 40,
+      reason: "second invoice allocation",
+      createdAt: "2026-09-02T12:00:00.000Z",
+    });
+    settleUsageReservation(db, {
+      id: "settlement-split-september",
+      tenantId: "tenant_default",
+      idempotencyKey: "settle-split-september",
+      reservationId: september.id,
+      actualMcuMicros: 40,
+      invoiceReference: "invoice-split",
+      reason: "second invoice allocation",
+      createdAt: "2026-09-02T12:01:00.000Z",
+    });
+    const creditInput = {
+      id: "credit-split",
+      tenantId: "tenant_default",
+      idempotencyKey: "credit-split",
+      taskId: "task-split",
+      mcuMicrosDelta: -80,
+      invoiceReference: "invoice-split",
+      reason: "split invoice correction",
+      createdAt: "2026-09-02T12:02:00.000Z",
+    } as const;
+    const authorizationRecord = createUsageFinanceAuthorization(db, {
+      id: "finance-credit-split",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "credit",
+      invoiceReference: creditInput.invoiceReference,
+      entryIdempotencyKey: creditInput.idempotencyKey,
+      mcuMicrosDelta: creditInput.mcuMicrosDelta,
+      reason: creditInput.reason,
+      approvedAt: "2026-09-02T12:01:30.000Z",
+      expiresAt: "2026-09-02T12:03:00.000Z",
+    });
+    const authorization = {
+      actorPrincipalId: "finance-owner",
+      financeAuthorizationId: authorizationRecord.id,
+      financeAuthorizationDigest: authorizationRecord.authorizationDigest,
+    } as const;
+
+    expect(() => creditUsage(db, { ...creditInput, ...authorization })).not.toThrow();
+    expect(reconcileUsageLedger(db, "tenant_default")).toMatchObject({
+      ok: true,
+      invoices: { "invoice-split": 20 },
+    });
+    const creditLines = listUsageLedger(db, "tenant_default")
+      .filter((entry) => entry.financeAuthorizationId === authorization.financeAuthorizationId);
+    const allocationByPrice = Object.fromEntries(creditLines.map((entry) => [
+      entry.priceVersion,
+      (creditLines.filter((candidate) => candidate.priceVersion === entry.priceVersion)
+        .reduce((sum, candidate) => sum + candidate.consumedMcuMicrosDelta, 0)),
+    ]));
+    expect(allocationByPrice).toEqual({ "price-a": -60, "price-split-b": -20 });
+    expect(creditUsage(db, { ...creditInput, ...authorization })).toEqual(creditLines[0]);
+  });
+
   it("recovers an existing finance authorization from the stable intent", () => {
     const db = setup();
     const original = createUsageFinanceAuthorization(db, {

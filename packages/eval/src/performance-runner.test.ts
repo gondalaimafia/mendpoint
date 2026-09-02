@@ -474,6 +474,55 @@ describe("performance runner", () => {
     expect(report.observations.every((item) => !item.success)).toBe(true);
   });
 
+  it.each([
+    ["wrong invocation nonce at the deadline", 1_000, (value: PerformanceProbeMeasurement) => ({
+      ...value,
+      observed: { ...value.observed, invocationNonce: "forged-nonce" },
+    })],
+    ["wrong invocation identifier after the deadline", 1_001, (value: PerformanceProbeMeasurement) => ({
+      ...value,
+      observed: { ...value.observed, invocationId: "forged-invocation" },
+    })],
+    ["stale producer timestamp at the deadline", 1_000, (value: PerformanceProbeMeasurement) => ({
+      ...value,
+      observed: { ...value.observed, observedAt: "1969-12-31T23:00:00.000Z" },
+    })],
+    ["missing producer provenance after the deadline", 1_001, (value: PerformanceProbeMeasurement) => ({
+      ...value,
+      observed: undefined,
+    }) as unknown as PerformanceProbeMeasurement],
+  ])("fails closed for %s instead of laundering it as cancellation", async (_name, returnedAt, mutate) => {
+    let now = 0;
+    const singleInvocationContract = contract();
+    singleInvocationContract.tiers[0] = {
+      ...singleInvocationContract.tiers[0]!,
+      concurrency: 1,
+      minimumSamples: 1,
+    };
+    const report = await runPerformanceProbe({
+      contract: singleInvocationContract,
+      tierId: "test-tier",
+      mode: "load",
+      ...metadata(),
+      now: () => now,
+      probe: async (context) => {
+        const result = mutate(measurementFor(context));
+        now = returnedAt;
+        return result;
+      },
+    });
+
+    expect(report.status).toBe("incomplete");
+    expect(report.ok).toBe(false);
+    expect(report.abortReason).toBe("probe_failure_unobserved");
+    expect(report.cancelledInvocationCount).toBe(0);
+    expect(report.aggregation.totalInvocationCount).toBe(1);
+    expect(report.observations).toHaveLength(5);
+    expect(report.observations.every((item) =>
+      !item.success && item.bindingSource === "request_context"
+    )).toBe(true);
+  });
+
   it("rejects a producer-observed repository shape that differs from the requested fixture", async () => {
     const report = await runPerformanceProbe({
       contract: contract(),
