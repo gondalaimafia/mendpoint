@@ -112,6 +112,7 @@ function fixture() {
 
   let observedAt = "2026-09-02T12:00:00.000Z";
   let identifier = 0;
+  let failAuditAction: string | null = null;
   const identities = new Map([
     ["owner.a.jwt", { issuer, subject: "owner-a", tenantId: "tenant-a" }],
     ["admin.a.jwt", { issuer, subject: "admin-a", tenantId: "tenant-a" }],
@@ -140,6 +141,7 @@ function fixture() {
     id: () => `billing-route-${++identifier}`,
     now: () => observedAt,
     audit: (context, input) => {
+      if (input.action === failAuditAction) throw new Error("injected_audit_failure");
       const principal = context.get("principal")!;
       recordAudit(db, {
         ...input,
@@ -154,6 +156,7 @@ function fixture() {
     app,
     db,
     setNow(value: string) { observedAt = value; },
+    failAudit(action: string | null) { failAuditAction = action; },
   };
 }
 
@@ -172,6 +175,56 @@ function request(token: string | null, path: string, body: Record<string, unknow
 }
 
 describe("billing usage finance routes", () => {
+  it("rolls back finance authorization and ledger mutations when mandatory audit persistence fails", async () => {
+    const { app, db, failAudit } = fixture();
+    const authorizationInput = {
+      entryType: "credit",
+      invoiceReference: "invoice-a",
+      idempotencyKey: "credit-audit-atomicity",
+      mcuMicrosDelta: -10,
+      reason: "audit atomicity credit",
+    };
+    failAudit("billing.usage_finance_authorized");
+    const failedAuthorization = request(
+      "owner.a.jwt",
+      "/billing/usage/finance-authorizations",
+      authorizationInput,
+    );
+    expect((await app.request(failedAuthorization.path, failedAuthorization.init)).status).toBe(500);
+    expect(db.raw.prepare(
+      "SELECT COUNT(*) AS count FROM usage_finance_authorizations WHERE entry_idempotency_key = ?",
+    ).get(authorizationInput.idempotencyKey)).toEqual({ count: 0 });
+    expect(listAudit(db, "tenant-a")).toEqual([]);
+
+    failAudit(null);
+    const create = request("owner.a.jwt", "/billing/usage/finance-authorizations", authorizationInput);
+    const createdResponse = await app.request(create.path, create.init);
+    expect(createdResponse.status).toBe(201);
+    const authorization = await createdResponse.json() as {
+      id: string;
+      authorizationDigest: string;
+    };
+    const beforeLedger = listUsageLedger(db, "tenant-a");
+    failAudit("billing.usage_credit");
+    const credit = request("owner.a.jwt", "/billing/usage/credits", {
+      idempotencyKey: authorizationInput.idempotencyKey,
+      taskId: "task-a",
+      mcuMicrosDelta: authorizationInput.mcuMicrosDelta,
+      invoiceReference: authorizationInput.invoiceReference,
+      reason: authorizationInput.reason,
+      financeAuthorizationId: authorization.id,
+      financeAuthorizationDigest: authorization.authorizationDigest,
+    });
+    expect((await app.request(credit.path, credit.init)).status).toBe(500);
+    expect(listUsageLedger(db, "tenant-a")).toEqual(beforeLedger);
+    expect(db.raw.prepare(
+      "SELECT consumed_at, consumed_entry_id FROM usage_finance_authorizations WHERE id = ?",
+    ).get(authorization.id)).toEqual({ consumed_at: null, consumed_entry_id: null });
+    expect(listAudit(db, "tenant-a").map((event) => event.action)).toEqual([
+      "billing.usage_finance_authorized",
+    ]);
+  });
+
   it("enforces human owner, tenant, digest, expiry, replay, and audit boundaries", async () => {
     const { app, db, setNow } = fixture();
     const authorizationInput = {

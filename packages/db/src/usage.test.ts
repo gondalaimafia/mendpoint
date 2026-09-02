@@ -95,6 +95,8 @@ function financeAuthorization(
     invoiceReference: string;
     reason: string;
     createdAt: string;
+    allocationEntitlementId?: string;
+    allocationPriceVersion?: string;
   },
 ) {
   const authorization = createUsageFinanceAuthorization(db, {
@@ -107,6 +109,8 @@ function financeAuthorization(
     entryIdempotencyKey: input.idempotencyKey,
     mcuMicrosDelta: input.mcuMicrosDelta,
     reason: input.reason,
+    allocationEntitlementId: input.allocationEntitlementId,
+    allocationPriceVersion: input.allocationPriceVersion,
     approvedAt: "2026-08-01T12:01:30.000Z",
     expiresAt: "2026-08-02T00:00:00.000Z",
   });
@@ -685,6 +689,155 @@ describe("usage ledger", () => {
     });
   });
 
+  it("binds late adjustments to the exact historical invoice allocation approved by finance", () => {
+    const db = setup();
+    const august = reserveUsage(db, {
+      id: "reservation-adjustment-august",
+      tenantId: "tenant_default",
+      idempotencyKey: "reserve-adjustment-august",
+      taskId: "task-adjustment",
+      mcuMicros: 60,
+      reason: "august allocation",
+      createdAt: at,
+    });
+    settleUsageReservation(db, {
+      id: "settlement-adjustment-august",
+      tenantId: "tenant_default",
+      idempotencyKey: "settle-adjustment-august",
+      reservationId: august.id,
+      actualMcuMicros: 60,
+      invoiceReference: "invoice-adjustment-history",
+      reason: "august settlement",
+      createdAt: "2026-08-01T12:01:00.000Z",
+    });
+    createUsagePriceVersion(db, {
+      id: "price-adjustment-september",
+      tenantId: "tenant_default",
+      formulaVersion: "mcu-v1",
+      currency: "USD",
+      pricePerMcuMoneyMicros: 30_000,
+      effectiveAt: "2026-09-01T00:00:00.000Z",
+      expiresAt: "2026-10-01T00:00:00.000Z",
+      contractReference: "contract-adjustment-september",
+      createdAt: "2026-09-01T00:00:00.000Z",
+    });
+    createUsageEntitlement(db, {
+      id: "entitlement-adjustment-september",
+      tenantId: "tenant_default",
+      priceVersionId: "price-adjustment-september",
+      quotaMcuMicros: 10_000,
+      features: ["fettler"],
+      contractReference: "contract-adjustment-september",
+      periodStart: "2026-09-01T00:00:00.000Z",
+      periodEnd: "2026-10-01T00:00:00.000Z",
+      createdAt: "2026-09-01T00:00:00.000Z",
+    });
+
+    const singleAuthorization = createUsageFinanceAuthorization(db, {
+      id: "finance-adjustment-single",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "adjustment",
+      invoiceReference: "invoice-adjustment-history",
+      entryIdempotencyKey: "adjustment-single",
+      mcuMicrosDelta: 10,
+      reason: "late august correction",
+      approvedAt: "2026-09-02T12:00:00.000Z",
+      expiresAt: "2026-09-02T12:05:00.000Z",
+    });
+    expect(singleAuthorization).toMatchObject({
+      allocationEntitlementId: "entitlement-a",
+      allocationPriceVersion: "price-a",
+    });
+    expect(adjustUsage(db, {
+      id: "adjustment-single",
+      tenantId: "tenant_default",
+      idempotencyKey: "adjustment-single",
+      taskId: "task-adjustment",
+      mcuMicrosDelta: 10,
+      invoiceReference: "invoice-adjustment-history",
+      reason: "late august correction",
+      actorPrincipalId: "finance-owner",
+      financeAuthorizationId: singleAuthorization.id,
+      financeAuthorizationDigest: singleAuthorization.authorizationDigest,
+      createdAt: "2026-09-02T12:01:00.000Z",
+    })).toMatchObject({
+      entitlementId: "entitlement-a",
+      priceVersion: "price-a",
+      consumedMcuMicrosDelta: 10,
+    });
+
+    const september = reserveUsage(db, {
+      id: "reservation-adjustment-september",
+      tenantId: "tenant_default",
+      idempotencyKey: "reserve-adjustment-september",
+      taskId: "task-adjustment",
+      mcuMicros: 40,
+      reason: "september allocation",
+      createdAt: "2026-09-02T12:02:00.000Z",
+    });
+    settleUsageReservation(db, {
+      id: "settlement-adjustment-september",
+      tenantId: "tenant_default",
+      idempotencyKey: "settle-adjustment-september",
+      reservationId: september.id,
+      actualMcuMicros: 40,
+      invoiceReference: "invoice-adjustment-history",
+      reason: "september settlement",
+      createdAt: "2026-09-02T12:02:10.000Z",
+    });
+    expect(() => createUsageFinanceAuthorization(db, {
+      id: "finance-adjustment-ambiguous",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "adjustment",
+      invoiceReference: "invoice-adjustment-history",
+      entryIdempotencyKey: "adjustment-ambiguous",
+      mcuMicrosDelta: 5,
+      reason: "ambiguous historical correction",
+      approvedAt: "2026-09-02T12:02:20.000Z",
+      expiresAt: "2026-09-02T12:07:20.000Z",
+    })).toThrow("usage_adjustment_allocation_target_required");
+    const multiAuthorization = createUsageFinanceAuthorization(db, {
+      id: "finance-adjustment-multi",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "adjustment",
+      invoiceReference: "invoice-adjustment-history",
+      entryIdempotencyKey: "adjustment-multi",
+      mcuMicrosDelta: 5,
+      reason: "targeted september correction",
+      allocationEntitlementId: "entitlement-adjustment-september",
+      allocationPriceVersion: "price-adjustment-september",
+      approvedAt: "2026-09-02T12:02:20.000Z",
+      expiresAt: "2026-09-02T12:07:20.000Z",
+    });
+    expect(adjustUsage(db, {
+      id: "adjustment-multi",
+      tenantId: "tenant_default",
+      idempotencyKey: "adjustment-multi",
+      taskId: "task-adjustment",
+      mcuMicrosDelta: 5,
+      invoiceReference: "invoice-adjustment-history",
+      reason: "targeted september correction",
+      actorPrincipalId: "finance-owner",
+      financeAuthorizationId: multiAuthorization.id,
+      financeAuthorizationDigest: multiAuthorization.authorizationDigest,
+      createdAt: "2026-09-02T12:03:00.000Z",
+    })).toMatchObject({
+      entitlementId: "entitlement-adjustment-september",
+      priceVersion: "price-adjustment-september",
+      consumedMcuMicrosDelta: 5,
+    });
+    expect(reconcileUsageLedger(db, "tenant_default")).toMatchObject({
+      ok: true,
+      invoices: { "invoice-adjustment-history": 115 },
+    });
+  });
+
   it("atomically allocates one historical credit across every immutable invoice allocation", () => {
     const db = setup();
     const august = reserveUsage(db, {
@@ -808,6 +961,10 @@ describe("usage ledger", () => {
     });
     const creditLines = listUsageLedger(db, "tenant_default")
       .filter((entry) => entry.financeAuthorizationId === authorization.financeAuthorizationId);
+    expect(creditLines.filter((entry) => entry.entryType === "credit")
+      .every((entry) => entry.consumedMcuMicrosDelta < 0)).toBe(true);
+    expect(creditLines.filter((entry) => entry.consumedMcuMicrosDelta > 0)
+      .every((entry) => entry.entryType === "adjustment")).toBe(true);
     const allocationByPrice = Object.fromEntries(creditLines.map((entry) => [
       entry.priceVersion,
       (creditLines.filter((candidate) => candidate.priceVersion === entry.priceVersion)
