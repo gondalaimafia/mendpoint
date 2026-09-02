@@ -154,4 +154,51 @@ describe("durable dependency outage queue", () => {
     })).toMatchObject({ status: "queued", authorityVersion: "installation-v2" });
     db.close();
   });
+
+  it("rejects digest substitution and expired authority reactivation", () => {
+    const db = new DatabaseSync(":memory:");
+    const queue = createDependencyOutageQueue(db);
+    queue.enqueue({
+      ...SCOPE,
+      retryBudget: 3,
+      expiresAt: "2026-09-01T12:01:00.000Z",
+      nextAttemptAt: "2026-09-01T12:00:00.000Z",
+      standing: "degraded_blocked",
+      authorityVersion: "installation-v1",
+      status: "blocked",
+    }, "2026-09-01T12:00:00.000Z");
+
+    expect(() => queue.claim({
+      ...SCOPE,
+      operationDigest: "d".repeat(64),
+      workerId: "worker-1",
+      now: "2026-09-01T12:00:00.000Z",
+      leaseMs: 1_000,
+    })).toThrow("dependency_outage_operation_digest_conflict");
+    expect(() => queue.reactivateAuthority(SCOPE, {
+      previousAuthorityVersion: "installation-v1",
+      nextAuthorityVersion: "installation-v2",
+      now: "2026-09-01T12:01:00.000Z",
+    })).toThrow("dependency_outage_expired");
+    db.close();
+  });
+
+  it("keeps the hash-chained recovery history append-only", () => {
+    const db = new DatabaseSync(":memory:");
+    const queue = createDependencyOutageQueue(db);
+    queue.enqueue({
+      ...SCOPE,
+      retryBudget: 3,
+      expiresAt: "2026-09-01T13:00:00.000Z",
+      nextAttemptAt: "2026-09-01T12:00:00.000Z",
+      standing: "degraded_retrying",
+    }, "2026-09-01T12:00:00.000Z");
+
+    expect(() => db.exec("UPDATE dependency_outage_history SET event_kind = 'rewritten'"))
+      .toThrow("dependency_outage_history_immutable");
+    expect(() => db.exec("DELETE FROM dependency_outage_history"))
+      .toThrow("dependency_outage_history_immutable");
+    expect(queue.history(SCOPE).map((event) => event.kind)).toEqual(["enqueued"]);
+    db.close();
+  });
 });

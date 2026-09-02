@@ -364,7 +364,10 @@ export class DependencyOutageQueue {
     positiveInteger(input.leaseMs, "dependency_outage_lease_invalid");
     return withImmediateTransaction(this.db, () => {
       const current = this.row(input);
-      if (!current || current.operation_digest !== input.operationDigest) return null;
+      if (!current) return null;
+      if (current.operation_digest !== input.operationDigest) {
+        throw new Error("dependency_outage_operation_digest_conflict");
+      }
       const recovering = current.status === "claimed" &&
         current.claim_expires_at !== null && current.claim_expires_at <= input.now;
       if ((current.status !== "queued" && !recovering) ||
@@ -490,6 +493,7 @@ export class DependencyOutageQueue {
       if (current.status !== "blocked" || current.authority_version !== input.previousAuthorityVersion) {
         throw new Error("dependency_outage_authority_mismatch");
       }
+      if (current.expires_at <= input.now) throw new Error("dependency_outage_expired");
       this.db.prepare(`UPDATE dependency_outage_operations SET
         status = 'queued', standing = 'degraded_retrying', circuit_state = 'half_open',
         next_attempt_at = ?, authority_version = ?, updated_at = ?
@@ -566,23 +570,24 @@ export class DependencyOutageQueue {
     try {
       const observed = await operation.reconcile();
       if (observed.status === "completed") {
-        const completed = this.complete(claim, observed.completionDigest, now);
+        const completed = this.complete(claim, observed.completionDigest, this.now());
         if (!completed.applied && completed.record.status !== "completed") {
           throw new Error("dependency_outage_completion_fence_lost");
         }
         return Object.freeze({ status: "recovered", value: observed.value, record: completed.record });
       }
       const executed = await operation.execute();
-      const completed = this.complete(claim, executed.completionDigest, now);
+      const completed = this.complete(claim, executed.completionDigest, this.now());
       if (!completed.applied) throw new Error("dependency_outage_completion_fence_lost");
       return Object.freeze({ status: "completed", value: executed.value, record: completed.record });
     } catch (error) {
+      const failedAt = this.now();
       const decision = operation.classify(error, {
         attempt: claim.attemptsConsumed,
         retryBudget: claim.retryBudget,
-        now,
+        now: failedAt,
       });
-      const record = this.fail(claim, decision, now);
+      const record = this.fail(claim, decision, failedAt);
       return Object.freeze({
         status: record.status === "blocked" ? "blocked" :
           record.status === "failed" ? "failed" : "deferred",

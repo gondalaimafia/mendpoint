@@ -32,6 +32,7 @@ import {
 
 const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
 const GITHUB_FILE_CONCURRENCY = 8;
+const OUTAGE_IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 
 export type GitHubDependencyFailureKind =
   | "timeout"
@@ -593,19 +594,26 @@ export class GitHubAppDelivery implements GitHubDelivery {
     }
     const options = this.dependencyOutage;
     const now = (options.now ?? (() => new Date().toISOString()))();
-    if (!Number.isSafeInteger(options.retryBudget) || options.retryBudget < 1 ||
+    if (!OUTAGE_IDENTITY.test(options.tenantId) || !OUTAGE_IDENTITY.test(options.workerId) ||
+        !Number.isFinite(Date.parse(now)) || new Date(Date.parse(now)).toISOString() !== now ||
+        !Number.isSafeInteger(options.retryBudget) || options.retryBudget < 1 ||
         !Number.isSafeInteger(options.expiresInMs) || options.expiresInMs < 1 ||
         !Number.isSafeInteger(options.leaseMs ?? 30_000) || (options.leaseMs ?? 30_000) < 1) {
       throw new Error("github_dependency_outage_configuration_invalid");
     }
     const operationDigest = digest(input);
+    const operationId = `github-draft:${digest({
+      owner: input.owner,
+      repo: input.repo,
+      branch: input.branch,
+    })}`;
     const expiresAt = new Date(Date.parse(now) + options.expiresInMs).toISOString();
     const result = await options.outage.run<ExactDraftDeliveryResult>(Object.freeze({
       schemaVersion: 1,
       tenantId: options.tenantId,
       dependencyKind: "scm",
       providerId: "github",
-      operationId: `${input.owner}/${input.repo}:${input.branch}`,
+      operationId,
       operationDigest,
       workerId: options.workerId,
       retryBudget: options.retryBudget,

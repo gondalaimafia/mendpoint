@@ -75,6 +75,8 @@ export {
 export {
   resolveModelBackend,
   resolveProviderEndpoint,
+  classifyModelProviderFailure,
+  runModelProviderOperation,
   modelProvider,
   registeredModelProviderIds,
   MODEL_PROVIDER_ENV_VAR,
@@ -83,6 +85,13 @@ export {
   type ModelTransport,
   type ModelProviderDescriptor,
   type ResolvedModelBackend,
+  type ModelProviderFailureKind,
+  type ModelProviderFailureEvidence,
+  type ModelDependencyOutageDecision,
+  type ModelDependencyOutageOperation,
+  type ModelDependencyOutageResult,
+  type ModelDependencyOutagePort,
+  type ModelDependencyOutagePolicy,
 } from "./model-providers.js";
 export {
   resolveTenantModelBackend,

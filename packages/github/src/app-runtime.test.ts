@@ -559,6 +559,8 @@ describe("github app runtime", () => {
       retryBudget: 3,
       workerId: "worker-1",
     });
+    expect(run.mock.calls[0]![0].operationId).toMatch(/^github-draft:[a-f0-9]{64}$/);
+    expect(run.mock.calls[0]![0].operationId.length).toBeLessThanOrEqual(200);
     expect(run.mock.calls[0]![0].operationDigest).toMatch(/^[a-f0-9]{64}$/);
   });
 });

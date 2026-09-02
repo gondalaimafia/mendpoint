@@ -423,7 +423,10 @@ export function classifyModelProviderFailure(input: Readonly<{
   if (input.responseInvalid === true || error instanceof SyntaxError) {
     return Object.freeze({ failureKind: "invalid_response" });
   }
-  const status = input.status ?? (typeof record.status === "number" ? record.status : undefined);
+  const response = record.response && typeof record.response === "object"
+    ? record.response as Record<string, unknown> : {};
+  const status = input.status ?? (typeof record.status === "number" ? record.status :
+    typeof response.status === "number" ? response.status : undefined);
   if (status === 401) return Object.freeze({ failureKind: "authentication" });
   if (status === 403) return Object.freeze({ failureKind: "permission" });
   const message = error instanceof Error ? error.message : String(error ?? "");
@@ -432,7 +435,12 @@ export function classifyModelProviderFailure(input: Readonly<{
     return Object.freeze({ failureKind: "timeout" });
   }
   if (status === 429) {
-    const delay = retryAfterMs(input.retryAfter ?? null, input.now ?? new Date().toISOString());
+    const headers = response.headers && typeof response.headers === "object"
+      ? response.headers as Record<string, unknown> : {};
+    const delay = retryAfterMs(
+      input.retryAfter ?? (typeof headers["retry-after"] === "string" ? headers["retry-after"] : null),
+      input.now ?? new Date().toISOString(),
+    );
     return Object.freeze({
       failureKind: "throttled",
       ...(delay === undefined ? {} : { retryAfterMs: delay }),

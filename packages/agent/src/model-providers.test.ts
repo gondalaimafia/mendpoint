@@ -206,6 +206,12 @@ describe("model provider outage recovery", () => {
       .toEqual({ failureKind: "permission" });
     expect(classifyModelProviderFailure({ status: 400 }))
       .toEqual({ failureKind: "permanent" });
+    expect(classifyModelProviderFailure({
+      error: Object.assign(new Error("gateway throttle"), {
+        response: { status: 429, headers: { "retry-after": "12" } },
+      }),
+      now: "2026-09-01T12:00:00.000Z",
+    })).toEqual({ failureKind: "throttled", retryAfterMs: 12_000 });
   });
 
   it("maps provider evidence through the injected shared decision policy", async () => {
