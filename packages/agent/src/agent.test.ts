@@ -17,11 +17,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ABSENT_FILE_EVIDENCE_DIGEST,
   createWardenRuntimeModelAuthorityDigest,
+  modelPlanOutageError,
   runWarden,
   runWardenWithRuntime,
   validatedToolCall,
   WARDEN_TOOL_CALL_SCHEMA,
 } from "./agent.js";
+import { classifyModelProviderFailure } from "./model-providers.js";
 import type { WardenRuntimeExecution } from "./runtime-execution.js";
 import type { WardenCheckpointBinding } from "./checkpoint.js";
 import type { WardenRuntimeJson } from "./runtime-state.js";
@@ -106,6 +108,17 @@ describe("runtime model authority", () => {
       .toBe(legacyRepairDigest);
     expect(createWardenRuntimeModelAuthorityDigest({ ...task, taskMode: "feature" }))
       .not.toBe(legacyRepairDigest);
+  });
+});
+
+describe("runtime model outage classification", () => {
+  it("blocks reconciliation after a post-dispatch connection loss", () => {
+    const error = modelPlanOutageError({ status: "request_failed", call: null });
+    expect(classifyModelProviderFailure({ error })).toMatchObject({
+      failureKind: "completed",
+      retryable: false,
+      remoteSideEffectUncertain: true,
+    });
   });
 });
 
