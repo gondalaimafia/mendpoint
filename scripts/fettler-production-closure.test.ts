@@ -23,6 +23,21 @@ describe("Fettler production closure operating contracts", () => {
             reason: "production_measurement_not_supplied",
           },
         },
+        migrationCompute: {
+          version: "mcu-v1",
+          digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          ledgerEntryTypes: [
+            "reservation",
+            "settlement",
+            "release",
+            "adjustment",
+            "credit",
+          ],
+          evidence: {
+            status: "not_observed",
+            reason: "production_ledger_not_supplied",
+          },
+        },
       },
     });
     expect(serializeFettlerProductionClosure()).toBe(
