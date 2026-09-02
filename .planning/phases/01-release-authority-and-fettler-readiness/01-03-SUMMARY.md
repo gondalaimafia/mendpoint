@@ -26,8 +26,8 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 ## Verification
 
 - RED authority verification: ten direct-transport cases proved malformed identifiers, non-customer-managed keys, wrong-size data keys, and malformed or oversized wrapped material reached the authorized requester before validation.
-- `npm test -w @mendpoint/platform -- src/vault-envelope.test.ts src/external-kek-client.test.ts`: 79 tests passed.
-- `npm test -w @mendpoint/platform`: 315 tests passed across 20 files.
+- `node node_modules/vitest/vitest.mjs run --configLoader runner packages/platform/src/vault-envelope.test.ts packages/platform/src/external-kek-client.test.ts`: 79 tests passed.
+- `node node_modules/vitest/vitest.mjs run --configLoader runner packages/platform/src`: 315 tests passed across 20 files with temporary test data directed to the isolated review directory.
 - `npm run typecheck -w @mendpoint/platform`: passed.
 - `npm run build`: optimized production build passed, including all 64 static pages.
 - `git diff --check`: passed.
@@ -51,14 +51,14 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 
 ## Commits and range-diff identity
 
-- `8d601296`: external customer-managed key adapter.
-- `5c4f1c59`: initial verification evidence.
-- `46c92857`: exact destination authority and DNS-rebinding repair.
-- `23ecf0a9`, `1b096716`, and `ac2a7418`: native lookup, socket isolation, streaming-overrun, and abort-settlement repairs.
-- `346ea20b` and `001d2b41`: fingerprint-drift and pre-network request-ceiling hostile tests and repair.
-- `6c6776de` and `da055d31`: direct public-transport input-boundary hostile tests and pre-network validation repair.
+- `3605c24b`: external customer-managed key adapter.
+- `ea6b16a5`: initial verification evidence.
+- `e46f4184`: exact destination authority and DNS-rebinding repair.
+- `baf5a861`, `284d0df1`, and `8e659b51`: native lookup, socket isolation, streaming-overrun, and abort-settlement repairs.
+- `663e7176` and `0e0aeb11`: fingerprint-drift and pre-network request-ceiling hostile tests and repair.
+- `42a4ffb3` and `ef75b808`: direct public-transport input-boundary hostile tests and pre-network validation repair.
 
-The exact base for this series is `f8d09056f713925baf585d99fc35aca79242108c`; the commands above verify implementation head `da055d31dc45d7594531d4e90ede9091ca2245c6`. The independent review at `c8931253b12daad300534c115822657e170853af` found the repaired direct-transport validation and stale-evidence defects and is superseded. A different reviewer must inspect and approve the final exact head before merge.
+The exact current base for this rebased series is `8456b36ebe94a48560982d5265aedbfab30710e3`; the commands above verify the exact rebased pre-evidence head `e80c2ce24e0f0c8b8f6601e5ceb7cab4f09b5e6e`. `git range-diff f8d09056f713925baf585d99fc35aca79242108c..b5b70ff2568a883bf9419e21790f1871e6f685ef 8456b36ebe94a48560982d5265aedbfab30710e3..e80c2ce24e0f0c8b8f6601e5ceb7cab4f09b5e6e` maps all 15 commits one-to-one with no semantic delta. The independent exact-head PASS at `b5b70ff2568a883bf9419e21790f1871e6f685ef` is superseded by this history rewrite. A different reviewer must inspect and approve the final exact head before merge.
 
 ## Remaining Release Work
 
