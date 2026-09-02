@@ -909,6 +909,90 @@ describe("durable dependency outage queue", () => {
     db.close();
   });
 
+  it("reconciles blocked uncertain work on replay without repeating execution", async () => {
+    const db = new DatabaseSync(":memory:");
+    let now = "2026-09-02T12:00:00.000Z";
+    let remoteCompleted = false;
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    const reconcile = vi.fn(async () => remoteCompleted
+      ? ({ status: "completed" as const, value: "delivered", completionDigest: COMPLETION })
+      : ({ status: "missing" as const }));
+    const execute = vi.fn(async (): Promise<never> => {
+      remoteCompleted = true;
+      throw Object.assign(new Error("response_lost"), { remoteSideEffectUncertain: true });
+    });
+    const operation = {
+      ...SCOPE,
+      workerId: "worker-1",
+      retryBudget: 3,
+      expiresAt: "2026-09-02T13:00:00.000Z",
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+      reconcile,
+      execute,
+      classify: () => decisionForAction("reconcile"),
+    };
+
+    await expect(queue.run(operation)).resolves.toMatchObject({ status: "blocked" });
+    now = "2026-09-02T12:00:01.000Z";
+    await expect(queue.run(operation)).resolves.toMatchObject({
+      status: "recovered",
+      value: "delivered",
+      record: { status: "completed", completionDigest: COMPLETION },
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    db.close();
+  });
+
+  it("reconciles and terminalizes an expired lease-recovered claim", async () => {
+    const db = new DatabaseSync(":memory:");
+    let now = "2026-09-02T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    const reconcile = vi.fn(async () => ({ status: "missing" as const }));
+    const execute = vi.fn(async () => ({ value: "unexpected", completionDigest: COMPLETION }));
+    const operation = {
+      ...SCOPE,
+      workerId: "worker-recovery",
+      retryBudget: 3,
+      expiresAt: "2026-09-02T12:00:02.000Z",
+      leaseMs: 1_000,
+      authorityVersion: "model-authority-v1",
+      reconcile,
+      execute,
+      classify: () => retryDecision(),
+    };
+    queue.enqueue({
+      ...operation,
+      nextAttemptAt: now,
+      standing: "degraded_retrying",
+    }, now);
+    expect(queue.claim({
+      ...SCOPE,
+      workerId: "worker-crashed",
+      now,
+      leaseMs: 1_000,
+      authorityVersion: "model-authority-v1",
+    })).not.toBeNull();
+    now = "2026-09-02T12:00:03.000Z";
+
+    await expect(queue.run(operation)).resolves.toMatchObject({
+      status: "failed",
+      record: {
+        status: "failed",
+        lastFailureKind: "expired",
+        lastFailureReason: "operation_expired",
+      },
+    });
+    await expect(queue.run(operation)).resolves.toMatchObject({ status: "failed" });
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
+    expect(queue.history(SCOPE).filter((event) =>
+      event.kind === "failed" && event.details.reason === "operation_expired"
+    )).toHaveLength(1);
+    db.close();
+  });
+
   it("keeps the hash-chained recovery history append-only", () => {
     const db = new DatabaseSync(":memory:");
     const queue = createDependencyOutageQueue(db);
