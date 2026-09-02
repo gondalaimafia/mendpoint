@@ -6,6 +6,7 @@ import type {
   PerformanceContract,
   PerformanceMetric,
 } from "./performance-contract.js";
+import { FETTLER_PERFORMANCE_CONTRACT } from "./performance-contract.js";
 import {
   createHttpPerformanceProbe,
   persistPerformanceProbeReport,
@@ -69,6 +70,51 @@ function metadata() {
 }
 
 describe("performance runner", () => {
+  it("accepts documented legacy pilot tier identifiers and reports canonical identities", async () => {
+    let now = 0;
+    const small = FETTLER_PERFORMANCE_CONTRACT.tiers.find((tier) => tier.id === "small")!;
+    const boundedContract: PerformanceContract = {
+      ...FETTLER_PERFORMANCE_CONTRACT,
+      tiers: [{
+        ...small,
+        minimumSamples: 2,
+        loadDurationSeconds: 1,
+        soakDurationSeconds: 2,
+      }],
+      objectives: FETTLER_PERFORMANCE_CONTRACT.objectives.filter(
+        (objective) => objective.tierId === "small",
+      ),
+    };
+    const report = await runPerformanceProbe({
+      contract: boundedContract,
+      tierId: "pilot-small",
+      mode: "load",
+      ...metadata(),
+      tenantId: "tenant-fettler-production",
+      repositoryId: "github-1319732323",
+      correlationId: "corr-legacy-cli",
+      source: "fettler-production-probe",
+      repository: {
+        files: 1_000,
+        sourceLines: 50_000,
+        bytes: 25_000_000,
+        languages: ["typescript"],
+      },
+      now: () => now,
+      probe: async () => {
+        now += 500;
+        return measurement();
+      },
+    });
+
+    expect(report.tierId).toBe("small");
+    expect(report.evaluation?.evidence).toMatchObject({
+      tenantId: "tenant-fettler-production",
+      repositoryId: "github-1319732323",
+      measuredConcurrency: 2,
+    });
+  });
+
   it("honors tier concurrency and the load duration while recording every metric", async () => {
     let now = 0;
     let active = 0;

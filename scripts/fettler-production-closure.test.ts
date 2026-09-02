@@ -2,6 +2,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { FETTLER_PERFORMANCE_CONTRACT } from "../packages/eval/src/index.js";
+import { MCU_SCHEDULE_V1 } from "../packages/platform/src/index.js";
 import {
   buildFettlerProductionClosure,
   checkFettlerProductionClosureArtifact,
@@ -10,6 +12,18 @@ import {
 } from "./fettler-production-closure.js";
 
 describe("Fettler production closure operating contracts", () => {
+  it("is reachable through public packages and the protected GA gate", () => {
+    const manifest = JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    expect(FETTLER_PERFORMANCE_CONTRACT.version).toBe("2026-09-02.v3");
+    expect(MCU_SCHEDULE_V1.version).toBe("mcu-v1");
+    expect(manifest.scripts["fettler:closure:check"])
+      .toBe("tsx scripts/fettler-production-closure.ts");
+    expect(manifest.scripts["ga:check"])
+      .toContain("npm run fettler:closure:check");
+  });
+
   it("binds performance and metric definitions without claiming a measurement", () => {
     const closure = buildFettlerProductionClosure();
 

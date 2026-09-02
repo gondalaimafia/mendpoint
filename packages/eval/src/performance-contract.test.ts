@@ -4,22 +4,25 @@ import {
   FETTLER_PERFORMANCE_CONTRACT,
   metricDictionaryDigest,
   performanceContractDigest,
+  resolvePerformanceTierId,
   validatePerformanceContract,
   type PerformanceContract,
+  type PerformanceEvidenceBinding,
   type PerformanceObservation,
 } from "./performance-contract.js";
 
-const EVALUATED_AT = "2026-09-02T00:00:10.000Z";
+const EVALUATED_AT = "2026-09-02T00:01:10.000Z";
 
 function contract(): PerformanceContract {
   return {
-    version: "2026-09-02.v2",
+    version: "2026-09-02.v3",
     percentileMethod: "nearest_rank_v1",
     metricDictionaryVersion: "2026-09-02.v1",
     tiers: [{
-      id: "fettler-small",
+      id: "small",
       repository: {
-        files: 5_000,
+        files: 2_000,
+        sourceLines: 100_000,
         bytes: 50_000_000,
         maxFileBytes: 1_000_000,
         languages: ["typescript"],
@@ -31,11 +34,11 @@ function contract(): PerformanceContract {
       soakDurationSeconds: 1_800,
     }],
     objectives: [
-      { metric: "first_result", p50Ms: 1_000, p95Ms: 2_000, p99Ms: 3_000 },
-      { metric: "complete_scan", p50Ms: 10_000, p95Ms: 20_000, p99Ms: 30_000 },
-      { metric: "verification", p50Ms: 5_000, p95Ms: 10_000, p99Ms: 15_000 },
-      { metric: "queue_wait", p50Ms: 500, p95Ms: 1_000, p99Ms: 1_500 },
-      { metric: "campaign_fanout", p50Ms: 2_000, p95Ms: 4_000, p99Ms: 6_000 },
+      { tierId: "small", metric: "first_result", p50Ms: 1_000, p95Ms: 2_000, p99Ms: 3_000 },
+      { tierId: "small", metric: "complete_scan", p50Ms: 10_000, p95Ms: 20_000, p99Ms: 30_000 },
+      { tierId: "small", metric: "verification", p50Ms: 5_000, p95Ms: 10_000, p99Ms: 15_000 },
+      { tierId: "small", metric: "queue_wait", p50Ms: 500, p95Ms: 1_000, p99Ms: 1_500 },
+      { tierId: "small", metric: "campaign_fanout", p50Ms: 2_000, p95Ms: 4_000, p99Ms: 6_000 },
     ],
     metricDictionary: [
       "first_result",
@@ -54,15 +57,45 @@ function contract(): PerformanceContract {
   } as PerformanceContract;
 }
 
+function binding(overrides: Partial<PerformanceEvidenceBinding> = {}): PerformanceEvidenceBinding {
+  return {
+    tenantId: "tenant-fettler-production",
+    repositoryId: "github-1319732323",
+    repositoryRevision: "a".repeat(40),
+    deploymentRevision: "b".repeat(40),
+    fixtureDigest: `sha256:${"c".repeat(64)}`,
+    correlationId: "corr-fettler-load-0001",
+    source: "fettler-production-probe",
+    repository: {
+      files: 1_800,
+      sourceLines: 90_000,
+      bytes: 45_000_000,
+      languages: ["typescript"],
+    },
+    measuredConcurrency: 2,
+    startedAt: "2026-09-02T00:00:00.000Z",
+    endedAt: "2026-09-02T00:01:00.000Z",
+    ...overrides,
+  };
+}
+
 function observations(metric: PerformanceObservation["metric"], values: number[]) {
+  const evidence = binding();
   return values.map((durationMs, index): PerformanceObservation => ({
     id: `${metric}-${index}`,
-    tierId: "fettler-small",
+    tierId: "small",
     metric,
     mode: "load",
     durationMs,
     success: true,
-    observedAt: `2026-09-02T00:00:0${index}.000Z`,
+    observedAt: `2026-09-02T00:00:${String(index + 1).padStart(2, "0")}.000Z`,
+    tenantId: evidence.tenantId,
+    repositoryId: evidence.repositoryId,
+    repositoryRevision: evidence.repositoryRevision,
+    deploymentRevision: evidence.deploymentRevision,
+    fixtureDigest: evidence.fixtureDigest,
+    correlationId: evidence.correlationId,
+    source: evidence.source,
   }));
 }
 
@@ -81,18 +114,25 @@ describe("Fettler performance contract", () => {
     const validated = validatePerformanceContract(FETTLER_PERFORMANCE_CONTRACT);
 
     expect(validated.tiers.map((tier) => tier.id)).toEqual([
-      "fettler-small",
-      "fettler-medium",
+      "small",
+      "medium",
+      "large",
     ]);
-    expect(validated.tiers[0]).toMatchObject({
-      repository: {
-        files: 5_000,
-        bytes: 50_000_000,
-        maxFileBytes: 1_000_000,
-        languageMix: [{ language: "typescript", minimumPercent: 100 }],
-      },
-      concurrency: 2,
-    });
+    expect(validated.tiers.map((tier) => ({
+      id: tier.id,
+      sourceLines: tier.repository.sourceLines,
+      files: tier.repository.files,
+      languages: tier.repository.languages.length,
+      concurrency: tier.concurrency,
+    }))).toEqual([
+      { id: "small", sourceLines: 100_000, files: 2_000, languages: 1, concurrency: 2 },
+      { id: "medium", sourceLines: 1_000_000, files: 20_000, languages: 3, concurrency: 4 },
+      { id: "large", sourceLines: 5_000_000, files: 100_000, languages: 6, concurrency: 8 },
+    ]);
+    expect(validated.objectives).toHaveLength(15);
+    expect(validated.objectives.find((objective) =>
+      objective.tierId === "large" && objective.metric === "complete_scan",
+    )).toMatchObject({ p50Ms: 2_100_000, p95Ms: 4_500_000, p99Ms: 7_200_000 });
     expect(validated.metricDictionary).toHaveLength(5);
     expect(validated.metricDictionary![0]).toMatchObject({
       eventSource: expect.stringMatching(/^fettler\.performance\./),
@@ -102,13 +142,19 @@ describe("Fettler performance contract", () => {
   });
 
   it("evaluates first result, complete run, concurrency, and nearest-rank percentiles", () => {
-    const report = evaluatePerformanceRun(contract(), completeObservations(), "load", EVALUATED_AT);
+    const report = evaluatePerformanceRun(
+      contract(),
+      completeObservations(),
+      binding(),
+      "load",
+      EVALUATED_AT,
+    );
 
     expect(report.ok).toBe(true);
     expect(report.contractDigest).toBe(performanceContractDigest(contract()));
     expect(report.metricDictionaryDigest).toBe(metricDictionaryDigest(contract()));
     expect(report.results.find((result) => result.metric === "first_result")).toMatchObject({
-      tierId: "fettler-small",
+      tierId: "small",
       concurrency: 2,
       sampleCount: 4,
       p50Ms: 800,
@@ -139,21 +185,73 @@ describe("Fettler performance contract", () => {
     expect(() => evaluatePerformanceRun(
       contract(),
       observations("first_result", [500, 600, 700]),
+      binding(),
       "load",
       EVALUATED_AT,
     )).toThrow("performance_samples_incomplete");
 
     const duplicate = completeObservations();
     duplicate[1] = { ...duplicate[1]!, id: duplicate[0]!.id };
-    expect(() => evaluatePerformanceRun(contract(), duplicate, "load", EVALUATED_AT))
+    expect(() => evaluatePerformanceRun(contract(), duplicate, binding(), "load", EVALUATED_AT))
       .toThrow("performance_observation_duplicate");
 
     const stale = completeObservations().map((observation) => ({
       ...observation,
       observedAt: "2026-09-01T00:00:00.000Z",
     }));
-    expect(() => evaluatePerformanceRun(contract(), stale, "load", EVALUATED_AT))
+    expect(() => evaluatePerformanceRun(contract(), stale, binding(), "load", EVALUATED_AT))
       .toThrow("performance_observation_stale");
+  });
+
+  it("fails closed when production evidence is unbound or not actually measured", () => {
+    const base = completeObservations();
+    const unbound = base.map((observation) => ({ ...observation, tenantId: "" }));
+    expect(() => evaluatePerformanceRun(contract(), unbound, binding(), "load", EVALUATED_AT))
+      .toThrow("performance_observation_tenant_mismatch");
+
+    const zeroDuration = base.map((observation) => ({ ...observation, durationMs: 0 }));
+    expect(() => evaluatePerformanceRun(contract(), zeroDuration, binding(), "load", EVALUATED_AT))
+      .toThrow("performance_observation_duration_invalid");
+
+    const oneTimestamp = base.map((observation) => ({
+      ...observation,
+      observedAt: "2026-09-02T00:00:01.000Z",
+    }));
+    expect(() => evaluatePerformanceRun(contract(), oneTimestamp, binding(), "load", EVALUATED_AT))
+      .toThrow("performance_observation_time_range_invalid");
+
+    expect(() => evaluatePerformanceRun(
+      contract(),
+      base,
+      binding({ measuredConcurrency: 1 }),
+      "load",
+      EVALUATED_AT,
+    )).toThrow("performance_measured_concurrency_mismatch");
+
+    expect(() => evaluatePerformanceRun(
+      contract(),
+      base,
+      binding({ repository: { ...binding().repository, files: 2_001 } }),
+      "load",
+      EVALUATED_AT,
+    )).toThrow("performance_repository_shape_exceeds_tier");
+
+    expect(() => evaluatePerformanceRun(
+      contract(),
+      base,
+      binding({ endedAt: "2026-09-02T00:00:59.999Z" }),
+      "load",
+      EVALUATED_AT,
+    )).toThrow("performance_run_duration_incomplete");
+  });
+
+  it("accepts legacy pilot tier inputs while emitting canonical tier identities", () => {
+    expect(resolvePerformanceTierId("pilot-small")).toBe("small");
+    expect(resolvePerformanceTierId("pilot-medium")).toBe("medium");
+    expect(resolvePerformanceTierId("pilot-large")).toBe("large");
+    expect(resolvePerformanceTierId("small")).toBe("small");
+    expect(() => resolvePerformanceTierId("warden-small"))
+      .toThrow("performance_tier_not_found");
   });
 
   it("rejects ambiguous tiers, incomplete dictionaries, and inverted objectives", () => {

@@ -2,81 +2,88 @@ import { describe, expect, it } from "vitest";
 import {
   assertMcuScheduleChange,
   calculateMcuV1,
+  createMcuLedgerEntry,
   formatMcu,
   MCU_SCHEDULE_DIGEST,
   MCU_MICROS,
   MCU_SCHEDULE_V1,
   mcuScheduleDigest,
   reconcileMcuLedgerLifecycle,
+  type McuLedgerEntry,
   type McuLedgerLifecycle,
 } from "./mcu.js";
 
 function lifecycle(): McuLedgerLifecycle {
+  const entries: McuLedgerEntry[] = [];
+  const append = (input: Parameters<typeof createMcuLedgerEntry>[0]) => {
+    const entry = createMcuLedgerEntry(input, entries.at(-1) ?? null);
+    entries.push(entry);
+    return entry;
+  };
+  const reservation = append({
+    tenantId: "tenant-fettler",
+    entryType: "reservation",
+    entitlementId: "entitlement-1",
+    idempotencyKey: "reserve-1",
+    taskId: "task-1",
+    campaignId: "campaign-a",
+    reservationId: null,
+    reservedMcuMicrosDelta: 4_000_000,
+    consumedMcuMicrosDelta: 0,
+    invoiceReference: null,
+    actorId: "service-fettler-meter",
+    reasonCode: "task_budget_reserved",
+    occurredAt: "2026-09-02T00:00:00.000Z",
+  });
+  append({
+    tenantId: "tenant-fettler",
+    entryType: "settlement",
+    entitlementId: "entitlement-1",
+    idempotencyKey: "settle-1",
+    taskId: "task-1",
+    campaignId: "campaign-a",
+    reservationId: reservation.id,
+    reservedMcuMicrosDelta: -4_000_000,
+    consumedMcuMicrosDelta: 3_000_000,
+    invoiceReference: "invoice-1",
+    actorId: "service-fettler-meter",
+    reasonCode: "task_usage_settled",
+    occurredAt: "2026-09-02T00:01:00.000Z",
+  });
+  append({
+    tenantId: "tenant-fettler",
+    entryType: "adjustment",
+    entitlementId: "entitlement-1",
+    idempotencyKey: "adjust-1",
+    taskId: "task-1",
+    campaignId: "campaign-a",
+    reservationId: null,
+    reservedMcuMicrosDelta: 0,
+    consumedMcuMicrosDelta: 500_000,
+    invoiceReference: "invoice-1",
+    actorId: "finance-owner",
+    reasonCode: "verified_usage_adjustment",
+    occurredAt: "2026-09-02T00:02:00.000Z",
+  });
+  append({
+    tenantId: "tenant-fettler",
+    entryType: "credit",
+    entitlementId: "entitlement-1",
+    idempotencyKey: "credit-1",
+    taskId: "task-1",
+    campaignId: "campaign-a",
+    reservationId: null,
+    reservedMcuMicrosDelta: 0,
+    consumedMcuMicrosDelta: -250_000,
+    invoiceReference: "invoice-1",
+    actorId: "finance-owner",
+    reasonCode: "service_credit",
+    occurredAt: "2026-09-02T00:03:00.000Z",
+  });
   return {
     scheduleVersion: "mcu-v1",
     scheduleDigest: MCU_SCHEDULE_DIGEST,
-    entries: [
-      {
-        id: "entry-reserve",
-        tenantId: "tenant-fettler",
-        entryType: "reservation",
-        entitlementId: "entitlement-1",
-        idempotencyKey: "reserve-1",
-        taskId: "task-1",
-        campaignId: null,
-        reservationId: null,
-        priceVersion: "price-1",
-        reservedMcuMicrosDelta: 4_000_000,
-        consumedMcuMicrosDelta: 0,
-        invoiceReference: null,
-        entrySequence: 1,
-      },
-      {
-        id: "entry-settle",
-        tenantId: "tenant-fettler",
-        entryType: "settlement",
-        entitlementId: "entitlement-1",
-        idempotencyKey: "settle-1",
-        taskId: "task-1",
-        campaignId: null,
-        reservationId: "entry-reserve",
-        priceVersion: "price-1",
-        reservedMcuMicrosDelta: -4_000_000,
-        consumedMcuMicrosDelta: 3_000_000,
-        invoiceReference: "invoice-1",
-        entrySequence: 2,
-      },
-      {
-        id: "entry-adjust",
-        tenantId: "tenant-fettler",
-        entryType: "adjustment",
-        entitlementId: "entitlement-1",
-        idempotencyKey: "adjust-1",
-        taskId: "task-1",
-        campaignId: null,
-        reservationId: null,
-        priceVersion: "price-1",
-        reservedMcuMicrosDelta: 0,
-        consumedMcuMicrosDelta: 500_000,
-        invoiceReference: "invoice-1",
-        entrySequence: 3,
-      },
-      {
-        id: "entry-credit",
-        tenantId: "tenant-fettler",
-        entryType: "credit",
-        entitlementId: "entitlement-1",
-        idempotencyKey: "credit-1",
-        taskId: "task-1",
-        campaignId: null,
-        reservationId: null,
-        priceVersion: "price-1",
-        reservedMcuMicrosDelta: 0,
-        consumedMcuMicrosDelta: -250_000,
-        invoiceReference: "invoice-1",
-        entrySequence: 4,
-      },
-    ],
+    entries,
   };
 }
 
@@ -132,9 +139,64 @@ describe("migration compute units", () => {
       adjustmentMcuMicros: 500_000,
       creditedMcuMicros: 250_000,
       outstandingReservationMcuMicros: 0,
-      invoiceMappings: [{ invoiceReference: "invoice-1", mcuMicros: 3_250_000 }],
+      invoiceMappings: [{
+        invoiceReference: "invoice-1",
+        mcuMicros: 3_250_000,
+        sourceEntryIds: lifecycle().entries.slice(1).map((entry) => entry.id),
+        settledEntryIds: [lifecycle().entries[1]!.id],
+      }],
       reconciled: true,
     });
+  });
+
+  it("rejects settlement above the reservation units released by that entry", () => {
+    const overSettled = lifecycle();
+    overSettled.entries[1] = {
+      ...overSettled.entries[1]!,
+      consumedMcuMicrosDelta: 10_000_000,
+    };
+    expect(() => reconcileMcuLedgerLifecycle(overSettled))
+      .toThrow("mcu_settlement_exceeds_released_reservation");
+  });
+
+  it("binds campaign, schedule formula, price, contiguous sequence, and hash chain", () => {
+    const changedCampaign = lifecycle();
+    changedCampaign.entries[1] = { ...changedCampaign.entries[1]!, campaignId: "campaign-b" };
+    expect(() => reconcileMcuLedgerLifecycle(changedCampaign))
+      .toThrow("mcu_ledger_entry_hash_invalid");
+
+    const arbitraryPrice = lifecycle();
+    arbitraryPrice.entries[1] = { ...arbitraryPrice.entries[1]!, priceVersion: "price-arbitrary" };
+    expect(() => reconcileMcuLedgerLifecycle(arbitraryPrice))
+      .toThrow("mcu_ledger_entry_hash_invalid");
+
+    const formulaDrift = lifecycle();
+    formulaDrift.entries[1] = { ...formulaDrift.entries[1]!, formulaDigest: `sha256:${"0".repeat(64)}` };
+    expect(() => reconcileMcuLedgerLifecycle(formulaDrift))
+      .toThrow("mcu_ledger_entry_hash_invalid");
+
+    const sequenceGap = lifecycle();
+    sequenceGap.entries[1] = { ...sequenceGap.entries[1]!, entrySequence: 44 };
+    expect(() => reconcileMcuLedgerLifecycle(sequenceGap))
+      .toThrow("mcu_ledger_entry_hash_invalid");
+
+    const tamperedReason = lifecycle();
+    tamperedReason.entries[2] = { ...tamperedReason.entries[2]!, reasonCode: "unattributed" };
+    expect(() => reconcileMcuLedgerLifecycle(tamperedReason))
+      .toThrow("mcu_ledger_entry_hash_invalid");
+
+    const brokenLink = lifecycle();
+    brokenLink.entries[2] = { ...brokenLink.entries[2]!, previousEntryHash: `sha256:${"f".repeat(64)}` };
+    expect(() => reconcileMcuLedgerLifecycle(brokenLink))
+      .toThrow("mcu_ledger_entry_hash_invalid");
+  });
+
+  it("creates reproducible settled entry identities", () => {
+    const first = lifecycle();
+    const second = lifecycle();
+    expect(second.entries.map((entry) => entry.id)).toEqual(first.entries.map((entry) => entry.id));
+    expect(second.entries.map((entry) => entry.entryHash))
+      .toEqual(first.entries.map((entry) => entry.entryHash));
   });
 
   it("fails closed for duplicate ledger evidence and schedule mutation without a version change", () => {
