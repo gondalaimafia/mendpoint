@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,6 +59,36 @@ describe("Fettler production closure operating contracts", () => {
     expect(serializeFettlerProductionClosure()).toBe(
       `${JSON.stringify(closure, null, 2)}\n`,
     );
+  });
+
+  it("projects all sixty-eight canonical Fettler requirements from one digest-bound register", () => {
+    const closure = buildFettlerProductionClosure();
+    const registerBytes = readFileSync(
+      join(process.cwd(), "docs", "PRODUCT_REQUIREMENTS.json"),
+    );
+
+    expect(closure.sourceAuthority).toMatchObject({
+      path: "docs/PRODUCT_REQUIREMENTS.json",
+      sha256: `sha256:${createHash("sha256").update(registerBytes).digest("hex")}`,
+      targetReleases: ["warden-pilot", "warden-ga"],
+      requirementCount: 68,
+    });
+    expect(closure.sourceAuthority.registerSets).toHaveLength(3);
+    expect(closure.sourceAuthority.registerSets.every((set) =>
+      /^[a-f0-9]{40}$/.test(set.auditedRevision))).toBe(true);
+    expect(closure.requirements).toHaveLength(68);
+    expect(new Set(closure.requirements.map(({ id }) => id)).size).toBe(68);
+    expect(closure.requirements.every(({ targetRelease }) =>
+      targetRelease === "warden-pilot" || targetRelease === "warden-ga")).toBe(true);
+    expect(closure.requirements.map(({ id }) => id)).toEqual(
+      [...closure.requirements.map(({ id }) => id)].sort(),
+    );
+    expect(closure.qualification).toEqual({
+      status: "not_qualified",
+      deploymentRevision: null,
+      evidenceDigest: null,
+      reason: "exact_revision_production_evidence_not_supplied",
+    });
   });
 
   it("rejects missing and stale bytes and reproduces the validated artifact exactly", () => {
