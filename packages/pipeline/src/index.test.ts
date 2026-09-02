@@ -300,14 +300,23 @@ describe("pipeline", () => {
     class RecordingDelivery extends MockGitHubDelivery {
       readonly sourceBranches: Array<string | undefined> = [];
 
-      override async createBranch(
-        owner: string,
-        repo: string,
-        branch: string,
-        fromBranch?: string,
-      ): Promise<void> {
-        this.sourceBranches.push(fromBranch);
-        await super.createBranch(owner, repo, branch);
+      override async deliverExactDraft(
+        input: Parameters<MockGitHubDelivery["deliverExactDraft"]>[0],
+      ): ReturnType<MockGitHubDelivery["deliverExactDraft"]> {
+        this.sourceBranches.push(input.baseBranch);
+        return super.deliverExactDraft(input);
+      }
+
+      override async createBranch(): Promise<void> {
+        throw new Error("legacy_create_branch_bypassed_outage_queue");
+      }
+
+      override async commitFiles(): Promise<void> {
+        throw new Error("legacy_commit_files_bypassed_outage_queue");
+      }
+
+      override async openPullRequest(): Promise<never> {
+        throw new Error("legacy_open_pull_request_bypassed_outage_queue");
       }
     }
 

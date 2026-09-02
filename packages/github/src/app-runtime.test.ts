@@ -483,6 +483,20 @@ describe("github app runtime", () => {
       failureKind: "throttled",
       retryAfterMs: 30_000,
     });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("API rate limit exceeded"), {
+      status: 403,
+      response: { headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1788264030" } },
+    }), "2026-09-01T12:00:00.000Z")).toEqual({
+      failureKind: "throttled",
+      retryAfterMs: 30_000,
+    });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("secondary rate limit"), {
+      status: 403,
+      response: { headers: { "retry-after": "45" } },
+    }), "2026-09-01T12:00:00.000Z")).toEqual({
+      failureKind: "throttled",
+      retryAfterMs: 45_000,
+    });
     expect(classifyGitHubDependencyFailure(Object.assign(new Error("timed out"), { code: "ETIMEDOUT" })))
       .toEqual({ failureKind: "timeout" });
     expect(classifyGitHubDependencyFailure(Object.assign(new Error("unavailable"), { status: 503 })))
@@ -571,6 +585,12 @@ describe("github app runtime", () => {
     expect(run.mock.calls[0]![0].operationId.length).toBeLessThanOrEqual(200);
     expect(run.mock.calls[0]![0].operationDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(run.mock.calls[0]![0].authorityVersion).toBe("installation-v1");
+    await delivery.deliverExactDraft({
+      ...input,
+      files: [{ path: "src/a.ts", content: "different\n", mode: "100644" as const }],
+    });
+    expect(run.mock.calls[1]![0].operationId).toBe(run.mock.calls[0]![0].operationId);
+    expect(run.mock.calls[1]![0].operationDigest).not.toBe(run.mock.calls[0]![0].operationDigest);
   });
 
   it("reconciles an exact lost-response draft before every Git write", async () => {

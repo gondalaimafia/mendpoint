@@ -44,6 +44,7 @@ describe("durable dependency outage queue", () => {
       expiresAt: "2026-09-01T13:00:00.000Z",
       nextAttemptAt: "2026-09-01T12:00:00.000Z",
       standing: "degraded_retrying",
+      authorityVersion: "model-authority-v1",
     }, "2026-09-01T12:00:00.000Z");
     firstDb.close();
 
@@ -54,6 +55,7 @@ describe("durable dependency outage queue", () => {
       workerId: "worker-old",
       now: "2026-09-01T12:00:00.000Z",
       leaseMs: 1_000,
+      authorityVersion: "model-authority-v1",
     });
     expect(oldClaim).not.toBeNull();
     const newClaim = second.claim({
@@ -61,6 +63,7 @@ describe("durable dependency outage queue", () => {
       workerId: "worker-new",
       now: "2026-09-01T12:00:02.000Z",
       leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
     });
     expect(newClaim!.claimGeneration).toBe(oldClaim!.claimGeneration + 1);
     expect(second.complete(oldClaim!, COMPLETION, "2026-09-01T12:00:03.000Z").applied)
@@ -230,6 +233,89 @@ describe("durable dependency outage queue", () => {
       .toBeNull();
     expect(queue.claim({ ...SCOPE, tenantId: "tenant-other", workerId: "worker-2", now: "2026-09-01T12:00:02.000Z", leaseMs: 1_000 }))
       .toBeNull();
+    db.close();
+  });
+
+  it("keeps tenant and retry-budget claim guards independently load-bearing", () => {
+    const db = new DatabaseSync(":memory:");
+    const queue = createDependencyOutageQueue(db);
+    queue.enqueue({
+      ...SCOPE,
+      retryBudget: 1,
+      expiresAt: "2026-09-01T13:00:00.000Z",
+      nextAttemptAt: "2026-09-01T12:00:00.000Z",
+      standing: "degraded_retrying",
+      authorityVersion: "model-authority-v1",
+    }, "2026-09-01T12:00:00.000Z");
+
+    expect(queue.claim({
+      ...SCOPE,
+      tenantId: "tenant-other",
+      workerId: "worker-other",
+      now: "2026-09-01T12:00:00.000Z",
+      leaseMs: 1_000,
+      authorityVersion: "model-authority-v1",
+    } as never)).toBeNull();
+
+    const first = queue.claim({
+      ...SCOPE,
+      workerId: "worker-first",
+      now: "2026-09-01T12:00:00.000Z",
+      leaseMs: 1_000,
+      authorityVersion: "model-authority-v1",
+    } as never);
+    expect(first).not.toBeNull();
+    expect(queue.claim({
+      ...SCOPE,
+      workerId: "worker-over-budget",
+      now: "2026-09-01T12:00:02.000Z",
+      leaseMs: 1_000,
+      authorityVersion: "model-authority-v1",
+    } as never)).toBeNull();
+    db.close();
+  });
+
+  it("rejects authority drift before queued or lease-recovered work can execute", async () => {
+    const db = new DatabaseSync(":memory:");
+    let now = "2026-09-01T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    const execute = vi.fn(async () => ({ value: "delivered", completionDigest: COMPLETION }));
+    const operation = {
+      ...SCOPE,
+      workerId: "worker-new",
+      retryBudget: 3,
+      expiresAt: "2026-09-01T13:00:00.000Z",
+      leaseMs: 1_000,
+      authorityVersion: "model-authority-v2",
+      reconcile: async () => ({ status: "missing" as const }),
+      execute,
+      classify: () => retryDecision(),
+    };
+    queue.enqueue({
+      ...SCOPE,
+      retryBudget: 3,
+      expiresAt: operation.expiresAt,
+      nextAttemptAt: now,
+      standing: "degraded_retrying",
+      authorityVersion: "model-authority-v1",
+    }, now);
+
+    await expect(queue.run(operation)).rejects.toThrow("dependency_outage_authority_mismatch");
+    expect(execute).not.toHaveBeenCalled();
+    expect(queue.get(SCOPE)).toMatchObject({ status: "queued", authorityVersion: "model-authority-v1" });
+
+    const claim = queue.claim({
+      ...SCOPE,
+      workerId: "worker-old",
+      now,
+      leaseMs: 1_000,
+      authorityVersion: "model-authority-v1",
+    } as never);
+    expect(claim).not.toBeNull();
+    now = "2026-09-01T12:00:02.000Z";
+    await expect(queue.run(operation)).rejects.toThrow("dependency_outage_authority_mismatch");
+    expect(execute).not.toHaveBeenCalled();
+    expect(queue.get(SCOPE)).toMatchObject({ status: "claimed", authorityVersion: "model-authority-v1" });
     db.close();
   });
 
