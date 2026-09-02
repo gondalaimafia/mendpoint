@@ -10,6 +10,7 @@ import {
 import { dirname, resolve } from "node:path";
 import {
   evaluatePerformanceRun,
+  performanceTierDefinitionDigest,
   validatePerformanceContract,
   WARDEN_PERFORMANCE_CONTRACT,
   type PerformanceContract,
@@ -149,7 +150,13 @@ function observedAt(now: () => number): string {
 
 function recordInvocation(
   observations: PerformanceObservation[],
-  tierId: string,
+  context: Readonly<{
+    tier: PerformanceTier;
+    deploymentRevision: string;
+    repositoryRevision: string;
+    fixtureDigest: string;
+    observedConcurrency: number;
+  }>,
   mode: PerformanceMode,
   sequence: number,
   measurement: PerformanceProbeMeasurement,
@@ -158,10 +165,15 @@ function recordInvocation(
   for (const metric of METRICS) {
     const value = measurement.metrics[metric];
     observations.push({
-      id: `${tierId}.${mode}.${String(sequence).padStart(8, "0")}.${metric}`,
-      tierId,
+      id: `${context.tier.id}.${mode}.${String(sequence).padStart(8, "0")}.${metric}`,
+      tierId: context.tier.id,
       metric,
       mode,
+      deploymentRevision: context.deploymentRevision,
+      repositoryRevision: context.repositoryRevision,
+      fixtureDigest: context.fixtureDigest,
+      tierDefinitionDigest: performanceTierDefinitionDigest(context.tier),
+      observedConcurrency: context.observedConcurrency,
       durationMs: value.durationMs,
       success: value.success,
       observedAt: at,
@@ -215,11 +227,14 @@ export async function runPerformanceProbe(
   const observations: PerformanceObservation[] = [];
   let sequence = 0;
   let cancelledInvocationCount = 0;
+  let activeInvocationCount = 0;
   const worker = async (): Promise<void> => {
     while (!controller.signal.aborted && now() < deadlineMs) {
       const invocationSequence = sequence++;
       const invocationId = `${tier.id}.${options.mode}.${String(invocationSequence).padStart(8, "0")}`;
       const invocationStarted = now();
+      activeInvocationCount += 1;
+      const observedConcurrency = activeInvocationCount;
       try {
         const measurement = await options.probe({
           invocationId,
@@ -234,7 +249,13 @@ export async function runPerformanceProbe(
         validateMeasurement(measurement);
         recordInvocation(
           observations,
-          tier.id,
+          {
+            tier,
+            deploymentRevision: options.deploymentRevision,
+            repositoryRevision: options.repositoryRevision,
+            fixtureDigest: options.fixtureDigest,
+            observedConcurrency,
+          },
           options.mode,
           invocationSequence,
           measurement,
@@ -247,12 +268,20 @@ export async function runPerformanceProbe(
         }
         recordInvocation(
           observations,
-          tier.id,
+          {
+            tier,
+            deploymentRevision: options.deploymentRevision,
+            repositoryRevision: options.repositoryRevision,
+            fixtureDigest: options.fixtureDigest,
+            observedConcurrency,
+          },
           options.mode,
           invocationSequence,
           failedMeasurement(Math.max(0, now() - invocationStarted)),
           observedAt(now),
         );
+      } finally {
+        activeInvocationCount -= 1;
       }
     }
   };
@@ -273,7 +302,12 @@ export async function runPerformanceProbe(
     tiers: [tier],
   };
   const evaluation = !externallyAborted && completeSamples
-    ? evaluatePerformanceRun(selectedTierContract, observations, options.mode)
+    ? evaluatePerformanceRun(
+        selectedTierContract,
+        observations,
+        options.mode,
+        new Date(Math.max(0, endedMs)).toISOString(),
+      )
     : null;
   const status = externallyAborted
     ? "aborted"
@@ -337,10 +371,30 @@ export function createHttpPerformanceProbe(options: Readonly<{
     if (!response.ok) throw new Error(`performance_probe_http_${response.status}`);
     const payload = await response.json() as {
       deploymentRevision?: unknown;
+      repositoryRevision?: unknown;
+      fixtureDigest?: unknown;
+      tierId?: unknown;
+      mode?: unknown;
+      invocationId?: unknown;
       metrics?: unknown;
     };
     if (payload.deploymentRevision !== context.deploymentRevision) {
       invalid("performance_probe_deployment_revision_mismatch");
+    }
+    if (payload.repositoryRevision !== context.repositoryRevision) {
+      invalid("performance_probe_repository_revision_mismatch");
+    }
+    if (payload.fixtureDigest !== context.fixtureDigest) {
+      invalid("performance_probe_fixture_digest_mismatch");
+    }
+    if (payload.tierId !== context.tier.id) {
+      invalid("performance_probe_tier_mismatch");
+    }
+    if (payload.mode !== context.mode) {
+      invalid("performance_probe_mode_mismatch");
+    }
+    if (payload.invocationId !== context.invocationId) {
+      invalid("performance_probe_invocation_mismatch");
     }
     const measurement = { metrics: payload.metrics } as PerformanceProbeMeasurement;
     validateMeasurement(measurement);

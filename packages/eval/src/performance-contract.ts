@@ -65,6 +65,11 @@ export type PerformanceObservation = {
   tierId: string;
   metric: PerformanceMetric;
   mode: PerformanceMode;
+  deploymentRevision: string;
+  repositoryRevision: string;
+  fixtureDigest: string;
+  tierDefinitionDigest: string;
+  observedConcurrency: number;
   durationMs: number;
   success: boolean;
   observedAt: string;
@@ -89,6 +94,9 @@ export type PerformanceReport = {
   metricDictionaryDigest: string;
   percentileMethod: typeof PERFORMANCE_PERCENTILE_METHOD;
   mode: PerformanceMode;
+  deploymentRevision: string;
+  repositoryRevision: string;
+  fixtureDigest: string;
   evaluatedAt: string;
   ok: boolean;
   results: Array<Omit<PerformanceResult, "observedP50Ms" | "observedP95Ms" | "observedP99Ms"> & {
@@ -181,6 +189,10 @@ export const FETTLER_PERFORMANCE_CONTRACT: PerformanceContract = {
 export const WARDEN_PERFORMANCE_CONTRACT = FETTLER_PERFORMANCE_CONTRACT;
 
 const ID = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
+const REPOSITORY_REVISION = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+const FIXTURE_DIGEST = /^[0-9a-f]{64}$/;
+const DEPLOYMENT_REVISION = /^(?!main$|master$|latest$|head$)[a-zA-Z0-9][a-zA-Z0-9._-]{6,127}$/i;
+const SHA256_DIGEST = /^sha256:[a-f0-9]{64}$/;
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -227,6 +239,17 @@ function canonicalJson(value: unknown): string {
 
 function digest(value: unknown): string {
   return `sha256:${createHash("sha256").update(canonicalJson(value), "utf8").digest("hex")}`;
+}
+
+export function performanceTierDefinitionDigest(tier: PerformanceTier): string {
+  return digest({
+    id: tier.id,
+    repository: tier.repository,
+    concurrency: tier.concurrency,
+    minimumSamples: tier.minimumSamples,
+    loadDurationSeconds: tier.loadDurationSeconds,
+    soakDurationSeconds: tier.soakDurationSeconds,
+  });
 }
 
 function dictionaryFor(input: PerformanceContract): PerformanceMetricDefinition[] {
@@ -361,24 +384,64 @@ export function evaluatePerformanceRun(
 ): PerformanceReport {
   const contract = validatePerformanceContract(rawContract);
   if (mode !== "load" && mode !== "soak") fail("performance_mode_invalid");
-  const knownTiers = new Set(contract.tiers.map((tier) => tier.id));
+  const knownTiers = new Map(contract.tiers.map((tier) => [tier.id, tier]));
   const observationIds = new Set<string>();
   const observationTimes: number[] = [];
+  let deploymentRevision: string | undefined;
+  let repositoryRevision: string | undefined;
+  let fixtureDigest: string | undefined;
   for (const observation of observations) {
     if (!ID.test(observation.id)) fail("performance_observation_id_invalid");
     if (observationIds.has(observation.id)) fail("performance_observation_duplicate");
     observationIds.add(observation.id);
-    if (!knownTiers.has(observation.tierId)) fail("performance_observation_tier_invalid");
+    const tier = knownTiers.get(observation.tierId);
+    if (!tier) fail("performance_observation_tier_invalid");
     if (!METRICS.includes(observation.metric)) fail("performance_observation_metric_invalid");
     if (observation.mode !== mode) fail("performance_observation_mode_invalid");
+    if (
+      typeof observation.deploymentRevision !== "string" ||
+      !DEPLOYMENT_REVISION.test(observation.deploymentRevision)
+    ) {
+      fail("performance_observation_deployment_revision_invalid");
+    }
+    if (
+      typeof observation.repositoryRevision !== "string" ||
+      !REPOSITORY_REVISION.test(observation.repositoryRevision)
+    ) {
+      fail("performance_observation_repository_revision_invalid");
+    }
+    if (
+      typeof observation.fixtureDigest !== "string" ||
+      !FIXTURE_DIGEST.test(observation.fixtureDigest)
+    ) {
+      fail("performance_observation_fixture_digest_invalid");
+    }
+    if (
+      typeof observation.tierDefinitionDigest !== "string" ||
+      !SHA256_DIGEST.test(observation.tierDefinitionDigest) ||
+      observation.tierDefinitionDigest !== performanceTierDefinitionDigest(tier)
+    ) {
+      fail("performance_observation_tier_definition_mismatch");
+    }
+    positiveInteger(observation.observedConcurrency, "performance_observation_concurrency");
+    if (observation.observedConcurrency > tier.concurrency) {
+      fail("performance_observation_concurrency_invalid");
+    }
+    deploymentRevision ??= observation.deploymentRevision;
+    repositoryRevision ??= observation.repositoryRevision;
+    fixtureDigest ??= observation.fixtureDigest;
+    if (
+      observation.deploymentRevision !== deploymentRevision ||
+      observation.repositoryRevision !== repositoryRevision ||
+      observation.fixtureDigest !== fixtureDigest
+    ) {
+      fail("performance_observation_identity_mismatch");
+    }
     duration(observation.durationMs, "performance_observation_duration");
     observationTimes.push(isoTime(observation.observedAt, "performance_observation_time"));
   }
-  const evaluatedAtValue = evaluatedAt ?? (
-    observationTimes.length > 0
-      ? new Date(Math.max(...observationTimes)).toISOString()
-      : fail("performance_observations_required")
-  );
+  if (observationTimes.length === 0) fail("performance_observations_required");
+  const evaluatedAtValue = evaluatedAt ?? new Date(Date.now()).toISOString();
   const evaluatedAtMs = isoTime(evaluatedAtValue, "performance_evaluated_at");
   const dictionary = new Map(dictionaryFor(contract).map((definition) => [definition.metric, definition]));
   for (let index = 0; index < observations.length; index += 1) {
@@ -397,6 +460,10 @@ export function evaluatePerformanceRun(
           observation.metric === objective.metric,
       );
       if (samples.length < tier.minimumSamples) fail("performance_samples_incomplete");
+      const observedConcurrency = Math.max(...samples.map((sample) => sample.observedConcurrency));
+      if (observedConcurrency !== tier.concurrency) {
+        fail("performance_observation_concurrency_incomplete");
+      }
       const durations = samples.map((sample) => sample.durationMs);
       const p50Ms = nearestRank(durations, 0.5);
       const p95Ms = nearestRank(durations, 0.95);
@@ -406,7 +473,7 @@ export function evaluatePerformanceRun(
         tierId: tier.id,
         metric: objective.metric,
         mode,
-        concurrency: tier.concurrency,
+        concurrency: observedConcurrency,
         sampleCount: samples.length,
         failureCount,
         p50Ms,
@@ -434,6 +501,9 @@ export function evaluatePerformanceRun(
     metricDictionaryDigest: metricDictionaryDigest(contract),
     percentileMethod: PERFORMANCE_PERCENTILE_METHOD,
     mode,
+    deploymentRevision: deploymentRevision!,
+    repositoryRevision: repositoryRevision!,
+    fixtureDigest: fixtureDigest!,
     evaluatedAt: evaluatedAtValue,
     ok: results.every((result) => result.ok),
     results,

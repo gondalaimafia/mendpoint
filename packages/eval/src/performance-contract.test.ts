@@ -4,6 +4,7 @@ import {
   FETTLER_PERFORMANCE_CONTRACT,
   metricDictionaryDigest,
   performanceContractDigest,
+  performanceTierDefinitionDigest,
   validatePerformanceContract,
   type PerformanceContract,
   type PerformanceObservation,
@@ -60,6 +61,11 @@ function observations(metric: PerformanceObservation["metric"], values: number[]
     tierId: "fettler-small",
     metric,
     mode: "load",
+    deploymentRevision: "b".repeat(40),
+    repositoryRevision: "a".repeat(40),
+    fixtureDigest: "c".repeat(64),
+    tierDefinitionDigest: performanceTierDefinitionDigest(contract().tiers[0]!),
+    observedConcurrency: 2,
     durationMs,
     success: true,
     observedAt: `2026-09-02T00:00:0${index}.000Z`,
@@ -136,9 +142,13 @@ describe("Fettler performance contract", () => {
   });
 
   it("fails closed with stable codes for missing, duplicate, and stale observations", () => {
+    const missingRevision = completeObservations().map((observation) => ({
+      ...observation,
+      deploymentRevision: undefined,
+    })) as unknown as PerformanceObservation[];
     expect(() => evaluatePerformanceRun(
       contract(),
-      completeObservations(),
+      missingRevision,
       "load",
       EVALUATED_AT,
     )).toThrow("performance_observation_deployment_revision_invalid");
@@ -154,6 +164,14 @@ describe("Fettler performance contract", () => {
     duplicate[1] = { ...duplicate[1]!, id: duplicate[0]!.id };
     expect(() => evaluatePerformanceRun(contract(), duplicate, "load", EVALUATED_AT))
       .toThrow("performance_observation_duplicate");
+
+    const mismatchedRevision = completeObservations();
+    mismatchedRevision[0] = {
+      ...mismatchedRevision[0]!,
+      repositoryRevision: "d".repeat(40),
+    };
+    expect(() => evaluatePerformanceRun(contract(), mismatchedRevision, "load", EVALUATED_AT))
+      .toThrow("performance_observation_identity_mismatch");
 
     const stale = completeObservations().map((observation) => ({
       ...observation,

@@ -240,12 +240,18 @@ describe("performance runner", () => {
 
   it("uses an injected HTTP client and verifies the deployment revision", async () => {
     const request = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
-      expect(JSON.parse(String(init?.body))).toMatchObject({
+      const body = JSON.parse(String(init?.body));
+      expect(body).toMatchObject({
         deploymentRevision: "b".repeat(40),
         fixtureDigest: "c".repeat(64),
       });
       return new Response(JSON.stringify({
-        deploymentRevision: "b".repeat(40),
+        deploymentRevision: body.deploymentRevision,
+        repositoryRevision: body.repositoryRevision,
+        fixtureDigest: body.fixtureDigest,
+        tierId: body.tier.id,
+        mode: body.mode,
+        invocationId: body.invocationId,
         ...measurement(),
       }), { status: 200 });
     });
