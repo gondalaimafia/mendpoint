@@ -261,6 +261,7 @@ import {
   isProduction,
   flushTelemetry,
   isTelemetryEnabled,
+  classifyDependencyOutage,
 } from "@mendpoint/ops";
 import {
   requestIdMiddleware,
@@ -1864,6 +1865,7 @@ app.post("/providers/:slug/publish", async (c) => {
       providerSlug: c.req.param("slug"),
       db,
       tenantId: requestTenantId(c),
+      dependencyOutagePolicy: classifyDependencyOutage,
       consumerIds: requestConsumerIds(c),
       severity: body.severity,
       notificationsOnly: body.notificationsOnly,
@@ -2168,6 +2170,7 @@ app.post("/feeds/poll", async (c) => {
         providerSlug: slug,
         db: d,
         tenantId: requestTenantId(c),
+        dependencyOutagePolicy: classifyDependencyOutage,
         consumerIds: requestConsumerIds(c),
       });
       return { changeId: report.changeId };

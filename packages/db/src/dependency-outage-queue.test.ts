@@ -225,13 +225,14 @@ describe("durable dependency outage queue", () => {
       expiresAt: "2026-09-01T13:00:00.000Z",
       nextAttemptAt: "2026-09-01T12:00:00.000Z",
       standing: "degraded_retrying",
+      authorityVersion: "model-authority-v1",
     }, "2026-09-01T12:00:00.000Z");
-    const claim = queue.claim({ ...SCOPE, workerId: "worker-1", now: "2026-09-01T12:00:00.000Z", leaseMs: 1_000 })!;
+    const claim = queue.claim({ ...SCOPE, workerId: "worker-1", now: "2026-09-01T12:00:00.000Z", leaseMs: 1_000, authorityVersion: "model-authority-v1" })!;
     const failed = queue.fail(claim, retryDecision(), "2026-09-01T12:00:00.500Z");
     expect(failed).toMatchObject({ status: "failed", standing: "degraded_failed" });
-    expect(queue.claim({ ...SCOPE, workerId: "worker-2", now: "2026-09-01T12:00:02.000Z", leaseMs: 1_000 }))
+    expect(queue.claim({ ...SCOPE, workerId: "worker-2", now: "2026-09-01T12:00:02.000Z", leaseMs: 1_000, authorityVersion: "model-authority-v1" }))
       .toBeNull();
-    expect(queue.claim({ ...SCOPE, tenantId: "tenant-other", workerId: "worker-2", now: "2026-09-01T12:00:02.000Z", leaseMs: 1_000 }))
+    expect(queue.claim({ ...SCOPE, tenantId: "tenant-other", workerId: "worker-2", now: "2026-09-01T12:00:02.000Z", leaseMs: 1_000, authorityVersion: "model-authority-v1" }))
       .toBeNull();
     db.close();
   });
@@ -255,7 +256,7 @@ describe("durable dependency outage queue", () => {
       now: "2026-09-01T12:00:00.000Z",
       leaseMs: 1_000,
       authorityVersion: "model-authority-v1",
-    } as never)).toBeNull();
+    })).toBeNull();
 
     const first = queue.claim({
       ...SCOPE,
@@ -263,7 +264,7 @@ describe("durable dependency outage queue", () => {
       now: "2026-09-01T12:00:00.000Z",
       leaseMs: 1_000,
       authorityVersion: "model-authority-v1",
-    } as never);
+    });
     expect(first).not.toBeNull();
     expect(queue.claim({
       ...SCOPE,
@@ -271,7 +272,7 @@ describe("durable dependency outage queue", () => {
       now: "2026-09-01T12:00:02.000Z",
       leaseMs: 1_000,
       authorityVersion: "model-authority-v1",
-    } as never)).toBeNull();
+    })).toBeNull();
     db.close();
   });
 
@@ -310,7 +311,7 @@ describe("durable dependency outage queue", () => {
       now,
       leaseMs: 1_000,
       authorityVersion: "model-authority-v1",
-    } as never);
+    });
     expect(claim).not.toBeNull();
     now = "2026-09-01T12:00:02.000Z";
     await expect(queue.run(operation)).rejects.toThrow("dependency_outage_authority_mismatch");
@@ -404,6 +405,7 @@ describe("durable dependency outage queue", () => {
       workerId: "worker-1",
       now: "2026-09-01T12:00:00.000Z",
       leaseMs: 1_000,
+      authorityVersion: "installation-v1",
     })).toThrow("dependency_outage_operation_digest_conflict");
     expect(() => queue.reactivateAuthority(SCOPE, {
       previousAuthorityVersion: "installation-v1",

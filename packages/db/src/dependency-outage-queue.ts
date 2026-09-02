@@ -427,6 +427,7 @@ export class DependencyOutageQueue {
     workerId: string;
     now: string;
     leaseMs: number;
+    authorityVersion: string;
   }>): DependencyOutageClaim | null {
     validateScope(input);
     if (!IDENTITY.test(input.workerId)) throw new Error("dependency_outage_worker_invalid");
@@ -443,6 +444,15 @@ export class DependencyOutageQueue {
       if ((current.status !== "queued" && !recovering) ||
           current.next_attempt_at > input.now || current.expires_at <= input.now ||
           current.attempts_consumed >= current.retry_budget) return null;
+      if (!IDENTITY.test(input.authorityVersion)) {
+        throw new Error("dependency_outage_authority_invalid");
+      }
+      if (current.authority_version === null) {
+        throw new Error("dependency_outage_authority_missing");
+      }
+      if (current.authority_version !== input.authorityVersion) {
+        throw new Error("dependency_outage_authority_mismatch");
+      }
       const generation = current.claim_generation + 1;
       const expiresAt = new Date(Date.parse(input.now) + input.leaseMs).toISOString();
       this.db.prepare(`UPDATE dependency_outage_operations SET
@@ -634,15 +644,16 @@ export class DependencyOutageQueue {
       nextAttemptAt: now,
       standing: "degraded_retrying",
     }, now);
-    if (enqueued.status === "blocked" && enqueued.authorityVersion !== operation.authorityVersion) {
-      if (enqueued.authorityVersion === null) {
-        throw new Error("dependency_outage_authority_missing");
+    if (enqueued.status === "queued" || enqueued.status === "claimed" || enqueued.status === "blocked") {
+      if (enqueued.authorityVersion === null) throw new Error("dependency_outage_authority_missing");
+      if (enqueued.authorityVersion !== operation.authorityVersion) {
+        if (enqueued.status !== "blocked") throw new Error("dependency_outage_authority_mismatch");
+        this.reactivateAuthority(operation, {
+          previousAuthorityVersion: enqueued.authorityVersion,
+          nextAuthorityVersion: operation.authorityVersion,
+          now,
+        });
       }
-      this.reactivateAuthority(operation, {
-        previousAuthorityVersion: enqueued.authorityVersion,
-        nextAuthorityVersion: operation.authorityVersion,
-        now,
-      });
     }
     const claim = this.claim({ ...operation, now, leaseMs: operation.leaseMs });
     if (!claim) {

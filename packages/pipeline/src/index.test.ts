@@ -182,6 +182,7 @@ describe("pipeline", () => {
       expect(createPipelineDeliveryResolver({
         tenantId: "tenant_default",
         providerSlug: "acme-payments",
+        dependencyOutagePolicy: () => { throw new Error("decision_not_expected"); },
       }, db)).toBeTypeOf("function");
       expect(db.raw.prepare(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dependency_outage_operations'",
@@ -344,7 +345,7 @@ describe("pipeline", () => {
       securityScanAttested: true,
     });
 
-    expect(report.consumers[0]?.prStatus).toBe("draft");
+    expect(report.consumers[0]?.prStatus, JSON.stringify(report.consumers[0])).toBe("draft");
     expect(github.sourceBranches).toEqual(["trunk"]);
   });
 
@@ -1595,17 +1596,12 @@ describe("pipeline", () => {
     class SelectiveFailureDelivery extends MockGitHubDelivery {
       readonly opened: string[] = [];
 
-      override async openPullRequest(
-        owner: string,
-        repo: string,
-        branch: string,
-        title: string,
-        body: string,
-        base?: string,
-      ) {
-        this.opened.push(repo);
-        if (repo === "b-shop") throw new Error("SCM unavailable");
-        return super.openPullRequest(owner, repo, branch, title, body, base);
+      override async deliverExactDraft(
+        input: Parameters<MockGitHubDelivery["deliverExactDraft"]>[0],
+      ): ReturnType<MockGitHubDelivery["deliverExactDraft"]> {
+        this.opened.push(input.repo);
+        if (input.repo === "b-shop") throw new Error("SCM unavailable");
+        return super.deliverExactDraft(input);
       }
     }
 

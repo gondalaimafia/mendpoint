@@ -108,6 +108,7 @@ import {
   flushTelemetry,
   isTelemetryEnabled,
   recordCounter,
+  classifyDependencyOutage,
 } from "@mendpoint/ops";
 import { checkAuditIntegrityForAllTenants } from "./audit-integrity.js";
 import { createWardenCheckpointJobJournal } from "./warden-checkpoint-journal.js";
@@ -2730,6 +2731,7 @@ async function demo() {
   try {
     const report = await runChangePipeline({
       tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
+      dependencyOutagePolicy: classifyDependencyOutage,
       providerSlug: "acme-payments",
     });
     console.log(JSON.stringify(report, null, 2));
@@ -2771,6 +2773,7 @@ async function watch(intervalMs = 30_000) {
         const report = await runUnseenVersion(seen, key, () =>
           runChangePipeline({
             tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
+            dependencyOutagePolicy: classifyDependencyOutage,
             providerSlug: provider.slug,
             db,
           }),
@@ -2820,6 +2823,7 @@ async function runFeedPollUnfenced(opts: {
       : async (slug, database) => {
           const report = await runChangePipeline({
             tenantId,
+            dependencyOutagePolicy: classifyDependencyOutage,
             providerSlug: slug,
             db: database,
           });

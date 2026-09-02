@@ -12,8 +12,7 @@ import { dirname, join, parse } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { createDb } from "@mendpoint/db";
-import { createDependencyOutageQueue } from "@mendpoint/db/dependency-outage";
+import { createDb, createDependencyOutageQueue } from "@mendpoint/db";
 import {
   assessRecoveryDrillCadence,
   createApplicationConsistentBackup,

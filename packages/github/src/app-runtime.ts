@@ -160,6 +160,14 @@ function parseRetryAfter(raw: unknown, now: string): number | undefined {
   return Math.min(24 * 60 * 60 * 1_000, Math.max(0, parsed - base));
 }
 
+function parseRateLimitReset(raw: unknown, now: string): number | undefined {
+  const resetSeconds = typeof raw === "number" ? raw :
+    typeof raw === "string" && raw.trim() ? Number(raw) : Number.NaN;
+  const base = Date.parse(now);
+  if (!Number.isFinite(resetSeconds) || resetSeconds < 0 || !Number.isFinite(base)) return undefined;
+  return Math.min(24 * 60 * 60 * 1_000, Math.max(0, Math.round(resetSeconds * 1_000 - base)));
+}
+
 /** Map bounded GitHub error evidence into the shared outage vocabulary. */
 export function classifyGitHubDependencyFailure(
   error: unknown,
@@ -171,23 +179,30 @@ export function classifyGitHubDependencyFailure(
   }
   const status = typeof record.status === "number" ? record.status : undefined;
   if (status === 401) return Object.freeze({ failureKind: "authentication" });
-  if (status === 403) return Object.freeze({ failureKind: "permission" });
   const message = error instanceof Error ? error.message : String(error ?? "");
   const code = typeof record.code === "string" ? record.code : message;
   if (/ETIMEDOUT|ABORT_ERR|request timeout|timed out/i.test(code)) {
     return Object.freeze({ failureKind: "timeout" });
   }
-  if (status === 429) {
+  if (status === 403 || status === 429) {
     const response = record.response && typeof record.response === "object"
       ? record.response as Record<string, unknown> : {};
     const headers = response.headers && typeof response.headers === "object"
       ? response.headers as Record<string, unknown> : {};
-    const delay = parseRetryAfter(headers["retry-after"] ?? headers.retryAfter, now);
-    return Object.freeze({
-      failureKind: "throttled",
-      ...(delay === undefined ? {} : { retryAfterMs: delay }),
-    });
+    const retryAfter = parseRetryAfter(headers["retry-after"] ?? headers.retryAfter, now);
+    const remaining = headers["x-ratelimit-remaining"] ?? headers.xRateLimitRemaining;
+    const reset = parseRateLimitReset(headers["x-ratelimit-reset"] ?? headers.xRateLimitReset, now);
+    const rateLimited = status === 429 || retryAfter !== undefined || String(remaining) === "0" ||
+      /(?:primary|secondary|API) rate limit/i.test(message);
+    if (rateLimited) {
+      const delay = retryAfter ?? reset ?? (/secondary rate limit/i.test(message) ? 60_000 : undefined);
+      return Object.freeze({
+        failureKind: "throttled",
+        ...(delay === undefined ? {} : { retryAfterMs: delay }),
+      });
+    }
   }
+  if (status === 403) return Object.freeze({ failureKind: "permission" });
   if (status === 408 || status === 425 || (status !== undefined && status >= 500 && status <= 599) ||
       /ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH/i.test(code)) {
     return Object.freeze({ failureKind: "transient" });
@@ -830,14 +845,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
           : Object.freeze({ status: "missing" as const });
       }),
       execute: async () => {
-        const value = await this.withAuthRetry(async (octokit) => {
-          const observed = await inspectExistingExactDraft(octokit, input);
-          if (observed.status === "completed") return observed.value;
-          if (observed.status === "commit_ready") {
-            return deliverFromExistingExactCommit(octokit, input, observed.commitSha);
-          }
-          return deliverExactDraftWithOctokit(octokit, input);
-        });
+        const value = await this.withAuthRetry((octokit) => deliverExactDraftWithOctokit(octokit, input));
         return Object.freeze({ value, completionDigest: digest(value) });
       },
       classify: (error, context) => {
