@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-09-02T02:41:43.842Z",
-    "observedMainRevision": "24590c4df96c61da377161b12a5dfdcd7fd08250",
-    "observationDigest": "sha256:669de1885fd7520a77839eb864733cd7f8c5c0002d3db9208c6b14cbacc885bc",
+    "observedAt": "2026-09-02T04:55:25.240Z",
+    "observedMainRevision": "e69d997b7eef88ffcc7786a3e51da46eb1e677d4",
+    "observationDigest": "sha256:7eb0796730a78fdac12b47e83e13d61b20f8f27c3ebb6d77fa7fe1c795fa20b0",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 534,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/534",
-      "title": "Add supersededBy to release-train PR records for consistency-checked superseding",
+      "number": 461,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/461",
+      "title": "claims: detect stale claims whose audited surface changed (mechanism half of #284)",
       "baseBranch": "main",
-      "headBranch": "codex/release-train-supersededby",
+      "headBranch": "claims-staleness-mechanism",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2083,16 +2083,18 @@
         "pullRequests": [],
         "branches": []
       },
-      "requirementIds": [],
+      "requirementIds": [
+        "ME-GTM-003"
+      ],
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260902-014",
+        "rotationId": "rotation-20260902-015",
         "kind": "runtime",
-        "issuedAt": "2026-09-02T02:41:43.842Z",
-        "expiresAt": "2026-09-03T02:41:43.842Z",
-        "basePolicySha256": "sha256:62785e425b9a4e50d4fb67bcaa4c73147d3ca75985588d5dc5fe19ff162ee3d6",
-        "proposedPolicySha256": "sha256:152c1b9eb0f12e4a98bf766c18f6a00505bb9c07cfc3108df6a2b207e0d9e407"
+        "issuedAt": "2026-09-02T04:55:25.240Z",
+        "expiresAt": "2026-09-03T04:55:25.240Z",
+        "basePolicySha256": "sha256:152c1b9eb0f12e4a98bf766c18f6a00505bb9c07cfc3108df6a2b207e0d9e407",
+        "proposedPolicySha256": "sha256:a679465f62ea507187d890dd7c163bebffb5e95dc14eb184e6836db5c6896a13"
       }
     },
     "pullRequests": [

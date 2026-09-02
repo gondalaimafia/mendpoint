@@ -47,9 +47,9 @@
     "scripts/production-closure-github-authority.ts": "sha256:551404bce6c205304e4f59fcc5befa906c974dfe8c21006849744eb597b8baf4",
     "scripts/production-closure-authority-rotation.ts": "sha256:e5557ab767353b4817ef07c235ee97b24dbb59d14b8697a92f1b781cab1717e7",
     "scripts/production-closure-matrix.ts": "sha256:01bd2b42846270d64638e0d5317688c4d4b0eef046b1630a480c4f1c5dcfb292",
-    "scripts/public-claims-check.ts": "sha256:31ce71d0cc998a4b534714bf8fd17f577876b235ca1255a2a76c8e38815ea248",
+    "scripts/public-claims-check.ts": "sha256:4a5ab72a1935b54f0a8c83b895bc1bef528e27b741229b7aa9ec630af28bfb2e",
     "packages/contract/src/product-requirements.ts": "sha256:a0ee9719e472bee1a73f44c44df9626f5f91d881608c628d5b2eb4c9fb7f4e98",
-    "packages/contract/src/public-claims.ts": "sha256:10b9739ff30ea52f17a8d1ca9822268f8c57e09b5a5f2d31a3b9a9189ad6aac0",
+    "packages/contract/src/public-claims.ts": "sha256:e43b2f156cefe4a9113100b7946e005f77a7b93fdd1096b817a30588893599bf",
     ".github/workflows/closure-authority-quiet-sweep.yml": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9"
   }
 }

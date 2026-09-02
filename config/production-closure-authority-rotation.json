@@ -960,6 +960,48 @@
           "toMode": "100644"
         }
       ]
+    },
+    {
+      "kind": "runtime",
+      "rotationId": "rotation-20260902-015",
+      "previousRotationId": "rotation-20260902-014",
+      "baseRevision": "e69d997b7eef88ffcc7786a3e51da46eb1e677d4",
+      "issuedAt": "2026-09-02T04:55:25.240Z",
+      "expiresAt": "2026-09-03T04:55:25.240Z",
+      "baseLedgerSha256": "sha256:537cc4050ae69cd60f2fb1aa974cc22f9e19b8ffb6db9b5edbe860d2e42682fd",
+      "basePolicySha256": "sha256:152c1b9eb0f12e4a98bf766c18f6a00505bb9c07cfc3108df6a2b207e0d9e407",
+      "proposedPolicySha256": "sha256:a679465f62ea507187d890dd7c163bebffb5e95dc14eb184e6836db5c6896a13",
+      "successor": null,
+      "changes": [
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:152c1b9eb0f12e4a98bf766c18f6a00505bb9c07cfc3108df6a2b207e0d9e407",
+          "toSha256": "sha256:a679465f62ea507187d890dd7c163bebffb5e95dc14eb184e6836db5c6896a13",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:efc4e5141a29fe0765e7b549d691ac3b32a7c912af9600bd049da228f6c84fdb",
+          "toSha256": "sha256:0c2b06c489ba0670b39b9f931cd738462f097f31807c40e4a6a8dfa4c44357b1",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "packages/contract/src/public-claims.ts",
+          "fromSha256": "sha256:10b9739ff30ea52f17a8d1ca9822268f8c57e09b5a5f2d31a3b9a9189ad6aac0",
+          "toSha256": "sha256:e43b2f156cefe4a9113100b7946e005f77a7b93fdd1096b817a30588893599bf",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/public-claims-check.ts",
+          "fromSha256": "sha256:31ce71d0cc998a4b534714bf8fd17f577876b235ca1255a2a76c8e38815ea248",
+          "toSha256": "sha256:4a5ab72a1935b54f0a8c83b895bc1bef528e27b741229b7aa9ec630af28bfb2e",
+          "fromMode": "100644",
+          "toMode": "100644"
+        }
+      ]
     }
   ]
 }
