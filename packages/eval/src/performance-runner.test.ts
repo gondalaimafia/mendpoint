@@ -107,6 +107,24 @@ function metadata() {
   };
 }
 
+function probeContext(correlationId = "corr-fettler-performance") {
+  return {
+    invocationId: "test-tier.load.00000000",
+    sequence: 0,
+    mode: "load" as const,
+    tier: contract().tiers[0]!,
+    repositoryRevision: "a".repeat(40),
+    deploymentRevision: "b".repeat(40),
+    fixtureDigest: "c".repeat(64),
+    tenantId: "tenant-fettler-production",
+    repositoryId: "github-1319732323",
+    correlationId,
+    source: "fettler-production-probe",
+    repository: metadata().repository,
+    signal: new AbortController().signal,
+  };
+}
+
 describe("performance runner", () => {
   it("executes canonical CLI bindings through persisted report bytes", async () => {
     let now = 0;
@@ -406,6 +424,42 @@ describe("performance runner", () => {
     expect(report.observations.every((item) => !item.success && item.bindingSource === "request_context")).toBe(true);
   });
 
+  it("accepts a semantically identical repository shape regardless of object insertion order", async () => {
+    let now = 0;
+    const expectedRepository = {
+      files: 10,
+      sourceLines: 100,
+      bytes: 1_000,
+      maxFileBytes: 100,
+      languages: ["typescript", "javascript"],
+      languageSourceLines: { typescript: 80, javascript: 20 },
+    };
+    const report = await runPerformanceProbe({
+      contract: contract(),
+      tierId: "test-tier",
+      mode: "load",
+      ...metadata(),
+      repository: expectedRepository,
+      now: () => now,
+      probe: async () => {
+        now += 500;
+        return measurement(10, true, {
+          repository: {
+            languageSourceLines: { javascript: 20, typescript: 80 },
+            languages: ["javascript", "typescript"],
+            maxFileBytes: 100,
+            bytes: 1_000,
+            sourceLines: 100,
+            files: 10,
+          },
+        });
+      },
+    });
+
+    expect(report.status).toBe("completed");
+    expect(report.ok).toBe(true);
+  });
+
   it("propagates aborts and returns an explicitly incomplete report", async () => {
     const controller = new AbortController();
     let invoked = 0;
@@ -565,6 +619,52 @@ describe("performance runner", () => {
       endpoint: "http://probe.example/performance",
       bearerToken: "do-not-expose",
     })).toThrow("performance_probe_https_required");
+  });
+
+  it("requires an exact approved destination before configuring a credentialed probe", () => {
+    expect(() => createHttpPerformanceProbe({
+      endpoint: "https://probe.example/performance",
+      bearerToken: "secret-value",
+    })).toThrow("performance_probe_approved_destination_required");
+    expect(() => createHttpPerformanceProbe({
+      endpoint: "https://probe.example/performance",
+      approvedDestination: "https://other.example/performance",
+      bearerToken: "secret-value",
+    })).toThrow("performance_probe_approved_destination_mismatch");
+  });
+
+  it("rejects every DNS answer when any resolved performance destination is unsafe", async () => {
+    const pinnedRequest = vi.fn();
+    const probe = createHttpPerformanceProbe({
+      endpoint: "https://probe.example/performance",
+      approvedDestination: "https://probe.example/performance",
+      bearerToken: "secret-value",
+      resolveHostname: async () => ["93.184.216.34", "169.254.169.254"],
+      pinnedRequest,
+    });
+
+    await expect(probe(probeContext())).rejects.toThrow("performance_probe_destination_blocked");
+    expect(pinnedRequest).not.toHaveBeenCalled();
+  });
+
+  it("pins each performance request to the address approved for that invocation", async () => {
+    const pinnedRequest = vi.fn(async (
+      _endpoint: URL,
+      approvedAddress: string,
+    ) => {
+      expect(approvedAddress).toBe("93.184.216.34");
+      return new Response(JSON.stringify(measurement()), { status: 200 });
+    });
+    const probe = createHttpPerformanceProbe({
+      endpoint: "https://probe.example/performance",
+      approvedDestination: "https://probe.example/performance",
+      bearerToken: "secret-value",
+      resolveHostname: async () => ["93.184.216.34"],
+      pinnedRequest,
+    });
+
+    await expect(probe(probeContext())).resolves.toEqual(measurement());
+    expect(pinnedRequest).toHaveBeenCalledTimes(1);
   });
 
   it("allows plaintext only for explicit loopback development without credentials", () => {
