@@ -681,6 +681,26 @@ describe("Fettler/Regauge logical database names", () => {
     database.close();
   });
 
+  it("rejects scope drift even if the insertion trigger is bypassed", () => {
+    const path = join(newDir("tenant-scope-digest"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+
+    const database = new DatabaseSync(path);
+    database.exec(
+      "DROP TRIGGER legacy_tenant_ownership_reconciliation_scope_append_only_insert",
+    );
+    database.prepare(
+      `INSERT INTO legacy_tenant_ownership_reconciliation_scope
+         (table_name, row_id, tenant_id, discovered_at)
+       VALUES ('jobs', 'late-row', 'tenant_default', ?)`,
+    ).run(TS);
+    database.close();
+
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+  });
+
   it("makes an attested source row tenant immutable", () => {
     const path = join(newDir("tenant-attested-source-immutable"), "legacy.sqlite");
     buildLegacyOwnershipVolume(path);

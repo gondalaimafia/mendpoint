@@ -353,6 +353,7 @@ CREATE TABLE IF NOT EXISTS legacy_tenant_ownership_reconciliation_discovery_stat
   id INTEGER PRIMARY KEY CHECK (id = 1),
   schema_version INTEGER NOT NULL CHECK (schema_version = 2),
   source_schema_digest TEXT NOT NULL,
+  scope_digest TEXT NOT NULL,
   sealed_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS legacy_tenant_ownership_attestations (
@@ -3876,26 +3877,30 @@ function reconcileLegacyTenantOwnership(
       releasedFallbackTenantTables: [...releasedFallbackTenantTables].sort(),
     }))
     .digest("hex");
+  const discoveryColumns = all<{ name: string }>(
+    db,
+    "PRAGMA table_info(legacy_tenant_ownership_reconciliation_discovery_state)",
+  ).map((column) => column.name);
+  if (!discoveryColumns.includes("scope_digest")) {
+    throw new Error("legacy_tenant_ownership_reconciliation_schema_unsupported");
+  }
   const discoveryState = get<{
     schema_version: number;
     source_schema_digest: string;
+    scope_digest: string;
   }>(
     db,
-    `SELECT schema_version, source_schema_digest
+    `SELECT schema_version, source_schema_digest, scope_digest
      FROM legacy_tenant_ownership_reconciliation_discovery_state
      WHERE id = 1`,
   );
   if (state && state.schema_version !== 1) {
     throw new Error("legacy_tenant_ownership_reconciliation_schema_unsupported");
   }
-  if (
-    discoveryState && (
-      discoveryState.schema_version !== 2 ||
-      discoveryState.source_schema_digest !== discoveryDigest
-    )
-  ) {
-    throw new Error("legacy_tenant_ownership_reconciliation_schema_unsupported");
-  }
+  if (discoveryState && (
+    discoveryState.schema_version !== 2 ||
+    discoveryState.source_schema_digest !== discoveryDigest
+  )) throw new Error("legacy_tenant_ownership_reconciliation_schema_unsupported");
   if (!state && discoveryState) {
     throw new Error("legacy_tenant_ownership_reconciliation_schema_unsupported");
   }
@@ -3928,12 +3933,13 @@ function reconcileLegacyTenantOwnership(
         );
       }
       if (!discoveryState) {
+        const scopeDigest = legacyTenantOwnershipScopeDigest(db);
         run(
           db,
           `INSERT INTO legacy_tenant_ownership_reconciliation_discovery_state
-             (id, schema_version, source_schema_digest, sealed_at)
-           VALUES (1, 2, ?, ?)`,
-          [discoveryDigest, discoveredAt],
+             (id, schema_version, source_schema_digest, scope_digest, sealed_at)
+           VALUES (1, 2, ?, ?, ?)`,
+          [discoveryDigest, scopeDigest, discoveredAt],
         );
       }
       db.raw.exec("COMMIT");
@@ -3948,6 +3954,20 @@ function reconcileLegacyTenantOwnership(
     "legacy_tenant_ownership_reconciliation_state",
     "legacy_tenant_ownership_reconciliation_discovery_state",
   ]);
+  run(
+    db,
+    `CREATE TRIGGER IF NOT EXISTS legacy_tenant_ownership_reconciliation_scope_append_only_insert
+     BEFORE INSERT ON legacy_tenant_ownership_reconciliation_scope
+     BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_reconciliation_scope_sealed'); END`,
+  );
+
+  const sealedDiscoveryState = get<{ scope_digest: string }>(
+    db,
+    `SELECT scope_digest FROM legacy_tenant_ownership_reconciliation_discovery_state WHERE id = 1`,
+  );
+  if (!sealedDiscoveryState || sealedDiscoveryState.scope_digest !== legacyTenantOwnershipScopeDigest(db)) {
+    throw new Error("legacy_tenant_ownership_reconciliation_required");
+  }
 
   const scopedRows = all<{
     table_name: string;
@@ -4001,11 +4021,61 @@ function reconcileLegacyTenantOwnership(
     ) {
       throw new Error("legacy_tenant_ownership_reconciliation_required");
     }
+    const source = get<{ tenant_id: string | null }>(
+      db,
+      `SELECT tenant_id FROM ${scoped.table_name} WHERE id = ?`,
+      [scoped.row_id],
+    );
+    if (!source || source.tenant_id !== scoped.tenant_id) {
+      throw new Error("legacy_tenant_ownership_reconciliation_required");
+    }
   }
+
+  installLegacyTenantOwnershipSourceGuards(db);
 
   installLegacyTenantOwnershipAppendOnlyTriggers(db, [
     "legacy_tenant_ownership_attestations",
   ]);
+}
+
+function legacyTenantOwnershipScopeDigest(db: AppDb): string {
+  const rows = all<{
+    table_name: string;
+    row_id: string;
+    tenant_id: string;
+    discovered_at: string;
+  }>(
+    db,
+    `SELECT table_name, row_id, tenant_id, discovered_at
+     FROM legacy_tenant_ownership_reconciliation_scope
+     ORDER BY table_name, row_id, tenant_id`,
+  );
+  return createHash("sha256").update(JSON.stringify({ schemaVersion: 1, rows })).digest("hex");
+}
+
+function installLegacyTenantOwnershipSourceGuards(db: AppDb): void {
+  for (const table of LEGACY_TENANT_OWNERSHIP_TABLES) {
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS ${table}_legacy_tenant_ownership_update
+       BEFORE UPDATE OF tenant_id ON ${table}
+       WHEN EXISTS (
+         SELECT 1 FROM legacy_tenant_ownership_reconciliation_scope scope
+         WHERE scope.table_name = '${table}' AND scope.row_id = OLD.id
+       )
+       BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_source_immutable'); END`,
+    );
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS ${table}_legacy_tenant_ownership_delete
+       BEFORE DELETE ON ${table}
+       WHEN EXISTS (
+         SELECT 1 FROM legacy_tenant_ownership_reconciliation_scope scope
+         WHERE scope.table_name = '${table}' AND scope.row_id = OLD.id
+       )
+       BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_source_immutable'); END`,
+    );
+  }
 }
 
 function installLegacyTenantOwnershipAppendOnlyTriggers(
