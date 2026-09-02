@@ -2064,7 +2064,7 @@
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-09-02T02:41:43.842Z",
     "observedMainRevision": "24590c4df96c61da377161b12a5dfdcd7fd08250",
-    "observationDigest": "sha256:669de1885fd7520a77839eb864733cd7f8c5c0002d3db9208c6b14cbacc885bc",
+    "observationDigest": "sha256:112bb7f69c00df010013ea4fe545bcec2b84750a1fd3d36e40e9ef89344d92f1",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
@@ -2110,9 +2110,7 @@
         },
         "disposition": "superseded",
         "dependencies": {
-          "pullRequests": [
-            461
-          ],
+          "pullRequests": [],
           "branches": []
         },
         "requirementIds": [

@@ -4521,3 +4521,32 @@ Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, ba
 - Every fact was verified against current `main`. Production deploy job is `deploy-customer-production` (`.github/workflows/ci.yml:358`). The `release-owner` label to trusted-reviewer mechanism lives in `scripts/production-closure-github-authority.ts`: `resolveReleaseOwner` requires exactly one `release-owner:<actor>` label, `trustedReviewerIdentities` skips the owner's actor, and `config/production-closure-authority.json` binds identities under only the `Claude` actor, so `release-owner:claude` yields an empty trusted set. Live required contexts from `gh api repos/gondalaimafia/mendpoint/branches/main/protection` are `test`, `release-gates`, `container-builds`, `deployment-e2e`, `mendpoint-production-closure-authority-quiet-sweep`, and `mendpoint-production-closure-controller-quiet-sweep`; the docs name the closure contexts by that source of truth rather than hardcoding the rotating `-quiet-sweep` strings.
 - `npm run eol:check` exit 0 (14 tests; no CRLF text blobs in the index). `npm run docs:check` reports "Public docs bundle is current" (a no-regression check; the bundle, sourced from `apps/web/app/docs/catalog.ts`, does not include these files). `git diff --cached --check` clean; 0 CR bytes in the worktree and the index blob of every changed file.
 - Not verified here: CI on the GitHub runners; the Codex peer review requested on the pull request.
+
+## 2026-09-02 Clear the stale dependency edge from superseded #284
+
+- [x] Remove `461` from record #284's `dependencies.pullRequests` in `docs/PRODUCTION_CLOSURE_MATRIX.json`. #284 is `state: closed`, `disposition: superseded`, `mergeRevision: null`; its only dependency edge points at #461, the pull request that replaced it.
+- [x] Recompute `releaseTrain.observationDigest` with the exported `releaseTrainIntegrityDigest` rather than by hand. The issue-authority section and its digest are untouched.
+- [x] Leave everything else on #284 exactly as it was: state, disposition, mergeRevision, requirementIds, and the record's presence in the release train.
+- [x] Verify `npm run closure:check` exits 0 with #461 still a static record and the bootstrap still #534, so this change is independent of the #461 rotation that follows it.
+
+### Why this has to land first
+
+- #461 is about to become an authority-rotation bootstrap. `CURRENT_PR_BOOTSTRAP_DUPLICATE` (`scripts/production-closure-matrix.ts:1145-1152`) forbids a pull request from being both the provider-resolved current pull request and a static snapshot record, so the rotation must remove #461's own static record.
+- Removing it while #284 still depends on #461 trips `PR_DEPENDENCY_UNTRACKED` (`scripts/production-closure-matrix.ts:1503-1511`), which has no `currentBootstrap` exemption. The promotion exemption exists at `:1563` and `:1581-1582` for requirement bindings, and in `scripts/production-closure-proposal-authority.ts:672-718` for provider-record removal, but it was never extended to dependency edges. Verified by running the check both ways rather than by reading alone.
+- Clearing the edge is therefore a precondition, and it belongs in an ordinary data pull request judged on its own merits rather than inside a rotation whose scope is meant to be the pull request's own record.
+
+### Scope and rollback
+
+- One file plus this task record. The matrix diff is exactly one array element and the recomputed release-train digest; nothing else in the release train, the requirements, or the issue authority changes.
+- Rollback is a single revert of this branch.
+
+### Follow-ups, deliberately not done here
+
+- The honest encoding of this relationship is `284.supersededBy = 461` with `461.supersedes = [284]`, which records that the work was subsumed instead of silently dropping the edge. That mechanism requires a MERGED superseder, and #461 has not merged, so it is scheduled as a data pull request immediately after #461 lands.
+- The exemption gap itself (a dependency on a promoted bootstrap has no resolution path) is filed separately. It touches `scripts/production-closure-matrix.ts`, a pinned authority surface, so it needs its own rotation and its own tests.
+
+### Review
+
+- `npm run closure:check` exit 0: `PRODUCTION CLOSURE STRUCTURE PASS: 101 requirements, 81 static pull requests, current PR 534; protected GitHub authority verification is still required`. #461 is still a static record and the bootstrap is still #534, confirming this change stands alone.
+- `scripts/production-closure-matrix.test.ts` and `scripts/production-closure-github-authority.test.ts`: 116 passed, exit 0. `scripts/production-closure-proposal-authority.test.ts`: 33 passed, exit 0.
+- `npm run eol:check` exit 0, `git diff --check` clean, and 0 CR bytes by byte count in every changed blob.
