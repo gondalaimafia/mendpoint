@@ -4148,6 +4148,21 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The repository index captures one exact source set, validates file identity and the complete directory-entry set against same-size metadata mutation, late files, and late links, then passes only those captured bytes into full or incremental call-graph extraction. The call graph never falls back to a mutable disk read when snapshot sources are supplied.
 - The public retrieval contract now accepts and enforces `maxFiles`, `maxBytes`, `maxFileBytes`, `maxTraversalDepth`, and `maxCandidates` on graph and non-graph paths. Traversal-depth exhaustion produces an idempotent abstention artifact, evidence record, audit event, and domain event bound to the exact repository snapshot, revision, content digest, limits, and usage.
 - Full affected verification passes: call graph 25 tests, codebase index 34 tests, code impact 123 tests, and pipeline 256 tests, for 438 tests total. All four affected workspace typechecks and diff integrity pass. No requirement, availability, or public claim is promoted.
+## 2026-08-30 GSD Plan 08-04 adapter lifecycle proof review repair
+
+- [x] Centralize exact lifecycle-proof validation for file and exported programmatic execution, including version, timeout, idempotency, rollback reason, nested arrays, credential names, and recomputed semantic input digest.
+- [x] Replace inferred pre-rollback eligibility with a durable tenant-bound domain-event checkpoint that binds the exact input, eligibility request and observation, and rollback request before rollback.
+- [x] Require exact authenticated checkpoint replay when registration already reports `rolled_back`; fail closed when the checkpoint is absent, substituted, or the tenant event chain is invalid.
+- [x] Expose the checkpoint through the authenticated tenant-admin API and cover the production request path.
+- [x] Register the proof signing key, key identifier, and exact API origin in the canonical protected runtime configuration manifest.
+- [x] Run hostile and complete affected tests, affected typechecks, configuration completeness, full build, and diff integrity.
+
+### Review
+
+- A resumed lifecycle can claim `eligibleBeforeRollback` only from the exact hash-chain checkpoint created while the adapter was eligible. The checkpoint binds the recomputed canonical input digest, canonical eligibility request, observed eligible response digest, and the artifact, reason, and idempotency key of the rollback request.
+- Direct callers now traverse the same validator as file callers before proof authority or API credentials are read. Bare `token` and `secret`, normalized compound credential names, invalid nested array members, malformed versions, timeouts, idempotency keys, rollback reasons, and substituted input digests all fail before network access.
+- The affected proof, configuration, Pipeline, and API matrix passes 80 of 80 focused tests. Complete Pipeline coverage passes 250 of 250 tests; complete API coverage passes. Pipeline, API, and scripts typechecks pass; `npm run config:check`, the optimized workspace build, and `git diff --check` pass.
+- This repair does not promote a requirement, change a public claim, deploy, or assert live adapter qualification. Exact-head review, current-base protected CI, protected merge, and exact-revision production evidence remain required.
 ## 2026-08-31 GSD Plan 06-05/06-06: Fettler real provider change to exact draft
 
 - [x] Audit the complete production producer-to-consumer chain from feed revision through exact draft delivery, including every durable transition and claim predicate.
@@ -4286,3 +4301,25 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Coverage removal declared. `origin/main` had four `recordJobMissionExecutionCost` call sites; this branch has two. `warden.campaign.execute` and both `pipeline.fanout` success paths no longer write a mission cost row. This is a consequence of the redesign, not an oversight: the new signature requires an exact routing run and envelope id, and those job types never go through the Fettler routing runtime, so there is no envelope to cite. Fabricating one would defeat the provenance discipline this branch exists to establish. The omission is fail-closed for margin (a revenue task with no cost row yields `actual_cost_missing` and `complete = false`), and restoring coverage requires giving those two job types real routing identity, which is separate work.
 - Known-null surface, recorded not changed. `recordExecutionCostFromRoutingLedger` hardcodes the five non-model components unmeasured, and `reconcileGrossMargin` marks any execution with an unmeasured component incomplete, so `attributedGrossMarginMoneyMicros` is null for every real execution today. `recordExecutionCostOutcome`'s only production caller is the new POST route, so nothing in the worker marks a cost accepted and attributed revenue is 0. Both are honest and fail-closed; this branch delivers the API boundary, not an end-to-end margin number.
 - Recorded, deliberately not changed: `durableRevenueJobForCost` matches `? LIKE j.id || ':lease-%'`, where an underscore in a job id is a single-character wildcard. An `ESCAPE` clause was written and then reverted. The clause is a no-op today because the query's `EXISTS` on `mission_task.created` pins `correlation_id` to exactly one job, so no decoy can ever join the result set, and the branch has zero test coverage anywhere: replacing `':lease-%'` with a never-matching literal leaves the db, API, and platform gross-margin suites green at 19/19 and 38/38. An unverifiable edit to a billing query was not worth shipping; the missing coverage is the real finding.
+## 2026-09-02 Issue authority refresh for #433
+
+- [x] Bind issue-authority record #433 to its exact live GitHub state and `updatedAt` value without changing requirement status, availability, or claims.
+- [x] Recompute the issue-authority integrity digest from the complete proposed matrix; the release-train digest is untouched because no release-train record changed.
+- [x] Prove every other issue-authority record still matches live GitHub (14 of 15 matched before the change; only #433 had drifted).
+- [x] Run the closure, specification, ledger, and GA validators plus the focused authority suites and diff integrity.
+
+### Root cause
+
+- `docs/PRODUCTION_CLOSURE_MATRIX.json` pinned issue #433 at `updatedAt` `2026-08-30T23:49:27Z` (the reopen). A claim comment on the issue at `2026-08-31T18:03:50Z` advanced GitHub's `updated_at`, so `closure:github:check` on every push to `main` since `5501de99` failed with `ISSUE_METADATA_MISMATCH 433`, one failed workflow run per merge. The pull-request observation scope does not verify that record, which is why pull requests stayed green while `main` stayed red.
+
+### Scope and rollback
+
+- Owned files: `docs/PRODUCTION_CLOSURE_MATRIX.json` and this task record. No issue, requirement, public claim, workflow, policy, credential, or production runtime is mutated by this branch.
+- Rollback is a single commit revert. The main authority observer remains fail closed until a refreshed matrix is merged and a new exact-main observation passes.
+
+### Review
+
+- Live GitHub readback at `2026-09-02T00:05:21.467Z` confirmed issue #433 is open, titled `Production closure FC 04: Fettler customer proof`, assigned to `gondalaimafia`, with `updatedAt` `2026-08-31T18:03:50Z`; the record retains its owner, title, URL, and requirement mappings.
+- The complete matrix recomputation produced issue-authority digest `sha256:11036b890a56a523c87ee8de129fa6d95431abec949a92dc86cb356db1269fd9`. The release-train digest remains `sha256:55d1f00bbe1af30a9787d5a5468779b94d1cd7aecb2bc9952c9e833914645a96`.
+- `npm run closure:check`, `npm run spec:check`, `npm run ledger:check`, and `npm run ga:check` exit 0. The focused GitHub authority, closure-matrix, and proposal-authority suites pass all 129 tests; the proposal-authority process exited 1 twice on a vitest worker `Timeout calling "onTaskUpdate"` under host load with 33 of 33 tests passed, not on an assertion. `git diff --check` passes; the edited blob has 0 CR bytes.
+- The same drift will recur whenever anyone comments on any of the 15 authority issues, because the record pins a volatile timestamp; that is a design decision to revisit separately, not something this refresh changes.

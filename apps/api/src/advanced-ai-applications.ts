@@ -6,6 +6,7 @@ import {
   getPostTrainedAdapterStatus,
   issueSoftwareAttestation,
   readSoftwareAttestation,
+  recordPostTrainedLifecycleProofCheckpoint,
   registerPostTrainedAdapter,
   rollbackPostTrainedAdapter,
   routePostTrainedAdapterDryRun,
@@ -375,6 +376,17 @@ export function createAdvancedAiApplicationRoutes(options: AdvancedAiApplication
   });
   routes.post("/post-trained/adapters/:adapterId/rollback", async (c) => {
     try { const principal = identity(c); if (!principal) return c.json({ error: "authenticated_principal_required" }, 401); const actorPrincipalId = c.get("trustPrincipalId"); if (!actorPrincipalId) return c.json({ error: "trust_principal_required" }, 401); if (!can(principal, "tenant:admin")) return c.json({ error: "forbidden" }, 403); const idempotencyKey = c.req.header("idempotency-key"); if (!idempotencyKey?.trim()) throw new Error("idempotency_key_required"); const body = await jsonBody(c); const value = rollbackPostTrainedAdapter(options.db, { tenantId: principal.tenantId, adapterId: c.req.param("adapterId"), actorPrincipalId, expectedArtifactDigest: body.expectedArtifactDigest, reason: body.reason, idempotencyKey, rolledBackAt: now() } as never, { enabled: true, authorizeHumanApprover: options.authorizeHumanApprover }); c.header("Cache-Control", "no-store"); return c.json(value); } catch (error) { return failure(c, error); }
+  });
+  routes.post("/post-trained/adapters/:adapterId/proof-checkpoints", async (c) => {
+    try {
+      const principal = identity(c); if (!principal) return c.json({ error: "authenticated_principal_required" }, 401);
+      const actorPrincipalId = c.get("trustPrincipalId"); if (!actorPrincipalId) return c.json({ error: "trust_principal_required" }, 401);
+      if (!can(principal, "tenant:admin")) return c.json({ error: "forbidden" }, 403);
+      const idempotencyKey = c.req.header("idempotency-key"); if (!idempotencyKey?.trim()) throw new Error("idempotency_key_required");
+      const body = await jsonBody(c);
+      const value = recordPostTrainedLifecycleProofCheckpoint(options.db, { tenantId: principal.tenantId, adapterId: c.req.param("adapterId"), actorPrincipalId, idempotencyKey, inputDigest: body.inputDigest, task: body.task, rollback: body.rollback, observedAt: now() } as never, { enabled: true, readConsent: options.readConsent, verifyEvidence: options.verifyEvidence });
+      c.header("Cache-Control", "no-store"); return c.json(value, 201);
+    } catch (error) { return failure(c, error); }
   });
   routes.get("/post-trained/adapters/:adapterId", (c) => { try { const principal = identity(c); if (!principal) return c.json({ error: "authenticated_principal_required" }, 401); if (!can(principal, "plan:read")) return c.json({ error: "forbidden" }, 403); c.header("Cache-Control", "no-store"); return c.json(getPostTrainedAdapterStatus(options.db, principal.tenantId, c.req.param("adapterId"), { enabled: true, readConsent: options.readConsent })); } catch (error) { return failure(c, error); } });
   routes.post("/post-trained/adapters/:adapterId/eligibility", async (c) => { try { const principal = identity(c); if (!principal) return c.json({ error: "authenticated_principal_required" }, 401); if (!can(principal, "plan:execute")) return c.json({ error: "forbidden" }, 403); const body = await jsonBody(c); return c.json(getPostTrainedAdapterEligibility(options.db, { tenantId: principal.tenantId, adapterId: c.req.param("adapterId"), task: body.task, now: new Date(now()) } as never, { enabled: true, readConsent: options.readConsent, verifyEvidence: options.verifyEvidence })); } catch (error) { return failure(c, error); } });
