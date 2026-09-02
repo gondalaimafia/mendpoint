@@ -98,7 +98,7 @@ function fixture() {
 function appFor(db: AppDb) {
   const app = new Hono<ApiEnv>();
   app.use("*", requestIdMiddleware());
-  app.use("*", createAuthMiddleware(db));
+  app.use("*", createAuthMiddleware(db, { now: () => new Date(NOW) }));
   app.get("/changes/:id", (c) => {
     const change = getChange(db, c.req.param("id"));
     if (!change) return c.json({ error: "not found" }, 404);

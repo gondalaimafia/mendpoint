@@ -40,7 +40,7 @@ function fixture() {
 function appFor(db: AppDb) {
   const app = new Hono<ApiEnv>();
   app.use("*", requestIdMiddleware());
-  app.use("*", createAuthMiddleware(db));
+  app.use("*", createAuthMiddleware(db, { now: () => new Date(NOW) }));
   app.route("/metrics/dashboard", createDashboardRoutes({ db }));
   return app;
 }

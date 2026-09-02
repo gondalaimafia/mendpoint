@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
   findActiveLearningConsent,
@@ -208,6 +208,7 @@ function removeFixtureRoot(root: string): void {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   while (services.length) services.pop()!.close();
   while (dbs.length) dbs.pop()!.raw.close();
   while (roots.length) removeFixtureRoot(roots.pop()!);
@@ -228,6 +229,20 @@ describe("Regauge production bootstrap runtime", () => {
   });
 
   it("materializes, plans, reviews, launches, and durably replays the real production recipe", async () => {
+    // Every clock read in this test must share one instant: the injected
+    // service/runtime seams, AND the un-seamed `new Date()` reads deep in
+    // materialization, recipe planning (evidence freshness against `evaluatedAt`,
+    // maxEvidenceAgeMs 1h), and the verifier-consent check. Pin the whole process
+    // Date to a fixed point inside the verifier-consent validity window (effective
+    // 2026-08-24, expires 2026-11-20 per the environment above); shouldAdvanceTime
+    // keeps reads monotonic like the real clock so hash-chained events stay well
+    // ordered. The real wall clock both drifts past the consent expiry and
+    // future-dates the recipe evidence, either of which fails this test.
+    vi.useFakeTimers({
+      toFake: ["Date"],
+      now: new Date("2026-08-24T17:02:00.000Z"),
+      shouldAdvanceTime: true,
+    });
     const root = mkdtempSync(join(tmpdir(), "mendpoint-regauge-bootstrap-"));
     roots.push(root);
     process.env.MENDPOINT_REPOS_DIR = join(root, "repos");
