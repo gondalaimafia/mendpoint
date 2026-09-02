@@ -169,10 +169,10 @@ status: complete
 - **Verification:** All ten hostile tests failed before implementation; the repaired evaluator suite passes 33 of 33 and the broader focused matrix passes 46 of 46.
 - **Committed in:** `30ca1a5d`, `7c4f5280`
 
-**5. [Rule 1 - Bug] Made canonical long runs executable without unbounded evidence growth**
+**5. [Rule 1 - Bug] Made canonical long runs executable with bounded, sealed evidence**
 - **Found during:** Independent complete-chain review after the first adversarial repair
 - **Issue:** Fixed five-minute freshness rejected valid early observations in medium and large load runs and every canonical soak, while a fast target could retain observations without a memory or publication bound for up to four hours.
-- **Fix:** Evaluate every observation against the authenticated run duration plus its metric freshness allowance, retain the pre-run and cross-run guards, and stop at a fixed 10,000-observation budget with an explicit incomplete `evidence_budget_exceeded` outcome.
+- **Fix:** Evaluate every observation against the authenticated run duration plus its metric freshness allowance, retain the pre-run and cross-run guards, and bound raw evidence at 10,000 observations. High-throughput runs now continue with deterministic stride sampling plus sealed total counts, failures, fixed duration histograms, and an aggregate digest instead of becoming incomplete solely because a healthy target is fast.
 - **Files modified:** `packages/eval/src/performance-contract.ts`, `packages/eval/src/performance-contract.test.ts`, `packages/eval/src/performance-runner.ts`, `packages/eval/src/performance-runner.test.ts`
 - **Verification:** Four canonical medium and large load and soak regressions plus one high-throughput overflow regression failed before implementation; the repaired evaluator suite passes 38 of 38 and the broader focused matrix passes 51 of 51.
 - **Committed in:** `288d9bc6`, `7049be3a`, `880bb666`
@@ -208,6 +208,13 @@ status: complete
 - **Files modified:** `packages/eval/src/performance-contract.ts`, `packages/eval/src/performance-runner.ts`, `packages/eval/src/performance-runner.test.ts`, `packages/platform/src/index.ts`, `packages/db/src/index.ts`, `packages/db/src/usage.ts`, `packages/db/src/usage.test.ts`, `packages/db/src/invoice-export.test.ts`, `packages/db/src/gross-margin.test.ts`, `apps/api/src/server.ts`, `scripts/fettler-production-closure.ts`, `scripts/fettler-production-closure.test.ts`, `docs/FETTLER_PRODUCTION_REQUIREMENT_CLOSURE.json`
 - **Verification:** The focused finance and upgrade matrix passes 21 of 21; the complete database suite passes 492 of 492; the earlier complete workspace and root test runner exited successfully with 633 root-script tests; full workspace typecheck passed and the final database and API typechecks pass; the optimized production build generated 64 routes; protected GA preflight passed; the final closure suite passes 3 of 3; and diff integrity passes.
 - **Committed in:** `e94acec8`, `f947166e`, `475dbebd`, `aecc9eda`, `4b75196f`, `ed68a592`, `d9ffaaab`, `cf9a2c14`, `0d7deb30`
+
+**10. [Rule 1 - Bug] Closed the final exact-head performance and finance replay gaps**
+- **Found during:** Independent exact-head review of pull request 610 at `e75e36d12bb85641cf308b5ffb5f8aee11da45fc`
+- **Issue:** Persisted performance detail discarded the invocation proof, healthy fast probes exhausted the raw evidence ceiling, committed finance mutations could not replay after approval expiry, prior-period credits were checked against a later entitlement, exact authorization retries conflicted, an unshipped contract version remained accepted, and hostile finance entry types reached the database.
+- **Fix:** Persist and revalidate invocation identifier, nonce, and sequence; retain bounded representative detail plus sealed aggregates for every invocation; return only exact already-committed finance replays before current time and membership gates; bind late credits to the immutable entitlement and price represented by their invoice allocation; recover an existing authorization from its stable intent; reject the unshipped contract version; and validate finance entry types at both the request and domain boundaries.
+- **Files modified:** `packages/eval/src/performance-contract.ts`, `packages/eval/src/performance-contract.test.ts`, `packages/eval/src/performance-runner.ts`, `packages/eval/src/performance-runner.test.ts`, `packages/db/src/usage.ts`, `packages/db/src/usage.test.ts`, `apps/api/src/billing-usage-input.ts`, `apps/api/src/billing-usage-input.test.ts`, `apps/api/src/server.ts`, `docs/PERFORMANCE_CONTRACT.md`
+- **Verification:** Seven independent review regressions, the hostile request-input matrix, and an additional full-cohort objective regression failed before implementation. The final focused matrix passes 69 of 69. The complete evaluator suite passes 219 of 219 and the complete database suite passes 496 of 496. The API suite passed 708 of 710 under three simultaneous package suites; its only two git-heavy 15-second host timeouts pass 28 of 28 when rerun alone with the established 60-second host budget. Full workspace typecheck passes, the optimized production build generates 64 routes, protected GA preflight passes, and diff integrity is clean.
 
 ---
 

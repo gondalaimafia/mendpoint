@@ -444,6 +444,314 @@ describe("usage ledger", () => {
     });
   });
 
+  it("replays an already committed finance mutation after authorization expiry", () => {
+    const db = setup();
+    const reservation = reserveUsage(db, {
+      id: "reservation-replay",
+      tenantId: "tenant_default",
+      idempotencyKey: "reserve-replay",
+      taskId: "task-replay",
+      mcuMicros: 100,
+      reason: "replay allocation",
+      createdAt: at,
+    });
+    settleUsageReservation(db, {
+      id: "settlement-replay",
+      tenantId: "tenant_default",
+      idempotencyKey: "settle-replay",
+      reservationId: reservation.id,
+      actualMcuMicros: 100,
+      invoiceReference: "invoice-replay",
+      reason: "replay settlement",
+      createdAt: "2026-08-01T12:01:00.000Z",
+    });
+    const authorization = createUsageFinanceAuthorization(db, {
+      id: "finance-replay",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "credit",
+      invoiceReference: "invoice-replay",
+      entryIdempotencyKey: "credit-replay",
+      mcuMicrosDelta: -10,
+      reason: "lost response replay",
+      approvedAt: "2026-08-01T12:01:30.000Z",
+      expiresAt: "2026-08-01T12:02:00.000Z",
+    });
+    const input = {
+      id: "credit-replay",
+      tenantId: "tenant_default",
+      idempotencyKey: "credit-replay",
+      taskId: "task-replay",
+      mcuMicrosDelta: -10,
+      invoiceReference: "invoice-replay",
+      reason: "lost response replay",
+      actorPrincipalId: "finance-owner",
+      financeAuthorizationId: authorization.id,
+      financeAuthorizationDigest: authorization.authorizationDigest,
+    } as const;
+    const committed = creditUsage(db, {
+      ...input,
+      createdAt: "2026-08-01T12:01:45.000Z",
+    });
+
+    expect(creditUsage(db, {
+      ...input,
+      id: "new-api-generated-id",
+      createdAt: "2026-08-01T12:10:00.000Z",
+    })).toEqual(committed);
+    expect(listUsageLedger(db, "tenant_default").filter((entry) =>
+      entry.idempotencyKey === "credit-replay",
+    )).toHaveLength(1);
+  });
+
+  it("applies a late credit to the entitlement represented by its invoice", () => {
+    const db = setup();
+    const reservation = reserveUsage(db, {
+      id: "reservation-august",
+      tenantId: "tenant_default",
+      idempotencyKey: "reserve-august",
+      taskId: "task-august",
+      mcuMicros: 1_000,
+      reason: "august allocation",
+      createdAt: at,
+    });
+    settleUsageReservation(db, {
+      id: "settlement-august",
+      tenantId: "tenant_default",
+      idempotencyKey: "settle-august",
+      reservationId: reservation.id,
+      actualMcuMicros: 1_000,
+      invoiceReference: "invoice-august",
+      reason: "august settlement",
+      createdAt: "2026-08-15T00:00:00.000Z",
+    });
+    createUsagePriceVersion(db, {
+      id: "price-b",
+      tenantId: "tenant_default",
+      formulaVersion: "mcu-v1",
+      currency: "USD",
+      pricePerMcuMoneyMicros: 20_000,
+      effectiveAt: "2026-09-01T00:00:00.000Z",
+      expiresAt: "2026-10-01T00:00:00.000Z",
+      contractReference: "contract-b",
+      createdAt: "2026-09-01T00:00:00.000Z",
+    });
+    createUsageEntitlement(db, {
+      id: "entitlement-b",
+      tenantId: "tenant_default",
+      priceVersionId: "price-b",
+      quotaMcuMicros: 10_000_000,
+      features: ["fettler"],
+      contractReference: "contract-b",
+      periodStart: "2026-09-01T00:00:00.000Z",
+      periodEnd: "2026-10-01T00:00:00.000Z",
+      createdAt: "2026-09-01T00:00:00.000Z",
+    });
+    const excessAuthorization = createUsageFinanceAuthorization(db, {
+      id: "finance-late-credit-excess",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "credit",
+      invoiceReference: "invoice-august",
+      entryIdempotencyKey: "late-credit-excess",
+      mcuMicrosDelta: -1_001,
+      reason: "excess late august correction",
+      approvedAt: "2026-09-02T12:00:00.000Z",
+      expiresAt: "2026-09-02T12:05:00.000Z",
+    });
+    expect(() => creditUsage(db, {
+      id: "late-credit-excess",
+      tenantId: "tenant_default",
+      idempotencyKey: "late-credit-excess",
+      taskId: "task-august",
+      mcuMicrosDelta: -1_001,
+      invoiceReference: "invoice-august",
+      reason: "excess late august correction",
+      actorPrincipalId: "finance-owner",
+      financeAuthorizationId: excessAuthorization.id,
+      financeAuthorizationDigest: excessAuthorization.authorizationDigest,
+      createdAt: "2026-09-02T12:01:00.000Z",
+    })).toThrow("usage_credit_exceeds_invoice_allocation");
+    const authorization = createUsageFinanceAuthorization(db, {
+      id: "finance-late-credit",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "credit",
+      invoiceReference: "invoice-august",
+      entryIdempotencyKey: "late-credit",
+      mcuMicrosDelta: -400,
+      reason: "late august correction",
+      approvedAt: "2026-09-02T12:00:00.000Z",
+      expiresAt: "2026-09-02T12:05:00.000Z",
+    });
+
+    const credit = creditUsage(db, {
+      id: "late-credit",
+      tenantId: "tenant_default",
+      idempotencyKey: "late-credit",
+      taskId: "task-august",
+      mcuMicrosDelta: -400,
+      invoiceReference: "invoice-august",
+      reason: "late august correction",
+      actorPrincipalId: "finance-owner",
+      financeAuthorizationId: authorization.id,
+      financeAuthorizationDigest: authorization.authorizationDigest,
+      createdAt: "2026-09-02T12:01:00.000Z",
+    });
+    expect(credit).toMatchObject({
+      entitlementId: "entitlement-a",
+      priceVersion: "price-a",
+      consumedMcuMicrosDelta: -400,
+    });
+
+    const fullAuthorization = createUsageFinanceAuthorization(db, {
+      id: "finance-late-credit-full",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "credit",
+      invoiceReference: "invoice-august",
+      entryIdempotencyKey: "late-credit-full",
+      mcuMicrosDelta: -600,
+      reason: "full august correction",
+      approvedAt: "2026-09-02T12:02:00.000Z",
+      expiresAt: "2026-09-02T12:07:00.000Z",
+    });
+    expect(creditUsage(db, {
+      id: "late-credit-full",
+      tenantId: "tenant_default",
+      idempotencyKey: "late-credit-full",
+      taskId: "task-august",
+      mcuMicrosDelta: -600,
+      invoiceReference: "invoice-august",
+      reason: "full august correction",
+      actorPrincipalId: "finance-owner",
+      financeAuthorizationId: fullAuthorization.id,
+      financeAuthorizationDigest: fullAuthorization.authorizationDigest,
+      createdAt: "2026-09-02T12:03:00.000Z",
+    })).toMatchObject({ entitlementId: "entitlement-a", consumedMcuMicrosDelta: -600 });
+
+    const septemberReservation = reserveUsage(db, {
+      id: "reservation-september",
+      tenantId: "tenant_default",
+      idempotencyKey: "reserve-september",
+      taskId: "task-september",
+      mcuMicros: 500,
+      reason: "september allocation",
+      createdAt: "2026-09-02T12:03:10.000Z",
+    });
+    settleUsageReservation(db, {
+      id: "settlement-september",
+      tenantId: "tenant_default",
+      idempotencyKey: "settle-september",
+      reservationId: septemberReservation.id,
+      actualMcuMicros: 500,
+      invoiceReference: "invoice-september",
+      reason: "september settlement",
+      createdAt: "2026-09-02T12:03:20.000Z",
+    });
+    const septemberAuthorization = createUsageFinanceAuthorization(db, {
+      id: "finance-september-credit",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "credit",
+      invoiceReference: "invoice-september",
+      entryIdempotencyKey: "september-credit",
+      mcuMicrosDelta: -100,
+      reason: "september correction",
+      approvedAt: "2026-09-02T12:03:30.000Z",
+      expiresAt: "2026-09-02T12:08:30.000Z",
+    });
+    expect(creditUsage(db, {
+      id: "september-credit",
+      tenantId: "tenant_default",
+      idempotencyKey: "september-credit",
+      taskId: "task-september",
+      mcuMicrosDelta: -100,
+      invoiceReference: "invoice-september",
+      reason: "september correction",
+      actorPrincipalId: "finance-owner",
+      financeAuthorizationId: septemberAuthorization.id,
+      financeAuthorizationDigest: septemberAuthorization.authorizationDigest,
+      createdAt: "2026-09-02T12:04:00.000Z",
+    })).toMatchObject({ entitlementId: "entitlement-b", consumedMcuMicrosDelta: -100 });
+    expect(reconcileUsageLedger(db, "tenant_default")).toMatchObject({
+      ok: true,
+      invoices: { "invoice-august": 0, "invoice-september": 400 },
+    });
+  });
+
+  it("recovers an existing finance authorization from the stable intent", () => {
+    const db = setup();
+    const original = createUsageFinanceAuthorization(db, {
+      id: "finance-original",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "credit",
+      invoiceReference: "invoice-recovery",
+      entryIdempotencyKey: "credit-recovery",
+      mcuMicrosDelta: -10,
+      reason: "authorization recovery",
+      approvedAt: "2026-08-01T12:01:30.000Z",
+      expiresAt: "2026-08-01T12:06:30.000Z",
+    });
+    const recovered = createUsageFinanceAuthorization(db, {
+      id: "new-server-generated-id",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "credit",
+      invoiceReference: "invoice-recovery",
+      entryIdempotencyKey: "credit-recovery",
+      mcuMicrosDelta: -10,
+      reason: "authorization recovery",
+      approvedAt: "2026-08-01T12:02:00.000Z",
+      expiresAt: "2026-08-01T12:07:00.000Z",
+    });
+
+    expect(recovered).toEqual(original);
+    expect(() => createUsageFinanceAuthorization(db, {
+      id: "conflicting-server-generated-id",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "credit",
+      invoiceReference: "invoice-recovery",
+      entryIdempotencyKey: "credit-recovery",
+      mcuMicrosDelta: -11,
+      reason: "authorization recovery",
+      approvedAt: "2026-08-01T12:02:00.000Z",
+      expiresAt: "2026-08-01T12:07:00.000Z",
+    })).toThrow("usage_finance_authorization_conflict");
+  });
+
+  it("rejects invalid finance entry types before a durable mutation", () => {
+    const db = setup();
+    for (const [index, entryType] of ["refund", null, [], {}].entries()) {
+      expect(() => createUsageFinanceAuthorization(db, {
+        id: `invalid-finance-type-${index}`,
+        tenantId: "tenant_default",
+        approvedByPrincipalId: "finance-owner",
+        actorPrincipalId: "finance-owner",
+        entryType: entryType as never,
+        invoiceReference: "invoice-a",
+        entryIdempotencyKey: `invalid-finance-type-${index}`,
+        mcuMicrosDelta: 1,
+        reason: "invalid entry type",
+        approvedAt: "2026-08-01T12:01:30.000Z",
+        expiresAt: "2026-08-01T12:06:30.000Z",
+      })).toThrow("usage_finance_entry_type_invalid");
+    }
+    expect(db.raw.prepare(
+      "SELECT COUNT(*) AS total FROM usage_finance_authorizations",
+    ).get()).toEqual({ total: 0 });
+  });
+
   it("requires a live tenant owner for approval and consumption", () => {
     const db = setup();
     insertPrincipal(db, {

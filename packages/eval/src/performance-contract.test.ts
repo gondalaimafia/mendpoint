@@ -105,7 +105,7 @@ function binding(overrides: Partial<PerformanceEvidenceBinding> = {}): Performan
 function observations(metric: PerformanceObservation["metric"], values: number[]) {
   const evidence = binding();
   return values.map((durationMs, index): PerformanceObservation => ({
-    id: `${metric}-${index}`,
+    id: `small.load.${String(index).padStart(8, "0")}.${metric}`,
     tierId: "small",
     metric,
     mode: "load",
@@ -121,6 +121,9 @@ function observations(metric: PerformanceObservation["metric"], values: number[]
     source: evidence.source,
     eventSource: `fettler.performance.${metric}`,
     bindingSource: "probe_observed",
+    invocationId: `small.load.${String(index).padStart(8, "0")}`,
+    invocationNonce: `nonce-${metric}-${index}`,
+    producerSequence: index,
   }));
 }
 
@@ -166,7 +169,7 @@ function canonicalRunEvidence(tierId: "medium" | "large", mode: "load" | "soak")
   };
   const samples = FETTLER_PERFORMANCE_CONTRACT.metricDictionary!.flatMap((definition) =>
     Array.from({ length: tier.minimumSamples }, (_, index): PerformanceObservation => ({
-      id: `${tierId}-${mode}-${definition.metric}-${index}`,
+      id: `${tierId}.${mode}.${String(index).padStart(8, "0")}.${definition.metric}`,
       tierId,
       metric: definition.metric,
       mode,
@@ -182,6 +185,9 @@ function canonicalRunEvidence(tierId: "medium" | "large", mode: "load" | "soak")
       source: evidence.source,
       eventSource: definition.eventSource,
       bindingSource: "probe_observed",
+      invocationId: `${tierId}.${mode}.${String(index).padStart(8, "0")}`,
+      invocationNonce: `nonce-${tierId}-${mode}-${definition.metric}-${index}`,
+      producerSequence: index,
     })),
   );
   return { evidence, samples, endedAt };
@@ -208,7 +214,8 @@ describe("Fettler performance contract", () => {
     expect(documentation).toContain("--repository-language-source-lines=typescript:50000");
     expect(documentation).toContain("--repository-max-file-bytes=1000000");
     expect(documentation).toContain("10,000 observations");
-    expect(documentation).toContain("2,000 complete probe invocations");
+    expect(documentation).toContain("deterministic stride sampling");
+    expect(documentation).toContain("aggregate digest");
   });
   it("publishes production workload ceilings, language mix, concurrency, and metric quality", () => {
     const validated = validatePerformanceContract(FETTLER_PERFORMANCE_CONTRACT);
@@ -306,6 +313,18 @@ describe("Fettler performance contract", () => {
       endedAt: "2026-09-01T00:01:00.000Z",
     }), "load", EVALUATED_AT))
       .toThrow("performance_observation_stale");
+  });
+
+  it("requires the persisted producer invocation proof for production evidence", () => {
+    const missingNonce = completeObservations();
+    delete (missingNonce[0] as Partial<PerformanceObservation>).invocationNonce;
+    expect(() => evaluatePerformanceRun(contract(), missingNonce, binding(), "load", EVALUATED_AT))
+      .toThrow("performance_observation_invocation_nonce_invalid");
+
+    const wrongSequence = completeObservations();
+    wrongSequence[0] = { ...wrongSequence[0]!, producerSequence: -1 };
+    expect(() => evaluatePerformanceRun(contract(), wrongSequence, binding(), "load", EVALUATED_AT))
+      .toThrow("performance_observation_producer_sequence_invalid");
   });
 
   it("rejects a stale observation even when the same metric has a fresh observation", () => {
@@ -490,6 +509,11 @@ describe("Fettler performance contract", () => {
   });
 
   it("rejects ambiguous tiers, incomplete dictionaries, and inverted objectives", () => {
+    expect(() => validatePerformanceContract({
+      ...contract(),
+      version: "2026-09-02.v2",
+    })).toThrow("performance_version_invalid");
+
     const duplicateTier = contract();
     duplicateTier.tiers.push({ ...duplicateTier.tiers[0]! });
     expect(() => validatePerformanceContract(duplicateTier))

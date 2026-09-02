@@ -41,6 +41,10 @@ The runner supplies an expected binding to an instrumented probe. A successful p
 ```json
 {
   "observed": {
+    "invocationId": "small.load.00000000",
+    "invocationNonce": "<fresh producer nonce>",
+    "sequence": 0,
+    "observedAt": "<producer observation time>",
     "tenantId": "tenant-example",
     "repositoryId": "repository-example",
     "repositoryRevision": "<immutable source revision>",
@@ -58,16 +62,16 @@ The runner supplies an expected binding to an instrumented probe. A successful p
     }
   },
   "metrics": {
-    "first_result": { "durationMs": 1000, "success": true },
-    "complete_scan": { "durationMs": 2000, "success": true },
-    "verification": { "durationMs": 500, "success": true },
-    "queue_wait": { "durationMs": 20, "success": true },
-    "campaign_fanout": { "durationMs": 750, "success": true }
+    "first_result": { "durationMs": 1000, "success": true, "eventSource": "fettler.performance.first_result" },
+    "complete_scan": { "durationMs": 2000, "success": true, "eventSource": "fettler.performance.complete_scan" },
+    "verification": { "durationMs": 500, "success": true, "eventSource": "fettler.performance.verification" },
+    "queue_wait": { "durationMs": 20, "success": true, "eventSource": "fettler.performance.queue_wait" },
+    "campaign_fanout": { "durationMs": 750, "success": true, "eventSource": "fettler.performance.campaign_fanout" }
   }
 }
 ```
 
-Every observed identity and repository field must exactly match the requested binding. The runner measures peak concurrency and the nonzero run interval itself. Declared strings alone are not evidence.
+Every observed identity and repository field must exactly match the requested binding. The persisted observation retains the exact invocation identifier, fresh nonce, producer sequence, producer timestamp, and metric event source that passed validation. The runner measures peak concurrency and the nonzero run interval itself. Declared strings alone are not evidence.
 
 Each metric dictionary entry owns an `eventSource`. Observations must carry that exact event source. The separate report-level `probeSource` identifies the producing probe implementation and cannot substitute for the metric event source.
 
@@ -83,8 +87,8 @@ Use `mode=soak` for the soak gate. The runner uses the tier's fixed concurrency 
 
 An operator interrupt produces an aborted report and a failing exit code. A thrown failure before producer observation is retained as a failed sample with a minimum one millisecond duration and request-context provenance; the report remains incomplete and records `probe_failure_unobserved`. A run that reaches its duration without enough complete evidence records `duration_elapsed`. A report completes only when every metric reaches the tier's minimum sample count with exact producer-observed bindings.
 
-The in-memory evidence budget is 10,000 observations, equal to 2,000 complete probe invocations because each invocation emits five metric observations. The runner does not sample or discard successful invocations. Crossing the limit stops the run, records `evidence_budget_exceeded`, and makes the report incomplete. Operators must choose a target and probe pacing whose full declared load or soak duration stays within that invocation ceiling. A higher-throughput contract requires a separately reviewed bounded evidence sink rather than increasing this in-memory limit.
+The schema version 3 report enforces an in-memory raw-evidence budget of 10,000 observations. When a healthy run exceeds that bound, deterministic stride sampling thins complete invocation groups across the full run instead of stopping the probe. The report retains the sampling stride, total invocation count, retained and dropped observation counts, per-metric counts, failures, duration range, fixed histogram, exact counts within each p50, p95, and p99 objective, and an aggregate digest over every observed invocation. Qualification uses those complete objective counts, so raw sampling cannot hide an unsampled slow cohort. A producer failure still fails closed; only successful raw detail is thinned. This keeps publication bounded while preserving auditable provenance and complete aggregate accounting for high-throughput load and soak runs.
 
 ## Claim boundary
 
-A candidate must pass load and soak modes for its advertised tier. Within the 10,000-observation evidence budget, reports retain every observation, including failures and retries. Synthetic fixtures prove only the named fixture and tier. Customer workload claims require separate observed customer evidence and approval through the public claim registry.
+A candidate must pass load and soak modes for its advertised tier. Reports retain every observation until the 10,000-observation raw-evidence budget is reached, then retain deterministic representative detail and sealed aggregate accounting. Synthetic fixtures prove only the named fixture and tier. Customer workload claims require separate observed customer evidence and approval through the public claim registry.

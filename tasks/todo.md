@@ -83,8 +83,11 @@
 - [x] Require a live tenant owner to issue one short-lived, digest-bound finance authorization and consume it atomically once.
 - [x] Persist finance authority in the usage-entry hash and reject missing, tampered, reused, or mismatched authority during reconciliation.
 - [x] Exercise reserve, settle, authorized credit, and reconciliation through the protected Fettler closure self-check.
+- [x] Persist and revalidate producer invocation proof, and replace the raw evidence ceiling with bounded representative detail plus complete sealed aggregate objective accounting.
+- [x] Return exact committed finance replays after authorization expiry, recover exact authorization retries, and bind prior-period credits to their immutable invoice entitlement.
+- [x] Reject the unshipped performance contract version and hostile finance entry types before database access.
 - [x] Pass focused database, evaluator, closure, and affected typecheck gates.
-- [x] Pass complete workspace tests, full typecheck, optimized production build, and protected GA checks.
+- [x] Pass complete affected workspace tests, full workspace typecheck, optimized production build, and protected GA checks.
 - [ ] Obtain exact-head independent review, current-base CI, protected merge, deployment, and production readback.
 
 - [x] RED: add database lifecycle tests for encrypted envelopes, tenant scope, rotation, expiry, retirement, and immutable incident revocation.

@@ -337,29 +337,63 @@ describe("performance runner", () => {
     expect(report.ok).toBe(true);
   });
 
-  it("fails closed at the evidence budget instead of retaining unbounded high-throughput samples", async () => {
+  it("completes high-throughput probes with bounded representative evidence and sealed aggregates", async () => {
+    let now = 0;
     let invocations = 0;
-    const guard = new AbortController();
     const report = await runPerformanceProbe({
       contract: contract(),
       tierId: "test-tier",
       mode: "load",
       ...metadata(),
-      signal: guard.signal,
-      now: () => 0,
+      now: () => now,
       probe: async (context) => {
         invocations += 1;
-        if (invocations > EXPECTED_OBSERVATION_LIMIT / METRICS.length + 2) guard.abort("test_guard");
+        now += 0.1;
         return measurementFor(context);
       },
     });
 
-    expect(report.status).toBe("incomplete");
+    expect(report.status).toBe("completed");
+    expect(report.ok).toBe(true);
+    expect(report.abortReason).toBeNull();
+    expect(report.observations.length).toBeLessThanOrEqual(EXPECTED_OBSERVATION_LIMIT);
+    expect(invocations).toBeGreaterThan(EXPECTED_OBSERVATION_LIMIT / METRICS.length);
+    expect(report.aggregation).toMatchObject({
+      samplingPolicy: "deterministic_stride_v1",
+      totalInvocationCount: invocations,
+      retainedObservationCount: report.observations.length,
+      droppedObservationCount: invocations * METRICS.length - report.observations.length,
+    });
+    expect(report.aggregation.aggregateDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(report.aggregation.metrics.every((metric) =>
+      metric.sampleCount === invocations &&
+      metric.failureCount === 0 &&
+      metric.withinObjectiveP99Count === invocations &&
+      metric.histogram.reduce((total, bucket) => total + bucket.count, 0) === invocations,
+    )).toBe(true);
+  });
+
+  it("uses complete aggregate objective counts when bounded raw sampling omits slow invocations", async () => {
+    let now = 0;
+    const report = await runPerformanceProbe({
+      contract: contract(),
+      tierId: "test-tier",
+      mode: "load",
+      ...metadata(),
+      now: () => now,
+      probe: async (context) => {
+        now += 0.1;
+        return measurementFor(context, context.sequence % 2 === 0 ? 10 : 1_000);
+      },
+    });
+
+    expect(report.status).toBe("completed");
+    expect(report.aggregation.droppedObservationCount).toBeGreaterThan(0);
+    expect(report.evaluation?.ok).toBe(true);
+    expect(report.aggregation.metrics.every((metric) =>
+      metric.withinObjectiveP99Count < Math.ceil(metric.sampleCount * 0.99),
+    )).toBe(true);
     expect(report.ok).toBe(false);
-    expect(report.abortReason).toBe("evidence_budget_exceeded");
-    expect(report.evaluation).toBeNull();
-    expect(report.observations).toHaveLength(EXPECTED_OBSERVATION_LIMIT);
-    expect(invocations).toBeLessThanOrEqual(EXPECTED_OBSERVATION_LIMIT / METRICS.length + 2);
   });
 
   it("evaluates only the explicitly selected workload tier", async () => {
@@ -576,6 +610,7 @@ describe("performance runner", () => {
 
     expect(persistPerformanceProbeReport(output, report)).toBe(output);
     expect(JSON.parse(readFileSync(output, "utf8"))).toMatchObject({
+      schemaVersion: 3,
       repositoryRevision: "a".repeat(40),
       deploymentRevision: "b".repeat(40),
       fixtureDigest: `sha256:${"c".repeat(64)}`,
@@ -584,6 +619,13 @@ describe("performance runner", () => {
       correlationId: "corr-fettler-performance",
       source: "fettler-production-probe",
       mode: "load",
+      observations: expect.arrayContaining([
+        expect.objectContaining({
+          invocationId: "test-tier.load.00000000",
+          invocationNonce: expect.any(String),
+          producerSequence: 0,
+        }),
+      ]),
     });
   });
 

@@ -108,6 +108,7 @@ import {
   registrySummaryMarkdown,
 } from "@mendpoint/db";
 import { parseAuditExportLimit } from "./audit-export.js";
+import { parseUsageFinanceEntryType } from "./billing-usage-input.js";
 import { changeDetailBody } from "./change-detail.js";
 import {
   detectVendors,
@@ -510,6 +511,7 @@ const USAGE_ERRORS = [
     "usage_finance_approved_at_invalid",
     "usage_finance_expires_at_invalid",
     "usage_finance_authorization_window_invalid",
+    "usage_finance_entry_type_invalid",
     "usage_reservation_empty",
     "usage_plan_unknown",
     "usage_plan_seats_invalid",
@@ -3661,13 +3663,13 @@ app.post("/billing/usage/finance-authorizations", async (c) => {
   if (!principal) return c.json({ error: "unauthorized" }, 401);
   if (principal.role !== "owner") return c.json({ error: "forbidden" }, 403);
   const body = await c.req.json<{
-    entryType?: "adjustment" | "credit";
+    entryType?: unknown;
     invoiceReference?: string;
     idempotencyKey?: string;
     mcuMicrosDelta?: number;
     reason?: string;
   }>().catch(() => ({} as {
-    entryType?: "adjustment" | "credit";
+    entryType?: unknown;
     invoiceReference?: string;
     idempotencyKey?: string;
     mcuMicrosDelta?: number;
@@ -3678,12 +3680,13 @@ app.post("/billing/usage/finance-authorizations", async (c) => {
   try {
     const actorPrincipalId = c.get("trustPrincipalId");
     if (!actorPrincipalId) return c.json({ error: "forbidden" }, 403);
+    const entryType = parseUsageFinanceEntryType(body.entryType);
     const authorization = createUsageFinanceAuthorization(db, {
       id: newId(),
       tenantId: requestTenantId(c),
       approvedByPrincipalId: actorPrincipalId,
       actorPrincipalId,
-      entryType: body.entryType ?? "adjustment",
+      entryType,
       invoiceReference: body.invoiceReference ?? "",
       entryIdempotencyKey: body.idempotencyKey ?? "",
       mcuMicrosDelta: body.mcuMicrosDelta ?? 0,

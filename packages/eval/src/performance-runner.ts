@@ -38,6 +38,11 @@ const FIXTURE_DIGEST = /^[0-9a-f]{64}$/;
 const DEPLOYMENT_REVISION = /^(?!main$|master$|latest$|head$)[a-zA-Z0-9][a-zA-Z0-9._-]{6,127}$/i;
 export const PERFORMANCE_OBSERVATION_LIMIT = 10_000;
 export const PERFORMANCE_PROBE_RESPONSE_BYTE_LIMIT = 1_048_576;
+const PERFORMANCE_HISTOGRAM_BOUNDS_MS = Object.freeze([
+  1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096,
+  8_192, 16_384, 32_768, 65_536, 131_072, 262_144, 524_288,
+  1_048_576, 2_097_152, 4_194_304, 8_388_608, 16_777_216,
+] as const);
 
 const PERFORMANCE_DESTINATION_BLOCK_LIST = new BlockList();
 for (const [address, prefix] of [
@@ -110,7 +115,7 @@ export type PerformancePinnedRequest = (
 ) => Promise<Response>;
 
 export type PerformanceProbeReport = Readonly<{
-  schemaVersion: 2;
+  schemaVersion: 3;
   contractVersion: string;
   percentileMethod: string;
   repositoryRevision: string;
@@ -137,6 +142,29 @@ export type PerformanceProbeReport = Readonly<{
   cancelledInvocationCount: number;
   ok: boolean;
   observations: readonly PerformanceObservation[];
+  aggregation: Readonly<{
+    samplingPolicy: "deterministic_stride_v1";
+    samplingStride: number;
+    totalInvocationCount: number;
+    retainedObservationCount: number;
+    droppedObservationCount: number;
+    aggregateDigest: string;
+    metrics: readonly Readonly<{
+      metric: PerformanceMetric;
+      sampleCount: number;
+      failureCount: number;
+      minimumDurationMs: number;
+      maximumDurationMs: number;
+      totalDurationMs: number;
+      objectiveP50Ms: number;
+      objectiveP95Ms: number;
+      objectiveP99Ms: number;
+      withinObjectiveP50Count: number;
+      withinObjectiveP95Count: number;
+      withinObjectiveP99Count: number;
+      histogram: readonly Readonly<{ upperBoundMs: number | null; count: number }>[];
+    }>[];
+  }>;
   evaluation: PerformanceReport | null;
 }>;
 
@@ -310,17 +338,70 @@ function observedAt(now: () => number): string {
 
 function recordInvocation(
   observations: PerformanceObservation[],
+  aggregate: {
+    samplingStride: number;
+    totalInvocationCount: number;
+    digest: ReturnType<typeof createHash>;
+    metrics: Map<PerformanceMetric, {
+      sampleCount: number;
+      failureCount: number;
+      minimumDurationMs: number;
+      maximumDurationMs: number;
+      totalDurationMs: number;
+      objectiveP50Ms: number;
+      objectiveP95Ms: number;
+      objectiveP99Ms: number;
+      withinObjectiveP50Count: number;
+      withinObjectiveP95Count: number;
+      withinObjectiveP99Count: number;
+      histogram: number[];
+    }>;
+  },
   tierId: string,
   mode: PerformanceMode,
   sequence: number,
   measurement: Pick<PerformanceProbeMeasurement, "metrics">,
   at: string,
+  invocation: Readonly<{
+    invocationId: string;
+    invocationNonce: string;
+    producerSequence: number;
+  }>,
   evidence: Pick<PerformanceEvidenceBinding,
     "tenantId" | "repositoryId" | "repositoryRevision" | "deploymentRevision" |
     "fixtureDigest" | "correlationId" | "source">,
   bindingSource: "probe_observed" | "request_context",
-): boolean {
-  if (observations.length + METRICS.length > PERFORMANCE_OBSERVATION_LIMIT) return false;
+): void {
+  aggregate.totalInvocationCount += 1;
+  aggregate.digest.update(JSON.stringify({
+    ...invocation,
+    observedAt: at,
+    metrics: measurement.metrics,
+  }));
+  for (const metric of METRICS) {
+    const value = measurement.metrics[metric];
+    const summary = aggregate.metrics.get(metric)!;
+    summary.sampleCount += 1;
+    if (!value.success) summary.failureCount += 1;
+    summary.minimumDurationMs = Math.min(summary.minimumDurationMs, value.durationMs);
+    summary.maximumDurationMs = Math.max(summary.maximumDurationMs, value.durationMs);
+    summary.totalDurationMs += value.durationMs;
+    if (value.durationMs <= summary.objectiveP50Ms) summary.withinObjectiveP50Count += 1;
+    if (value.durationMs <= summary.objectiveP95Ms) summary.withinObjectiveP95Count += 1;
+    if (value.durationMs <= summary.objectiveP99Ms) summary.withinObjectiveP99Count += 1;
+    const bucket = PERFORMANCE_HISTOGRAM_BOUNDS_MS.findIndex(
+      (upperBound) => value.durationMs <= upperBound,
+    );
+    summary.histogram[bucket === -1 ? PERFORMANCE_HISTOGRAM_BOUNDS_MS.length : bucket] += 1;
+  }
+  while (observations.length + METRICS.length > PERFORMANCE_OBSERVATION_LIMIT) {
+    aggregate.samplingStride *= 2;
+    const retained = observations.filter(
+      (observation) => (observation.producerSequence ?? -1) % aggregate.samplingStride === 0,
+    );
+    observations.splice(0, observations.length, ...retained);
+  }
+  if (sequence % aggregate.samplingStride !== 0) return;
   for (const metric of METRICS) {
     const value = measurement.metrics[metric];
     observations.push({
@@ -340,9 +421,11 @@ function recordInvocation(
       source: evidence.source,
       eventSource: value.eventSource,
       bindingSource,
+      invocationId: invocation.invocationId,
+      invocationNonce: invocation.invocationNonce,
+      producerSequence: invocation.producerSequence,
     });
   }
-  return true;
 }
 
 function failedMeasurement(
@@ -395,6 +478,31 @@ export async function runPerformanceProbe(
   deadlineTimer.unref?.();
 
   const observations: PerformanceObservation[] = [];
+  const objectiveByMetric = new Map(contract.objectives
+    .filter((objective) => objective.tierId === undefined || objective.tierId === tier.id)
+    .map((objective) => [objective.metric, objective]));
+  const aggregate = {
+    samplingStride: 1,
+    totalInvocationCount: 0,
+    digest: createHash("sha256"),
+    metrics: new Map(METRICS.map((metric) => {
+      const objective = objectiveByMetric.get(metric)!;
+      return [metric, {
+        sampleCount: 0,
+        failureCount: 0,
+        minimumDurationMs: Number.POSITIVE_INFINITY,
+        maximumDurationMs: 0,
+        totalDurationMs: 0,
+        objectiveP50Ms: objective.p50Ms,
+        objectiveP95Ms: objective.p95Ms,
+        objectiveP99Ms: objective.p99Ms,
+        withinObjectiveP50Count: 0,
+        withinObjectiveP95Count: 0,
+        withinObjectiveP99Count: 0,
+        histogram: Array.from({ length: PERFORMANCE_HISTOGRAM_BOUNDS_MS.length + 1 }, () => 0),
+      }] as const;
+    })),
+  };
   const evidenceIdentity = {
     tenantId: options.tenantId,
     repositoryId: options.repositoryId,
@@ -410,8 +518,7 @@ export async function runPerformanceProbe(
   let measuredConcurrency = 0;
   let observedRepository: PerformanceEvidenceBinding["repository"] | null = null;
   let unobservedFailure = false;
-  let evidenceOverflow = false;
-  let internalAbortReason: "probe_failure_unobserved" | "evidence_budget_exceeded" | "duration_elapsed" | null = null;
+  let internalAbortReason: "probe_failure_unobserved" | "duration_elapsed" | null = null;
   const eventSources = new Map(
     (contract.metricDictionary ?? WARDEN_PERFORMANCE_CONTRACT.metricDictionary!).map(
       (definition) => [definition.metric, definition.eventSource],
@@ -464,45 +571,42 @@ export async function runPerformanceProbe(
           metricEventSources,
         }, now());
         observedRepository ??= producerRepository;
-        const recorded = recordInvocation(
+        recordInvocation(
           observations,
+          aggregate,
           tier.id,
           options.mode,
           invocationSequence,
           measurement,
           measurement.observed.observedAt,
+          {
+            invocationId: measurement.observed.invocationId,
+            invocationNonce: measurement.observed.invocationNonce,
+            producerSequence: measurement.observed.sequence,
+          },
           evidenceIdentity,
           "probe_observed",
         );
-        if (!recorded) {
-          evidenceOverflow = true;
-          internalAbortReason = "evidence_budget_exceeded";
-          controller.abort("evidence_budget_exceeded");
-        }
       } catch {
         if (controller.signal.aborted || now() >= deadlineMs) {
           cancelledInvocationCount += 1;
           continue;
         }
         unobservedFailure = true;
-        const recorded = recordInvocation(
+        recordInvocation(
           observations,
+          aggregate,
           tier.id,
           options.mode,
           invocationSequence,
           failedMeasurement(Math.max(1, now() - invocationStarted), metricEventSources),
           observedAt(now),
+          { invocationId, invocationNonce, producerSequence: invocationSequence },
           evidenceIdentity,
           "request_context",
         );
-        if (!recorded) {
-          evidenceOverflow = true;
-          internalAbortReason = "evidence_budget_exceeded";
-          controller.abort("evidence_budget_exceeded");
-        } else {
-          internalAbortReason = "probe_failure_unobserved";
-          controller.abort("probe_failure_unobserved");
-        }
+        internalAbortReason = "probe_failure_unobserved";
+        controller.abort("probe_failure_unobserved");
       } finally {
         activeInvocationCount -= 1;
       }
@@ -535,12 +639,12 @@ export async function runPerformanceProbe(
     startedAt: new Date(Math.max(0, startedMs)).toISOString(),
     endedAt: new Date(Math.max(0, endedMs)).toISOString(),
   };
-  const evaluation = !externallyAborted && !unobservedFailure && !evidenceOverflow && observedRepository && completeSamples
+  const evaluation = !externallyAborted && !unobservedFailure && observedRepository && completeSamples
     ? evaluatePerformanceRun(selectedTierContract, observations, performanceEvidence, options.mode)
     : null;
   const status = externallyAborted
     ? "aborted"
-    : completeSamples && observedRepository && !unobservedFailure && !evidenceOverflow
+    : completeSamples && observedRepository && !unobservedFailure
       ? "completed"
       : "incomplete";
   if (
@@ -552,8 +656,36 @@ export async function runPerformanceProbe(
     internalAbortReason = "duration_elapsed";
   }
 
+  const aggregationMetrics = METRICS.map((metric) => {
+    const summary = aggregate.metrics.get(metric)!;
+    return Object.freeze({
+      metric,
+      sampleCount: summary.sampleCount,
+      failureCount: summary.failureCount,
+      minimumDurationMs: Number.isFinite(summary.minimumDurationMs) ? summary.minimumDurationMs : 0,
+      maximumDurationMs: summary.maximumDurationMs,
+      totalDurationMs: summary.totalDurationMs,
+      objectiveP50Ms: summary.objectiveP50Ms,
+      objectiveP95Ms: summary.objectiveP95Ms,
+      objectiveP99Ms: summary.objectiveP99Ms,
+      withinObjectiveP50Count: summary.withinObjectiveP50Count,
+      withinObjectiveP95Count: summary.withinObjectiveP95Count,
+      withinObjectiveP99Count: summary.withinObjectiveP99Count,
+      histogram: Object.freeze(summary.histogram.map((count, index) => Object.freeze({
+        upperBoundMs: PERFORMANCE_HISTOGRAM_BOUNDS_MS[index] ?? null,
+        count,
+      }))),
+    });
+  });
+  const aggregateDigest = `sha256:${aggregate.digest.digest("hex")}`;
+  const aggregateObjectivesOk = aggregationMetrics.every((metric) =>
+    metric.failureCount === 0 &&
+    metric.withinObjectiveP50Count >= Math.ceil(metric.sampleCount * 0.5) &&
+    metric.withinObjectiveP95Count >= Math.ceil(metric.sampleCount * 0.95) &&
+    metric.withinObjectiveP99Count >= Math.ceil(metric.sampleCount * 0.99),
+  );
   return Object.freeze({
-    schemaVersion: 2,
+    schemaVersion: 3,
     contractVersion: contract.version,
     percentileMethod: contract.percentileMethod,
     repositoryRevision: options.repositoryRevision,
@@ -580,8 +712,17 @@ export async function runPerformanceProbe(
     status,
     abortReason: externallyAborted ? abortReason(options.signal?.reason) : internalAbortReason,
     cancelledInvocationCount,
-    ok: status === "completed" && evaluation?.ok === true,
+    ok: status === "completed" && aggregateObjectivesOk && evaluation?.ok === true,
     observations: Object.freeze(observations),
+    aggregation: Object.freeze({
+      samplingPolicy: "deterministic_stride_v1" as const,
+      samplingStride: aggregate.samplingStride,
+      totalInvocationCount: aggregate.totalInvocationCount,
+      retainedObservationCount: observations.length,
+      droppedObservationCount: aggregate.totalInvocationCount * METRICS.length - observations.length,
+      aggregateDigest,
+      metrics: Object.freeze(aggregationMetrics),
+    }),
     evaluation,
   });
 }

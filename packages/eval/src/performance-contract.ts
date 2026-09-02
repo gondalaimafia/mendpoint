@@ -6,7 +6,6 @@ export const PERFORMANCE_PERCENTILE_METHOD = "nearest_rank_v1" as const;
 
 const LEGACY_PERFORMANCE_CONTRACT_VERSIONS = new Set([
   "2026-08-02.v1",
-  "2026-09-02.v2",
 ]);
 
 export const FETTLER_PERFORMANCE_TIER_IDS = ["small", "medium", "large"] as const;
@@ -94,6 +93,9 @@ export type PerformanceObservation = {
   source?: string;
   eventSource?: string;
   bindingSource?: "probe_observed" | "request_context";
+  invocationId?: string;
+  invocationNonce?: string;
+  producerSequence?: number;
 };
 
 export type PerformanceEvidenceBinding = Readonly<{
@@ -610,6 +612,28 @@ export function evaluatePerformanceRun(
     }
     if (observation.bindingSource !== "probe_observed") {
       fail("performance_observation_binding_unobserved");
+    }
+    if (
+      typeof observation.invocationId !== "string" ||
+      !/^[a-z0-9]+(?:[._-][a-z0-9]+)*\.[0-9]{8}$/.test(observation.invocationId)
+    ) {
+      fail("performance_observation_invocation_id_invalid");
+    }
+    if (
+      typeof observation.invocationNonce !== "string" ||
+      observation.invocationNonce.length < 8 ||
+      observation.invocationNonce.length > 256 ||
+      !/^[a-zA-Z0-9._:-]+$/.test(observation.invocationNonce)
+    ) {
+      fail("performance_observation_invocation_nonce_invalid");
+    }
+    if (
+      !Number.isSafeInteger(observation.producerSequence) ||
+      observation.producerSequence! < 0 ||
+      Number(observation.invocationId.slice(-8)) !== observation.producerSequence ||
+      observation.id !== `${observation.invocationId}.${observation.metric}`
+    ) {
+      fail("performance_observation_producer_sequence_invalid");
     }
     const observedAtMs = isoTime(observation.observedAt, "performance_observation_time");
     if (observedAtMs < startedAtMs || observedAtMs > endedAtMs) {

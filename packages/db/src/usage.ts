@@ -444,6 +444,9 @@ export function createUsageFinanceAuthorization(
     expiresAt: string;
   }>,
 ): UsageFinanceAuthorization {
+  if (input.entryType !== "adjustment" && input.entryType !== "credit") {
+    throw new Error("usage_finance_entry_type_invalid");
+  }
   const id = required("usage_finance_authorization_id", input.id);
   const tenantId = required("tenant_id", input.tenantId);
   const approvedByPrincipalId = required(
@@ -469,8 +472,6 @@ export function createUsageFinanceAuthorization(
   const approvedAtMs = time("usage_finance_approved_at", input.approvedAt);
   const expiresAtMs = time("usage_finance_expires_at", input.expiresAt);
   if (expiresAtMs <= approvedAtMs) throw new Error("usage_finance_authorization_window_invalid");
-  assertFinanceOwnerAt(db, tenantId, approvedByPrincipalId, input.approvedAt);
-  assertActiveActorAt(db, tenantId, actorPrincipalId, input.approvedAt);
   const intent = usageFinanceIntent({
     tenantId,
     actorPrincipalId,
@@ -481,6 +482,31 @@ export function createUsageFinanceAuthorization(
     reason,
   });
   const intentDigest = sha256(intent);
+  const existing = one<FinanceAuthorizationRow>(
+    db,
+    `SELECT * FROM usage_finance_authorizations
+     WHERE tenant_id = ? AND (id = ? OR entry_idempotency_key = ?)`,
+    [tenantId, id, entryIdempotencyKey],
+  );
+  if (existing) {
+    const authorization = financeAuthorizationFromRow(existing);
+    if (
+      authorization.tenantId !== tenantId ||
+      authorization.approvedByPrincipalId !== approvedByPrincipalId ||
+      authorization.actorPrincipalId !== actorPrincipalId ||
+      authorization.entryType !== input.entryType ||
+      authorization.invoiceReference !== invoiceReference ||
+      authorization.entryIdempotencyKey !== entryIdempotencyKey ||
+      authorization.mcuMicrosDelta !== delta ||
+      authorization.reason !== reason ||
+      authorization.intentDigest !== intentDigest
+    ) {
+      throw new Error("usage_finance_authorization_conflict");
+    }
+    return authorization;
+  }
+  assertFinanceOwnerAt(db, tenantId, approvedByPrincipalId, input.approvedAt);
+  assertActiveActorAt(db, tenantId, actorPrincipalId, input.approvedAt);
   const content = {
     id,
     tenantId,
@@ -497,19 +523,6 @@ export function createUsageFinanceAuthorization(
     expiresAt: input.expiresAt,
   };
   const authorizationDigest = usageFinanceAuthorizationDigest(content);
-  const existing = one<FinanceAuthorizationRow>(
-    db,
-    `SELECT * FROM usage_finance_authorizations
-     WHERE tenant_id = ? AND (id = ? OR entry_idempotency_key = ?)`,
-    [tenantId, id, entryIdempotencyKey],
-  );
-  if (existing) {
-    const authorization = financeAuthorizationFromRow(existing);
-    if (authorization.authorizationDigest !== authorizationDigest) {
-      throw new Error("usage_finance_authorization_conflict");
-    }
-    return authorization;
-  }
   db.raw.prepare(
     `INSERT INTO usage_finance_authorizations
      (id, tenant_id, approved_by_principal_id, approved_by_role, actor_principal_id,
@@ -1054,21 +1067,20 @@ function signedUsageChange(
   }
   const invoiceReference = input.invoiceReference?.trim();
   if (!invoiceReference) throw new Error("usage_invoice_reference_required");
+  const financeAuthorizationId = required(
+    "usage_finance_authorization_id",
+    input.financeAuthorizationId ?? "",
+  );
+  const financeAuthorizationDigest = required(
+    "usage_finance_authorization_digest",
+    input.financeAuthorizationDigest ?? "",
+  );
+  const actorPrincipalId = required(
+    "usage_finance_actor_principal_id",
+    input.actorPrincipalId ?? "",
+  );
   db.raw.exec("BEGIN IMMEDIATE");
   try {
-    const entitlement = getActiveUsageEntitlement(db, input.tenantId, input.createdAt);
-    if (!entitlement) throw new Error("usage_entitlement_required");
-    const entry: EntryInput = {
-      ...input,
-      entryType,
-      entitlementId: entitlement.id,
-      priceVersion: entitlement.priceVersionId,
-      reservedDelta: 0,
-      consumedDelta: delta,
-      financeAuthorizationId: input.financeAuthorizationId ?? null,
-      financeAuthorizationDigest: input.financeAuthorizationDigest ?? null,
-    };
-    prepareEntry(db, entry);
     const existing = one<EntryRow>(
       db,
       `SELECT * FROM usage_ledger_entries WHERE tenant_id = ? AND idempotency_key = ?`,
@@ -1077,14 +1089,10 @@ function signedUsageChange(
     const authorization = one<FinanceAuthorizationRow>(
       db,
       `SELECT * FROM usage_finance_authorizations WHERE id = ? AND tenant_id = ?`,
-      [required("usage_finance_authorization_id", input.financeAuthorizationId ?? ""), input.tenantId],
+      [financeAuthorizationId, input.tenantId],
     );
     if (!authorization) throw new Error("usage_finance_authorization_required");
     const finance = financeAuthorizationFromRow(authorization);
-    const actorPrincipalId = required(
-      "usage_finance_actor_principal_id",
-      input.actorPrincipalId ?? "",
-    );
     const expectedIntent = usageFinanceIntent({
       tenantId: input.tenantId,
       actorPrincipalId,
@@ -1097,7 +1105,7 @@ function signedUsageChange(
     if (
       finance.approvedByRole !== "finance_owner" ||
       finance.intentDigest !== sha256(expectedIntent) ||
-      finance.authorizationDigest !== input.financeAuthorizationDigest ||
+      finance.authorizationDigest !== financeAuthorizationDigest ||
       finance.authorizationDigest !== usageFinanceAuthorizationDigest({
         id: finance.id,
         tenantId: finance.tenantId,
@@ -1116,6 +1124,26 @@ function signedUsageChange(
     ) {
       throw new Error("usage_finance_authorization_binding_invalid");
     }
+    if (existing) {
+      const committed = entryFromRow(existing);
+      const exactReplay =
+        committed.entryType === entryType &&
+        committed.taskId === input.taskId &&
+        committed.campaignId === (input.campaignId ?? null) &&
+        committed.reservationId === null &&
+        committed.reservedMcuMicrosDelta === 0 &&
+        committed.consumedMcuMicrosDelta === delta &&
+        committed.invoiceReference === invoiceReference &&
+        committed.reason === input.reason &&
+        committed.actorPrincipalId === actorPrincipalId &&
+        committed.financeAuthorizationId === financeAuthorizationId &&
+        committed.financeAuthorizationDigest === financeAuthorizationDigest &&
+        finance.consumedEntryId === committed.id &&
+        financeAuthorizationMatchesEntry(db, committed);
+      if (!exactReplay) throw new Error("usage_idempotency_conflict");
+      db.raw.exec("COMMIT");
+      return committed;
+    }
     const occurredAtMs = time("usage_created_at", input.createdAt);
     if (
       occurredAtMs < time("usage_finance_approved_at", finance.approvedAt) ||
@@ -1125,31 +1153,72 @@ function signedUsageChange(
     }
     assertFinanceOwnerAt(db, input.tenantId, finance.approvedByPrincipalId, input.createdAt);
     assertActiveActorAt(db, input.tenantId, actorPrincipalId, input.createdAt);
-    if (
-      finance.consumedEntryId !== null &&
-      (!existing || finance.consumedEntryId !== existing.id)
-    ) {
+    if (finance.consumedEntryId !== null) {
       throw new Error("usage_finance_authorization_consumed");
     }
-    if (!existing) {
-      const invoiceAllocation = one<{ allocated: number }>(
-        db,
-        `SELECT COALESCE(SUM(consumed_mcu_micros_delta), 0) AS allocated
-         FROM usage_ledger_entries
-         WHERE tenant_id = ? AND invoice_reference = ?`,
-        [input.tenantId, invoiceReference],
-      )!.allocated;
-      if (invoiceAllocation <= 0) throw new Error("usage_invoice_allocation_not_found");
-      if (entryType === "credit" && invoiceAllocation + delta < 0) {
-        throw new Error("usage_credit_exceeds_invoice_allocation");
-      }
-      const totals = currentTotals(db, input.tenantId, entitlement.id);
-      const nextConsumed = totals.consumed + delta;
-      if (nextConsumed < 0) throw new Error("usage_credit_exceeds_consumption");
-      if (delta > 0 && totals.reserved + nextConsumed > entitlement.quotaMcuMicros) {
-        throw new Error("usage_quota_exceeded");
-      }
+    const invoiceAllocations = many<{
+      entitlement_id: string;
+      price_version: string;
+      allocated: number;
+      first_sequence: number;
+    }>(
+      db,
+      `SELECT entitlement_id, price_version,
+              SUM(consumed_mcu_micros_delta) AS allocated,
+              MIN(entry_sequence) AS first_sequence
+       FROM usage_ledger_entries
+       WHERE tenant_id = ? AND invoice_reference = ?
+       GROUP BY entitlement_id, price_version
+       ORDER BY first_sequence`,
+      [input.tenantId, invoiceReference],
+    );
+    const invoiceAllocation = invoiceAllocations.reduce(
+      (total, allocation) => total + allocation.allocated,
+      0,
+    );
+    if (invoiceAllocation <= 0) throw new Error("usage_invoice_allocation_not_found");
+    if (entryType === "credit" && invoiceAllocation + delta < 0) {
+      throw new Error("usage_credit_exceeds_invoice_allocation");
     }
+    const activeEntitlement = getActiveUsageEntitlement(db, input.tenantId, input.createdAt);
+    const creditAllocation = entryType === "credit"
+      ? invoiceAllocations.find((allocation) => allocation.allocated + delta >= 0)
+      : null;
+    const entitlement = creditAllocation
+      ? one<EntitlementRow>(db, "SELECT * FROM usage_entitlements WHERE id = ? AND tenant_id = ?", [
+          creditAllocation.entitlement_id,
+          input.tenantId,
+        ])
+      : activeEntitlement
+        ? one<EntitlementRow>(db, "SELECT * FROM usage_entitlements WHERE id = ? AND tenant_id = ?", [
+            activeEntitlement.id,
+            input.tenantId,
+          ])
+        : undefined;
+    if (!entitlement) throw new Error(entryType === "credit"
+      ? "usage_credit_exceeds_consumption"
+      : "usage_entitlement_required");
+    const selectedEntitlement = entitlementFromRow(entitlement);
+    const totals = currentTotals(db, input.tenantId, selectedEntitlement.id);
+    const nextConsumed = totals.consumed + delta;
+    if (nextConsumed < 0) throw new Error("usage_credit_exceeds_consumption");
+    if (
+      delta > 0 &&
+      totals.reserved + nextConsumed > selectedEntitlement.quotaMcuMicros
+    ) {
+      throw new Error("usage_quota_exceeded");
+    }
+    const entry: EntryInput = {
+      ...input,
+      entryType,
+      entitlementId: selectedEntitlement.id,
+      priceVersion: selectedEntitlement.priceVersionId,
+      reservedDelta: 0,
+      consumedDelta: delta,
+      financeAuthorizationId,
+      financeAuthorizationDigest,
+    };
+    prepareEntry(db, entry);
     const result = insertEntry(db, entry);
     if (finance.consumedEntryId === null) {
       const consumed = db.raw.prepare(
