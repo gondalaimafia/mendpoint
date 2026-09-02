@@ -868,7 +868,7 @@ describe("Fettler/Regauge logical database names", () => {
   it("never publishes a partial recovery-guard state to another connection", () => {
     const path = join(newDir("tenant-recovery-guard-atomicity"), "legacy.sqlite");
     buildLegacyOwnershipVolume(path);
-    applyReleasedFallbackBackfill(path);
+    applyExactReleasedPredecessorTenantMigration(path);
     expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
     attestExactReconciliationScope(path);
 
