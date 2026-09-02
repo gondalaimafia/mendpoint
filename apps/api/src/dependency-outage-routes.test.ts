@@ -72,4 +72,25 @@ describe("dependency outage routes", () => {
       expect(await response.json()).toEqual({ error: "dependency_outage_list_limit_invalid" });
     }
   });
+
+  it("redacts internal database failures", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "dependency-outage-api-failed-"));
+    const db = createDb(join(directory, "app.sqlite"));
+    const routes = createDependencyOutageRoutes({ db });
+    db.raw.close();
+    try {
+      const app = new Hono<ApiEnv>();
+      app.use("*", async (c, next) => {
+        c.set("principal", { id: "human:owner", tenantId: "tenant-a", role: "owner" });
+        c.set("requestId", "request-failed");
+        await next();
+      });
+      app.route("/dependency-outages", routes);
+      const response = await app.request("/dependency-outages");
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: "dependency_outage_query_failed" });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });

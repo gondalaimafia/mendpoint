@@ -3164,6 +3164,9 @@ function modelOutageScope(
 }
 
 function modelPlanOutageError(plan: ModelPlanResult): Error {
+  if (plan.status === "response_invalid" || plan.status === "response_too_large") {
+    return new SyntaxError(`warden_runtime_model_${plan.status}`);
+  }
   const error = new Error(`warden_runtime_model_${plan.status}`) as Error & {
     status?: number;
     code?: string;
@@ -3179,8 +3182,6 @@ function modelPlanOutageError(plan: ModelPlanResult): Error {
     error.status = 503;
   } else if (plan.status === "source_policy_denied") {
     error.status = 403;
-  } else if (plan.status === "response_invalid" || plan.status === "response_too_large") {
-    error.name = "SyntaxError";
   }
   return error;
 }
@@ -3229,10 +3230,10 @@ async function runtimeSuggestTool(
           modelOutageScope(task, runtime, effectId, requestDigest),
         );
         // No durable claim means the provider was never reached. A queued
-        // record is also safe to retry because the shared queue only returns it
-        // after classifying a definitive pre-processing failure. Every other
-        // state may have crossed the remote boundary and therefore remains
-        // unknown to the checkpoint authority: never repeat it automatically.
+        // record is also safe to retry because the shared policy approved that
+        // retry; ambiguous timeouts become blocked reconciliation instead.
+        // Every other state may have crossed the remote boundary and therefore
+        // remains unknown to the checkpoint authority: never repeat it.
         return record === null || record.status === "queued"
           ? { status: "not_started" as const }
           : { status: "unknown" as const };

@@ -28,7 +28,10 @@ export function createDependencyOutageRoutes(input: Readonly<{ db: AppDb }>): Ho
       }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "dependency_outage_query_failed";
-      return c.json({ error: message }, 400);
+      if (message === "dependency_outage_list_limit_invalid") {
+        return c.json({ error: message }, 400);
+      }
+      return c.json({ error: "dependency_outage_query_failed" }, 500);
     }
   });
   return routes;
