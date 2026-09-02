@@ -50,9 +50,51 @@ jobs:
             echo "active=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=Customer backup not applicable::NOT-CONFIGURED — mendpoint-talal still runs the demo profile; the customer-profile activation (discarded #337 headline) has not been proposed. No backup was taken. Flip repo variable MENDPOINT_CUSTOMER_PROFILE_ACTIVE=true when activating."
           fi
-  backup:
+  execution-gate:
     needs: profile-gate
     if: ${{ needs.profile-gate.outputs.active == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      execute: ${{ steps.check.outputs.execute }}
+    steps:
+      - name: Recheck serialized backup freshness
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          BACKUP_REF: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          current_created_at="$(gh run view "$CURRENT_RUN_ID" --repo "$GH_REPO" \
+            --json createdAt --jq '.createdAt')"
+          superseding_run_id=""
+          while IFS= read -r candidate_run_id; do
+            if [ -z "$candidate_run_id" ] || [ "$candidate_run_id" = "$CURRENT_RUN_ID" ]; then continue; fi
+            completed_after_creation="$(gh run view "$candidate_run_id" --repo "$GH_REPO" \
+              --json jobs \
+              --jq "[.jobs[] | select(.name == \"backup\" and .conclusion == \"success\" and .completedAt >= \"$current_created_at\")] | length")"
+            if [ "$completed_after_creation" = "1" ]; then
+              superseding_run_id="$candidate_run_id"
+              break
+            fi
+          done < <(gh run list --repo "$GH_REPO" --workflow customer-backup.yml \
+            --branch "$BACKUP_REF" --status success --limit 50 \
+            --json databaseId --jq '.[].databaseId')
+          if [ -n "$superseding_run_id" ]; then
+            echo "execute=false" >> "$GITHUB_OUTPUT"
+            echo "duplicate_backup_execution_fenced superseding_run_id=$superseding_run_id"
+          else
+            echo "execute=true" >> "$GITHUB_OUTPUT"
+          fi
+  backup:
+    needs: [profile-gate, execution-gate]
+    if: ${{ needs.profile-gate.outputs.active == 'true' && needs.execution-gate.outputs.execute == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
     # The app's authenticated object-store operation is bounded at four hours.
     # Keep the runner alive through that fail-closed timeout so it does not sever

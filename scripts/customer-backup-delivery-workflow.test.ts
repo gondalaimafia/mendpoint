@@ -15,6 +15,7 @@ const controller = delivery.jobs.controller as Record<string, any>;
 const steps = controller.steps as Record<string, any>[];
 const backupPath = resolve(root, ".github/workflows/customer-backup.yml");
 const backup = parse(readFileSync(backupPath, "utf8")) as Record<string, any>;
+const executionGate = backup.jobs["execution-gate"] as Record<string, any> | undefined;
 
 function step(name: string): Record<string, any> {
   const found = steps.find((candidate) => candidate.name === name);
@@ -42,6 +43,7 @@ function runController(options: {
   const bin = join(dir, "bin");
   const log = join(dir, "gh.log");
   const ledger = join(dir, "delivery.jsonl");
+  const dispatched = join(dir, "dispatched");
   mkdirSync(bin, { recursive: true });
   writeFileSync(log, "", "utf8");
   executable(bin, "sleep", "#!/bin/sh\nexit 0\n");
@@ -61,7 +63,9 @@ case "$1 $2" in
         fi
         ;;
       *)
-        if [ -n "\${GH_STUB_LATEST_SUCCESS:-}" ]; then
+        if [ -f "$GH_STUB_DISPATCHED" ]; then
+          printf '%s\\t%s\\n' '4242' "$GH_STUB_DISPATCHED_SUCCESS"
+        elif [ -n "\${GH_STUB_LATEST_SUCCESS:-}" ]; then
           printf '%s\\t%s\\n' '777' "$GH_STUB_LATEST_SUCCESS"
         fi
         ;;
@@ -70,7 +74,11 @@ case "$1 $2" in
   'run view') printf '%s\\n' "\${GH_STUB_BACKUP_JOB_SUCCESS:-1}" ;;
   'workflow run')
     case "$*" in
-      *customer-backup.yml*) exit "\${GH_STUB_DISPATCH_STATUS:-0}" ;;
+      *customer-backup.yml*)
+        status="\${GH_STUB_DISPATCH_STATUS:-0}"
+        if [ "$status" = 0 ]; then : > "$GH_STUB_DISPATCHED"; fi
+        exit "$status"
+        ;;
     esac
     ;;
 esac
@@ -95,13 +103,15 @@ exit 0
         BACKUP_REF: "main",
         CONTROLLER_RUN_ID: "9001",
         DELIVERY_LEDGER_PATH: ledger,
-        DELIVERY_CYCLES: "1",
+        DELIVERY_CYCLES: "2",
         DELIVERY_SLEEP_SECONDS: "0",
         DELIVERY_MAX_AGE_SECONDS: "1500",
         DELIVERY_MAX_ACTIVE_AGE_SECONDS: "1800",
         DELIVERY_OBSERVE_ATTEMPTS: "1",
         DELIVERY_OBSERVE_SLEEP_SECONDS: "0",
         GH_STUB_LOG: log,
+        GH_STUB_DISPATCHED: dispatched,
+        GH_STUB_DISPATCHED_SUCCESS: new Date().toISOString(),
         GH_STUB_ACTIVE_RUN_ID: options.activeRunId ?? "",
         GH_STUB_ACTIVE_CREATED_AT: options.activeCreatedAt ?? new Date().toISOString(),
         GH_STUB_LATEST_SUCCESS: options.latestSuccess ?? "2026-01-01T00:00:00Z",
@@ -119,15 +129,49 @@ exit 0
   };
 }
 
+function runExecutionGate(completedAfterCurrentCreation: boolean) {
+  if (!executionGate) throw new Error("execution-gate job not found");
+  const dir = mkdtempSync(join(tmpdir(), "customer-backup-execution-gate-"));
+  const bin = join(dir, "bin");
+  const output = join(dir, "github-output");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(output, "", "utf8");
+  executable(bin, "gh", `#!/bin/sh
+case "$1 $2 $3" in
+  'run view 9001') printf '%s\\n' '2026-09-02T12:00:00Z' ;;
+  'run view 222') printf '%s\\n' '${completedAfterCurrentCreation ? "1" : "0"}' ;;
+  'run list --repo') printf '%s\\n' '222' ;;
+esac
+exit 0
+`);
+  const check = executionGate.steps.find((candidate: Record<string, any>) =>
+    candidate.name === "Recheck serialized backup freshness");
+  if (!check) throw new Error("execution gate check step not found");
+  const script = join(dir, "execution-gate.sh");
+  writeFileSync(script, check.run, "utf8");
+  const result = spawnSync("bash", ["--noprofile", "--norc", script.replaceAll("\\", "/")], {
+    cwd: root,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+      GH_TOKEN: "not-a-real-token",
+      GH_REPO: "mendpoint-tests/repository-that-does-not-exist",
+      CURRENT_RUN_ID: "9001",
+      BACKUP_REF: "main",
+      GITHUB_OUTPUT: output,
+    },
+  });
+  return { ...result, output: readFileSync(output, "utf8") };
+}
+
 describe("customer backup delivery controller workflow", () => {
   it("keeps an event-driven controller alive across dropped schedules", () => {
     expect(delivery.on.schedule).toEqual([{ cron: "17 * * * *" }]);
     expect(delivery.on.workflow_run).toMatchObject({ workflows: ["CI"], types: ["completed"] });
     expect(delivery.on).toHaveProperty("workflow_dispatch");
-    expect(delivery.concurrency).toEqual({
-      group: "customer-production-backup-delivery",
-      "cancel-in-progress": false,
-    });
+    expect(delivery.concurrency["cancel-in-progress"]).toBe(false);
+    expect(String(delivery.concurrency.group)).toContain("customer-production-backup-delivery");
     expect(controller["timeout-minutes"]).toBe(330);
     expect(controller.environment).toBe("customer-production-backup");
     expect(controller.if).toContain("default_branch");
@@ -177,7 +221,7 @@ describe("customer backup delivery controller workflow", () => {
 
   it("does not queue a duplicate while an exact backup run is active", () => {
     const result = runController({ activeRunId: "31337" });
-    expect(result.status).toBe(0);
+    expect(result.status).not.toBe(0);
     expect(result.calls.some((call) => call.startsWith("workflow run customer-backup.yml"))).toBe(false);
     expect(result.ledger).toContainEqual(expect.objectContaining({
       event: "backup_active",
@@ -195,10 +239,10 @@ describe("customer backup delivery controller workflow", () => {
       latestSuccess: new Date().toISOString(),
       backupJobSuccess: false,
     });
-    expect(result.status).toBe(0);
+    expect(result.status).not.toBe(0);
     expect(result.calls.some((call) => call.startsWith("run view 777"))).toBe(true);
     expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup.yml")))
-      .toHaveLength(1);
+      .toHaveLength(2);
     expect(result.ledger).toContainEqual(expect.objectContaining({
       event: "backup_workflow_success_without_backup_job",
       backupRunId: "777",
@@ -219,14 +263,22 @@ describe("customer backup delivery controller workflow", () => {
   });
 
   it("rechecks durable freshness inside serialized backup execution", () => {
-    const executionGate = backup.jobs["execution-gate"] as Record<string, any>;
-    expect(executionGate.needs).toBe("profile-gate");
-    expect(executionGate.permissions).toMatchObject({ actions: "read" });
-    expect(executionGate.outputs.execute).toBeTruthy();
-    expect(executionGate.steps.some((candidate: Record<string, any>) =>
+    expect(executionGate?.needs).toBe("profile-gate");
+    expect(executionGate?.permissions).toMatchObject({ actions: "read" });
+    expect(executionGate?.outputs.execute).toBeTruthy();
+    expect(executionGate?.steps.some((candidate: Record<string, any>) =>
       candidate.run?.includes("duplicate_backup_execution_fenced"))).toBe(true);
     expect(backup.jobs.backup.needs).toEqual(["profile-gate", "execution-gate"]);
     expect(backup.jobs.backup.if).toContain("needs.execution-gate.outputs.execute == 'true'");
+
+    const raced = runExecutionGate(true);
+    expect(raced.status).toBe(0);
+    expect(raced.output).toContain("execute=false");
+    expect(raced.stdout).toContain("duplicate_backup_execution_fenced superseding_run_id=222");
+
+    const notRaced = runExecutionGate(false);
+    expect(notRaced.status).toBe(0);
+    expect(notRaced.output).toContain("execute=true");
   });
 
   it("accepts only an exact successful backup job as recent completion", () => {

@@ -37,7 +37,13 @@ on:
 # cancel-in-progress=false, a new recovery trigger replaces an older pending run
 # but never kills the controller that currently owns the delivery clock.
 concurrency:
-  group: customer-production-backup-delivery
+  # A workflow_run from an irrelevant branch must not replace the accepted
+  # default-branch successor while it is pending behind the current controller.
+  group: >-
+    ${{ github.event_name == 'workflow_run'
+        && github.event.workflow_run.head_branch != github.event.repository.default_branch
+        && format('customer-production-backup-delivery-ignored-{0}', github.run_id)
+        || 'customer-production-backup-delivery' }}
   cancel-in-progress: false
 
 jobs:
@@ -98,6 +104,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$(dirname "$DELIVERY_LEDGER_PATH")"
           : > "$DELIVERY_LEDGER_PATH"
+          completion_observed=false
 
           record() {
             jq -nc "$@" >> "$DELIVERY_LEDGER_PATH"
@@ -163,6 +170,7 @@ jobs:
               fi
 
               if [ "$due" = false ]; then
+                completion_observed=true
                 record --arg at "$checked_at" --arg id "$latest_success_run_id" \
                   --arg createdAt "$latest_success" \
                   --argjson age "$age_seconds" --argjson cycle "$cycle" \
@@ -203,6 +211,13 @@ jobs:
               sleep "$DELIVERY_SLEEP_SECONDS"
             fi
           done
+
+          if [ "$completion_observed" != true ]; then
+            echo "customer_backup_delivery_completion_missing" >&2
+            record --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '{at:$at,event:"backup_completion_missing"}'
+            exit 1
+          fi
 
           # A workflow_dispatch triggered by GITHUB_TOKEN is allowed to create a
           # new workflow run. With cancel-in-progress=false it becomes the one
