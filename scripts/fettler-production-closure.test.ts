@@ -10,6 +10,16 @@ import {
 } from "./fettler-production-closure.js";
 
 describe("Fettler production closure operating contracts", () => {
+  it("exposes the canonical closure check through the workspace command", () => {
+    const packageManifest = JSON.parse(
+      readFileSync(join(process.cwd(), "package.json"), "utf8"),
+    ) as { scripts?: Record<string, string> };
+
+    expect(packageManifest.scripts?.["fettler:closure:check"]).toBe(
+      "tsx scripts/fettler-production-closure.ts",
+    );
+  });
+
   it("binds performance and metric definitions without claiming a measurement", () => {
     const closure = buildFettlerProductionClosure();
 
