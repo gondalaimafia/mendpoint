@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { createDb, insertTenant, listAudit, recordAudit, type AppDb } from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
@@ -14,7 +14,15 @@ const roots: string[] = [];
 const dbs: AppDb[] = [];
 const at = "2026-08-30T12:00:00.000Z";
 
+beforeEach(() => {
+  // `recordAudit` stamps `created_at` from the wall clock with no injection seam,
+  // so pin the process clock to the suite's fixed instant. Faking only Date keeps
+  // the sqlite/fs work synchronous and untouched.
+  vi.useFakeTimers({ toFake: ["Date"], now: new Date(at) });
+});
+
 afterEach(() => {
+  vi.useRealTimers();
   while (dbs.length) dbs.pop()?.raw.close();
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
 });
