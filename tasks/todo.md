@@ -4562,3 +4562,21 @@ Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, ba
   - `npm run closure:check` (49 tests; STRUCTURE PASS), `actions:check` (6; every external uses ref pinned to a SHA), `third-state:check` (17), `config:check` (18; 56 declared, 0 gated-absent), `docs:check` ("Public docs bundle is current"), `eol:check` (14; no CRLF text blobs in the git index): all exit 0.
 - 0 CR bytes in every changed blob (byte count over the `git diff origin/main HEAD` file set). No protected file touched (checked against the 16 in `config/production-closure-authority.json`).
 - Not verified here: CI on the GitHub runners; the customer-profile boot path itself, which by design has no test yet (see Before re-landing item 3); the Codex peer review requested on the pull request.
+
+## 2026-09-02 Fettler GSD Plan 01-01 current-main completion
+
+- [x] Abort the conflicting stale-base merge without resolving unrelated closure-registry files.
+- [x] Restage the seven safe Plan 01-01 commits onto current `origin/main` after pull request 592 merged.
+- [x] Prove the missing `fettler:closure:check` command with a committed RED regression, then add the one-line package binding and pass the GREEN proof.
+- [x] Pass focused tests, the full workspace and root script suites, full typecheck, optimized production build, GA checks, and diff integrity.
+- [ ] Obtain independent exact-head review before push or merge.
+
+### Review
+
+- Local implementation head: `14bd5bc5`; branch `codex/601-fettler-operating-contracts-successor`; eighteen commits ahead of current-main base `1ae5e9a2` before this documentation update.
+- No source, claims, authority, or Claude-owned conflict was overwritten. The failed merge was aborted, and the successor branch contains only the scoped plan transplant, the RED/GREEN package binding, the completion summary, and this task record.
+- Independent review findings were repaired: all 68 canonical requirements are projected, performance evidence is bound to exact workload and deployment identity, MCU over-settlement is rejected, and the protected package manifest is unchanged.
+- Verification passes: 179 evaluation tests, 257 platform tests, 4 closure tests, full workspace typecheck, optimized 64-route build, all GA gates, all workspace tests, and all 33 proposal-authority tests with an appropriate host timeout.
+- Production backup run `33655513368` completed and restored `/livez`, `/healthz`, and `/readyz` to 200 on `mendpoint-fettler-production`; the durable cadence repair remains in its separate lane.
+- The pre-existing `@xmldom/xmldom` 0.8.13 advisory requires a protected lockfile rotation to 0.8.15 and remains a separate release-control repair.
+- Nothing on this branch has been pushed, merged, deployed, activated, or promoted. Independent exact-head review and current-base protected continuous integration remain required.

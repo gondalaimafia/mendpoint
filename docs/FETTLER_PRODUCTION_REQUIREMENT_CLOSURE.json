@@ -1,0 +1,976 @@
+{
+  "schemaVersion": "fettler-production-requirement-closure/1",
+  "product": "fettler",
+  "release": "production",
+  "sourceAuthority": {
+    "path": "docs/PRODUCT_REQUIREMENTS.json",
+    "sha256": "sha256:b36e6fba107729824395e8f34e4fccadbcbb24266cf29fbd72a125cb9fbbcfcf",
+    "specSha256": "sha256:a317c50563e97ddbb97bf5938e64acf12e8855f1ab1875c501ae75dc13dc8679",
+    "targetReleases": [
+      "warden-pilot",
+      "warden-ga"
+    ],
+    "requirementCount": 68,
+    "registerSets": [
+      {
+        "key": "foundational",
+        "source": "mendpoint-foundational-spec-gap-analysis-and-plan-2026-08-01.md",
+        "auditedRevision": "4134b51b5d1e38da31a31c7c99189ef747e77329",
+        "requirementCount": 84
+      },
+      {
+        "key": "v3-platform",
+        "source": "docs/product/mendpoint-product-platform-specification-v3.md sections 9.5, 10.4, and 28.1.1; enrolled per docs/adr/0004-canonical-product-specification-v3.md",
+        "auditedRevision": "7570fefcf7606f2348431ebb86030c79d92a0eb0",
+        "requirementCount": 9
+      },
+      {
+        "key": "v4-platform",
+        "source": "docs/product/mendpoint-product-platform-specification-v4.md sections 6.5-6.10, 11.22-11.26, and 28.1.0; enrolled per docs/adr/2026-08-22-enroll-v4-persistent-context-register.md",
+        "auditedRevision": "4038232eec7569edd6bddf70433848ce868009b2",
+        "requirementCount": 8
+      }
+    ]
+  },
+  "requirements": [
+    {
+      "id": "ME-CGR-001",
+      "title": "Change Graph production-grade acceptance",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "unimplemented",
+      "availability": "planned",
+      "claimState": "roadmap_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-CGR-001-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-COM-001",
+      "title": "MCU definition",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "verified",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-09",
+      "acceptanceIds": [
+        "ME-COM-001-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-COM-002",
+      "title": "Usage ledger",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "verified",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-09",
+      "acceptanceIds": [
+        "ME-COM-002-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-COM-003",
+      "title": "Billing",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-09",
+      "acceptanceIds": [
+        "ME-COM-003-AC01"
+      ],
+      "externalBlockers": [
+        "approved billing processor or invoice export account",
+        "finance pricing and tax policy"
+      ]
+    },
+    {
+      "id": "ME-COM-004",
+      "title": "Gross margin analytics",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "verified",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-09",
+      "acceptanceIds": [
+        "ME-COM-004-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ENT-001",
+      "title": "Human identity",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-01",
+      "acceptanceIds": [
+        "ME-ENT-001-AC01"
+      ],
+      "externalBlockers": [
+        "approved identity provider tenant",
+        "SAML and SCIM enterprise lifecycle"
+      ]
+    },
+    {
+      "id": "ME-ENT-002",
+      "title": "Tenant isolation proof",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-01",
+      "acceptanceIds": [
+        "ME-ENT-002-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ENT-003",
+      "title": "Secrets lifecycle",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-01",
+      "acceptanceIds": [
+        "ME-ENT-003-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ENT-004",
+      "title": "Audit integrity and retention",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-01",
+      "acceptanceIds": [
+        "ME-ENT-004-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ENT-005",
+      "title": "Observability",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-10",
+      "acceptanceIds": [
+        "ME-ENT-005-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ENT-006",
+      "title": "Horizontal reliability",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-10",
+      "acceptanceIds": [
+        "ME-ENT-006-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ENT-007",
+      "title": "Disaster recovery",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-10",
+      "acceptanceIds": [
+        "ME-ENT-007-AC01"
+      ],
+      "externalBlockers": [
+        "production backup provider",
+        "approved cross region recovery infrastructure",
+        "real production regional failover drill"
+      ]
+    },
+    {
+      "id": "ME-ENT-008",
+      "title": "Dependency outage behavior",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-10",
+      "acceptanceIds": [
+        "ME-ENT-008-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ENT-009",
+      "title": "Performance contract",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-10",
+      "acceptanceIds": [
+        "ME-ENT-009-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ENT-010",
+      "title": "Self hosted support contract",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-10",
+      "acceptanceIds": [
+        "ME-ENT-010-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-FET-015",
+      "title": "Relationship materialization",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-FET-015-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-FET-016",
+      "title": "Impact-path explainability",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-FET-016-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-FET-017",
+      "title": "Coverage-aware no-impact result",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-FET-017-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-FET-018",
+      "title": "Raw-retrieval fallback",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "unimplemented",
+      "availability": "planned",
+      "claimState": "roadmap_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-FET-018-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-FND-001",
+      "title": "Canonical foundational specification",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "documented",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-00",
+      "acceptanceIds": [
+        "ME-FND-001-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-FND-002",
+      "title": "GitHub pilot and GitLab GA scope",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "documented",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-00",
+      "acceptanceIds": [
+        "ME-FND-002-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-FND-006",
+      "title": "Measurable performance contract",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "documented",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-00",
+      "acceptanceIds": [
+        "ME-FND-006-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-FND-007",
+      "title": "Versioned metric dictionary",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "documented",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-00",
+      "acceptanceIds": [
+        "ME-FND-007-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-FND-008",
+      "title": "Versioned migration compute unit",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "documented",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-00",
+      "acceptanceIds": [
+        "ME-FND-008-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-FND-010",
+      "title": "Atomic release tier assignment",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "documented",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-00",
+      "acceptanceIds": [
+        "ME-FND-010-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-GRF-001",
+      "title": "Entity and edge completeness",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-GRF-001-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-GRF-002",
+      "title": "Temporal reconstruction",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-GRF-002-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-GRF-003",
+      "title": "Complete dependency paths",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "verified",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-GRF-003-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-GRF-004",
+      "title": "Multi language semantic accuracy",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-GRF-004-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-GRF-005",
+      "title": "Runtime, test, owner, and CI evidence",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-GRF-005-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-GRF-006",
+      "title": "Calibrated confidence",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-GRF-006-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-GRF-007",
+      "title": "Production graph scale",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-GRF-007-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-GRF-008",
+      "title": "Impact benchmark",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-GRF-008-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-GTM-001",
+      "title": "Guided onboarding",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "verified",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-04",
+      "acceptanceIds": [
+        "ME-GTM-001-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-GTM-002",
+      "title": "Pilot success contract",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "verified",
+      "availability": "experimental",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-04",
+      "acceptanceIds": [
+        "ME-GTM-002-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-GTM-003",
+      "title": "Public trust and proof",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-04",
+      "acceptanceIds": [
+        "ME-GTM-003-AC01"
+      ],
+      "externalBlockers": [
+        "observed external customer proof"
+      ]
+    },
+    {
+      "id": "ME-ING-001",
+      "title": "Unified source artifacts",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-ING-001-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ING-002",
+      "title": "OpenAPI validation",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "verified",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-ING-002-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ING-003",
+      "title": "Changelog and release ingestion",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-ING-003-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ING-004",
+      "title": "SDK release ingestion",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-ING-004-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ING-005",
+      "title": "Manual provider announcement",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "verified",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-ING-005-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ING-006",
+      "title": "Customer incident intake",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-ING-006-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ING-007",
+      "title": "Scheduled provider monitoring",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "verified",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-ING-007-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ING-008",
+      "title": "Change taxonomy",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "verified",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-ING-008-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-ING-009",
+      "title": "Provider recipe catalog",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-ING-009-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-MCC-001",
+      "title": "Mission Context Compiler",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-00",
+      "acceptanceIds": [
+        "ME-MCC-001-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-MSN-001",
+      "title": "Persistent Mission Space",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-00",
+      "acceptanceIds": [
+        "ME-MSN-001-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-MSN-002",
+      "title": "Mission decisions, exceptions, and artifacts",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-00",
+      "acceptanceIds": [
+        "ME-MSN-002-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-MSN-003",
+      "title": "Mission and persistent-context acceptance",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-00",
+      "acceptanceIds": [
+        "ME-MSN-003-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-OMM-001",
+      "title": "Organization Memory governed store",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-08",
+      "acceptanceIds": [
+        "ME-OMM-001-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-PEV-001",
+      "title": "Versioned Policy Envelope inheritance",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-07",
+      "acceptanceIds": [
+        "ME-PEV-001-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-SCM-001",
+      "title": "SCM neutral repository identity",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "verified",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-02",
+      "acceptanceIds": [
+        "ME-SCM-001-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-SCM-002",
+      "title": "Immutable repository snapshot",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "verified",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-02",
+      "acceptanceIds": [
+        "ME-SCM-002-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-SCM-003",
+      "title": "GitHub App end to end",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-02",
+      "acceptanceIds": [
+        "ME-SCM-003-AC01"
+      ],
+      "externalBlockers": [
+        "GitHub App production credentials"
+      ]
+    },
+    {
+      "id": "ME-SCM-004",
+      "title": "GitLab end to end",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-02",
+      "acceptanceIds": [
+        "ME-SCM-004-AC01"
+      ],
+      "externalBlockers": [
+        "approved GitLab credential and disposable private project",
+        "live GitLab webhook and recovery drill"
+      ]
+    },
+    {
+      "id": "ME-SCM-005",
+      "title": "Connection health",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "verified",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-02",
+      "acceptanceIds": [
+        "ME-SCM-005-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-SCM-006",
+      "title": "Ownership and CI discovery",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-02",
+      "acceptanceIds": [
+        "ME-SCM-006-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-SXT-001",
+      "title": "Pluggable structural extractor contract",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "internal",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-SXT-001-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-WAR-001",
+      "title": "Impact to precise edit",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-WAR-001-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-WAR-002",
+      "title": "Baseline verification",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-WAR-002-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-WAR-003",
+      "title": "Structured PR package",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "verified",
+      "availability": "experimental",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-WAR-003-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-WAR-004",
+      "title": "Review actions",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-04",
+      "acceptanceIds": [
+        "ME-WAR-004-AC01"
+      ],
+      "externalBlockers": [
+        "live authenticated GitHub and GitLab review reconciliation drills"
+      ]
+    },
+    {
+      "id": "ME-WAR-005",
+      "title": "Policy enforcement",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "scaffold",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-WAR-005-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-WAR-006",
+      "title": "Durable Fettler campaigns",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-04",
+      "acceptanceIds": [
+        "ME-WAR-006-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-WAR-007",
+      "title": "Rollout order",
+      "targetRelease": "warden-ga",
+      "implementationStatus": "verified",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-04",
+      "acceptanceIds": [
+        "ME-WAR-007-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-WAR-008",
+      "title": "Audit completeness",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "verified",
+      "availability": "experimental",
+      "claimState": "experimental_only",
+      "closureWorkstream": "FC-03",
+      "acceptanceIds": [
+        "ME-WAR-008-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-WAR-009",
+      "title": "Fettler metrics",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "partial",
+      "availability": "experimental",
+      "claimState": "internal_only",
+      "closureWorkstream": "FC-04",
+      "acceptanceIds": [
+        "ME-WAR-009-AC01"
+      ],
+      "externalBlockers": null
+    },
+    {
+      "id": "ME-WAR-010",
+      "title": "Real customer proof",
+      "targetRelease": "warden-pilot",
+      "implementationStatus": "blocked_external",
+      "availability": "planned",
+      "claimState": "roadmap_only",
+      "closureWorkstream": "FC-04",
+      "acceptanceIds": [
+        "ME-WAR-010-AC01"
+      ],
+      "externalBlockers": [
+        "consented private customer repository",
+        "design partner acceptance and observed outcome"
+      ]
+    }
+  ],
+  "qualification": {
+    "status": "not_qualified",
+    "deploymentRevision": null,
+    "evidenceDigest": null,
+    "reason": "exact_revision_production_evidence_not_supplied"
+  },
+  "operatingContracts": {
+    "performance": {
+      "version": "2026-09-02.v2",
+      "digest": "sha256:5411c80d8492660ce0b1e050b911bc91ef8a60f6d3adcebc8c504bc5aa8e27ac",
+      "metricDictionaryVersion": "2026-09-02.v1",
+      "metricDictionaryDigest": "sha256:f1deec032fceea984c8073f7d8e57d8a5f602e20c7c339a5319927289d63eb9f",
+      "evidence": {
+        "status": "not_observed",
+        "reason": "production_measurement_not_supplied"
+      }
+    },
+    "migrationCompute": {
+      "version": "mcu-v1",
+      "digest": "sha256:2f3bb3161f2d8ffc9cf3d186cbf45f05ea90be9a6c9e38a586bc279af203bbe8",
+      "ledgerEntryTypes": [
+        "reservation",
+        "settlement",
+        "release",
+        "adjustment",
+        "credit"
+      ],
+      "evidence": {
+        "status": "not_observed",
+        "reason": "production_ledger_not_supplied"
+      }
+    }
+  }
+}

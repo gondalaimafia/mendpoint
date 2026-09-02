@@ -1,0 +1,114 @@
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import {
+  buildFettlerProductionClosure,
+  checkFettlerProductionClosureArtifact,
+  serializeFettlerProductionClosure,
+  writeFettlerProductionClosureArtifact,
+} from "./fettler-production-closure.js";
+
+describe("Fettler production closure operating contracts", () => {
+  it("enforces the canonical closure artifact inside the existing GA preflight", () => {
+    const gaCheckSource = readFileSync(
+      join(process.cwd(), "scripts", "ga-check.ts"),
+      "utf8",
+    );
+
+    expect(gaCheckSource).toContain(
+      'import { checkFettlerProductionClosureArtifact } from "./fettler-production-closure.js";',
+    );
+    expect(gaCheckSource).toContain("checkFettlerProductionClosureArtifact();");
+  });
+
+  it("binds performance and metric definitions without claiming a measurement", () => {
+    const closure = buildFettlerProductionClosure();
+
+    expect(closure).toMatchObject({
+      schemaVersion: "fettler-production-requirement-closure/1",
+      product: "fettler",
+      release: "production",
+      operatingContracts: {
+        performance: {
+          version: "2026-09-02.v2",
+          digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          metricDictionaryVersion: "2026-09-02.v1",
+          metricDictionaryDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          evidence: {
+            status: "not_observed",
+            reason: "production_measurement_not_supplied",
+          },
+        },
+        migrationCompute: {
+          version: "mcu-v1",
+          digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          ledgerEntryTypes: [
+            "reservation",
+            "settlement",
+            "release",
+            "adjustment",
+            "credit",
+          ],
+          evidence: {
+            status: "not_observed",
+            reason: "production_ledger_not_supplied",
+          },
+        },
+      },
+    });
+    expect(serializeFettlerProductionClosure()).toBe(
+      `${JSON.stringify(closure, null, 2)}\n`,
+    );
+  });
+
+  it("projects all sixty-eight canonical Fettler requirements from one digest-bound register", () => {
+    const closure = buildFettlerProductionClosure();
+    const registerBytes = readFileSync(
+      join(process.cwd(), "docs", "PRODUCT_REQUIREMENTS.json"),
+    );
+
+    expect(closure.sourceAuthority).toMatchObject({
+      path: "docs/PRODUCT_REQUIREMENTS.json",
+      sha256: `sha256:${createHash("sha256").update(registerBytes).digest("hex")}`,
+      targetReleases: ["warden-pilot", "warden-ga"],
+      requirementCount: 68,
+    });
+    expect(closure.sourceAuthority.registerSets).toHaveLength(3);
+    expect(closure.sourceAuthority.registerSets.every((set) =>
+      /^[a-f0-9]{40}$/.test(set.auditedRevision))).toBe(true);
+    expect(closure.requirements).toHaveLength(68);
+    expect(new Set(closure.requirements.map(({ id }) => id)).size).toBe(68);
+    expect(closure.requirements.every(({ targetRelease }) =>
+      targetRelease === "warden-pilot" || targetRelease === "warden-ga")).toBe(true);
+    expect(closure.requirements.map(({ id }) => id)).toEqual(
+      [...closure.requirements.map(({ id }) => id)].sort(),
+    );
+    expect(closure.qualification).toEqual({
+      status: "not_qualified",
+      deploymentRevision: null,
+      evidenceDigest: null,
+      reason: "exact_revision_production_evidence_not_supplied",
+    });
+  });
+
+  it("rejects missing and stale bytes and reproduces the validated artifact exactly", () => {
+    const directory = mkdtempSync(join(tmpdir(), "fettler-closure-"));
+    const artifactPath = join(directory, "closure.json");
+    try {
+      expect(() => checkFettlerProductionClosureArtifact(artifactPath))
+        .toThrow("fettler_production_closure_artifact_missing");
+
+      writeFileSync(artifactPath, "{}\n", "utf8");
+      expect(() => checkFettlerProductionClosureArtifact(artifactPath))
+        .toThrow("fettler_production_closure_artifact_stale");
+
+      writeFettlerProductionClosureArtifact(artifactPath);
+      expect(readFileSync(artifactPath, "utf8")).toBe(serializeFettlerProductionClosure());
+      expect(() => checkFettlerProductionClosureArtifact(artifactPath)).not.toThrow();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});

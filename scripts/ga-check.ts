@@ -4,6 +4,7 @@
  */
 import { RELEASE, featureMatrix, validateApiEnv, readiness } from "@mendpoint/ops";
 import { runGraphBenchmark } from "@mendpoint/graph-learn";
+import { checkFettlerProductionClosureArtifact } from "./fettler-production-closure.js";
 
 function fail(msg: string): never {
   console.error("GA CHECK FAIL:", msg);
@@ -11,6 +12,7 @@ function fail(msg: string): never {
 }
 
 function main() {
+  checkFettlerProductionClosureArtifact();
   console.log("=== Mendpoint / Fettler GA preflight ===");
   console.log(`version=${RELEASE.version} channel=${RELEASE.channel}`);
 
