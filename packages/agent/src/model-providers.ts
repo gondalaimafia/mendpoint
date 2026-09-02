@@ -369,11 +369,10 @@ export type ModelDependencyOutageOperation<T> = Readonly<{
 }>;
 
 export type ModelDependencyOutageResult<T> =
-  | Readonly<{ status: "completed" | "recovered"; value: T; [key: string]: unknown }>
+  | Readonly<{ status: "completed" | "recovered"; value: T }>
   | Readonly<{
     status: "deferred" | "blocked" | "failed";
     decision?: ModelDependencyOutageDecision;
-    [key: string]: unknown;
   }>;
 
 /** Structurally implemented by the durable db recovery queue without importing db here. */

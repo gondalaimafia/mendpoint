@@ -7,7 +7,9 @@ import {
   resolveModelBackend,
   resolveProviderEndpoint,
   runModelProviderOperation,
+  type ModelDependencyOutageOperation,
   type ModelDependencyOutagePort,
+  type ModelDependencyOutageResult,
 } from "./model-providers.js";
 import { DEFAULT_MODEL_PRICE_TABLE, computeModelCostUsd } from "./model-provenance.js";
 
@@ -218,12 +220,14 @@ describe("model provider outage recovery", () => {
       standing: "degraded_retrying" as const,
     }));
     const outage: ModelDependencyOutagePort = {
-      async run<T>(operation) {
+      async run<T>(
+        operation: ModelDependencyOutageOperation<T>,
+      ): Promise<ModelDependencyOutageResult<T>> {
         const decision = operation.classify(
           Object.assign(new Error("upstream unavailable"), { status: 503 }),
           { attempt: 1, retryBudget: 3, now: "2026-09-01T12:00:00.000Z" },
         );
-        return { status: "deferred", decision } as Awaited<ReturnType<typeof outage.run<T>>>;
+        return { status: "deferred", decision };
       },
     };
     await expect(runModelProviderOperation({
@@ -254,7 +258,9 @@ describe("model provider outage recovery", () => {
   it("reconciles completed work by request digest before invoking the model again", async () => {
     const invoke = vi.fn(async () => ({ output: "duplicate" }));
     const outage: ModelDependencyOutagePort = {
-      async run<T>(operation) {
+      async run<T>(
+        operation: ModelDependencyOutageOperation<T>,
+      ): Promise<ModelDependencyOutageResult<T>> {
         const observed = await operation.reconcile();
         if (observed.status !== "completed") throw new Error("expected_completed_model_request");
         return { status: "recovered", value: observed.value };

@@ -80,11 +80,10 @@ export type GitHubDependencyOutageOperation<T> = Readonly<{
 }>;
 
 export type GitHubDependencyOutageResult<T> =
-  | Readonly<{ status: "completed" | "recovered"; value: T; [key: string]: unknown }>
+  | Readonly<{ status: "completed" | "recovered"; value: T }>
   | Readonly<{
     status: "deferred" | "blocked" | "failed";
     decision?: GitHubDependencyOutageDecision;
-    [key: string]: unknown;
   }>;
 
 /** Structurally implemented by the durable db recovery queue without importing db here. */
@@ -638,7 +637,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
         });
       },
     }));
-    if (result.status === "completed" || result.status === "recovered") return result.value;
+    if ("value" in result) return result.value;
     throw new GitHubDependencyOutageError(result.status, result.decision);
   }
 
