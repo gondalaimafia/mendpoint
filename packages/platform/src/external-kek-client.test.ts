@@ -445,7 +445,7 @@ describe("HTTPS external key transport", () => {
     });
 
     await expect(transport.attestKey(locator, "tenant-a"))
-      .rejects.toThrow("external_kek_request_failed");
+      .rejects.toThrow("external_kek_destination_invalid");
     expect(requestImpl).not.toHaveBeenCalled();
   });
 
@@ -463,7 +463,7 @@ describe("HTTPS external key transport", () => {
 
     await expect(transport.attestKey(locator, "tenant-a")).resolves.toEqual({ accepted: true });
     await expect(transport.attestKey(locator, "tenant-a"))
-      .rejects.toThrow("external_kek_request_failed");
+      .rejects.toThrow("external_kek_destination_invalid");
     expect(resolveAddresses).toHaveBeenCalledTimes(2);
     expect(requestImpl).toHaveBeenCalledTimes(1);
   });
@@ -493,7 +493,7 @@ describe("HTTPS external key transport", () => {
       requestImpl,
     });
     await expect(rebound.attestKey(locator, "tenant-a"))
-      .rejects.toThrow("external_kek_request_failed");
+      .rejects.toThrow("external_kek_destination_invalid");
     expect(requestImpl).toHaveBeenCalledTimes(1);
   });
 

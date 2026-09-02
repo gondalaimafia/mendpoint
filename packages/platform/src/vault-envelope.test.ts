@@ -229,6 +229,30 @@ describe("external customer-managed key provider", () => {
     expect(String(redacted)).not.toMatch(/credential|data-key|wrapped-bytes|provider-body/);
   });
 
+  it("preserves a safe destination-denial code and normalizes invalid runtime key material", async () => {
+    const key = {
+      provider: "customer-kms",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: true,
+    } as const;
+    const denied = createExternalKeyEncryptionKeyProvider({
+      provider: "customer-kms",
+      keys: [externalBinding],
+    }, externalTransport({
+      attestKey: async () => { throw new Error("external_kek_destination_invalid"); },
+    }));
+    await expect(denied.attestKey(key, "tenant-a"))
+      .rejects.toThrow("external_kek_destination_invalid");
+
+    const provider = createExternalKeyEncryptionKeyProvider({
+      provider: "customer-kms",
+      keys: [externalBinding],
+    }, externalTransport());
+    await expect(provider.wrapDataKey(key, "tenant-a", undefined as never))
+      .rejects.toThrow("external_kek_operation_failed");
+  });
+
   it("rejects invalid configuration and non-customer-managed use", async () => {
     expect(() => createExternalKeyEncryptionKeyProvider({
       provider: "customer-kms",
