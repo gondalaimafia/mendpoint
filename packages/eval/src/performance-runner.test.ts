@@ -11,6 +11,7 @@ import {
   createHttpPerformanceProbe,
   parsePerformanceCliArguments,
   persistPerformanceProbeReport,
+  runPerformanceCli,
   runPerformanceProbe,
   type PerformanceProbeMeasurement,
 } from "./performance-runner.js";
@@ -103,6 +104,41 @@ function metadata() {
 }
 
 describe("performance runner", () => {
+  it("executes canonical CLI bindings through persisted report bytes", async () => {
+    let now = 0;
+    const directory = mkdtempSync(join(tmpdir(), "performance-cli-"));
+    temporaryDirectories.push(directory);
+    const output = join(directory, "reports", "load.json");
+    const args = [
+      "--mode=load", "--tier=test-tier", "--endpoint=https://deployment.example/probe",
+      "--tenant-id=tenant-fettler-production", "--repository-id=github-1319732323",
+      `--repository-revision=${"a".repeat(40)}`, `--deployment-revision=${"b".repeat(40)}`,
+      `--fixture-digest=sha256:${"c".repeat(64)}`, "--correlation-id=corr-fettler-performance",
+      "--probe-source=fettler-production-probe", "--repository-files=10",
+      "--repository-source-lines=100", "--repository-bytes=1000",
+      "--repository-languages=typescript", "--repository-language-source-lines=typescript:100",
+      `--output=${output}`,
+    ];
+
+    const report = await runPerformanceCli(args, {
+      contract: contract(),
+      dependencyVersions: { node: "test" },
+      now: () => now,
+      probe: async () => {
+        now += 500;
+        return measurement();
+      },
+    });
+
+    expect(report.ok).toBe(true);
+    expect(JSON.parse(readFileSync(output, "utf8"))).toMatchObject({
+      tenantId: "tenant-fettler-production",
+      repositoryRevision: "a".repeat(40),
+      repository: { languages: ["typescript"] },
+      measuredRepository: { languageSourceLines: { typescript: 100 } },
+      ok: true,
+    });
+  });
   it("parses every canonical operator binding including measured language distribution", () => {
     expect(parsePerformanceCliArguments([
       "--mode=load",

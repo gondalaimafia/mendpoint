@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   evaluatePerformanceRun,
@@ -136,7 +135,10 @@ function completeObservations(): PerformanceObservation[] {
 
 describe("Fettler performance contract", () => {
   it("keeps every documented objective equal to the executable authority", () => {
-    const documentation = readFileSync(resolve("docs/PERFORMANCE_CONTRACT.md"), "utf8");
+    const documentation = readFileSync(
+      new URL("../../../docs/PERFORMANCE_CONTRACT.md", import.meta.url),
+      "utf8",
+    );
     const labels = {
       first_result: "First result",
       complete_scan: "Complete scan",

@@ -545,29 +545,51 @@ function dependencyVersions(lockPath: string): Record<string, string> {
 }
 
 async function main(): Promise<void> {
-  const parsed = parsePerformanceCliArguments(process.argv.slice(2), repositoryRevision());
-  const { endpoint, output, ...probeOptions } = parsed;
   const controller = new AbortController();
   const stop = () => controller.abort("operator_signal");
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   try {
-    const report = await runPerformanceProbe({
-      ...probeOptions,
-      dependencyVersions: dependencyVersions(resolve("package-lock.json")),
-      probe: createHttpPerformanceProbe({
-        endpoint,
-        bearerToken: process.env.MENDPOINT_PERFORMANCE_BEARER_TOKEN,
-      }),
-      signal: controller.signal,
-    });
-    console.log(`Performance report ${persistPerformanceProbeReport(output, report)}`);
+    const report = await runPerformanceCli(process.argv.slice(2), { signal: controller.signal });
+    console.log(`Performance report ${resolve(option(process.argv.slice(2), "output")!)}`);
     console.log(`${report.tierId} ${report.mode}: ${report.status}, ${report.observations.length} observations`);
     if (!report.ok) process.exitCode = 1;
   } finally {
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);
   }
+}
+
+export async function runPerformanceCli(
+  args: readonly string[],
+  dependencies: Readonly<{
+    contract?: PerformanceContract;
+    defaultRepositoryRevision?: string;
+    dependencyVersions?: Readonly<Record<string, string>>;
+    probe?: PerformanceProbe;
+    signal?: AbortSignal;
+    now?: () => number;
+  }> = {},
+): Promise<PerformanceProbeReport> {
+  const explicitRevision = option(args, "repository-revision");
+  const parsed = parsePerformanceCliArguments(
+    args,
+    dependencies.defaultRepositoryRevision ?? (explicitRevision ? undefined : repositoryRevision()),
+  );
+  const { endpoint, output, ...probeOptions } = parsed;
+  const report = await runPerformanceProbe({
+    ...probeOptions,
+    ...(dependencies.contract === undefined ? {} : { contract: dependencies.contract }),
+    dependencyVersions: dependencies.dependencyVersions ?? dependencyVersions(resolve("package-lock.json")),
+    probe: dependencies.probe ?? createHttpPerformanceProbe({
+      endpoint,
+      bearerToken: process.env.MENDPOINT_PERFORMANCE_BEARER_TOKEN,
+    }),
+    ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+    ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
+  });
+  persistPerformanceProbeReport(output, report);
+  return report;
 }
 
 export function parsePerformanceCliArguments(
