@@ -20,7 +20,21 @@
     "scripts/production-closure-matrix.test.ts",
     "scripts/production-closure-proposal-authority.test.ts"
   ],
-  "successor": null,
+  "successor": {
+    "templatePath": "config/production-closure-successors/closure-authority-systemic-escalation.yml",
+    "workflowPath": ".github/workflows/closure-authority-systemic-escalation.yml",
+    "workflowSha256": "sha256:6515535ee7a2c8b1da5be04560fc507a2ab1cb85271f209d393d09e6aecad02e",
+    "externalCheckName": "mendpoint-production-closure-authority-systemic-escalation",
+    "externalCheckAppId": 4718395,
+    "controllerCheckName": "mendpoint-production-closure-controller-systemic-escalation",
+    "controllerCheckAppId": 15368,
+    "controllerStatusCreatorLogin": "github-actions[bot]",
+    "controllerStatusCreatorUserId": 41898282,
+    "activationDeadline": "2026-09-08T06:34:50.583Z",
+    "phase": "staged",
+    "stagedByRotationId": "rotation-20260902-017",
+    "activatedByRotationId": null
+  },
   "trustedReviewers": {
     "Claude": [
       {
@@ -36,7 +50,7 @@
   "productionEvidenceAuthorities": [],
   "protectedFiles": {
     "config/production-closure-successors/closure-authority-quiet-sweep.yml": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9",
-    "config/production-closure-successors/closure-authority-systemic-escalation.yml": "sha256:8f538c66031de95befaa01328138d779f64af639a7efb292ad39c939206aef79",
+    "config/production-closure-successors/closure-authority-systemic-escalation.yml": "sha256:6515535ee7a2c8b1da5be04560fc507a2ab1cb85271f209d393d09e6aecad02e",
     ".github/workflows/ci.yml": "sha256:af2e34aa2a94375846fc34ba41978598f05dedbe03a68dd161434199a6a975b3",
     "scripts/production-closure-ci-workflow.test.ts": "sha256:5942062f144d6fc9ce4c15c4ba0bc7a38ebc6bbcc793d409fb9faedbe9a63d24",
     "package.json": "sha256:5166abfa08925beec8bbf6cc0078435bf37f1d4165e25524608924d840dd606a",
@@ -50,6 +64,7 @@
     "scripts/public-claims-check.ts": "sha256:31ce71d0cc998a4b534714bf8fd17f577876b235ca1255a2a76c8e38815ea248",
     "packages/contract/src/product-requirements.ts": "sha256:a0ee9719e472bee1a73f44c44df9626f5f91d881608c628d5b2eb4c9fb7f4e98",
     "packages/contract/src/public-claims.ts": "sha256:10b9739ff30ea52f17a8d1ca9822268f8c57e09b5a5f2d31a3b9a9189ad6aac0",
-    ".github/workflows/closure-authority-quiet-sweep.yml": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9"
+    ".github/workflows/closure-authority-quiet-sweep.yml": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9",
+    ".github/workflows/closure-authority-systemic-escalation.yml": "sha256:6515535ee7a2c8b1da5be04560fc507a2ab1cb85271f209d393d09e6aecad02e"
   }
 }

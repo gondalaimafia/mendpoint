@@ -960,6 +960,87 @@
           "toMode": "100644"
         }
       ]
+    },
+    {
+      "kind": "runtime",
+      "rotationId": "rotation-20260902-016",
+      "previousRotationId": "rotation-20260902-014",
+      "baseRevision": "f8d09056f713925baf585d99fc35aca79242108c",
+      "issuedAt": "2026-09-02T06:07:09.819Z",
+      "expiresAt": "2026-09-03T06:07:09.819Z",
+      "baseLedgerSha256": "sha256:537cc4050ae69cd60f2fb1aa974cc22f9e19b8ffb6db9b5edbe860d2e42682fd",
+      "basePolicySha256": "sha256:152c1b9eb0f12e4a98bf766c18f6a00505bb9c07cfc3108df6a2b207e0d9e407",
+      "proposedPolicySha256": "sha256:69ef2aa18463d441b363fe537f690e194c86e684a891bb7180cfe38b5a7c0d0a",
+      "successor": null,
+      "changes": [
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:152c1b9eb0f12e4a98bf766c18f6a00505bb9c07cfc3108df6a2b207e0d9e407",
+          "toSha256": "sha256:69ef2aa18463d441b363fe537f690e194c86e684a891bb7180cfe38b5a7c0d0a",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "config/production-closure-successors/closure-authority-systemic-escalation.yml",
+          "fromSha256": "sha256:8f538c66031de95befaa01328138d779f64af639a7efb292ad39c939206aef79",
+          "toSha256": "sha256:6515535ee7a2c8b1da5be04560fc507a2ab1cb85271f209d393d09e6aecad02e",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:efc4e5141a29fe0765e7b549d691ac3b32a7c912af9600bd049da228f6c84fdb",
+          "toSha256": "sha256:9d326f8121b2c73f1cd397b1eecb723a4fc26292ffcf76ccaa815f45a5d09066",
+          "fromMode": "100644",
+          "toMode": "100644"
+        }
+      ]
+    },
+    {
+      "kind": "stage_successor",
+      "rotationId": "rotation-20260902-017",
+      "previousRotationId": "rotation-20260902-016",
+      "baseRevision": "e1d5b7483c057578c9cc8c8b795cfa633f53878f",
+      "issuedAt": "2026-09-02T06:34:50.583Z",
+      "expiresAt": "2026-09-03T06:34:50.583Z",
+      "baseLedgerSha256": "sha256:2c157e99b71ba2edf33fd9f25bab134fe8eed73ad73c82344fdb653c040d9ca2",
+      "basePolicySha256": "sha256:69ef2aa18463d441b363fe537f690e194c86e684a891bb7180cfe38b5a7c0d0a",
+      "proposedPolicySha256": "sha256:b01e56a307820b2eb020ec85408d735159e4c3993d9a9b5829916d6fa617751e",
+      "successor": {
+        "templatePath": "config/production-closure-successors/closure-authority-systemic-escalation.yml",
+        "workflowPath": ".github/workflows/closure-authority-systemic-escalation.yml",
+        "workflowSha256": "sha256:6515535ee7a2c8b1da5be04560fc507a2ab1cb85271f209d393d09e6aecad02e",
+        "externalCheckName": "mendpoint-production-closure-authority-systemic-escalation",
+        "externalCheckAppId": 4718395,
+        "controllerCheckName": "mendpoint-production-closure-controller-systemic-escalation",
+        "controllerCheckAppId": 15368,
+        "controllerStatusCreatorLogin": "github-actions[bot]",
+        "controllerStatusCreatorUserId": 41898282,
+        "activationDeadline": "2026-09-08T06:34:50.583Z"
+      },
+      "changes": [
+        {
+          "path": ".github/workflows/closure-authority-systemic-escalation.yml",
+          "fromSha256": null,
+          "toSha256": "sha256:6515535ee7a2c8b1da5be04560fc507a2ab1cb85271f209d393d09e6aecad02e",
+          "fromMode": null,
+          "toMode": "100644"
+        },
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:69ef2aa18463d441b363fe537f690e194c86e684a891bb7180cfe38b5a7c0d0a",
+          "toSha256": "sha256:b01e56a307820b2eb020ec85408d735159e4c3993d9a9b5829916d6fa617751e",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:9d326f8121b2c73f1cd397b1eecb723a4fc26292ffcf76ccaa815f45a5d09066",
+          "toSha256": "sha256:25344887ff1a1c7506ab8ec81fcf470bf9465c731f1f866d1b6a45e088b5cf4d",
+          "fromMode": "100644",
+          "toMode": "100644"
+        }
+      ]
     }
   ]
 }
