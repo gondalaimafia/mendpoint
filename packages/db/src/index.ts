@@ -3601,7 +3601,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
      SET available_at = created_at
      WHERE available_at IS NULL`,
   );
-  for (const table of [
+  installTenantNonblankGuards(db, [
     "consumers",
     "jobs",
     "repair_sessions",
@@ -3609,48 +3609,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
     "agent_run_meters",
     "audit_events",
     "suppressed_patterns",
-  ]) {
-    // Existing NULL, empty, or whitespace-only tenant ids are unattributable
-    // historical data. Leave them byte-identical and quarantined. The versioned
-    // nonblank triggers supplement any earlier exact-empty trigger definition
-    // without rewriting historical ownership.
-    run(
-      db,
-      `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_required_insert
-       BEFORE INSERT ON ${table}
-       WHEN NEW.tenant_id IS NULL OR NEW.tenant_id = ''
-       BEGIN
-         SELECT RAISE(ABORT, 'tenant_id_required');
-       END`,
-    );
-    run(
-      db,
-      `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_required_update
-       BEFORE UPDATE OF tenant_id ON ${table}
-       WHEN NEW.tenant_id IS NULL OR NEW.tenant_id = ''
-       BEGIN
-         SELECT RAISE(ABORT, 'tenant_id_required');
-       END`,
-    );
-    run(
-      db,
-      `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_nonblank_insert
-       BEFORE INSERT ON ${table}
-       WHEN NEW.tenant_id IS NULL OR trim(NEW.tenant_id) = ''
-       BEGIN
-         SELECT RAISE(ABORT, 'tenant_id_required');
-       END`,
-    );
-    run(
-      db,
-      `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_nonblank_update
-       BEFORE UPDATE OF tenant_id ON ${table}
-       WHEN NEW.tenant_id IS NULL OR trim(NEW.tenant_id) = ''
-       BEGIN
-         SELECT RAISE(ABORT, 'tenant_id_required');
-       END`,
-    );
-  }
+  ]);
   run(db, `CREATE INDEX IF NOT EXISTS jobs_tenant_status_idx ON jobs(tenant_id, status)`);
   run(
     db,
@@ -3992,6 +3951,7 @@ function reconcileLegacyTenantOwnership(
           [legacyTenantOwnershipQuarantineScopeDigest(db), discoveredAt],
         );
       }
+      installTenantNonblankGuards(db, LEGACY_TENANT_OWNERSHIP_TABLES);
       installLegacyTenantOwnershipSourceGuards(db);
       db.raw.exec("COMMIT");
     } catch (error) {
@@ -3999,6 +3959,11 @@ function reconcileLegacyTenantOwnership(
       throw error;
     }
   }
+
+  // A prior binary can have committed the sealed discovery boundary and then
+  // failed for missing attestations before reaching the general write guards.
+  // Repair that durable intermediate state before revalidating attestations.
+  installTenantNonblankGuards(db, LEGACY_TENANT_OWNERSHIP_TABLES);
 
   installLegacyTenantOwnershipAppendOnlyTriggers(db, [
     "legacy_tenant_ownership_reconciliation_scope",
@@ -4157,6 +4122,57 @@ function legacyTenantOwnershipQuarantineScopeDigest(db: AppDb): string {
      ORDER BY table_name, row_id`,
   );
   return createHash("sha256").update(JSON.stringify({ schemaVersion: 1, rows })).digest("hex");
+}
+
+function installTenantNonblankGuards(db: AppDb, tables: readonly string[]): void {
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    for (const table of tables) {
+      // Existing NULL, empty, or whitespace-only tenant ids are historical
+      // evidence. Leave them byte-identical; reject only future writes.
+      run(
+        db,
+        `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_required_insert
+         BEFORE INSERT ON ${table}
+         WHEN NEW.tenant_id IS NULL OR NEW.tenant_id = ''
+         BEGIN
+           SELECT RAISE(ABORT, 'tenant_id_required');
+         END`,
+      );
+      run(
+        db,
+        `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_required_update
+         BEFORE UPDATE OF tenant_id ON ${table}
+         WHEN NEW.tenant_id IS NULL OR NEW.tenant_id = ''
+         BEGIN
+           SELECT RAISE(ABORT, 'tenant_id_required');
+         END`,
+      );
+      run(
+        db,
+        `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_nonblank_insert
+         BEFORE INSERT ON ${table}
+         WHEN NEW.tenant_id IS NULL OR trim(NEW.tenant_id) = ''
+         BEGIN
+           SELECT RAISE(ABORT, 'tenant_id_required');
+         END`,
+      );
+      run(
+        db,
+        `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_nonblank_update
+         BEFORE UPDATE OF tenant_id ON ${table}
+         WHEN NEW.tenant_id IS NULL OR trim(NEW.tenant_id) = ''
+         BEGIN
+           SELECT RAISE(ABORT, 'tenant_id_required');
+         END`,
+      );
+    }
+    if (ownsTransaction) db.raw.exec("COMMIT");
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function installLegacyTenantOwnershipSourceGuards(db: AppDb): void {
