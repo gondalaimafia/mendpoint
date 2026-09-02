@@ -3171,7 +3171,12 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "providers", name: "tenant_id", sql: "TEXT" },
     { table: "api_keys", name: "authority_principal_id", sql: "TEXT" },
     { table: "api_keys", name: "authority_role", sql: "TEXT" },
-    { table: "jobs", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    // Historical rows that predate tenant attribution must remain unknown. A
+    // default here would silently claim them for the default customer tenant.
+    // Fresh databases keep the NOT NULL column from the static DDL, while the
+    // triggers installed below require attribution for every future write on an
+    // upgraded volume.
+    { table: "jobs", name: "tenant_id", sql: "TEXT" },
     { table: "api_keys", name: "principal_id", sql: "TEXT" },
     { table: "jobs", name: "lease_owner", sql: "TEXT" },
     { table: "jobs", name: "lease_expires_at", sql: "TEXT" },
@@ -3181,14 +3186,14 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "jobs", name: "last_error_at", sql: "TEXT" },
     { table: "jobs", name: "dead_at", sql: "TEXT" },
     { table: "jobs", name: "cancelled_at", sql: "TEXT" },
-    { table: "repair_sessions", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
-    { table: "agent_runs", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "repair_sessions", name: "tenant_id", sql: "TEXT" },
+    { table: "agent_runs", name: "tenant_id", sql: "TEXT" },
     { table: "agent_runs", name: "job_id", sql: "TEXT" },
-    { table: "audit_events", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "audit_events", name: "tenant_id", sql: "TEXT" },
     { table: "audit_events", name: "principal_id", sql: "TEXT" },
     { table: "audit_events", name: "api_key_id", sql: "TEXT" },
     { table: "audit_events", name: "request_id", sql: "TEXT" },
-    { table: "suppressed_patterns", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "suppressed_patterns", name: "tenant_id", sql: "TEXT" },
     { table: "feed_polls", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
     { table: "feed_schedules", name: "release_last_success_at", sql: "TEXT" },
     { table: "feed_schedule_windows", name: "lease_expires_at", sql: "TEXT" },
@@ -3529,12 +3534,9 @@ function migrateProvidersFeedColumns(db: AppDb) {
     "audit_events",
     "suppressed_patterns",
   ]) {
-    run(
-      db,
-      `UPDATE ${table}
-       SET tenant_id = 'tenant_default'
-       WHERE tenant_id IS NULL OR tenant_id = ''`,
-    );
+    // Existing NULL or empty tenant ids are unattributable historical data.
+    // Leave them quarantined from tenant-scoped equality queries. The triggers
+    // reject new unattributed writes without fabricating ownership for old rows.
     run(
       db,
       `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_required_insert
