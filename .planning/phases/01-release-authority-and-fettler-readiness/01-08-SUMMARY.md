@@ -12,9 +12,9 @@ provides:
 affects: [01-18, model-runtime-binding, github-delivery-binding, production-readiness]
 
 actuals:
-  tokens: 20118
+  tokens: 37942
   tasks: 3
-  commits: 7
+  commits: 9
 
 tech-stack:
   added: []
@@ -22,6 +22,7 @@ tech-stack:
     - Dependency-inverted outage ports prevent package dependency cycles.
     - Reconcile-before-execute protects completed external effects from replay.
     - Fenced durable claims and operation digests fail closed under restart and contention.
+    - Circuit snapshots are persisted as state, opening time, cooldown, and consecutive failure count.
 
 key-files:
   created:
@@ -40,7 +41,7 @@ key-files:
 
 key-decisions:
   - "Use injected structural ports instead of importing ops or db from GitHub, because ops already depends on GitHub and the direct plan link would create a package cycle."
-  - "Keep exact provider reconciliation inside the GitHub delivery implementation, where branch, commit, and draft pull request state can be validated safely."
+  - "Keep exact provider reconciliation inside the GitHub delivery implementation, where branch, commit identity, complete tree delta, file content, file mode, and draft pull request state can be validated read-only before a repeated write."
   - "Do not fabricate production reachability: live caller construction and the database barrel binding remain explicit follow-up work."
 
 patterns-established:
@@ -105,10 +106,11 @@ status: halted
 
 ## Accomplishments
 
-- Added deterministic bounded retry, retry-after handling, circuit opening and probing, expiry, authority blocking, and customer-visible degraded standing.
+- Added deterministic bounded retry, retry-after handling, durable three-failure circuit opening, half-open probing, expiry, authority blocking, and customer-visible degraded standing.
 - Added a durable tenant-scoped queue with restart recovery, fenced claims, exact-once completion, operation and completion digest conflict detection, and append-only hash-chained history.
-- Added provider-specific model and GitHub classification and injected ports that reconcile before invoking an external effect.
-- Proved retry, duplicate, lost-response, restart, expired authority, tenant isolation, digest substitution, immutable history, and package-cycle behavior with 47 focused tests.
+- Added provider-specific model and GitHub classification and injected ports that carry the reconstructed circuit snapshot into every decision.
+- Added read-only GitHub reconciliation that verifies the exact branch, commit identity, parent, full tree delta, file content, file mode, and draft pull request before any repeated blob, tree, commit, reference, or pull request write.
+- Proved retry, duplicate, exact pull request lost-response, zero-repeat writes, process restart, three-failure trip, half-open recovery, expired authority, tenant isolation, digest substitution, immutable history, and package-cycle behavior with 51 focused tests.
 
 ## Task Commits
 
@@ -118,6 +120,7 @@ status: halted
 4. **Task 3 SCM recovery seam:** `dea6a7c8` (`feat`)
 5. **Typed result correction:** `0eb85da2` (`fix`)
 6. **Authority, hostile tests, identifiers, and barrel exports:** `f78d6a7b` (`fix`)
+7. **Durable circuit and read-only GitHub reconciliation repair:** `d4bebdff` (`fix`)
 
 Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/605), open, issue body read back with exact `Owner: Codex` claim.
 
@@ -136,7 +139,7 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 ## Decisions Made
 
 - The plan's proposed GitHub to database link was not implemented because `@mendpoint/ops` already depends on `@mendpoint/github`; importing ops or database into GitHub would create a package cycle. Structural injected ports preserve ownership direction and are covered by an architecture test.
-- A lost GitHub response is classified as requiring provider reconciliation. Exact provider observation stays in `deliverExactDraft`, which verifies the base, branch, commit, draft state, and pull request before a repeated write.
+- A lost GitHub response is classified as requiring provider reconciliation. The outage adapter performs an exact read-only observation before execution; a fully delivered draft completes from provider state, while an exact committed branch without a pull request resumes at pull request creation without repeating Git object writes.
 - Operation identifiers are digest-bounded so maximum provider path lengths cannot overflow durable queue limits.
 
 ## Deviations from Plan
@@ -158,9 +161,17 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - **Verification:** Current-base rebase incorporated #587 without modifying or reverting its database barrel work.
 - **Committed in:** no database barrel commit by design
 
+**3. Independent review found non-durable circuit snapshots and write-before-reconcile behavior**
+- **Found during:** exact-head independent review of pull request #606
+- **Issue:** The queue stored only the circuit state label, so consecutive failures and cooldown history reset between calls; the GitHub outage reconcile callback always returned `missing`, causing completed Git object writes to be repeated after a lost response.
+- **Fix:** Persisted and reconstructed the complete circuit snapshot, transitioned a due open circuit to a fenced half-open claim, threaded the snapshot through both model and GitHub decision inputs, and added exact read-only GitHub state inspection before every write.
+- **Files modified:** outage policy, durable queue, model port, GitHub runtime, their tests, and two public type barrels
+- **Verification:** 51 focused tests, four affected package type checks, the full 179-test ops suite, and the full 195-test GitHub suite pass.
+- **Committed in:** `d4bebdff`
+
 ---
 
-**Total deviations:** 2: one architectural correction and one ownership-preserving deferral.
+**Total deviations:** 3: one architectural correction, one ownership-preserving deferral, and one independently reviewed reliability repair.
 **Impact on plan:** The core behavior is complete and tested. The final production link and therefore ME-ENT-008 qualification are not complete.
 
 ## Issues Encountered
@@ -170,11 +181,11 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 
 ## Verification
 
-- Exact plan commands: all four workspaces passed, 47 tests total.
-- Node 22 combined focused run: 4 test files passed, 47 tests passed.
+- Exact plan commands plus hostile review regressions: all four workspaces passed, 51 focused tests total.
+- Full package regressions: ops passed 179 tests; GitHub passed 195 tests.
 - TypeScript: ops, database, agent, and GitHub package checks passed with no errors.
-- Diff integrity: `git diff --check origin/main...HEAD` passed.
-- Current base: rebased onto `24590c4df96c61da377161b12a5dfdcd7fd08250` before the final runs.
+- Diff integrity: `git diff --check` passed before the repair commit.
+- Current base before the final rebase: `24590c4df96c61da377161b12a5dfdcd7fd08250`.
 
 ## User Setup Required
 
