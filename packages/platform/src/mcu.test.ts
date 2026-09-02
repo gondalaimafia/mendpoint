@@ -174,6 +174,44 @@ describe("migration compute units", () => {
       .toThrow("mcu_reservation_not_closed");
   });
 
+  it("rejects settlement consumption above the exact reservation amount it closes", () => {
+    const overSettlement = lifecycle();
+    overSettlement.entries[1] = {
+      ...overSettlement.entries[1]!,
+      consumedMcuMicrosDelta: 5_000_000,
+    };
+    expect(() => reconcileMcuLedgerLifecycle(overSettlement))
+      .toThrow("mcu_settlement_exceeds_reservation");
+
+    const splitSettlement = lifecycle();
+    splitSettlement.entries.splice(1, 1,
+      {
+        ...splitSettlement.entries[1]!,
+        id: "entry-settle-1",
+        idempotencyKey: "settle-1a",
+        reservedMcuMicrosDelta: -1_000_000,
+        consumedMcuMicrosDelta: 1_000_000,
+        entrySequence: 2,
+      },
+      {
+        ...splitSettlement.entries[1]!,
+        id: "entry-settle-2",
+        idempotencyKey: "settle-1b",
+        reservedMcuMicrosDelta: -3_000_000,
+        consumedMcuMicrosDelta: 2_000_000,
+        entrySequence: 3,
+      },
+    );
+    splitSettlement.entries[3]!.entrySequence = 4;
+    splitSettlement.entries[4]!.entrySequence = 5;
+    expect(reconcileMcuLedgerLifecycle(splitSettlement)).toMatchObject({
+      reservationMcuMicros: 4_000_000,
+      settledMcuMicros: 3_000_000,
+      outstandingReservationMcuMicros: 0,
+      reconciled: true,
+    });
+  });
+
   it("requires the reservation to start the ordered lifecycle", () => {
     const outOfOrder = lifecycle();
     [outOfOrder.entries[0], outOfOrder.entries[1]] = [
