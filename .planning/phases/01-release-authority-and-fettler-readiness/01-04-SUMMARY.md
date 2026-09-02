@@ -9,7 +9,7 @@ tags:
   - hostile-tests
 dependency_graph:
   requires:
-    - pull request 625 head d73c63ff3875d34dc6e76f55d32da2513e4fd166
+    - pull request 625 implementation head 174f5ea5c2f35f7693423f26a7852b82d1b04253
     - issue 624 tenant ownership quarantine contract
   provides:
     - immutable attested source identity and ownership
@@ -27,6 +27,7 @@ key_files:
   created:
     - .planning/phases/01-release-authority-and-fettler-readiness/01-04-SUMMARY.md
   modified:
+    - packages/db/src/index.test.ts
     - packages/db/src/index.ts
     - packages/db/src/warden-transformer-rename.test.ts
     - tasks/todo.md
@@ -35,9 +36,9 @@ decisions:
   - Persist unattributable rows in a sealed ledger whose source triggers remain active under the older binary.
   - Revalidate both sealed ledgers and their current source rows on every startup.
 metrics:
-  review_blockers_reproduced: 2
-  hostile_tests: 34
-  database_tests: 513
+  review_blockers_reproduced: 3
+  hostile_tests: 36
+  database_tests: 515
   completed: 2026-09-02
 ---
 
@@ -49,6 +50,7 @@ Pull request 625 now binds the complete legacy ownership chain: scope membership
 
 - Every source row in the attested reconciliation scope rejects primary-key changes, tenant changes, and deletion across all five migration-touched tables.
 - Source guards are installed in the same immediate transaction that seals discovery, so a failed pre-attestation boot does not leave scoped rows mutable.
+- Future-write tenant guards are installed in that same transaction, so a failed pre-attestation boot cannot admit a late null, empty, or trim-blank ownership row. An already-sealed state from the vulnerable binary is repaired before attestations are revalidated.
 - Unattributable null, empty, and whitespace-only ownership is recorded in a separate sealed quarantine ledger.
 - The durable source triggers reference both ledgers. The exact base backfill statement therefore aborts instead of converting unknown ownership to `tenant_default`.
 - Every startup verifies both ledger digests and checks that each recorded source identifier still exists with the sealed ownership state.
@@ -65,6 +67,10 @@ The hostile suite failed on the reviewed head before production changes:
 
 The focused red run reported 6 failing tests and 27 passing tests.
 
+The final review regression then failed with 35 tests passing and 1 failing. It
+recorded 30 permitted late writes across all five ownership tables and retained
+the resulting unattributable rows after the attested restart.
+
 ### Green
 
 The repair adds the smallest shared boundary for both findings:
@@ -76,8 +82,8 @@ The repair adds the smallest shared boundary for both findings:
 
 ## Verification
 
-- Focused tenant migration suite: 34 of 34 tests passed.
-- Full database suite: 59 files and 513 tests passed.
+- Focused tenant migration suite: 36 of 36 tests passed.
+- Full database suite: 59 files and 515 tests passed.
 - Database TypeScript typecheck passed.
 - Optimized production build passed with 64 generated pages.
 - General-availability preflight passed, including specification, closure, configuration, claims, action pins, architecture, model, naming, architecture decision record, third-state, evidence reachability, revert obligation, and readiness checks.
@@ -91,10 +97,10 @@ The repair adds the smallest shared boundary for both findings:
 
 ## Remaining Authority
 
-This implementation does not merge or deploy the pull request. The pushed repair head still requires independent exact-head review and every protected check.
+This implementation does not push, merge, or deploy the pull request. The local repair head requires the root-controlled current-main rebase, independent exact-head review, and every protected check.
 
 ## Self-Check
 
-- Both independent review blockers have direct hostile regressions.
-- The original pull request branch is updated only after an exact-head guard.
+- All three independent review blockers have direct hostile regressions.
+- No remote branch was changed; the root release lane owns rebase and push after reviewing this evidence commit.
 - Pull requests 606 and 610 and Plans 01-05 and 01-06 are untouched.
