@@ -741,9 +741,14 @@ function signedUsageChange(
   entryType: "adjustment" | "credit",
 ) {
   const delta = micros("usage_adjustment_mcu_micros", input.mcuMicrosDelta, true);
-  if (delta === 0 || (entryType === "credit" && delta > 0)) {
-    throw new Error(entryType === "credit" ? "usage_credit_invalid" : "usage_adjustment_empty");
+  if (entryType === "adjustment" && delta <= 0) {
+    throw new Error("usage_adjustment_invalid");
   }
+  if (entryType === "credit" && delta >= 0) {
+    throw new Error("usage_credit_invalid");
+  }
+  const invoiceReference = input.invoiceReference?.trim();
+  if (!invoiceReference) throw new Error("usage_invoice_reference_required");
   db.raw.exec("BEGIN IMMEDIATE");
   try {
     const entitlement = getActiveUsageEntitlement(db, input.tenantId, input.createdAt);
@@ -763,6 +768,17 @@ function signedUsageChange(
       [input.tenantId, input.idempotencyKey],
     );
     if (!existing) {
+      const invoiceAllocation = one<{ allocated: number }>(
+        db,
+        `SELECT COALESCE(SUM(consumed_mcu_micros_delta), 0) AS allocated
+         FROM usage_ledger_entries
+         WHERE tenant_id = ? AND invoice_reference = ?`,
+        [input.tenantId, invoiceReference],
+      )!.allocated;
+      if (invoiceAllocation <= 0) throw new Error("usage_invoice_allocation_not_found");
+      if (entryType === "credit" && invoiceAllocation + delta < 0) {
+        throw new Error("usage_credit_exceeds_invoice_allocation");
+      }
       const totals = currentTotals(db, input.tenantId, entitlement.id);
       const nextConsumed = totals.consumed + delta;
       if (nextConsumed < 0) throw new Error("usage_credit_exceeds_consumption");
@@ -854,6 +870,9 @@ export function reconcileUsageLedger(db: AppDb, tenantId: string) {
     if (entry.invoiceReference) {
       invoices[entry.invoiceReference] =
         (invoices[entry.invoiceReference] ?? 0) + entry.consumedMcuMicrosDelta;
+      if (invoices[entry.invoiceReference]! < 0) {
+        return { ok: false, checked: index, error: `usage_invoice_negative:${entry.id}` };
+      }
     }
     previousHash = entry.entryHash;
   }
