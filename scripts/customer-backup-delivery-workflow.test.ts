@@ -176,6 +176,13 @@ describe("customer backup delivery controller workflow", () => {
     }));
   });
 
+  it("does not confuse a green workflow with authenticated backup-job completion", () => {
+    const maintain = step("Maintain continuous backup delivery");
+    expect(maintain.run).toContain('gh run view "$candidate_run_id"');
+    expect(maintain.run).toContain('.name == "backup" and .conclusion == "success"');
+    expect(maintain.run).toContain("backup_workflow_success_without_backup_job");
+  });
+
   it("fails loudly when GitHub accepts a dispatch but never exposes its exact run", () => {
     const result = runController({ acknowledgedRunId: "" });
     expect(result.status).not.toBe(0);
