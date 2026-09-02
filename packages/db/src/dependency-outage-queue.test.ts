@@ -33,6 +33,49 @@ function retryDecision(nextAttemptAt = "2026-09-01T12:00:01.000Z"): DependencyOu
 }
 
 describe("durable dependency outage queue", () => {
+  it("rejects malformed injected failure decisions instead of minting retry authority", async () => {
+    const queue = createDependencyOutageQueue(new DatabaseSync(":memory:"), {
+      now: () => "2026-09-02T12:00:00.000Z",
+    });
+    const operation = {
+      ...SCOPE,
+      workerId: "worker-1",
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+      reconcile: async () => ({ status: "missing" as const }),
+      execute: async () => { throw new Error("transport failed"); },
+      classify: () => ({
+        ...retryDecision("2026-09-02T12:00:01.000Z"),
+        failureKind: "mystery",
+      }),
+    };
+
+    await expect(queue.run(operation)).rejects.toThrow("dependency_outage_decision_invalid");
+    expect(queue.get(SCOPE)).toMatchObject({ status: "claimed" });
+  });
+
+  it("rejects unknown reconciliation evidence before executing the external effect", async () => {
+    const queue = createDependencyOutageQueue(new DatabaseSync(":memory:"), {
+      now: () => "2026-09-02T12:00:00.000Z",
+    });
+    const execute = vi.fn(async () => ({ value: "result", completionDigest: COMPLETION }));
+
+    await expect(queue.run({
+      ...SCOPE,
+      workerId: "worker-1",
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+      reconcile: async () => ({ status: "unknown" }) as never,
+      execute,
+      classify: () => retryDecision(),
+    })).rejects.toThrow("dependency_outage_reconciliation_invalid");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("projects a bounded tenant-only degraded health view without operation identifiers", () => {
     const db = new DatabaseSync(":memory:");
     let now = "2026-09-02T12:00:00.000Z";
