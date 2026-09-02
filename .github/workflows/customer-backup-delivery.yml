@@ -41,7 +41,9 @@ concurrency:
   # default-branch successor while it is pending behind the current controller.
   group: >-
     ${{ github.event_name == 'workflow_run'
-        && github.event.workflow_run.head_branch != github.event.repository.default_branch
+        && (github.event.workflow_run.head_branch != github.event.repository.default_branch
+            || github.event.workflow_run.head_repository.full_name != github.repository
+            || github.event.workflow_run.event != 'push')
         && format('customer-production-backup-delivery-ignored-{0}', github.run_id)
         || 'customer-production-backup-delivery' }}
   cancel-in-progress: false
@@ -50,7 +52,9 @@ jobs:
   controller:
     if: >-
       ${{ (github.event_name != 'workflow_run'
-           || github.event.workflow_run.head_branch == github.event.repository.default_branch)
+           || (github.event.workflow_run.head_branch == github.event.repository.default_branch
+               && github.event.workflow_run.head_repository.full_name == github.repository
+               && github.event.workflow_run.event == 'push'))
           && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
     timeout-minutes: 330
@@ -90,6 +94,7 @@ jobs:
           # one-hour RPO for dispatch delay and backup completion. The focused
           # test binds this value below one half of CORE_DISASTER_RECOVERY_POLICY.
           DELIVERY_MAX_AGE_SECONDS: "1500"
+          DELIVERY_RPO_SECONDS: "3600"
           # A backup that remains active for thirty minutes has consumed the
           # controller's full safety margin. Do not queue a duplicate, but do
           # fail loudly instead of calling the hung run healthy forever.
@@ -104,10 +109,30 @@ jobs:
           set -euo pipefail
           mkdir -p "$(dirname "$DELIVERY_LEDGER_PATH")"
           : > "$DELIVERY_LEDGER_PATH"
-          completion_observed=false
-
           record() {
             jq -nc "$@" >> "$DELIVERY_LEDGER_PATH"
+          }
+
+          latest_successful_backup() {
+            local checked_at="$1"
+            local cycle="$2"
+            local candidate_rows
+            candidate_rows="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
+              --branch "$BACKUP_REF" --limit 50 --json databaseId,conclusion,createdAt \
+              --jq '.[] | select(.conclusion == "success") | [.databaseId, .createdAt] | @tsv')"
+            while IFS=$'\t' read -r candidate_run_id candidate_created_at; do
+              if [ -z "$candidate_run_id" ]; then continue; fi
+              backup_job_success="$(gh run view "$candidate_run_id" --repo "$GH_REPO" \
+                --json jobs \
+                --jq '[.jobs[] | select(.name == "backup" and .conclusion == "success")] | length')"
+              if [ "$backup_job_success" = "1" ]; then
+                printf '%s\t%s\n' "$candidate_run_id" "$candidate_created_at"
+                return 0
+              fi
+              record --arg at "$checked_at" --arg id "$candidate_run_id" \
+                --arg createdAt "$candidate_created_at" --argjson cycle "$cycle" \
+                '{at:$at,event:"backup_workflow_success_without_backup_job",cycle:$cycle,backupRunId:$id,createdAt:$createdAt}'
+            done <<< "$candidate_rows"
           }
 
           for cycle in $(seq 1 "$DELIVERY_CYCLES"); do
@@ -138,25 +163,8 @@ jobs:
               # the workflow green when the protected backup job is skipped.
               # Inspect each successful candidate and accept only a run whose
               # exact backup job completed successfully.
-              candidate_rows="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
-                --branch "$BACKUP_REF" --limit 50 --json databaseId,conclusion,createdAt \
-                --jq '.[] | select(.conclusion == "success") | [.databaseId, .createdAt] | @tsv')"
-              latest_success=""
-              latest_success_run_id=""
-              while IFS=$'\t' read -r candidate_run_id candidate_created_at; do
-                if [ -z "$candidate_run_id" ]; then continue; fi
-                backup_job_success="$(gh run view "$candidate_run_id" --repo "$GH_REPO" \
-                  --json jobs \
-                  --jq '[.jobs[] | select(.name == "backup" and .conclusion == "success")] | length')"
-                if [ "$backup_job_success" = "1" ]; then
-                  latest_success="$candidate_created_at"
-                  latest_success_run_id="$candidate_run_id"
-                  break
-                fi
-                record --arg at "$checked_at" --arg id "$candidate_run_id" \
-                  --arg createdAt "$candidate_created_at" --argjson cycle "$cycle" \
-                  '{at:$at,event:"backup_workflow_success_without_backup_job",cycle:$cycle,backupRunId:$id,createdAt:$createdAt}'
-              done <<< "$candidate_rows"
+              latest_success_row="$(latest_successful_backup "$checked_at" "$cycle")"
+              IFS=$'\t' read -r latest_success_run_id latest_success <<< "$latest_success_row"
 
               due=true
               age_seconds=null
@@ -170,7 +178,6 @@ jobs:
               fi
 
               if [ "$due" = false ]; then
-                completion_observed=true
                 record --arg at "$checked_at" --arg id "$latest_success_run_id" \
                   --arg createdAt "$latest_success" \
                   --argjson age "$age_seconds" --argjson cycle "$cycle" \
@@ -179,8 +186,9 @@ jobs:
                 delivery_id="backup-delivery-${CONTROLLER_RUN_ID}-${cycle}"
                 expected_title="Customer production backup [$delivery_id]"
                 started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                dispatch_status=0
                 gh workflow run "$BACKUP_WORKFLOW" --repo "$GH_REPO" --ref "$BACKUP_REF" \
-                  -f "delivery_id=$delivery_id"
+                  -f "delivery_id=$delivery_id" || dispatch_status=$?
 
                 # workflow_dispatch returns no run id. Bind acknowledgement to
                 # the unique run-name identity instead of accepting whichever
@@ -197,13 +205,14 @@ jobs:
                 if [ -z "$backup_run_id" ]; then
                   echo "customer_backup_delivery_run_not_observed delivery_id=$delivery_id" >&2
                   record --arg at "$checked_at" --arg deliveryId "$delivery_id" \
-                    --argjson cycle "$cycle" \
-                    '{at:$at,event:"dispatch_unacknowledged",cycle:$cycle,deliveryId:$deliveryId}'
+                    --argjson cycle "$cycle" --argjson clientStatus "$dispatch_status" \
+                    '{at:$at,event:"dispatch_unacknowledged",cycle:$cycle,deliveryId:$deliveryId,clientStatus:$clientStatus}'
                   exit 1
                 fi
                 record --arg at "$checked_at" --arg deliveryId "$delivery_id" \
                   --arg id "$backup_run_id" --argjson cycle "$cycle" \
-                  '{at:$at,event:"backup_dispatched",cycle:$cycle,deliveryId:$deliveryId,backupRunId:$id}'
+                  --argjson clientStatus "$dispatch_status" \
+                  '{at:$at,event:"backup_dispatched",cycle:$cycle,deliveryId:$deliveryId,backupRunId:$id,clientStatus:$clientStatus}'
               fi
             fi
 
@@ -212,10 +221,19 @@ jobs:
             fi
           done
 
-          if [ "$completion_observed" != true ]; then
+          final_checked_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          final_success_row="$(latest_successful_backup "$final_checked_at" "$DELIVERY_CYCLES")"
+          IFS=$'\t' read -r final_success_run_id final_success <<< "$final_success_row"
+          final_age_seconds=""
+          if [ -n "$final_success" ]; then
+            final_success_epoch="$(date -u -d "$final_success" +%s)"
+            final_age_seconds="$(( $(date -u +%s) - final_success_epoch ))"
+          fi
+          if [ -z "$final_age_seconds" ] || [ "$final_age_seconds" -ge "$DELIVERY_RPO_SECONDS" ]; then
             echo "customer_backup_delivery_completion_missing" >&2
-            record --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              '{at:$at,event:"backup_completion_missing"}'
+            record --arg at "$final_checked_at" --arg id "$final_success_run_id" \
+              --arg age "$final_age_seconds" \
+              '{at:$at,event:"backup_completion_missing",backupRunId:($id | select(length > 0)),ageSeconds:($age | select(length > 0) | tonumber)}'
             exit 1
           fi
 
@@ -225,8 +243,9 @@ jobs:
           # independent of GitHub's best-effort schedule.
           handoff_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           expected_successor_title="Customer production backup delivery [$CONTROLLER_RUN_ID]"
+          handoff_status=0
           gh workflow run "$DELIVERY_WORKFLOW" --repo "$GH_REPO" --ref "$BACKUP_REF" \
-            -f "predecessor_run_id=$CONTROLLER_RUN_ID"
+            -f "predecessor_run_id=$CONTROLLER_RUN_ID" || handoff_status=$?
           successor_run_id=""
           for _ in $(seq 1 "$DELIVERY_OBSERVE_ATTEMPTS"); do
             successor_run_id="$(gh run list --repo "$GH_REPO" --workflow "$DELIVERY_WORKFLOW" \
@@ -239,13 +258,14 @@ jobs:
           if [ -z "$successor_run_id" ]; then
             echo "customer_backup_delivery_successor_not_observed predecessor_run_id=$CONTROLLER_RUN_ID" >&2
             record --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              --arg predecessor "$CONTROLLER_RUN_ID" \
-              '{at:$at,event:"controller_handoff_unacknowledged",predecessorRunId:$predecessor}'
+              --arg predecessor "$CONTROLLER_RUN_ID" --argjson clientStatus "$handoff_status" \
+              '{at:$at,event:"controller_handoff_unacknowledged",predecessorRunId:$predecessor,clientStatus:$clientStatus}'
             exit 1
           fi
           record --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg predecessor "$CONTROLLER_RUN_ID" --arg successor "$successor_run_id" \
-            '{at:$at,event:"controller_handoff",predecessorRunId:$predecessor,successorRunId:$successor}'
+            --argjson clientStatus "$handoff_status" \
+            '{at:$at,event:"controller_handoff",predecessorRunId:$predecessor,successorRunId:$successor,clientStatus:$clientStatus}'
 
       - name: Retain the backup delivery ledger
         if: ${{ always() && steps.gate.outputs.active == 'true' }}

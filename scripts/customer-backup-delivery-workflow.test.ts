@@ -35,6 +35,7 @@ function runController(options: {
   activeCreatedAt?: string;
   latestSuccess?: string;
   backupJobSuccess?: boolean;
+  dispatchedWorkflowSuccess?: boolean;
   acknowledgedRunId?: string;
   handoffRunId?: string;
   dispatchStatus?: string;
@@ -42,6 +43,7 @@ function runController(options: {
   handoffDispatchStatus?: string;
   handoffAcceptedOnError?: boolean;
   deliveryMaxAgeSeconds?: string;
+  deliveryRpoSeconds?: string;
   deliverySleepSeconds?: string;
   realSleep?: boolean;
 }) {
@@ -50,6 +52,7 @@ function runController(options: {
   const log = join(dir, "gh.log");
   const ledger = join(dir, "delivery.jsonl");
   const dispatched = join(dir, "dispatched");
+  const handoffDispatched = join(dir, "handoff-dispatched");
   mkdirSync(bin, { recursive: true });
   writeFileSync(log, "", "utf8");
   executable(bin, "sleep", `#!/bin/sh
@@ -64,8 +67,16 @@ printf '%s\\n' "$*" >> "$GH_STUB_LOG"
 case "$1 $2" in
   'run list')
     case "$*" in
-      *customer-backup-delivery.yml*) printf '%s\\n' "\${GH_STUB_HANDOFF_RUN_ID:-}" ;;
-      *displayTitle*) printf '%s\\n' "\${GH_STUB_ACKNOWLEDGED_RUN_ID:-}" ;;
+      *customer-backup-delivery.yml*)
+        if [ -f "$GH_STUB_HANDOFF_DISPATCHED" ]; then
+          printf '%s\\n' "\${GH_STUB_HANDOFF_RUN_ID:-}"
+        fi
+        ;;
+      *displayTitle*)
+        if [ -f "$GH_STUB_DISPATCHED" ]; then
+          printf '%s\\n' "\${GH_STUB_ACKNOWLEDGED_RUN_ID:-}"
+        fi
+        ;;
       *'status != "completed"'*)
         if [ -n "\${GH_STUB_ACTIVE_RUN_ID:-}" ]; then
           printf '%s\\t%s\\n' "$GH_STUB_ACTIVE_RUN_ID" "$GH_STUB_ACTIVE_CREATED_AT"
@@ -73,7 +84,11 @@ case "$1 $2" in
         ;;
       *)
         if [ -f "$GH_STUB_DISPATCHED" ]; then
-          printf '%s\\t%s\\n' '4242' "$GH_STUB_DISPATCHED_SUCCESS"
+          if [ "\${GH_STUB_DISPATCHED_WORKFLOW_SUCCESS:-1}" = 1 ]; then
+            printf '%s\\t%s\\n' '4242' "$GH_STUB_DISPATCHED_SUCCESS"
+          elif [ -n "\${GH_STUB_LATEST_SUCCESS:-}" ]; then
+            printf '%s\\t%s\\n' '777' "$GH_STUB_LATEST_SUCCESS"
+          fi
         elif [ -n "\${GH_STUB_LATEST_SUCCESS:-}" ]; then
           printf '%s\\t%s\\n' '777' "$GH_STUB_LATEST_SUCCESS"
         fi
@@ -92,6 +107,9 @@ case "$1 $2" in
         ;;
       *customer-backup-delivery.yml*)
         status="\${GH_STUB_HANDOFF_DISPATCH_STATUS:-0}"
+        if [ "$status" = 0 ] || [ "\${GH_STUB_HANDOFF_ACCEPTED_ON_ERROR:-0}" = 1 ]; then
+          : > "$GH_STUB_HANDOFF_DISPATCHED"
+        fi
         exit "$status"
         ;;
     esac
@@ -121,16 +139,19 @@ exit 0
         DELIVERY_CYCLES: "2",
         DELIVERY_SLEEP_SECONDS: options.deliverySleepSeconds ?? "0",
         DELIVERY_MAX_AGE_SECONDS: options.deliveryMaxAgeSeconds ?? "1500",
+        DELIVERY_RPO_SECONDS: options.deliveryRpoSeconds ?? "3600",
         DELIVERY_MAX_ACTIVE_AGE_SECONDS: "1800",
         DELIVERY_OBSERVE_ATTEMPTS: "1",
         DELIVERY_OBSERVE_SLEEP_SECONDS: "0",
         GH_STUB_LOG: log,
         GH_STUB_DISPATCHED: dispatched,
+        GH_STUB_HANDOFF_DISPATCHED: handoffDispatched,
         GH_STUB_DISPATCHED_SUCCESS: new Date().toISOString(),
         GH_STUB_ACTIVE_RUN_ID: options.activeRunId ?? "",
         GH_STUB_ACTIVE_CREATED_AT: options.activeCreatedAt ?? new Date().toISOString(),
         GH_STUB_LATEST_SUCCESS: options.latestSuccess ?? "2026-01-01T00:00:00Z",
         GH_STUB_BACKUP_JOB_SUCCESS: options.backupJobSuccess === false ? "0" : "1",
+        GH_STUB_DISPATCHED_WORKFLOW_SUCCESS: options.dispatchedWorkflowSuccess === false ? "0" : "1",
         GH_STUB_ACKNOWLEDGED_RUN_ID: options.acknowledgedRunId ?? "4242",
         GH_STUB_HANDOFF_RUN_ID: options.handoffRunId ?? "5252",
         GH_STUB_DISPATCH_STATUS: options.dispatchStatus ?? "0",
@@ -203,6 +224,9 @@ describe("customer backup delivery controller workflow", () => {
     expect(maintain.env.BACKUP_REF).toBe("${{ github.event.repository.default_branch }}");
     expect(Number(maintain.env.DELIVERY_MAX_AGE_SECONDS)).toBeLessThan(
       CORE_DISASTER_RECOVERY_POLICY.rpoSeconds / 2,
+    );
+    expect(Number(maintain.env.DELIVERY_RPO_SECONDS)).toBe(
+      CORE_DISASTER_RECOVERY_POLICY.rpoSeconds,
     );
     expect(maintain.run).toContain('gh workflow run "$BACKUP_WORKFLOW"');
     expect(maintain.run).toContain('-f "delivery_id=$delivery_id"');
@@ -280,8 +304,10 @@ describe("customer backup delivery controller workflow", () => {
     const result = runController({
       latestSuccess: new Date().toISOString(),
       deliveryMaxAgeSeconds: "1",
+      deliveryRpoSeconds: "1",
       deliverySleepSeconds: "2",
       realSleep: true,
+      dispatchedWorkflowSuccess: false,
     });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("customer_backup_delivery_completion_missing");

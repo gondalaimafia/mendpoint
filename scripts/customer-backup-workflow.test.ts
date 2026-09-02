@@ -80,7 +80,7 @@ describe("customer backup workflow", () => {
     // never a silent skip that fakes "we have backups".
     expect(gateStep.run).toContain("::notice");
     expect(gateStep.run).toContain("No backup was taken");
-    expect(job.needs).toBe("profile-gate");
+    expect(job.needs).toEqual(expect.arrayContaining(["profile-gate", "execution-gate"]));
     expect(job.if).toContain("needs.profile-gate.outputs.active == 'true'");
     // The original default-branch guard must survive composition.
     expect(job.if).toContain("github.event.repository.default_branch");
