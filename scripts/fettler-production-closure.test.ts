@@ -16,12 +16,13 @@ describe("Fettler production closure operating contracts", () => {
     const manifest = JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")) as {
       scripts: Record<string, string>;
     };
+    const gaGate = readFileSync(join(import.meta.dirname, "ga-check.ts"), "utf8");
     expect(FETTLER_PERFORMANCE_CONTRACT.version).toBe("2026-09-02.v3");
     expect(MCU_SCHEDULE_V1.version).toBe("mcu-v1");
-    expect(manifest.scripts["fettler:closure:check"])
-      .toBe("tsx scripts/fettler-production-closure.ts");
     expect(manifest.scripts["ga:check"])
-      .toContain("npm run fettler:closure:check");
+      .toContain("tsx scripts/ga-check.ts");
+    expect(gaGate).toContain("checkFettlerProductionClosureArtifact");
+    expect(gaGate).toContain("checkFettlerProductionClosureArtifact();");
   });
 
   it("binds performance and metric definitions without claiming a measurement", () => {
