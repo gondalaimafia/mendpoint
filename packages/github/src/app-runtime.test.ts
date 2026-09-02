@@ -1,6 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
+  classifyGitHubDependencyFailure,
   createAppJwt,
   deliverToManyRepos,
   GitHubAppDelivery,
@@ -9,6 +10,7 @@ import {
   listInstallationRepositories,
   loadAppCredentials,
   mockInstallationRepositories,
+  type GitHubDependencyOutagePort,
 } from "./app-runtime.js";
 import { MockGitHubDelivery } from "./index.js";
 
@@ -467,5 +469,96 @@ describe("github app runtime", () => {
     );
     expect(results).toHaveLength(2);
     expect(results.every((r) => r.pr?.number)).toBe(true);
+  });
+
+  it("classifies authentication, permission, throttle, timeout, provider, and lost-response failures distinctly", () => {
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("bad credentials"), { status: 401 })))
+      .toEqual({ failureKind: "authentication" });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("forbidden"), { status: 403 })))
+      .toEqual({ failureKind: "permission" });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("slow down"), {
+      status: 429,
+      response: { headers: { "retry-after": "30" } },
+    }), "2026-09-01T12:00:00.000Z")).toEqual({
+      failureKind: "throttled",
+      retryAfterMs: 30_000,
+    });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("timed out"), { code: "ETIMEDOUT" })))
+      .toEqual({ failureKind: "timeout" });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("unavailable"), { status: 503 })))
+      .toEqual({ failureKind: "transient" });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("response lost"), {
+      remoteSideEffectUncertain: true,
+    }))).toEqual({ failureKind: "completed" });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("validation"), { status: 422 })))
+      .toEqual({ failureKind: "permanent" });
+  });
+
+  it("binds exact-draft delivery to the tenant-scoped injected outage port", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const recovered = {
+      number: 23,
+      url: "https://github.com/acme/shop/pull/23",
+      branch: "mendpoint/fettler/candidate-a",
+      title: "Fettler candidate",
+      draft: true as const,
+      baseBranch: "main",
+      baseSha: EXACT_BASE_SHA,
+      commitSha: EXACT_COMMIT_SHA,
+    };
+    const run = vi.fn(async (operation: Parameters<GitHubDependencyOutagePort["run"]>[0]) => ({
+      status: "recovered" as const,
+      value: recovered,
+      operationDigest: operation.operationDigest,
+    }));
+    const outage = { run } as GitHubDependencyOutagePort;
+    const decide = vi.fn(() => ({
+      schemaVersion: 1 as const,
+      action: "await_authority" as const,
+      failureKind: "authentication",
+      retryable: false,
+      reason: "authority_change_required",
+      nextAttemptAt: null,
+      circuitState: "open" as const,
+      standing: "degraded_blocked" as const,
+    }));
+    const delivery = new GitHubAppDelivery(
+      { appId: "99", privateKeyPem: pem },
+      42,
+      undefined,
+      [77],
+      {
+        tenantId: "tenant-acme",
+        outage,
+        decide,
+        retryBudget: 3,
+        expiresInMs: 60_000,
+        workerId: "worker-1",
+      },
+    );
+    const input = {
+      owner: "acme",
+      repo: "shop",
+      baseBranch: "main",
+      expectedBaseSha: EXACT_BASE_SHA,
+      branch: "mendpoint/fettler/candidate-a",
+      commitMessage: "Open approved Fettler candidate",
+      commitDate: "2026-09-01T12:00:00.000Z",
+      title: "Fettler candidate",
+      body: "Exact candidate",
+      files: [{ path: "src/a.ts", content: "changed\n", mode: "100644" as const }],
+    };
+    await expect(delivery.deliverExactDraft(input)).resolves.toEqual(recovered);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0]![0]).toMatchObject({
+      schemaVersion: 1,
+      tenantId: "tenant-acme",
+      dependencyKind: "scm",
+      providerId: "github",
+      retryBudget: 3,
+      workerId: "worker-1",
+    });
+    expect(run.mock.calls[0]![0].operationDigest).toMatch(/^[a-f0-9]{64}$/);
   });
 });

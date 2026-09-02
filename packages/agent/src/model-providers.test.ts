@@ -1,10 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  classifyModelProviderFailure,
   DEFAULT_PROVIDER_ID,
   modelProvider,
   registeredModelProviderIds,
   resolveModelBackend,
   resolveProviderEndpoint,
+  runModelProviderOperation,
+  type ModelDependencyOutagePort,
 } from "./model-providers.js";
 import { DEFAULT_MODEL_PRICE_TABLE, computeModelCostUsd } from "./model-provenance.js";
 
@@ -179,6 +182,106 @@ describe("multi-provider gateway: fail-closed and pricing", () => {
       "anthropic",
       "gemini",
     ]);
+  });
+});
+
+describe("model provider outage recovery", () => {
+  it("classifies timeout, throttle, transient service failure, invalid response, and denial distinctly", () => {
+    expect(classifyModelProviderFailure({ error: new Error("bounded_http_timeout") }))
+      .toEqual({ failureKind: "timeout" });
+    expect(classifyModelProviderFailure({
+      status: 429,
+      retryAfter: "45",
+      now: "2026-09-01T12:00:00.000Z",
+    })).toEqual({ failureKind: "throttled", retryAfterMs: 45_000 });
+    expect(classifyModelProviderFailure({ status: 503 }))
+      .toEqual({ failureKind: "transient" });
+    expect(classifyModelProviderFailure({ responseInvalid: true }))
+      .toEqual({ failureKind: "invalid_response" });
+    expect(classifyModelProviderFailure({ status: 401 }))
+      .toEqual({ failureKind: "authentication" });
+    expect(classifyModelProviderFailure({ status: 403 }))
+      .toEqual({ failureKind: "permission" });
+    expect(classifyModelProviderFailure({ status: 400 }))
+      .toEqual({ failureKind: "permanent" });
+  });
+
+  it("maps provider evidence through the injected shared decision policy", async () => {
+    const decide = vi.fn((input: Record<string, unknown>) => ({
+      schemaVersion: 1 as const,
+      action: "retry" as const,
+      failureKind: String(input.failureKind),
+      retryable: true,
+      reason: "transient_failure",
+      nextAttemptAt: "2026-09-01T12:00:01.000Z",
+      circuitState: "closed" as const,
+      standing: "degraded_retrying" as const,
+    }));
+    const outage: ModelDependencyOutagePort = {
+      async run<T>(operation) {
+        const decision = operation.classify(
+          Object.assign(new Error("upstream unavailable"), { status: 503 }),
+          { attempt: 1, retryBudget: 3, now: "2026-09-01T12:00:00.000Z" },
+        );
+        return { status: "deferred", decision } as Awaited<ReturnType<typeof outage.run<T>>>;
+      },
+    };
+    await expect(runModelProviderOperation({
+      tenantId: "tenant-acme",
+      providerId: "muse-spark",
+      operationId: "mission-123:model-call-4",
+      operationDigest: "d".repeat(64),
+      retryBudget: 3,
+      expiresAt: "2026-09-01T13:00:00.000Z",
+      workerId: "worker-1",
+      leaseMs: 30_000,
+      outage,
+      decide,
+      reconcile: async () => ({ status: "missing" }),
+      invoke: async () => ({ output: "unused" }),
+      completionDigest: () => "e".repeat(64),
+    })).resolves.toMatchObject({ status: "deferred" });
+    expect(decide).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: "tenant-acme",
+      dependencyKind: "model",
+      providerId: "muse-spark",
+      failureKind: "transient",
+      attempt: 1,
+      retryBudget: 3,
+    }));
+  });
+
+  it("reconciles completed work by request digest before invoking the model again", async () => {
+    const invoke = vi.fn(async () => ({ output: "duplicate" }));
+    const outage: ModelDependencyOutagePort = {
+      async run<T>(operation) {
+        const observed = await operation.reconcile();
+        if (observed.status !== "completed") throw new Error("expected_completed_model_request");
+        return { status: "recovered", value: observed.value };
+      },
+    };
+    await expect(runModelProviderOperation({
+      tenantId: "tenant-acme",
+      providerId: "muse-spark",
+      operationId: "mission-123:model-call-4",
+      operationDigest: "f".repeat(64),
+      retryBudget: 3,
+      expiresAt: "2026-09-01T13:00:00.000Z",
+      workerId: "worker-1",
+      leaseMs: 30_000,
+      outage,
+      decide: () => {
+        throw new Error("decision_not_expected");
+      },
+      reconcile: async () => ({
+        status: "completed",
+        value: { output: "original" },
+        completionDigest: "1".repeat(64),
+      }),
+      invoke,
+      completionDigest: () => "2".repeat(64),
+    })).resolves.toEqual({ status: "recovered", value: { output: "original" } });
+    expect(invoke).not.toHaveBeenCalled();
   });
 });
 
