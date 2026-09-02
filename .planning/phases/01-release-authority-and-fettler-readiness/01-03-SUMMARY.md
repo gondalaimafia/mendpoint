@@ -66,9 +66,9 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 - `42a4ffb3` and `ef75b808`: direct public-transport input-boundary hostile tests and pre-network validation repair.
 - `3576fe1c` and `2be3b9a0`: destination-denial and invalid runtime key-material hostile tests and safe-code preservation repair.
 - `33517054` and `35d7f348`: malformed runtime key-object hostile tests and common binding-boundary repair.
-- `c89a3a76` and `da1f5564`: non-string configuration and runtime identifier hostile tests and unknown-safe string identifier repair.
+- `721400a6` and `41f9a9fd`: non-string configuration and runtime identifier hostile tests and unknown-safe string identifier repair.
 
-The exact current base for this series is `1ae5e9a2c331f35ffbd95ae8f2fd34ba6436c40c`; the commands above verify the exact pre-summary implementation head `da1f55641fc8f5673b35d5f6875321010c8e3d97`. Earlier reviews are superseded by the observability, runtime-boundary, and identifier-boundary commits plus this evidence refresh. A different reviewer must inspect and approve the final exact head before merge.
+The exact current base for this series is `4952aefd6a4578345e70eb3062f27db644bbcd8e`; the commands above verify the exact pre-summary implementation head `41f9a9fdce5d810ac84b81fd8bc959925670e6d5`. Earlier reviews are superseded by the observability, runtime-boundary, and identifier-boundary commits plus this evidence refresh. A different reviewer must inspect and approve the final exact head before merge.
 
 ## Remaining Release Work
 
