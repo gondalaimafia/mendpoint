@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "fettler-production-requirement-closure/1",
+  "product": "fettler",
+  "release": "production",
+  "requirements": [
+    "ME-FND-006",
+    "ME-FND-007",
+    "ME-FND-008"
+  ],
+  "operatingContracts": {
+    "performance": {
+      "version": "2026-09-02.v2",
+      "digest": "sha256:5411c80d8492660ce0b1e050b911bc91ef8a60f6d3adcebc8c504bc5aa8e27ac",
+      "metricDictionaryVersion": "2026-09-02.v1",
+      "metricDictionaryDigest": "sha256:f1deec032fceea984c8073f7d8e57d8a5f602e20c7c339a5319927289d63eb9f",
+      "evidence": {
+        "status": "not_observed",
+        "reason": "production_measurement_not_supplied"
+      }
+    },
+    "migrationCompute": {
+      "version": "mcu-v1",
+      "digest": "sha256:2f3bb3161f2d8ffc9cf3d186cbf45f05ea90be9a6c9e38a586bc279af203bbe8",
+      "ledgerEntryTypes": [
+        "reservation",
+        "settlement",
+        "release",
+        "adjustment",
+        "credit"
+      ],
+      "evidence": {
+        "status": "not_observed",
+        "reason": "production_ledger_not_supplied"
+      }
+    }
+  }
+}
