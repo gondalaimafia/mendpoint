@@ -2,8 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
+  linkSync,
   readFileSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -464,7 +464,22 @@ export function createHttpPerformanceProbe(options: Readonly<{
   bearerToken?: string;
   fetch?: typeof fetch;
 }>): PerformanceProbe {
-  const endpoint = new URL(options.endpoint).toString();
+  let parsedEndpoint: URL;
+  try {
+    parsedEndpoint = new URL(options.endpoint);
+  } catch {
+    throw new Error("performance_probe_url_invalid");
+  }
+  if (parsedEndpoint.username || parsedEndpoint.password) {
+    throw new Error("performance_probe_url_credentials_forbidden");
+  }
+  const loopback = new Set(["localhost", "127.0.0.1", "[::1]"]).has(parsedEndpoint.hostname);
+  if (parsedEndpoint.protocol !== "https:" && !(
+    parsedEndpoint.protocol === "http:" && loopback && !options.bearerToken
+  )) {
+    throw new Error("performance_probe_https_required");
+  }
+  const endpoint = parsedEndpoint.toString();
   const request = options.fetch ?? globalThis.fetch;
   return async (context) => {
     const response = await request(endpoint, {
@@ -487,6 +502,7 @@ export function createHttpPerformanceProbe(options: Readonly<{
         deploymentRevision: context.deploymentRevision,
         fixtureDigest: context.fixtureDigest,
       }),
+      redirect: "error",
       signal: context.signal,
     });
     if (!response.ok) throw new Error(`performance_probe_http_${response.status}`);
@@ -507,15 +523,23 @@ export function persistPerformanceProbeReport(
   const target = resolve(path);
   mkdirSync(dirname(target), { recursive: true });
   const temporary = `${target}.${randomUUID()}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(report, null, 2)}\n`, {
+  const bytes = `${JSON.stringify(report, null, 2)}\n`;
+  writeFileSync(temporary, bytes, {
     encoding: "utf8",
     flag: "wx",
   });
   try {
-    renameSync(temporary, target);
+    linkSync(temporary, target);
   } catch (error) {
-    rmSync(temporary, { force: true });
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") {
+      const existing = readFileSync(target, "utf8");
+      if (existing === bytes) return target;
+      throw new Error("performance_report_conflict");
+    }
     throw error;
+  } finally {
+    rmSync(temporary, { force: true });
   }
   return target;
 }

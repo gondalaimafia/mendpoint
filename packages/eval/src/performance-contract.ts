@@ -582,6 +582,7 @@ export function evaluatePerformanceRun(
     if (!Number.isFinite(observation.durationMs) || observation.durationMs <= 0) {
       fail("performance_observation_duration_invalid");
     }
+    if (typeof observation.success !== "boolean") fail("performance_observation_success_invalid");
     if (observation.tenantId !== evidence.tenantId) fail("performance_observation_tenant_mismatch");
     if (observation.repositoryId !== evidence.repositoryId) fail("performance_observation_repository_mismatch");
     if (observation.repositoryRevision !== evidence.repositoryRevision) {
@@ -614,15 +615,12 @@ export function evaluatePerformanceRun(
   );
   const evaluatedAtMs = isoTime(evaluatedAtValue, "performance_evaluated_at");
   if (evaluatedAtMs < endedAtMs) fail("performance_evaluated_before_run_end");
-  for (const metric of METRICS) {
-    const latest = Math.max(...observations
-      .map((observation, index) => observation.metric === metric ? observationTimes[index]! : -1));
-    if (latest < 0) continue;
-    const ageMs = evaluatedAtMs - latest;
+  observations.forEach((observation, index) => {
+    const ageMs = evaluatedAtMs - observationTimes[index]!;
     if (ageMs < 0) fail("performance_observation_future");
-    const definition = dictionary.get(metric)!;
+    const definition = dictionary.get(observation.metric)!;
     if (ageMs > definition.freshnessSeconds * 1_000) fail("performance_observation_stale");
-  }
+  });
 
   const results: PerformanceReport["results"] = [];
   const objectives = contract.objectives.filter((objective) =>
