@@ -333,6 +333,33 @@ CREATE TABLE IF NOT EXISTS suppressed_patterns (
 CREATE INDEX IF NOT EXISTS suppressed_patterns_consumer_idx ON suppressed_patterns(consumer_id);
 CREATE INDEX IF NOT EXISTS suppressed_patterns_pattern_idx ON suppressed_patterns(pattern);
 
+-- Persist the exact row boundary discovered when nullable legacy tenant columns
+-- first reach the repaired schema. Records inside this boundary require an
+-- operator attestation before the application may boot; later writes are not
+-- retrospectively classified as legacy.
+CREATE TABLE IF NOT EXISTS legacy_tenant_ownership_reconciliation_scope (
+  table_name TEXT NOT NULL,
+  row_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  discovered_at TEXT NOT NULL,
+  PRIMARY KEY (table_name, row_id, tenant_id)
+);
+CREATE TABLE IF NOT EXISTS legacy_tenant_ownership_reconciliation_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  sealed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS legacy_tenant_ownership_attestations (
+  table_name TEXT NOT NULL,
+  row_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  evidence_digest TEXT NOT NULL,
+  attested_by TEXT NOT NULL,
+  attested_at TEXT NOT NULL,
+  attestation_digest TEXT NOT NULL,
+  PRIMARY KEY (table_name, row_id, tenant_id)
+);
+
 -- Warden capability-adoption opportunities: NEW provider capabilities that linked
 -- consumers are not yet using (measured from static code presence). Idempotent per
 -- (tenant, change, capability); re-measurement upserts the counts.
@@ -3086,6 +3113,16 @@ function migrateRepositorySnapshotIdentity(db: AppDb): void {
 
 /** Additive columns for Phase D feed URLs + Phase E tenant on consumers. */
 function migrateProvidersFeedColumns(db: AppDb) {
+  const nullableLegacyTenantTables = new Set<string>();
+  for (const table of LEGACY_TENANT_OWNERSHIP_TABLES) {
+    const tenantColumn = all<{ name: string; notnull: number }>(
+      db,
+      `PRAGMA table_info(${table})`,
+    ).find((column) => column.name === "tenant_id");
+    if (!tenantColumn || tenantColumn.notnull !== 1) {
+      nullableLegacyTenantTables.add(table);
+    }
+  }
   const pcols = all<{ name: string }>(db, `PRAGMA table_info(providers)`).map((c) => c.name);
   if (!pcols.includes("openapi_url")) {
     run(db, `ALTER TABLE providers ADD COLUMN openapi_url TEXT`);
@@ -3408,6 +3445,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
       addedColumns.add(`${column.table}.${column.name}`);
     }
   }
+  reconcileLegacyTenantOwnership(db, nullableLegacyTenantTables);
   run(
     db,
     `UPDATE feed_schedule_windows
@@ -3767,6 +3805,162 @@ function get<T>(db: AppDb, sql: string, params: SQLInputValue[] = []): T | undef
 
 function run(db: AppDb, sql: string, params: SQLInputValue[] = []): void {
   db.raw.prepare(sql).run(...params);
+}
+
+const LEGACY_TENANT_OWNERSHIP_TABLES = [
+  "jobs",
+  "repair_sessions",
+  "agent_runs",
+  "audit_events",
+  "suppressed_patterns",
+] as const;
+
+export type LegacyTenantOwnershipAttestation = {
+  tableName: (typeof LEGACY_TENANT_OWNERSHIP_TABLES)[number];
+  rowId: string;
+  tenantId: string;
+  evidenceDigest: string;
+  attestedBy: string;
+  attestedAt: string;
+};
+
+export function computeLegacyTenantOwnershipAttestationDigest(
+  input: LegacyTenantOwnershipAttestation,
+): string {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      schemaVersion: 1,
+      tableName: input.tableName,
+      rowId: input.rowId,
+      tenantId: input.tenantId,
+      evidenceDigest: input.evidenceDigest,
+      attestedBy: input.attestedBy,
+      attestedAt: input.attestedAt,
+    }))
+    .digest("hex");
+}
+
+function reconcileLegacyTenantOwnership(
+  db: AppDb,
+  nullableLegacyTenantTables: ReadonlySet<string>,
+): void {
+  const state = get<{ schema_version: number }>(
+    db,
+    "SELECT schema_version FROM legacy_tenant_ownership_reconciliation_state WHERE id = 1",
+  );
+  if (!state) {
+    db.raw.exec("BEGIN IMMEDIATE");
+    try {
+      const discoveredAt = new Date().toISOString();
+      for (const table of LEGACY_TENANT_OWNERSHIP_TABLES) {
+        if (!nullableLegacyTenantTables.has(table)) continue;
+        run(
+          db,
+          `INSERT OR IGNORE INTO legacy_tenant_ownership_reconciliation_scope
+             (table_name, row_id, tenant_id, discovered_at)
+           SELECT ?, id, tenant_id, ?
+           FROM ${table}
+           WHERE tenant_id = 'tenant_default'`,
+          [table, discoveredAt],
+        );
+      }
+      run(
+        db,
+        `INSERT INTO legacy_tenant_ownership_reconciliation_state
+           (id, schema_version, sealed_at) VALUES (1, 1, ?)`,
+        [discoveredAt],
+      );
+      db.raw.exec("COMMIT");
+    } catch (error) {
+      if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+      throw error;
+    }
+  } else if (state.schema_version !== 1) {
+    throw new Error("legacy_tenant_ownership_reconciliation_schema_unsupported");
+  }
+
+  installLegacyTenantOwnershipAppendOnlyTriggers(db, [
+    "legacy_tenant_ownership_reconciliation_scope",
+    "legacy_tenant_ownership_reconciliation_state",
+  ]);
+
+  const scopedRows = all<{
+    table_name: string;
+    row_id: string;
+    tenant_id: string;
+  }>(
+    db,
+    `SELECT table_name, row_id, tenant_id
+     FROM legacy_tenant_ownership_reconciliation_scope
+     ORDER BY table_name, row_id`,
+  );
+  for (const scoped of scopedRows) {
+    if (!(LEGACY_TENANT_OWNERSHIP_TABLES as readonly string[]).includes(scoped.table_name)) {
+      throw new Error("legacy_tenant_ownership_reconciliation_required");
+    }
+    const attestation = get<{
+      table_name: string;
+      row_id: string;
+      tenant_id: string;
+      evidence_digest: string;
+      attested_by: string;
+      attested_at: string;
+      attestation_digest: string;
+    }>(
+      db,
+      `SELECT table_name, row_id, tenant_id, evidence_digest, attested_by,
+              attested_at, attestation_digest
+       FROM legacy_tenant_ownership_attestations
+       WHERE table_name = ? AND row_id = ? AND tenant_id = ?`,
+      [scoped.table_name, scoped.row_id, scoped.tenant_id],
+    );
+    const evidenceDigest = attestation?.evidence_digest ?? "";
+    const attestedBy = attestation?.attested_by ?? "";
+    const attestedAt = attestation?.attested_at ?? "";
+    const validTimestamp = Number.isFinite(Date.parse(attestedAt)) &&
+      new Date(attestedAt).toISOString() === attestedAt;
+    if (
+      !attestation ||
+      !/^[a-f0-9]{64}$/.test(evidenceDigest) ||
+      attestedBy.trim() === "" ||
+      !validTimestamp ||
+      attestation.attestation_digest !==
+        computeLegacyTenantOwnershipAttestationDigest({
+          tableName: scoped.table_name as LegacyTenantOwnershipAttestation["tableName"],
+          rowId: scoped.row_id,
+          tenantId: scoped.tenant_id,
+          evidenceDigest,
+          attestedBy,
+          attestedAt,
+        })
+    ) {
+      throw new Error("legacy_tenant_ownership_reconciliation_required");
+    }
+  }
+
+  installLegacyTenantOwnershipAppendOnlyTriggers(db, [
+    "legacy_tenant_ownership_attestations",
+  ]);
+}
+
+function installLegacyTenantOwnershipAppendOnlyTriggers(
+  db: AppDb,
+  tables: readonly string[],
+): void {
+  for (const table of tables) {
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS ${table}_append_only_update
+       BEFORE UPDATE ON ${table}
+       BEGIN SELECT RAISE(ABORT, '${table}_append_only'); END`,
+    );
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS ${table}_append_only_delete
+       BEFORE DELETE ON ${table}
+       BEGIN SELECT RAISE(ABORT, '${table}_append_only'); END`,
+    );
+  }
 }
 
 export function recordAudit(

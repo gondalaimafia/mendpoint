@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -440,6 +441,78 @@ function applyReleasedFallbackBackfill(path: string): void {
   legacy.close();
 }
 
+function persistLegacyOwnershipAttestations(
+  path: string,
+  mutate?: (input: {
+    tableName: string;
+    rowId: string;
+    tenantId: string;
+    evidenceDigest: string;
+    attestedBy: string;
+    attestedAt: string;
+    attestationDigest: string;
+  }) => { attestationDigest: string },
+): void {
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`
+    CREATE TABLE legacy_tenant_ownership_attestations (
+      table_name TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      evidence_digest TEXT NOT NULL,
+      attested_by TEXT NOT NULL,
+      attested_at TEXT NOT NULL,
+      attestation_digest TEXT NOT NULL,
+      PRIMARY KEY (table_name, row_id, tenant_id)
+    );
+  `);
+  const evidenceDigest = "a".repeat(64);
+  const attestedBy = "operator:test";
+  const attestedAt = "2026-09-02T00:00:00.000Z";
+  for (const tableName of LEGACY_OWNERSHIP_TABLES) {
+    for (const suffix of ["empty", "null"] as const) {
+      const rowId = `${tableName}-${suffix}`;
+      const tenantId = "tenant_default";
+      const canonical = JSON.stringify({
+        schemaVersion: 1,
+        tableName,
+        rowId,
+        tenantId,
+        evidenceDigest,
+        attestedBy,
+        attestedAt,
+      });
+      const attestationDigest = createHash("sha256")
+        .update(canonical)
+        .digest("hex");
+      const stored = mutate?.({
+        tableName,
+        rowId,
+        tenantId,
+        evidenceDigest,
+        attestedBy,
+        attestedAt,
+        attestationDigest,
+      }) ?? { attestationDigest };
+      legacy.prepare(
+        `INSERT INTO legacy_tenant_ownership_attestations
+           (table_name, row_id, tenant_id, evidence_digest, attested_by,
+            attested_at, attestation_digest)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        tableName,
+        rowId,
+        tenantId,
+        evidenceDigest,
+        attestedBy,
+        attestedAt,
+        stored.attestationDigest,
+      );
+    }
+  }
+  legacy.close();
+}
+
 describe("Fettler/Regauge logical database names", () => {
   it("fails closed when a prior released boot already laundered unknown ownership", () => {
     const path = join(newDir("tenant-two-step-laundering"), "legacy.sqlite");
@@ -452,6 +525,21 @@ describe("Fettler/Regauge logical database names", () => {
 
     const preserved = new DatabaseSync(path);
     try {
+      expect(
+        preserved
+          .prepare(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'trigger'
+               AND name IN (
+                 'legacy_tenant_ownership_reconciliation_scope_append_only_update',
+                 'legacy_tenant_ownership_reconciliation_scope_append_only_delete',
+                 'legacy_tenant_ownership_reconciliation_state_append_only_update',
+                 'legacy_tenant_ownership_reconciliation_state_append_only_delete'
+               )
+             ORDER BY name`,
+          )
+          .all(),
+      ).toHaveLength(4);
       for (const table of LEGACY_OWNERSHIP_TABLES) {
         expect(
           preserved
@@ -466,6 +554,42 @@ describe("Fettler/Regauge logical database names", () => {
       }
     } finally {
       preserved.close();
+    }
+  });
+
+  it("rejects a mutated persisted operator attestation", () => {
+    const path = join(newDir("tenant-mutated-attestation"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyReleasedFallbackBackfill(path);
+    persistLegacyOwnershipAttestations(path, ({ attestationDigest }) => ({
+      attestationDigest: `0${attestationDigest.slice(1)}`,
+    }));
+
+    expect(() => boot(path)).toThrow(
+      "legacy_tenant_ownership_reconciliation_required",
+    );
+  });
+
+  it("accepts exact persisted operator attestations for preexisting fallback rows", () => {
+    const path = join(newDir("tenant-exact-attestation"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyReleasedFallbackBackfill(path);
+    persistLegacyOwnershipAttestations(path);
+
+    const migrated = boot(path);
+    for (const table of LEGACY_OWNERSHIP_TABLES) {
+      expect(
+        migrated.raw
+          .prepare(
+            `SELECT id FROM ${table}
+             WHERE tenant_id = 'tenant_default'
+             ORDER BY id`,
+          )
+          .all(),
+      ).toEqual([
+        { id: `${table}-empty` },
+        { id: `${table}-null` },
+      ]);
     }
   });
 
