@@ -247,13 +247,21 @@ describe("customer backup delivery controller workflow", () => {
     const handoff = step("Hand off continuous backup delivery");
     expect(maintain.env.BACKUP_WORKFLOW).toBe("customer-backup.yml");
     expect(maintain.env.BACKUP_REF).toBe("${{ github.event.repository.default_branch }}");
-    const observeWindow = Number(maintain.env.DELIVERY_OBSERVE_ATTEMPTS)
+    const backupObserveWindow = Number(maintain.env.DELIVERY_OBSERVE_ATTEMPTS)
       * Number(maintain.env.DELIVERY_OBSERVE_SLEEP_SECONDS);
+    const handoffAttempts = Number(handoff.env.DELIVERY_HANDOFF_ATTEMPTS);
+    const handoffObserveWindow = handoffAttempts
+      * Number(handoff.env.DELIVERY_OBSERVE_ATTEMPTS)
+      * Number(handoff.env.DELIVERY_OBSERVE_SLEEP_SECONDS);
+    const handoffBackoffWindow = Number(handoff.env.DELIVERY_HANDOFF_BACKOFF_SECONDS)
+      * handoffAttempts
+      * (handoffAttempts - 1)
+      / 2;
     const combinedRpoEnvelope = Number(maintain.env.DELIVERY_MAX_AGE_SECONDS)
       + Number(maintain.env.DELIVERY_MAX_ACTIVE_AGE_SECONDS)
-      + observeWindow
-      + (Number(handoff.env.DELIVERY_OBSERVE_ATTEMPTS)
-        * Number(handoff.env.DELIVERY_OBSERVE_SLEEP_SECONDS))
+      + backupObserveWindow
+      + handoffObserveWindow
+      + handoffBackoffWindow
       + Number(maintain.env.DELIVERY_OBSERVATION_MARGIN_SECONDS);
     expect(combinedRpoEnvelope).toBeLessThan(CORE_DISASTER_RECOVERY_POLICY.rpoSeconds);
     expect(Number(maintain.env.DELIVERY_RPO_SECONDS)).toBe(
@@ -267,10 +275,7 @@ describe("customer backup delivery controller workflow", () => {
     expect(handoff.if).toBe("${{ always() && steps.gate.outputs.active == 'true' }}");
     expect(Number(handoff.env.DELIVERY_HANDOFF_ATTEMPTS)).toBeGreaterThan(1);
     expect(Number(handoff.env.DELIVERY_HANDOFF_BACKOFF_SECONDS)).toBeGreaterThan(0);
-    expect(
-      (Number(handoff.env.DELIVERY_HANDOFF_ATTEMPTS) - 1)
-      * Number(handoff.env.DELIVERY_HANDOFF_BACKOFF_SECONDS),
-    ).toBeLessThan(Number(maintain.env.DELIVERY_OBSERVATION_MARGIN_SECONDS));
+    expect(handoffBackoffWindow).toBeGreaterThan(0);
     expect(deliverySource).not.toContain("scripts/customer-backup.ts");
     expect(deliverySource).not.toContain("scripts/start-fly.mjs");
     expect(deliverySource).not.toContain("initializeWithMutationLease");
