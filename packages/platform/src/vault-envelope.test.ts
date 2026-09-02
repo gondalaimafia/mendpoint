@@ -79,6 +79,72 @@ function externalTransport(overrides: Partial<ExternalKeyTransport> = {}): Exter
 }
 
 describe("external customer-managed key provider", () => {
+  const nonStringIdentifiers = [null, undefined, 7] as const;
+
+  it.each(nonStringIdentifiers)("rejects non-string provider identifier %s during construction", (value) => {
+    expect(() => createExternalKeyEncryptionKeyProvider({
+      provider: value as never,
+      keys: [externalBinding],
+    }, externalTransport())).toThrow("external_kek_configuration_invalid");
+  });
+
+  it.each([
+    ...nonStringIdentifiers.map((value) => ["tenantId", value] as const),
+    ...nonStringIdentifiers.map((value) => ["keyId", value] as const),
+    ...nonStringIdentifiers.map((value) => ["version", value] as const),
+  ])("rejects non-string binding %s identifier %s during construction", (field, value) => {
+    expect(() => createExternalKeyEncryptionKeyProvider({
+      provider: "customer-kms",
+      keys: [{ ...externalBinding, [field]: value } as never],
+    }, externalTransport())).toThrow("external_kek_configuration_invalid");
+  });
+
+  it.each([
+    ...nonStringIdentifiers.map((value) => ["tenantId", value] as const),
+    ...nonStringIdentifiers.map((value) => ["provider", value] as const),
+    ...nonStringIdentifiers.map((value) => ["keyId", value] as const),
+    ...nonStringIdentifiers.map((value) => ["version", value] as const),
+  ])("rejects non-string runtime %s identifier %s before transport", async (field, value) => {
+    let transportCalls = 0;
+    const transport = externalTransport({
+      attestKey: async () => {
+        transportCalls += 1;
+        return externalResponse();
+      },
+      wrapDataKey: async () => {
+        transportCalls += 1;
+        return externalResponse({ wrappedDataKey: "d3JhcHBlZA==" });
+      },
+      unwrapDataKey: async () => {
+        transportCalls += 1;
+        return externalResponse({ dataKeyBase64: Buffer.alloc(32, 9).toString("base64") });
+      },
+    });
+    const runtimeTenantId = field === "tenantId" ? value : "tenant-a";
+    const bindingTenantId = field === "tenantId" ? String(value) : "tenant-a";
+    const provider = createExternalKeyEncryptionKeyProvider({
+      provider: "customer-kms",
+      keys: [{ ...externalBinding, tenantId: bindingTenantId }],
+    }, transport);
+    const key = {
+      provider: "customer-kms",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: true,
+      ...(field === "tenantId" ? {} : { [field]: value }),
+    } as never;
+
+    await expect(provider.keyMaterialFingerprint(key, runtimeTenantId as never))
+      .rejects.toThrow("external_kek_operation_failed");
+    await expect(provider.attestKey(key, runtimeTenantId as never))
+      .rejects.toThrow("external_kek_operation_failed");
+    await expect(provider.wrapDataKey(key, runtimeTenantId as never, Buffer.alloc(32, 1)))
+      .rejects.toThrow("external_kek_operation_failed");
+    await expect(provider.unwrapDataKey(key, runtimeTenantId as never, "d3JhcHBlZA=="))
+      .rejects.toThrow("external_kek_operation_failed");
+    expect(transportCalls).toBe(0);
+  });
+
   it("wraps and unwraps without importing key-encryption-key material", async () => {
     const transport = externalTransport();
     const provider = createExternalKeyEncryptionKeyProvider({
