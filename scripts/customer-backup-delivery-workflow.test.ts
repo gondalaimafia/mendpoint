@@ -13,6 +13,8 @@ const deliverySource = readFileSync(deliveryPath, "utf8");
 const delivery = parse(deliverySource) as Record<string, any>;
 const controller = delivery.jobs.controller as Record<string, any>;
 const steps = controller.steps as Record<string, any>[];
+const backupPath = resolve(root, ".github/workflows/customer-backup.yml");
+const backup = parse(readFileSync(backupPath, "utf8")) as Record<string, any>;
 
 function step(name: string): Record<string, any> {
   const found = steps.find((candidate) => candidate.name === name);
@@ -201,6 +203,30 @@ describe("customer backup delivery controller workflow", () => {
       event: "backup_workflow_success_without_backup_job",
       backupRunId: "777",
     }));
+  });
+
+  it("fails closed when no dispatched backup ever completes successfully", () => {
+    const result = runController({ backupJobSuccess: false });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_delivery_completion_missing");
+    expect(result.calls.some((call) => call.startsWith("workflow run customer-backup-delivery.yml")))
+      .toBe(false);
+  });
+
+  it("isolates irrelevant branch recovery runs from the accepted successor", () => {
+    expect(String(delivery.concurrency.group)).toContain("github.event.workflow_run.head_branch");
+    expect(String(delivery.concurrency.group)).toContain("github.run_id");
+  });
+
+  it("rechecks durable freshness inside serialized backup execution", () => {
+    const executionGate = backup.jobs["execution-gate"] as Record<string, any>;
+    expect(executionGate.needs).toBe("profile-gate");
+    expect(executionGate.permissions).toMatchObject({ actions: "read" });
+    expect(executionGate.outputs.execute).toBeTruthy();
+    expect(executionGate.steps.some((candidate: Record<string, any>) =>
+      candidate.run?.includes("duplicate_backup_execution_fenced"))).toBe(true);
+    expect(backup.jobs.backup.needs).toEqual(["profile-gate", "execution-gate"]);
+    expect(backup.jobs.backup.if).toContain("needs.execution-gate.outputs.execute == 'true'");
   });
 
   it("accepts only an exact successful backup job as recent completion", () => {
