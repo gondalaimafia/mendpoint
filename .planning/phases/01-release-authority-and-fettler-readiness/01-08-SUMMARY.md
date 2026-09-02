@@ -218,7 +218,9 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - TypeScript: ops, database, agent, GitHub, pipeline, API, and worker package checks passed with no errors.
 - Production build: optimized workspace build passed.
 - Diff integrity: `git diff --check` passed before the repair commit.
-- Current base: `e69d997b7eef88ffcc7786a3e51da46eb1e677d4`.
+- Current base: `e1d5b7483c057578c9cc8c8b795cfa633f53878f`.
+- Current-base range diff: all 16 pre-refresh commits are patch-identical after rebasing from `e69d997b7eef88ffcc7786a3e51da46eb1e677d4` to `e1d5b7483c057578c9cc8c8b795cfa633f53878f`.
+- Current-base rerun: 106 of 106 focused tests, 38 of 38 protected-authority tests, all seven affected typechecks, database 501 of 501, GitHub 195 of 195, operations 180 of 180, pipeline 272 of 272, optimized 64-page production build, and diff integrity passed.
 
 ## User Setup Required
 
