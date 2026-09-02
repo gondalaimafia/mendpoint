@@ -610,4 +610,266 @@ describe("production closure matrix", () => {
       expect(observedCodes).toContain("PR_MERGE_REVISION_UNREACHABLE");
     }
   });
+
+  // supersededBy lets a closed pull request record, truthfully, that its work
+  // was fully subsumed by another pull request that merged. These fixtures use
+  // 333 (merged) as the dependent, 404 and 408 (closed), and 383 (merged) as
+  // the superseder. The guard is deliberately narrow: it discharges a
+  // dependency only when supersededBy names a genuinely merged, non-superseded
+  // pull request, and it is a first-class validation error otherwise so it can
+  // never become a universal dependency bypass.
+  it("satisfies a dependency superseded by a genuinely merged pull request", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const dependent = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 333)!;
+    const superseded = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 404)!;
+    const superseder = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 383)!;
+    expect(dependent.state).toBe("merged");
+    expect(superseded.state).toBe("closed");
+    expect(superseder.state).toBe("merged");
+    dependent.dependencies.pullRequests = [superseded.number];
+    superseded.supersededBy = superseder.number;
+    superseder.supersedes = [superseded.number]; // reciprocal backreference
+
+    const result = codes(manifest, matrix);
+    expect(result).not.toContain("PR_DEPENDENCY_UNSATISFIED");
+    expect(result).not.toContain("PR_SUPERSEDED_BY_INVALID");
+    expect(result).not.toContain("PR_SUPERSEDES_INVALID");
+  });
+
+  it("rejects a supersededBy whose target does not reciprocally list it", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const dependent = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 333)!;
+    const superseded = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 404)!;
+    const superseder = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 383)!;
+    dependent.dependencies.pullRequests = [superseded.number];
+    // A merged, otherwise-unrelated PR must not discharge a dependency merely by
+    // existing: without the reciprocal supersedes backreference the claim is not
+    // machine-checkable, so it is rejected and does not discharge.
+    superseded.supersededBy = superseder.number;
+
+    const result = codes(manifest, matrix);
+    expect(result).toContain("PR_SUPERSEDED_BY_INVALID");
+    expect(result).toContain("PR_DEPENDENCY_UNSATISFIED");
+  });
+
+  it("does not let supersededBy pointing at an open pull request discharge a dependency", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const dependent = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 333)!;
+    const superseded = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 404)!;
+    const openTarget = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 331)!;
+    expect(openTarget.state).toBe("open");
+    dependent.dependencies.pullRequests = [superseded.number];
+    superseded.supersededBy = openTarget.number;
+
+    const result = codes(manifest, matrix);
+    expect(result).toContain("PR_DEPENDENCY_UNSATISFIED");
+    expect(result).toContain("PR_SUPERSEDED_BY_INVALID");
+  });
+
+  it("does not let supersededBy pointing at a closed unmerged pull request discharge a dependency", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const dependent = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 333)!;
+    const superseded = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 404)!;
+    const closedTarget = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 408)!;
+    expect(closedTarget.state).toBe("closed");
+    dependent.dependencies.pullRequests = [superseded.number];
+    superseded.supersededBy = closedTarget.number;
+
+    const result = codes(manifest, matrix);
+    expect(result).toContain("PR_DEPENDENCY_UNSATISFIED");
+    expect(result).toContain("PR_SUPERSEDED_BY_INVALID");
+  });
+
+  it("rejects and does not honor a supersededBy naming a non-existent pull request", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const dependent = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 333)!;
+    const superseded = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 404)!;
+    dependent.dependencies.pullRequests = [superseded.number];
+    superseded.supersededBy = 999_999;
+
+    const result = codes(manifest, matrix);
+    // A malformed supersededBy must be REJECTED, not silently ignored...
+    expect(result).toContain("PR_SUPERSEDED_BY_INVALID");
+    // ...and it must not discharge the dependency it was attached to.
+    expect(result).toContain("PR_DEPENDENCY_UNSATISFIED");
+  });
+
+  it("rejects supersededBy on a merged record as incoherent", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const merged = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 358)!;
+    const superseder = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 383)!;
+    expect(merged.state).toBe("merged");
+    merged.supersededBy = superseder.number;
+
+    expect(codes(manifest, matrix)).toContain("PR_SUPERSEDED_BY_INVALID");
+  });
+
+  it("rejects supersededBy on an open record as incoherent", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const open = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 331)!;
+    const superseder = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 383)!;
+    expect(open.state).toBe("open");
+    open.supersededBy = superseder.number;
+
+    expect(codes(manifest, matrix)).toContain("PR_SUPERSEDED_BY_INVALID");
+  });
+
+  // The two cases below are the clause-scoped tests for (A) and (C) in
+  // supersededByMerged. Every other case in this block leaves the named target
+  // without a `supersedes` array, so clause (E) reciprocity rejects them first
+  // and they would still pass with (A) and (C) deleted. These fixtures DO
+  // reciprocate, so (E) is satisfied and the clause under test is the only
+  // thing left that can reject.
+  it("rejects supersededBy on a merged record even when the target reciprocates", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const carrier = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 358)!;
+    const superseder = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 383)!;
+    expect(carrier.state).toBe("merged");
+    expect(superseder.state).toBe("merged");
+    // (B) distinct, (C) target merged, (D) target not itself superseded, and
+    // (E) reciprocity all hold, so only (A) - the carrying record must be
+    // CLOSED - can reject this. Delete (A) and this expectation fails.
+    carrier.supersededBy = superseder.number;
+    superseder.supersedes = [carrier.number];
+
+    expect(codes(manifest, matrix)).toContain("PR_SUPERSEDED_BY_INVALID");
+  });
+
+  it("rejects a reciprocated supersededBy whose target never merged", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const dependent = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 333)!;
+    const superseded = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 404)!;
+    const target = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 408)!;
+    expect(dependent.state).toBe("merged");
+    expect(superseded.state).toBe("closed");
+    expect(target.state).toBe("closed");
+    dependent.dependencies.pullRequests = [superseded.number];
+    // Both records are closed and they reciprocate, so (A), (B), (D), and (E)
+    // all hold and only (C) - the named target must be MERGED - can reject
+    // this. Delete (C) and a dependency is discharged by a pair of pull
+    // requests neither of which ever merged, and both expectations fail.
+    superseded.supersededBy = target.number;
+    target.supersedes = [superseded.number];
+
+    const result = codes(manifest, matrix);
+    expect(result).toContain("PR_SUPERSEDED_BY_INVALID");
+    expect(result).toContain("PR_DEPENDENCY_UNSATISFIED");
+  });
+
+  it("rejects a supersededBy cycle without discharging anything or overflowing the stack", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const first = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 404)!;
+    const second = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 408)!;
+    expect(first.state).toBe("closed");
+    expect(second.state).toBe("closed");
+    // Neither closed record ever merged, so each rejects the other as a target;
+    // resolution is a single non-recursive lookup that cannot loop.
+    first.supersededBy = second.number;
+    second.supersededBy = first.number;
+
+    const result = codes(manifest, matrix);
+    expect(result.filter((code) => code === "PR_SUPERSEDED_BY_INVALID")).toHaveLength(2);
+  });
+
+  it("rejects a supersededBy chain even when the intermediate is itself validly superseded", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const dependent = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 333)!;
+    const superseded = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 404)!;
+    const intermediate = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 408)!;
+    const merged = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 383)!;
+    dependent.dependencies.pullRequests = [superseded.number];
+    // 404 -> 408 (closed, VALIDLY superseded by merged 383) -> 383 (merged).
+    // 408 is a coherent superseded record here, yet 404's claim on it is still
+    // rejected. Note which clause does the rejecting: 408 does not list 404 in
+    // `supersedes`, so this fixture is rejected by (E) reciprocity, not by the
+    // merged-target requirement (C). It shows that a chain cannot form through
+    // an otherwise-valid intermediate; (C) is exercised on its own by "rejects
+    // a reciprocated supersededBy whose target never merged" above. Either way
+    // 408 stays valid and only 404 is rejected, and resolution is a single
+    // non-recursive lookup, so nothing walks the graph.
+    intermediate.supersededBy = merged.number;
+    merged.supersedes = [intermediate.number];
+    superseded.supersededBy = intermediate.number;
+
+    const result = codes(manifest, matrix);
+    expect(result.filter((code) => code === "PR_SUPERSEDED_BY_INVALID")).toHaveLength(1);
+    expect(result).toContain("PR_DEPENDENCY_UNSATISFIED");
+  });
+
+  it("rejects supersedes on a non-merged record", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const closed = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 404)!;
+    const other = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 408)!;
+    expect(closed.state).toBe("closed");
+    // supersedes belongs on the merged superseder; a closed record cannot claim
+    // to have subsumed anything.
+    closed.supersedes = [other.number];
+
+    expect(codes(manifest, matrix)).toContain("PR_SUPERSEDES_INVALID");
+  });
+
+  it("rejects supersedes listing a record that does not point back", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const superseder = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 383)!;
+    const closed = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 404)!;
+    expect(superseder.state).toBe("merged");
+    // 383 claims to supersede 404, but 404 does not name 383 in supersededBy, so
+    // the half-declared relationship is rejected rather than silently accepted.
+    superseder.supersedes = [closed.number];
+
+    expect(codes(manifest, matrix)).toContain("PR_SUPERSEDES_INVALID");
+  });
+
+  it("rejects supersedes listing a record that is not closed", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const superseder = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 383)!;
+    const mergedTarget = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 358)!;
+    expect(mergedTarget.state).toBe("merged");
+    superseder.supersedes = [mergedTarget.number];
+    mergedTarget.supersededBy = superseder.number; // even a back-pointer cannot rescue a non-closed target
+
+    const result = codes(manifest, matrix);
+    expect(result).toContain("PR_SUPERSEDES_INVALID");
+  });
+
+  it("honors supersededBy for an in-flight bootstrap dependency", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const superseded = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 404)!;
+    const superseder = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 383)!;
+    superseded.supersededBy = superseder.number;
+    superseder.supersedes = [superseded.number];
+    // The bootstrap (in-flight PR) depends on the superseded closed record; the
+    // bootstrap path must honor supersededBy exactly like the static predicate.
+    const bootstrap = ensureBootstrap(matrix);
+    bootstrap.dependencies.pullRequests = [superseded.number];
+
+    const result = codes(manifest, matrix);
+    expect(result).not.toContain("CURRENT_PR_DEPENDENCY_UNSATISFIED");
+  });
+
+  it("still flags an in-flight bootstrap dependency on a merely closed record", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const closed = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 404)!;
+    expect(closed.state).toBe("closed");
+    const bootstrap = ensureBootstrap(matrix);
+    bootstrap.dependencies.pullRequests = [closed.number];
+
+    expect(codes(manifest, matrix)).toContain("CURRENT_PR_DEPENDENCY_UNSATISFIED");
+  });
 });

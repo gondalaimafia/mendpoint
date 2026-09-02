@@ -120,6 +120,25 @@ export interface ReleaseTrainPullRequest {
   };
   blockers: ReleaseTrainBlocker[];
   reviewRemediationPullRequest?: number | null;
+  // supersededBy records, on a CLOSED record, that this pull request's work was
+  // fully subsumed by another pull request that actually merged. It lets a
+  // dependent's dependency on this closed PR be discharged explicitly, instead
+  // of falsely restating this PR as merged or silently deleting the dependency
+  // edge. It is not an open-ended bypass: it discharges a dependency only when
+  // it names a genuinely MERGED pull request that reciprocally lists this PR in
+  // its `supersedes` array (see supersededByMerged), and it is a first-class
+  // validation error otherwise (PR_SUPERSEDED_BY_INVALID). The required
+  // reciprocal backreference is a CONSISTENCY check, not a truthfulness check:
+  // both halves are self-declared in this same snapshot by the same actor, so
+  // it rejects a half-declared relationship and an unrelated untouched merged
+  // pull request, but it cannot detect a deliberate two-sided self-declaration.
+  // Null or absent means "not superseded".
+  supersededBy?: number | null;
+  // supersedes is the reciprocal side, declared on the MERGED superseder: the
+  // exact set of closed pull requests it fully subsumed. Each entry must be a
+  // closed record whose supersededBy points back here (PR_SUPERSEDES_INVALID
+  // otherwise), so neither half of the relationship can be asserted alone.
+  supersedes?: number[];
 }
 
 export interface CurrentPullRequestBootstrap {
@@ -1363,7 +1382,94 @@ export function validateProductionClosureMatrix(
     }
   }
 
+  // supersededByMerged is the single predicate that both discharges a dependency
+  // and gates PR_SUPERSEDED_BY_INVALID, so a supersededBy either satisfies AND is
+  // valid or does neither and is rejected; it can never be silently ignored. It
+  // is true only when:
+  //   (A) the carrying record is CLOSED  - a merged or open record carrying
+  //       supersededBy is incoherent and rejected;
+  //   (C) the named target is MERGED     - this is what forbids transitivity and
+  //       cycles: a chain's intermediate is itself closed (not merged), so it is
+  //       rejected here, and a merged target can never be a valid superseded
+  //       record, so no chain or cycle can form. The property is delivered by
+  //       this closed/merged disjointness, not by walking the graph, so the
+  //       single non-recursive lookup below cannot loop or stack-overflow;
+  //   (E) the target reciprocally lists this PR in `supersedes`.
+  // (A), (C), and (E) are each independently load-bearing and each has a test
+  // that fails when only that clause is removed; see the clause-scoped cases in
+  // production-closure-matrix.test.ts. The self-reference guard (B), the
+  // target-not-itself-superseded guard (D), and the shape guard on the target
+  // number are redundant defense-in-depth: (A)+(C)+(E) already exclude those
+  // cases. They are kept as belt-and-suspenders, not relied on for the
+  // guarantees above.
+  //
+  // What (E) buys is CONSISTENCY, not provider-verified truth. Both halves of
+  // the relationship live in this same static snapshot and are authored by the
+  // same actor in the same change, and nothing reconciles either field against
+  // the provider, so a merged record can be given `supersedes` in the very
+  // commit that gives the closed record `supersededBy`. (E) rules out a
+  // half-declared relationship and an unrelated merged pull request that was
+  // never edited; it does not rule out a deliberate self-declaration. The
+  // provider-verified facts this discharge still rests on are the target's
+  // `state` and `mergeRevision`, which production-closure-github-authority.ts
+  // mirrors against the live pull request.
+  const supersededByMerged = (record: ReleaseTrainPullRequest): boolean => {
+    const target = record.supersededBy ?? null;
+    if (target === null) return false;
+    if (!Number.isInteger(target) || target < 1) return false; // shape, defense-in-depth
+    if (record.state !== "closed") return false; // (A)
+    const superseder = releasePrs.get(target);
+    return Boolean(
+      superseder &&
+        superseder.number !== record.number && // (B) defense-in-depth
+        superseder.state === "merged" && // (C)
+        (superseder.supersededBy ?? null) === null && // (D) defense-in-depth
+        (superseder.supersedes ?? []).includes(record.number), // (E) reciprocity
+    );
+  };
   for (const pullRequest of releasePrs.values()) {
+    if ((pullRequest.supersededBy ?? null) !== null && !supersededByMerged(pullRequest)) {
+      add(
+        issues,
+        "PR_SUPERSEDED_BY_INVALID",
+        String(pullRequest.number),
+        "supersededBy may appear only on a closed pull request and must name a merged pull request that reciprocally lists this pull request in its supersedes array",
+      );
+    }
+    // supersedes is validated independently so the new field is never silently
+    // ignored: it belongs only on a merged superseder and every entry must be a
+    // tracked closed record whose supersededBy points back to this record.
+    const supersedes = pullRequest.supersedes ?? [];
+    if (supersedes.length > 0) {
+      const seen = new Set<number>();
+      const coherent =
+        pullRequest.state === "merged" &&
+        supersedes.every((number) => {
+          if (
+            !Number.isInteger(number) ||
+            number < 1 ||
+            number === pullRequest.number ||
+            seen.has(number)
+          ) {
+            return false;
+          }
+          seen.add(number);
+          const subsumed = releasePrs.get(number);
+          return Boolean(
+            subsumed &&
+              subsumed.state === "closed" &&
+              (subsumed.supersededBy ?? null) === pullRequest.number,
+          );
+        });
+      if (!coherent) {
+        add(
+          issues,
+          "PR_SUPERSEDES_INVALID",
+          String(pullRequest.number),
+          "supersedes may appear only on a merged pull request and must list tracked closed pull requests whose supersededBy points back to this pull request",
+        );
+      }
+    }
     if (pullRequest.state === "merged" && pullRequest.blockers.length > 0) {
       add(
         issues,
@@ -1406,13 +1512,14 @@ export function validateProductionClosureMatrix(
       } else if (
         (pullRequest.state === "merged" ||
           pullRequest.checkState === "current_checks_green") &&
-        dependency.state !== "merged"
+        dependency.state !== "merged" &&
+        !supersededByMerged(dependency)
       ) {
         add(
           issues,
           "PR_DEPENDENCY_UNSATISFIED",
           String(pullRequest.number),
-          `dependency ${dependencyNumber} must be merged before this pull request can be release eligible`,
+          `dependency ${dependencyNumber} must be merged or superseded by a merged pull request before this pull request can be release eligible`,
         );
       }
     }
@@ -1528,12 +1635,22 @@ export function validateProductionClosureMatrix(
   }
   for (const dependencyNumber of currentBootstrap?.dependencies.pullRequests ?? []) {
     const dependency = releasePrs.get(dependencyNumber);
-    if (!dependency || dependency.state !== "merged" || !dependency.mergeRevision) {
+    // The in-flight pull request is the case supersededBy exists for, so the
+    // bootstrap path honors it exactly as the static dependency predicate does:
+    // a dependency is satisfied by a tracked merged revision, or by a closed
+    // record validly superseded by a merged pull request.
+    if (
+      !dependency ||
+      !(
+        (dependency.state === "merged" && dependency.mergeRevision) ||
+        supersededByMerged(dependency)
+      )
+    ) {
       add(
         issues,
         "CURRENT_PR_DEPENDENCY_UNSATISFIED",
         String(currentBootstrap?.number),
-        `current pull request dependency ${dependencyNumber} is not a tracked merged revision`,
+        `current pull request dependency ${dependencyNumber} is not a tracked merged revision or a closed record superseded by a merged pull request`,
       );
     }
   }
