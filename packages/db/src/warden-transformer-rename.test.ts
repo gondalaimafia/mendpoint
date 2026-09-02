@@ -735,6 +735,75 @@ describe("Fettler/Regauge logical database names", () => {
     }
   });
 
+  it("rejects every late unattributable write after an unattested first boot", () => {
+    const path = join(newDir("tenant-unattested-late-write-guards"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyReleasedFallbackBackfill(path);
+
+    const setup = new DatabaseSync(path);
+    setup.exec("UPDATE jobs SET status = 'done'");
+    setup.close();
+
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+
+    const sealed = new DatabaseSync(path);
+    const insertSql: Record<(typeof LEGACY_OWNERSHIP_TABLES)[number], string> = {
+      jobs: `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+             VALUES (?, ?, 'repair', '{}', ?)`,
+      repair_sessions:
+        `INSERT INTO repair_sessions (id, tenant_id, repo_path, status, created_at)
+         VALUES (?, ?, '/repo', 'pending', ?)`,
+      agent_runs:
+        `INSERT INTO agent_runs (id, tenant_id, goal, repo_path, status, created_at)
+         VALUES (?, ?, 'repair', '/repo', 'pending', ?)`,
+      audit_events:
+        `INSERT INTO audit_events
+           (id, tenant_id, actor, action, resource_type, metadata_json, created_at)
+         VALUES (?, ?, 'legacy', 'legacy.observed', 'legacy', '{}', ?)`,
+      suppressed_patterns:
+        `INSERT INTO suppressed_patterns (id, tenant_id, pattern, created_at)
+         VALUES (?, ?, 'legacy-pattern', ?)`,
+    };
+    try {
+      for (const table of LEGACY_OWNERSHIP_TABLES) {
+        for (const [label, tenantId] of [
+          ["null", null],
+          ["empty", ""],
+          ["blank", "   "],
+        ] as const) {
+          expect.soft(() => sealed.prepare(insertSql[table]).run(
+            `${table}-late-${label}`,
+            tenantId,
+            TS,
+          )).toThrow("tenant_id_required");
+          expect.soft(() => sealed.prepare(
+            `UPDATE ${table} SET tenant_id = ? WHERE id = ?`,
+          ).run(tenantId, `${table}-valid`)).toThrow("tenant_id_required");
+        }
+      }
+    } finally {
+      sealed.close();
+    }
+
+    attestExactReconciliationScope(path);
+    const restarted = boot(path);
+    for (const table of LEGACY_OWNERSHIP_TABLES) {
+      expect(restarted.raw.prepare(
+        `SELECT id FROM ${table} WHERE id LIKE ? ORDER BY id`,
+      ).all(`${table}-late-%`)).toEqual([]);
+      expect(restarted.raw.prepare(
+        `SELECT tenant_id FROM ${table} WHERE id = ?`,
+      ).get(`${table}-valid`)).toEqual({ tenant_id: "tenant_customer" });
+    }
+    for (const tenantId of [undefined, "tenant_default", "tenant_customer", "tenant_other"]) {
+      expect(claimNextJob(restarted, ["repair"], {
+        tenantId,
+        workerId: `late-write-worker:${tenantId ?? "global"}`,
+        now: "2026-09-02T00:10:00.000Z",
+      })).toBeUndefined();
+    }
+  });
+
   it("prevents a scoped primary-key rename from escaping attestation through identifier reuse", () => {
     const path = join(newDir("tenant-attested-source-identity-immutable"), "legacy.sqlite");
     buildLegacyOwnershipVolume(path);
