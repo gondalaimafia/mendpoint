@@ -10,9 +10,11 @@ import {
 import { dirname, resolve } from "node:path";
 import {
   evaluatePerformanceRun,
+  resolvePerformanceTierId,
   validatePerformanceContract,
   WARDEN_PERFORMANCE_CONTRACT,
   type PerformanceContract,
+  type PerformanceEvidenceBinding,
   type PerformanceMetric,
   type PerformanceMode,
   type PerformanceObservation,
@@ -48,6 +50,10 @@ export type PerformanceProbeContext = Readonly<{
   repositoryRevision: string;
   deploymentRevision: string;
   fixtureDigest: string;
+  tenantId: string;
+  repositoryId: string;
+  correlationId: string;
+  source: string;
   signal: AbortSignal;
 }>;
 
@@ -56,17 +62,23 @@ export type PerformanceProbe = (
 ) => Promise<PerformanceProbeMeasurement>;
 
 export type PerformanceProbeReport = Readonly<{
-  schemaVersion: 1;
+  schemaVersion: 2;
   contractVersion: string;
   percentileMethod: string;
   repositoryRevision: string;
   deploymentRevision: string;
   fixtureDigest: string;
+  tenantId: string;
+  repositoryId: string;
+  correlationId: string;
+  source: string;
   dependencyVersions: Readonly<Record<string, string>>;
   tierId: string;
   mode: PerformanceMode;
   repository: PerformanceTier["repository"];
+  measuredRepository: PerformanceEvidenceBinding["repository"];
   concurrency: number;
+  measuredConcurrency: number;
   minimumSamples: number;
   plannedDurationMs: number;
   startedAt: string;
@@ -87,6 +99,11 @@ export type RunPerformanceProbeOptions = Readonly<{
   repositoryRevision: string;
   deploymentRevision: string;
   fixtureDigest: string;
+  tenantId: string;
+  repositoryId: string;
+  correlationId: string;
+  source: string;
+  repository: PerformanceEvidenceBinding["repository"];
   dependencyVersions: Readonly<Record<string, string>>;
   probe: PerformanceProbe;
   signal?: AbortSignal;
@@ -110,8 +127,26 @@ function validateMetadata(options: RunPerformanceProbeOptions): void {
   if (!DEPLOYMENT_REVISION.test(options.deploymentRevision)) {
     invalid("performance_deployment_revision_invalid");
   }
-  if (!FIXTURE_DIGEST.test(options.fixtureDigest)) {
+  if (!/^(?:sha256:)?[a-f0-9]{64}$/.test(options.fixtureDigest)) {
     invalid("performance_fixture_digest_invalid");
+  }
+  for (const [field, value] of [
+    ["tenant_id", options.tenantId],
+    ["repository_id", options.repositoryId],
+    ["correlation_id", options.correlationId],
+    ["source", options.source],
+  ] as const) {
+    if (!value || value.length > 256 || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(value)) {
+      invalid(`performance_${field}_invalid`);
+    }
+  }
+  if (
+    !Number.isSafeInteger(options.repository.files) || options.repository.files < 1 ||
+    !Number.isSafeInteger(options.repository.sourceLines) || options.repository.sourceLines < 1 ||
+    !Number.isSafeInteger(options.repository.bytes) || options.repository.bytes < 1 ||
+    options.repository.languages.length === 0
+  ) {
+    invalid("performance_repository_shape_invalid");
   }
   const dependencies = Object.entries(options.dependencyVersions);
   if (
@@ -154,6 +189,9 @@ function recordInvocation(
   sequence: number,
   measurement: PerformanceProbeMeasurement,
   at: string,
+  evidence: Pick<PerformanceEvidenceBinding,
+    "tenantId" | "repositoryId" | "repositoryRevision" | "deploymentRevision" |
+    "fixtureDigest" | "correlationId" | "source">,
 ): void {
   for (const metric of METRICS) {
     const value = measurement.metrics[metric];
@@ -165,6 +203,13 @@ function recordInvocation(
       durationMs: value.durationMs,
       success: value.success,
       observedAt: at,
+      tenantId: evidence.tenantId,
+      repositoryId: evidence.repositoryId,
+      repositoryRevision: evidence.repositoryRevision,
+      deploymentRevision: evidence.deploymentRevision,
+      fixtureDigest: evidence.fixtureDigest,
+      correlationId: evidence.correlationId,
+      source: evidence.source,
     });
   }
 }
@@ -192,7 +237,10 @@ export async function runPerformanceProbe(
 ): Promise<PerformanceProbeReport> {
   validateMetadata(options);
   const contract = validatePerformanceContract(options.contract ?? WARDEN_PERFORMANCE_CONTRACT);
-  const tier = contract.tiers.find((candidate) => candidate.id === options.tierId);
+  const requestedTier = options.tierId.startsWith("pilot-")
+    ? resolvePerformanceTierId(options.tierId)
+    : options.tierId;
+  const tier = contract.tiers.find((candidate) => candidate.id === requestedTier);
   if (!tier) invalid("performance_tier_not_found");
   if (options.mode !== "load" && options.mode !== "soak") invalid("performance_mode_invalid");
 
@@ -213,13 +261,28 @@ export async function runPerformanceProbe(
   deadlineTimer.unref?.();
 
   const observations: PerformanceObservation[] = [];
+  const evidenceIdentity = {
+    tenantId: options.tenantId,
+    repositoryId: options.repositoryId,
+    repositoryRevision: options.repositoryRevision,
+    deploymentRevision: options.deploymentRevision,
+    fixtureDigest: options.fixtureDigest.startsWith("sha256:")
+      ? options.fixtureDigest
+      : `sha256:${options.fixtureDigest}`,
+    correlationId: options.correlationId,
+    source: options.source,
+  } as const;
   let sequence = 0;
   let cancelledInvocationCount = 0;
+  let activeInvocationCount = 0;
+  let measuredConcurrency = 0;
   const worker = async (): Promise<void> => {
     while (!controller.signal.aborted && now() < deadlineMs) {
       const invocationSequence = sequence++;
       const invocationId = `${tier.id}.${options.mode}.${String(invocationSequence).padStart(8, "0")}`;
       const invocationStarted = now();
+      activeInvocationCount += 1;
+      measuredConcurrency = Math.max(measuredConcurrency, activeInvocationCount);
       try {
         const measurement = await options.probe({
           invocationId,
@@ -229,6 +292,10 @@ export async function runPerformanceProbe(
           repositoryRevision: options.repositoryRevision,
           deploymentRevision: options.deploymentRevision,
           fixtureDigest: options.fixtureDigest,
+          tenantId: options.tenantId,
+          repositoryId: options.repositoryId,
+          correlationId: options.correlationId,
+          source: options.source,
           signal: controller.signal,
         });
         validateMeasurement(measurement);
@@ -239,6 +306,7 @@ export async function runPerformanceProbe(
           invocationSequence,
           measurement,
           observedAt(now),
+          evidenceIdentity,
         );
       } catch {
         if (controller.signal.aborted || now() >= deadlineMs) {
@@ -252,7 +320,10 @@ export async function runPerformanceProbe(
           invocationSequence,
           failedMeasurement(Math.max(0, now() - invocationStarted)),
           observedAt(now),
+          evidenceIdentity,
         );
+      } finally {
+        activeInvocationCount -= 1;
       }
     }
   };
@@ -271,9 +342,20 @@ export async function runPerformanceProbe(
   const selectedTierContract: PerformanceContract = {
     ...contract,
     tiers: [tier],
+    objectives: contract.objectives.filter((objective) =>
+      objective.tierId === undefined || objective.tierId === tier.id,
+    ),
+  };
+  const performanceEvidence: PerformanceEvidenceBinding = {
+    tierId: tier.id,
+    ...evidenceIdentity,
+    repository: options.repository,
+    measuredConcurrency,
+    startedAt: new Date(Math.max(0, startedMs)).toISOString(),
+    endedAt: new Date(Math.max(0, endedMs)).toISOString(),
   };
   const evaluation = !externallyAborted && completeSamples
-    ? evaluatePerformanceRun(selectedTierContract, observations, options.mode)
+    ? evaluatePerformanceRun(selectedTierContract, observations, performanceEvidence, options.mode)
     : null;
   const status = externallyAborted
     ? "aborted"
@@ -282,19 +364,25 @@ export async function runPerformanceProbe(
       : "incomplete";
 
   return Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: 2,
     contractVersion: contract.version,
     percentileMethod: contract.percentileMethod,
     repositoryRevision: options.repositoryRevision,
     deploymentRevision: options.deploymentRevision,
-    fixtureDigest: options.fixtureDigest,
+    fixtureDigest: evidenceIdentity.fixtureDigest,
+    tenantId: options.tenantId,
+    repositoryId: options.repositoryId,
+    correlationId: options.correlationId,
+    source: options.source,
     dependencyVersions: Object.freeze(
       Object.fromEntries(Object.entries(options.dependencyVersions).sort(([left], [right]) => left.localeCompare(right))),
     ),
     tierId: tier.id,
     mode: options.mode,
     repository: tier.repository,
+    measuredRepository: options.repository,
     concurrency: tier.concurrency,
+    measuredConcurrency,
     minimumSamples: tier.minimumSamples,
     plannedDurationMs,
     startedAt: new Date(Math.max(0, startedMs)).toISOString(),
@@ -324,8 +412,12 @@ export function createHttpPerformanceProbe(options: Readonly<{
         ...(options.bearerToken ? { authorization: `Bearer ${options.bearerToken}` } : {}),
       },
       body: JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         invocationId: context.invocationId,
+        tenantId: context.tenantId,
+        repositoryId: context.repositoryId,
+        correlationId: context.correlationId,
+        source: context.source,
         mode: context.mode,
         tier: context.tier,
         repositoryRevision: context.repositoryRevision,
@@ -399,9 +491,23 @@ async function main(): Promise<void> {
   const deploymentRevision = option("deployment-revision");
   const fixtureDigest = option("fixture-digest");
   const output = option("output");
-  if (!mode || !tierId || !endpoint || !deploymentRevision || !fixtureDigest || !output) {
+  const tenantId = option("tenant-id");
+  const repositoryId = option("repository-id");
+  const correlationId = option("correlation-id");
+  const source = option("source");
+  const repositoryFiles = Number(option("repository-files"));
+  const repositorySourceLines = Number(option("repository-source-lines"));
+  const repositoryBytes = Number(option("repository-bytes"));
+  const repositoryLanguages = option("repository-languages")?.split(",").map((value) => value.trim()).filter(Boolean);
+  if (
+    !mode || !tierId || !endpoint || !deploymentRevision || !fixtureDigest || !output ||
+    !tenantId || !repositoryId || !correlationId || !source || !repositoryLanguages
+  ) {
     throw new Error(
       "usage: --mode=load|soak --tier=<tier> --endpoint=<url> " +
+      "--tenant-id=<tenant> --repository-id=<repository> --correlation-id=<correlation> " +
+      "--source=<source> --repository-files=<count> --repository-source-lines=<count> " +
+      "--repository-bytes=<count> --repository-languages=<comma-list> " +
       "--deployment-revision=<immutable-id> --fixture-digest=<sha256> --output=<path>",
     );
   }
@@ -413,6 +519,16 @@ async function main(): Promise<void> {
     const report = await runPerformanceProbe({
       tierId,
       mode,
+      tenantId,
+      repositoryId,
+      correlationId,
+      source,
+      repository: {
+        files: repositoryFiles,
+        sourceLines: repositorySourceLines,
+        bytes: repositoryBytes,
+        languages: repositoryLanguages,
+      },
       repositoryRevision: repositoryRevision(),
       deploymentRevision,
       fixtureDigest,

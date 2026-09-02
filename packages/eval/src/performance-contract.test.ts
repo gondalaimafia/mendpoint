@@ -49,7 +49,17 @@ function contract(): PerformanceContract {
     ].map((metric) => ({
       metric,
       eventSource: `fettler.performance.${metric}`,
-      dimensions: ["deployment_revision", "repository_revision", "tier_id", "mode"],
+      dimensions: [
+        "tenant_id",
+        "repository_id",
+        "deployment_revision",
+        "repository_revision",
+        "fixture_digest",
+        "correlation_id",
+        "source",
+        "tier_id",
+        "mode",
+      ],
       exclusions: ["operator_cancelled"],
       freshnessSeconds: 300,
       qualityChecks: ["finite_duration", "successful_terminal_state", "revision_bound"],
@@ -59,6 +69,7 @@ function contract(): PerformanceContract {
 
 function binding(overrides: Partial<PerformanceEvidenceBinding> = {}): PerformanceEvidenceBinding {
   return {
+    tierId: "small",
     tenantId: "tenant-fettler-production",
     repositoryId: "github-1319732323",
     repositoryRevision: "a".repeat(40),
@@ -199,7 +210,10 @@ describe("Fettler performance contract", () => {
       ...observation,
       observedAt: "2026-09-01T00:00:00.000Z",
     }));
-    expect(() => evaluatePerformanceRun(contract(), stale, binding(), "load", EVALUATED_AT))
+    expect(() => evaluatePerformanceRun(contract(), stale, binding({
+      startedAt: "2026-09-01T00:00:00.000Z",
+      endedAt: "2026-09-01T00:01:00.000Z",
+    }), "load", EVALUATED_AT))
       .toThrow("performance_observation_stale");
   });
 
@@ -212,13 +226,6 @@ describe("Fettler performance contract", () => {
     const zeroDuration = base.map((observation) => ({ ...observation, durationMs: 0 }));
     expect(() => evaluatePerformanceRun(contract(), zeroDuration, binding(), "load", EVALUATED_AT))
       .toThrow("performance_observation_duration_invalid");
-
-    const oneTimestamp = base.map((observation) => ({
-      ...observation,
-      observedAt: "2026-09-02T00:00:01.000Z",
-    }));
-    expect(() => evaluatePerformanceRun(contract(), oneTimestamp, binding(), "load", EVALUATED_AT))
-      .toThrow("performance_observation_time_range_invalid");
 
     expect(() => evaluatePerformanceRun(
       contract(),

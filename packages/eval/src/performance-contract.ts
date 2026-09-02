@@ -1,10 +1,22 @@
 import { createHash } from "node:crypto";
 
-export const PERFORMANCE_CONTRACT_VERSION = "2026-09-02.v2" as const;
+export const PERFORMANCE_CONTRACT_VERSION = "2026-09-02.v3" as const;
 export const PERFORMANCE_METRIC_DICTIONARY_VERSION = "2026-09-02.v1" as const;
 export const PERFORMANCE_PERCENTILE_METHOD = "nearest_rank_v1" as const;
 
-const LEGACY_PERFORMANCE_CONTRACT_VERSION = "2026-08-02.v1";
+const LEGACY_PERFORMANCE_CONTRACT_VERSIONS = new Set([
+  "2026-08-02.v1",
+  "2026-09-02.v2",
+]);
+
+export const FETTLER_PERFORMANCE_TIER_IDS = ["small", "medium", "large"] as const;
+export type FettlerPerformanceTierId = typeof FETTLER_PERFORMANCE_TIER_IDS[number];
+
+const LEGACY_TIER_ALIASES: Readonly<Record<string, FettlerPerformanceTierId>> = Object.freeze({
+  "pilot-small": "small",
+  "pilot-medium": "medium",
+  "pilot-large": "large",
+});
 
 export type PerformanceMetric =
   | "first_result"
@@ -24,6 +36,7 @@ export type PerformanceTier = {
   id: string;
   repository: {
     files: number;
+    sourceLines?: number;
     bytes: number;
     maxFileBytes?: number;
     languages: string[];
@@ -36,6 +49,7 @@ export type PerformanceTier = {
 };
 
 export type PerformanceObjective = {
+  tierId?: string;
   metric: PerformanceMetric;
   p50Ms: number;
   p95Ms: number;
@@ -68,7 +82,34 @@ export type PerformanceObservation = {
   durationMs: number;
   success: boolean;
   observedAt: string;
+  tenantId?: string;
+  repositoryId?: string;
+  repositoryRevision?: string;
+  deploymentRevision?: string;
+  fixtureDigest?: string;
+  correlationId?: string;
+  source?: string;
 };
+
+export type PerformanceEvidenceBinding = Readonly<{
+  tierId: string;
+  tenantId: string;
+  repositoryId: string;
+  repositoryRevision: string;
+  deploymentRevision: string;
+  fixtureDigest: string;
+  correlationId: string;
+  source: string;
+  repository: Readonly<{
+    files: number;
+    sourceLines: number;
+    bytes: number;
+    languages: readonly string[];
+  }>;
+  measuredConcurrency: number;
+  startedAt: string;
+  endedAt: string;
+}>;
 
 export type PerformanceResult = PerformanceObjective & {
   tierId: string;
@@ -90,6 +131,7 @@ export type PerformanceReport = {
   percentileMethod: typeof PERFORMANCE_PERCENTILE_METHOD;
   mode: PerformanceMode;
   evaluatedAt: string;
+  evidence: PerformanceEvidenceBinding;
   ok: boolean;
   results: Array<Omit<PerformanceResult, "observedP50Ms" | "observedP95Ms" | "observedP99Ms"> & {
     p50Ms: number;
@@ -110,8 +152,13 @@ const METRICS: readonly PerformanceMetric[] = [
 ];
 
 const REQUIRED_DIMENSIONS = [
+  "tenant_id",
+  "repository_id",
   "deployment_revision",
   "repository_revision",
+  "fixture_digest",
+  "correlation_id",
+  "source",
   "tier_id",
   "mode",
 ] as const;
@@ -135,9 +182,10 @@ export const FETTLER_PERFORMANCE_CONTRACT: PerformanceContract = {
   metricDictionaryVersion: PERFORMANCE_METRIC_DICTIONARY_VERSION,
   tiers: [
     {
-      id: "fettler-small",
+      id: "small",
       repository: {
-        files: 5_000,
+        files: 2_000,
+        sourceLines: 100_000,
         bytes: 50_000_000,
         maxFileBytes: 1_000_000,
         languages: ["typescript"],
@@ -149,9 +197,10 @@ export const FETTLER_PERFORMANCE_CONTRACT: PerformanceContract = {
       soakDurationSeconds: 3_600,
     },
     {
-      id: "fettler-medium",
+      id: "medium",
       repository: {
-        files: 25_000,
+        files: 20_000,
+        sourceLines: 1_000_000,
         bytes: 500_000_000,
         maxFileBytes: 5_000_000,
         languages: ["javascript", "python", "typescript"],
@@ -161,24 +210,65 @@ export const FETTLER_PERFORMANCE_CONTRACT: PerformanceContract = {
           { language: "typescript", minimumPercent: 33 },
         ],
       },
-      concurrency: 5,
+      concurrency: 4,
       minimumSamples: 100,
       loadDurationSeconds: 600,
       soakDurationSeconds: 7_200,
     },
+    {
+      id: "large",
+      repository: {
+        files: 100_000,
+        sourceLines: 5_000_000,
+        bytes: 2_500_000_000,
+        maxFileBytes: 10_000_000,
+        languages: ["go", "java", "javascript", "python", "ruby", "typescript"],
+        languageMix: [
+          { language: "go", minimumPercent: 16 },
+          { language: "java", minimumPercent: 16 },
+          { language: "javascript", minimumPercent: 17 },
+          { language: "python", minimumPercent: 17 },
+          { language: "ruby", minimumPercent: 17 },
+          { language: "typescript", minimumPercent: 17 },
+        ],
+      },
+      concurrency: 8,
+      minimumSamples: 100,
+      loadDurationSeconds: 900,
+      soakDurationSeconds: 14_400,
+    },
   ],
   objectives: [
-    { metric: "first_result", p50Ms: 60_000, p95Ms: 180_000, p99Ms: 300_000 },
-    { metric: "complete_scan", p50Ms: 300_000, p95Ms: 900_000, p99Ms: 1_800_000 },
-    { metric: "verification", p50Ms: 120_000, p95Ms: 600_000, p99Ms: 1_200_000 },
-    { metric: "queue_wait", p50Ms: 5_000, p95Ms: 30_000, p99Ms: 60_000 },
-    { metric: "campaign_fanout", p50Ms: 30_000, p95Ms: 120_000, p99Ms: 300_000 },
+    { tierId: "small", metric: "first_result", p50Ms: 30_000, p95Ms: 90_000, p99Ms: 180_000 },
+    { tierId: "small", metric: "complete_scan", p50Ms: 120_000, p95Ms: 300_000, p99Ms: 480_000 },
+    { tierId: "small", metric: "verification", p50Ms: 300_000, p95Ms: 900_000, p99Ms: 1_500_000 },
+    { tierId: "small", metric: "queue_wait", p50Ms: 5_000, p95Ms: 30_000, p99Ms: 60_000 },
+    { tierId: "small", metric: "campaign_fanout", p50Ms: 30_000, p95Ms: 120_000, p99Ms: 300_000 },
+    { tierId: "medium", metric: "first_result", p50Ms: 90_000, p95Ms: 240_000, p99Ms: 480_000 },
+    { tierId: "medium", metric: "complete_scan", p50Ms: 600_000, p95Ms: 1_500_000, p99Ms: 2_400_000 },
+    { tierId: "medium", metric: "verification", p50Ms: 900_000, p95Ms: 2_400_000, p99Ms: 3_600_000 },
+    { tierId: "medium", metric: "queue_wait", p50Ms: 10_000, p95Ms: 60_000, p99Ms: 120_000 },
+    { tierId: "medium", metric: "campaign_fanout", p50Ms: 60_000, p95Ms: 240_000, p99Ms: 600_000 },
+    { tierId: "large", metric: "first_result", p50Ms: 240_000, p95Ms: 600_000, p99Ms: 1_200_000 },
+    { tierId: "large", metric: "complete_scan", p50Ms: 2_100_000, p95Ms: 4_500_000, p99Ms: 7_200_000 },
+    { tierId: "large", metric: "verification", p50Ms: 2_700_000, p95Ms: 7_200_000, p99Ms: 10_800_000 },
+    { tierId: "large", metric: "queue_wait", p50Ms: 30_000, p95Ms: 120_000, p99Ms: 300_000 },
+    { tierId: "large", metric: "campaign_fanout", p50Ms: 120_000, p95Ms: 600_000, p99Ms: 1_200_000 },
   ],
   metricDictionary: METRIC_DICTIONARY,
 };
 
 /** Compatibility export for runtime callers that have not migrated their import name. */
 export const WARDEN_PERFORMANCE_CONTRACT = FETTLER_PERFORMANCE_CONTRACT;
+
+export function resolvePerformanceTierId(input: string): FettlerPerformanceTierId {
+  const normalized = input.trim().toLowerCase();
+  const canonical = LEGACY_TIER_ALIASES[normalized] ?? normalized;
+  if (!FETTLER_PERFORMANCE_TIER_IDS.includes(canonical as FettlerPerformanceTierId)) {
+    fail("performance_tier_not_found");
+  }
+  return canonical as FettlerPerformanceTierId;
+}
 
 const ID = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
 
@@ -230,14 +320,14 @@ function digest(value: unknown): string {
 }
 
 function dictionaryFor(input: PerformanceContract): PerformanceMetricDefinition[] {
-  if (input.version === LEGACY_PERFORMANCE_CONTRACT_VERSION && input.metricDictionary === undefined) {
+  if (LEGACY_PERFORMANCE_CONTRACT_VERSIONS.has(input.version) && input.metricDictionary === undefined) {
     return METRIC_DICTIONARY;
   }
   return input.metricDictionary ?? fail("performance_metric_dictionary_incomplete");
 }
 
 function dictionaryVersionFor(input: PerformanceContract): string {
-  if (input.version === LEGACY_PERFORMANCE_CONTRACT_VERSION && input.metricDictionaryVersion === undefined) {
+  if (LEGACY_PERFORMANCE_CONTRACT_VERSIONS.has(input.version) && input.metricDictionaryVersion === undefined) {
     return PERFORMANCE_METRIC_DICTIONARY_VERSION;
   }
   if (input.metricDictionaryVersion !== PERFORMANCE_METRIC_DICTIONARY_VERSION) {
@@ -262,7 +352,7 @@ export function performanceContractDigest(input: PerformanceContract): string {
 export function validatePerformanceContract(input: PerformanceContract): PerformanceContract {
   if (
     input.version !== PERFORMANCE_CONTRACT_VERSION &&
-    input.version !== LEGACY_PERFORMANCE_CONTRACT_VERSION
+    !LEGACY_PERFORMANCE_CONTRACT_VERSIONS.has(input.version)
   ) {
     fail("performance_version_invalid");
   }
@@ -279,6 +369,7 @@ export function validatePerformanceContract(input: PerformanceContract): Perform
     positiveInteger(tier.repository.bytes, "performance_tier_bytes");
     uniqueIds(tier.repository.languages, "performance_tier_languages");
     if (input.version === PERFORMANCE_CONTRACT_VERSION) {
+      positiveInteger(tier.repository.sourceLines ?? 0, "performance_tier_source_lines");
       positiveInteger(tier.repository.maxFileBytes ?? 0, "performance_tier_max_file_bytes");
       if (tier.repository.maxFileBytes! > tier.repository.bytes) {
         fail("performance_tier_max_file_bytes_invalid");
@@ -305,23 +396,36 @@ export function validatePerformanceContract(input: PerformanceContract): Perform
       fail("performance_tier_soak_duration_invalid");
     }
   }
-  if (!Array.isArray(input.objectives) || input.objectives.length !== METRICS.length) {
+  const expectedObjectiveCount = input.version === PERFORMANCE_CONTRACT_VERSION
+    ? input.tiers.length * METRICS.length
+    : METRICS.length;
+  if (!Array.isArray(input.objectives) || input.objectives.length !== expectedObjectiveCount) {
     fail("performance_objectives_incomplete");
   }
-  const objectiveMetrics = new Set<PerformanceMetric>();
+  const objectiveKeys = new Set<string>();
   for (const objective of input.objectives) {
     if (!METRICS.includes(objective.metric)) fail("performance_objective_metric_invalid");
-    if (objectiveMetrics.has(objective.metric)) fail("performance_objective_duplicate");
-    objectiveMetrics.add(objective.metric);
-    duration(objective.p50Ms, "performance_objective_p50");
-    duration(objective.p95Ms, "performance_objective_p95");
-    duration(objective.p99Ms, "performance_objective_p99");
+    const tierId = input.version === PERFORMANCE_CONTRACT_VERSION
+      ? objective.tierId ?? fail("performance_objective_tier_required")
+      : objective.tierId ?? "legacy";
+    if (input.version === PERFORMANCE_CONTRACT_VERSION && !tierIds.has(tierId)) {
+      fail("performance_objective_tier_invalid");
+    }
+    const key = `${tierId}:${objective.metric}`;
+    if (objectiveKeys.has(key)) fail("performance_objective_duplicate");
+    objectiveKeys.add(key);
+    positiveInteger(objective.p50Ms, "performance_objective_p50");
+    positiveInteger(objective.p95Ms, "performance_objective_p95");
+    positiveInteger(objective.p99Ms, "performance_objective_p99");
     if (objective.p50Ms > objective.p95Ms || objective.p95Ms > objective.p99Ms) {
       fail("performance_objective_order_invalid");
     }
   }
-  if (METRICS.some((metric) => !objectiveMetrics.has(metric))) {
-    fail("performance_objectives_incomplete");
+  for (const tier of input.tiers) {
+    const tierKey = input.version === PERFORMANCE_CONTRACT_VERSION ? tier.id : "legacy";
+    if (METRICS.some((metric) => !objectiveKeys.has(`${tierKey}:${metric}`))) {
+      fail("performance_objectives_incomplete");
+    }
   }
   const dictionary = dictionaryFor(input);
   dictionaryVersionFor(input);
@@ -353,44 +457,127 @@ function nearestRank(values: readonly number[], percentile: number): number {
   return ordered[Math.max(0, Math.ceil(percentile * ordered.length) - 1)]!;
 }
 
+const REVISION = /^(?!main$|master$|latest$|head$)[a-zA-Z0-9][a-zA-Z0-9._-]{6,127}$/i;
+const FIXTURE_DIGEST = /^sha256:[a-f0-9]{64}$/;
+
+function requiredEvidenceId(value: string, field: string): void {
+  if (
+    typeof value !== "string" ||
+    value.length < 1 ||
+    value.length > 256 ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(value)
+  ) {
+    fail(`${field}_invalid`);
+  }
+}
+
+function validateEvidenceBinding(
+  contract: PerformanceContract,
+  evidence: PerformanceEvidenceBinding,
+  mode: PerformanceMode,
+): { tier: PerformanceTier; startedAtMs: number; endedAtMs: number } {
+  if (!evidence || typeof evidence !== "object") fail("performance_evidence_binding_required");
+  requiredEvidenceId(evidence.tenantId, "performance_tenant_id");
+  requiredEvidenceId(evidence.repositoryId, "performance_repository_id");
+  requiredEvidenceId(evidence.correlationId, "performance_correlation_id");
+  requiredEvidenceId(evidence.source, "performance_source");
+  if (!REVISION.test(evidence.repositoryRevision)) fail("performance_repository_revision_invalid");
+  if (!REVISION.test(evidence.deploymentRevision)) fail("performance_deployment_revision_invalid");
+  if (!FIXTURE_DIGEST.test(evidence.fixtureDigest)) fail("performance_fixture_digest_invalid");
+  const tier = contract.tiers.find((candidate) => candidate.id === evidence.tierId);
+  if (!tier) fail("performance_evidence_tier_invalid");
+  positiveInteger(evidence.repository.files, "performance_repository_files");
+  positiveInteger(evidence.repository.sourceLines, "performance_repository_source_lines");
+  positiveInteger(evidence.repository.bytes, "performance_repository_bytes");
+  uniqueIds([...evidence.repository.languages], "performance_repository_languages");
+  if (
+    evidence.repository.files > tier.repository.files ||
+    evidence.repository.sourceLines > (tier.repository.sourceLines ?? Number.MAX_SAFE_INTEGER) ||
+    evidence.repository.bytes > tier.repository.bytes ||
+    evidence.repository.languages.length > tier.repository.languages.length ||
+    evidence.repository.languages.some((language) => !tier.repository.languages.includes(language))
+  ) {
+    fail("performance_repository_shape_exceeds_tier");
+  }
+  if (evidence.measuredConcurrency !== tier.concurrency) {
+    fail("performance_measured_concurrency_mismatch");
+  }
+  const startedAtMs = isoTime(evidence.startedAt, "performance_run_started_at");
+  const endedAtMs = isoTime(evidence.endedAt, "performance_run_ended_at");
+  const minimumDurationMs = (
+    mode === "load" ? tier.loadDurationSeconds : tier.soakDurationSeconds
+  ) * 1_000;
+  if (endedAtMs <= startedAtMs || endedAtMs - startedAtMs < minimumDurationMs) {
+    fail("performance_run_duration_incomplete");
+  }
+  return { tier, startedAtMs, endedAtMs };
+}
+
 export function evaluatePerformanceRun(
   rawContract: PerformanceContract,
   observations: readonly PerformanceObservation[],
+  evidence: PerformanceEvidenceBinding,
   mode: PerformanceMode = "load",
   evaluatedAt?: string,
 ): PerformanceReport {
   const contract = validatePerformanceContract(rawContract);
   if (mode !== "load" && mode !== "soak") fail("performance_mode_invalid");
-  const knownTiers = new Set(contract.tiers.map((tier) => tier.id));
+  const { tier, startedAtMs, endedAtMs } = validateEvidenceBinding(contract, evidence, mode);
   const observationIds = new Set<string>();
   const observationTimes: number[] = [];
   for (const observation of observations) {
     if (!ID.test(observation.id)) fail("performance_observation_id_invalid");
     if (observationIds.has(observation.id)) fail("performance_observation_duplicate");
     observationIds.add(observation.id);
-    if (!knownTiers.has(observation.tierId)) fail("performance_observation_tier_invalid");
+    if (observation.tierId !== tier.id) fail("performance_observation_tier_invalid");
     if (!METRICS.includes(observation.metric)) fail("performance_observation_metric_invalid");
     if (observation.mode !== mode) fail("performance_observation_mode_invalid");
-    duration(observation.durationMs, "performance_observation_duration");
-    observationTimes.push(isoTime(observation.observedAt, "performance_observation_time"));
+    if (!Number.isFinite(observation.durationMs) || observation.durationMs <= 0) {
+      fail("performance_observation_duration_invalid");
+    }
+    if (observation.tenantId !== evidence.tenantId) fail("performance_observation_tenant_mismatch");
+    if (observation.repositoryId !== evidence.repositoryId) fail("performance_observation_repository_mismatch");
+    if (observation.repositoryRevision !== evidence.repositoryRevision) {
+      fail("performance_observation_repository_revision_mismatch");
+    }
+    if (observation.deploymentRevision !== evidence.deploymentRevision) {
+      fail("performance_observation_deployment_revision_mismatch");
+    }
+    if (observation.fixtureDigest !== evidence.fixtureDigest) fail("performance_observation_fixture_mismatch");
+    if (observation.correlationId !== evidence.correlationId) {
+      fail("performance_observation_correlation_mismatch");
+    }
+    if (observation.source !== evidence.source) fail("performance_observation_source_mismatch");
+    const observedAtMs = isoTime(observation.observedAt, "performance_observation_time");
+    if (observedAtMs < startedAtMs || observedAtMs > endedAtMs) {
+      fail("performance_observation_outside_run");
+    }
+    observationTimes.push(observedAtMs);
   }
+  if (observationTimes.length === 0) fail("performance_observations_required");
   const evaluatedAtValue = evaluatedAt ?? (
-    observationTimes.length > 0
-      ? new Date(Math.max(...observationTimes)).toISOString()
-      : fail("performance_observations_required")
+    new Date(endedAtMs).toISOString()
   );
   const evaluatedAtMs = isoTime(evaluatedAtValue, "performance_evaluated_at");
+  if (evaluatedAtMs < endedAtMs) fail("performance_evaluated_before_run_end");
   const dictionary = new Map(dictionaryFor(contract).map((definition) => [definition.metric, definition]));
-  for (let index = 0; index < observations.length; index += 1) {
-    const ageMs = evaluatedAtMs - observationTimes[index]!;
+  for (const metric of METRICS) {
+    const latest = Math.max(...observations
+      .map((observation, index) => observation.metric === metric ? observationTimes[index]! : -1));
+    if (latest < 0) continue;
+    const ageMs = evaluatedAtMs - latest;
     if (ageMs < 0) fail("performance_observation_future");
-    const definition = dictionary.get(observations[index]!.metric)!;
+    const definition = dictionary.get(metric)!;
     if (ageMs > definition.freshnessSeconds * 1_000) fail("performance_observation_stale");
   }
 
   const results: PerformanceReport["results"] = [];
-  for (const tier of contract.tiers) {
-    for (const objective of contract.objectives) {
+  const objectives = contract.objectives.filter((objective) =>
+    contract.version === PERFORMANCE_CONTRACT_VERSION
+      ? objective.tierId === tier.id
+      : true,
+  );
+  for (const objective of objectives) {
       const samples = observations.filter(
         (observation) =>
           observation.tierId === tier.id &&
@@ -421,7 +608,6 @@ export function evaluatePerformanceRun(
           p95Ms <= objective.p95Ms &&
           p99Ms <= objective.p99Ms,
       });
-    }
   }
   results.sort(
     (left, right) =>
@@ -435,6 +621,13 @@ export function evaluatePerformanceRun(
     percentileMethod: PERFORMANCE_PERCENTILE_METHOD,
     mode,
     evaluatedAt: evaluatedAtValue,
+    evidence: Object.freeze({
+      ...evidence,
+      repository: Object.freeze({
+        ...evidence.repository,
+        languages: Object.freeze([...evidence.repository.languages]),
+      }),
+    }),
     ok: results.every((result) => result.ok),
     results,
   };

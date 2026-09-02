@@ -62,9 +62,19 @@ function measurement(durationMs = 10, success = true): PerformanceProbeMeasureme
 
 function metadata() {
   return {
+    tenantId: "tenant-fettler-production",
+    repositoryId: "github-1319732323",
     repositoryRevision: "a".repeat(40),
     deploymentRevision: "b".repeat(40),
     fixtureDigest: "c".repeat(64),
+    correlationId: "corr-fettler-performance",
+    source: "fettler-production-probe",
+    repository: {
+      files: 10,
+      sourceLines: 100,
+      bytes: 1_000,
+      languages: ["typescript"],
+    },
     dependencyVersions: { node: "22.17.0", vitest: "3.0.9" },
   };
 }
@@ -263,7 +273,11 @@ describe("performance runner", () => {
     expect(JSON.parse(readFileSync(output, "utf8"))).toMatchObject({
       repositoryRevision: "a".repeat(40),
       deploymentRevision: "b".repeat(40),
-      fixtureDigest: "c".repeat(64),
+      fixtureDigest: `sha256:${"c".repeat(64)}`,
+      tenantId: "tenant-fettler-production",
+      repositoryId: "github-1319732323",
+      correlationId: "corr-fettler-performance",
+      source: "fettler-production-probe",
       mode: "load",
     });
   });
@@ -307,6 +321,10 @@ describe("performance runner", () => {
       repositoryRevision: "a".repeat(40),
       deploymentRevision: "b".repeat(40),
       fixtureDigest: "c".repeat(64),
+      tenantId: "tenant-fettler-production",
+      repositoryId: "github-1319732323",
+      correlationId: "corr-http-probe",
+      source: "fettler-production-probe",
       signal: new AbortController().signal,
     });
 
