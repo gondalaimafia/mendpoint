@@ -16,7 +16,7 @@
       "state": "preview",
       "scope": "Approved private pilot teams",
       "evidence": [
-        { "id": "CLM-001-EV01", "type": "live", "locator": "https://proposal-authority-fixture.invalid/livez", "observedAt": "2026-08-25T09:41:12.318Z", "freshUntil": "2026-09-01T09:41:12.318Z", "revision": "94e837863e3f47d143084c9b9e52e29cf9afcacc" },
+        { "id": "CLM-001-EV01", "type": "live", "locator": "https://proposal-authority-fixture.invalid/livez", "observedAt": "2026-08-25T09:41:12.318Z", "freshUntil": "2099-01-01T00:00:00.318Z", "revision": "94e837863e3f47d143084c9b9e52e29cf9afcacc" },
         { "id": "CLM-001-EV02", "type": "document", "locator": "docs/PRODUCT_CONTRACT.md" }
       ],
       "limitations": ["Public signup is not available", "Pilot access is approved manually"],
@@ -253,8 +253,8 @@
       "state": "limited_availability",
       "scope": "Fly pilot deployment",
       "evidence": [
-        { "id": "CLM-013-EV01", "type": "live", "locator": "https://proposal-authority-fixture.invalid/access", "observedAt": "2026-08-25T09:41:13.902Z", "freshUntil": "2026-09-01T09:41:13.902Z", "revision": "94e837863e3f47d143084c9b9e52e29cf9afcacc" },
-        { "id": "CLM-013-EV02", "type": "live", "locator": "https://proposal-authority-fixture.invalid/healthz", "observedAt": "2026-08-25T09:41:15.244Z", "freshUntil": "2026-09-01T09:41:15.244Z", "revision": "94e837863e3f47d143084c9b9e52e29cf9afcacc" }
+        { "id": "CLM-013-EV01", "type": "live", "locator": "https://proposal-authority-fixture.invalid/access", "observedAt": "2026-08-25T09:41:13.902Z", "freshUntil": "2099-01-01T00:00:00.902Z", "revision": "94e837863e3f47d143084c9b9e52e29cf9afcacc" },
+        { "id": "CLM-013-EV02", "type": "live", "locator": "https://proposal-authority-fixture.invalid/healthz", "observedAt": "2026-08-25T09:41:15.244Z", "freshUntil": "2099-01-01T00:00:00.244Z", "revision": "94e837863e3f47d143084c9b9e52e29cf9afcacc" }
       ],
       "limitations": ["Workspace access requires an approved operator credential", "Health reports degraded while recovery work requires operator review"],
       "requiredQualifier": "Fly pilot deployment",
