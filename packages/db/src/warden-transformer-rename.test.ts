@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDb } from "./index.js";
+import { claimNextJob, createDb, enqueueJob } from "./index.js";
 
 // Release A makes the destructive old-to-new rename tolerant of a future
 // compatibility release without changing today's new-only physical schema.
@@ -321,6 +321,113 @@ function closeTracked(db: Db): void {
   if (index >= 0) openDbs.splice(index, 1);
 }
 
+const LEGACY_OWNERSHIP_TABLES = [
+  "jobs",
+  "repair_sessions",
+  "agent_runs",
+  "audit_events",
+  "suppressed_patterns",
+] as const;
+
+function buildLegacyOwnershipVolume(path: string): void {
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`
+    CREATE TABLE jobs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT,
+      type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 3,
+      error TEXT,
+      result_json TEXT,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT
+    );
+    CREATE TABLE repair_sessions (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT,
+      consumer_id TEXT,
+      repo_path TEXT NOT NULL,
+      status TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      edits_count INTEGER NOT NULL DEFAULT 0,
+      ok INTEGER NOT NULL DEFAULT 0,
+      report_md TEXT,
+      result_json TEXT,
+      created_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+    CREATE TABLE agent_runs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT,
+      job_id TEXT,
+      goal TEXT NOT NULL,
+      repo_path TEXT NOT NULL,
+      status TEXT NOT NULL,
+      ok INTEGER NOT NULL DEFAULT 0,
+      steps INTEGER NOT NULL DEFAULT 0,
+      files_changed_json TEXT,
+      report_md TEXT,
+      result_json TEXT,
+      created_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+    CREATE TABLE audit_events (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT,
+      actor TEXT NOT NULL,
+      action TEXT NOT NULL,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE suppressed_patterns (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT,
+      consumer_id TEXT,
+      provider_slug TEXT,
+      pattern TEXT NOT NULL,
+      reason TEXT,
+      source_pr_id TEXT,
+      created_at TEXT NOT NULL
+    );
+  `);
+  const tenants = [
+    ["empty", ""],
+    ["null", null],
+    ["valid", "tenant_customer"],
+    ["whitespace", "   "],
+  ] as const;
+  for (const [suffix, tenantId] of tenants) {
+    legacy.prepare(
+      `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+       VALUES (?, ?, 'repair', '{}', ?)`,
+    ).run(`jobs-${suffix}`, tenantId, TS);
+    legacy.prepare(
+      `INSERT INTO repair_sessions (id, tenant_id, repo_path, status, created_at)
+       VALUES (?, ?, '/repo', 'pending', ?)`,
+    ).run(`repair_sessions-${suffix}`, tenantId, TS);
+    legacy.prepare(
+      `INSERT INTO agent_runs (id, tenant_id, goal, repo_path, status, created_at)
+       VALUES (?, ?, 'repair', '/repo', 'pending', ?)`,
+    ).run(`agent_runs-${suffix}`, tenantId, TS);
+    legacy.prepare(
+      `INSERT INTO audit_events
+         (id, tenant_id, actor, action, resource_type, metadata_json, created_at)
+       VALUES (?, ?, 'legacy', 'legacy.observed', 'legacy', '{}', ?)`,
+    ).run(`audit_events-${suffix}`, tenantId, TS);
+    legacy.prepare(
+      `INSERT INTO suppressed_patterns (id, tenant_id, pattern, created_at)
+       VALUES (?, ?, 'legacy-pattern', ?)`,
+    ).run(`suppressed_patterns-${suffix}`, tenantId, TS);
+  }
+  legacy.close();
+}
+
 describe("Fettler/Regauge logical database names", () => {
   it("keeps a fresh legacy row unattributable when the tenant column is introduced", () => {
     const path = join(newDir("tenant-fresh-upgrade"), "legacy.sqlite");
@@ -334,6 +441,10 @@ describe("Fettler/Regauge logical database names", () => {
         .prepare("SELECT id FROM jobs WHERE tenant_id = 'tenant_default'")
         .all(),
     ).toEqual([]);
+    expect(claimNextJob(migrated, ["repair"], {
+      workerId: "review-worker",
+      now: "2026-01-02T00:00:00.000Z",
+    })).toBeUndefined();
   });
 
   it("preserves aged null, empty, and valid tenant ownership without laundering", () => {
@@ -342,6 +453,7 @@ describe("Fettler/Regauge logical database names", () => {
       { id: "aged-empty", tenantId: "" },
       { id: "aged-null", tenantId: null },
       { id: "aged-valid", tenantId: "tenant_customer" },
+      { id: "aged-whitespace", tenantId: "   " },
     ]);
 
     const migrated = boot(path);
@@ -350,12 +462,84 @@ describe("Fettler/Regauge logical database names", () => {
       { id: "aged-empty", tenant_id: "" },
       { id: "aged-null", tenant_id: null },
       { id: "aged-valid", tenant_id: "tenant_customer" },
+      { id: "aged-whitespace", tenant_id: "   " },
     ]);
     expect(
       migrated.raw
         .prepare("SELECT id FROM jobs WHERE tenant_id = 'tenant_default'")
         .all(),
     ).toEqual([]);
+    expect(claimNextJob(migrated, ["repair"], {
+      workerId: "review-worker",
+      now: "2026-01-02T00:00:00.000Z",
+    })).toMatchObject({ id: "aged-valid", tenant_id: "tenant_customer" });
+    expect(claimNextJob(migrated, ["repair"], {
+      workerId: "review-worker",
+      now: "2026-01-02T00:00:00.000Z",
+    })).toBeUndefined();
+  });
+
+  it("quarantines unattributable ownership across every migration-touched table", () => {
+    const path = join(newDir("tenant-all-table-upgrade"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+
+    const migrated = boot(path);
+
+    for (const table of LEGACY_OWNERSHIP_TABLES) {
+      expect(
+        migrated.raw.prepare(`SELECT id, tenant_id FROM ${table} ORDER BY id`).all(),
+      ).toEqual([
+        { id: `${table}-empty`, tenant_id: "" },
+        { id: `${table}-null`, tenant_id: null },
+        { id: `${table}-valid`, tenant_id: "tenant_customer" },
+        { id: `${table}-whitespace`, tenant_id: "   " },
+      ]);
+      expect(
+        migrated.raw
+          .prepare(`SELECT id FROM ${table} WHERE tenant_id = 'tenant_default'`)
+          .all(),
+      ).toEqual([]);
+    }
+  });
+
+  it("rejects whitespace-only ownership on every relevant future insert and update", () => {
+    const path = join(newDir("tenant-write-guards"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    const migrated = boot(path);
+
+    const inserts = [
+      `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+       VALUES ('jobs-new-whitespace', '   ', 'repair', '{}', '${TS}')`,
+      `INSERT INTO repair_sessions (id, tenant_id, repo_path, status, created_at)
+       VALUES ('repair_sessions-new-whitespace', '   ', '/repo', 'pending', '${TS}')`,
+      `INSERT INTO agent_runs (id, tenant_id, goal, repo_path, status, created_at)
+       VALUES ('agent_runs-new-whitespace', '   ', 'repair', '/repo', 'pending', '${TS}')`,
+      `INSERT INTO audit_events
+         (id, tenant_id, actor, action, resource_type, metadata_json, created_at)
+       VALUES ('audit_events-new-whitespace', '   ', 'legacy', 'legacy.observed', 'legacy', '{}', '${TS}')`,
+      `INSERT INTO suppressed_patterns (id, tenant_id, pattern, created_at)
+       VALUES ('suppressed_patterns-new-whitespace', '   ', 'legacy-pattern', '${TS}')`,
+    ];
+    for (const statement of inserts) {
+      expect(() => migrated.raw.exec(statement)).toThrow("tenant_id_required");
+    }
+
+    for (const table of ["jobs", "repair_sessions", "agent_runs", "suppressed_patterns"]) {
+      expect(() => migrated.raw.exec(
+        `UPDATE ${table} SET tenant_id = '   ' WHERE id = '${table}-valid'`,
+      )).toThrow("tenant_id_required");
+    }
+    expect(() => migrated.raw.exec(
+      "UPDATE audit_events SET tenant_id = '   ' WHERE id = 'audit_events-valid'",
+    )).toThrow();
+
+    expect(() => enqueueJob(migrated, {
+      id: "enqueue-whitespace",
+      tenantId: "   ",
+      type: "repair",
+      payload: {},
+      createdAt: TS,
+    })).toThrow("tenant_id_required");
   });
 
   it("resumes an interrupted tenant-column upgrade without claiming unknown rows", () => {
