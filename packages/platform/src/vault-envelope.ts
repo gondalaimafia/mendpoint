@@ -578,7 +578,10 @@ class ExternalKeyEncryptionKeyProvider implements KeyEncryptionKeyProvider {
   async #remote<T>(operation: () => Promise<T>): Promise<T> {
     try {
       return await operation();
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === "external_kek_destination_invalid") {
+        throw new Error("external_kek_destination_invalid");
+      }
       throw new Error("external_kek_operation_failed");
     }
   }
@@ -612,7 +615,9 @@ class ExternalKeyEncryptionKeyProvider implements KeyEncryptionKeyProvider {
     dataKey: Uint8Array,
   ): Promise<string> {
     const binding = this.#binding(key, tenantId);
-    if (dataKey.byteLength !== 32) throw new Error("external_kek_operation_failed");
+    if (!(dataKey instanceof Uint8Array) || dataKey.byteLength !== 32) {
+      throw new Error("external_kek_operation_failed");
+    }
     return this.#remote(async () => {
       const response = await this.#transport.wrapDataKey(key, tenantId, dataKey);
       this.#attestation(response, key, tenantId, binding);

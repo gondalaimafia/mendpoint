@@ -471,7 +471,10 @@ export class HttpsExternalKeyTransport implements ExternalKeyTransport {
         throw new Error("invalid_response");
       }
       return parsed;
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === "external_kek_destination_invalid") {
+        throw new Error("external_kek_destination_invalid");
+      }
       throw new Error("external_kek_request_failed");
     }
   }
