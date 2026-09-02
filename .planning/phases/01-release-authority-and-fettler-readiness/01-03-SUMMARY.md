@@ -25,9 +25,9 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 
 ## Verification
 
-- RED verification: the 69-test focused suite failed only on fingerprint-only restart drift and a direct oversized request reaching the requester; 67 tests passed.
-- `npm test -w @mendpoint/platform -- src/vault-envelope.test.ts src/external-kek-client.test.ts`: 69 tests passed.
-- `npm test -w @mendpoint/platform`: 305 tests passed across 20 files.
+- RED authority verification: ten direct-transport cases proved malformed identifiers, non-customer-managed keys, wrong-size data keys, and malformed or oversized wrapped material reached the authorized requester before validation.
+- `npm test -w @mendpoint/platform -- src/vault-envelope.test.ts src/external-kek-client.test.ts`: 79 tests passed.
+- `npm test -w @mendpoint/platform`: 315 tests passed across 20 files.
 - `npm run typecheck -w @mendpoint/platform`: passed.
 - `npm run build`: optimized production build passed, including all 64 static pages.
 - `git diff --check`: passed.
@@ -51,18 +51,14 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 
 ## Commits and range-diff identity
 
-- `464eb6ff`: external customer-managed key adapter, patch-identical to pre-rebase `9af8fad2`.
-- `ae478afb`: verification evidence, patch-identical to pre-rebase `4caa5a70`.
-- `ac56609c`: destination authority and DNS-rebinding repair, patch-identical to pre-rebase `a5d8d387`.
-- `7115bd04`: refreshed exact-head evidence after rebase, patch-identical to pre-rebase `24a35019`.
-- `99257b81`: native all-address lookup compatibility repair, patch-identical to pre-rebase `775d80d7`.
-- `5dfe79fe`: validated socket isolation repair, patch-identical to pre-rebase `e25bf527`.
-- `4b808f24`: oversized declared-response listener ordering and single-settlement repair, patch-identical to pre-rebase `31f04f9e`.
-- `f7481e39`: evidence-only exact-head binding, patch-identical to pre-rebase `3b1a50a9`.
-- `37dc160a`: hostile regressions for fingerprint-only restart drift, oversized direct requests, native streaming overrun, and aborted response settlement.
-- `dcdc73c9`: versioned customer-managed fingerprint binding and pre-network request ceiling repair.
+- `8d601296`: external customer-managed key adapter.
+- `5c4f1c59`: initial verification evidence.
+- `46c92857`: exact destination authority and DNS-rebinding repair.
+- `23ecf0a9`, `1b096716`, and `ac2a7418`: native lookup, socket isolation, streaming-overrun, and abort-settlement repairs.
+- `346ea20b` and `001d2b41`: fingerprint-drift and pre-network request-ceiling hostile tests and repair.
+- `6c6776de` and `da055d31`: direct public-transport input-boundary hostile tests and pre-network validation repair.
 
-The exact base for this series is `e69d997b7eef88ffcc7786a3e51da46eb1e677d4`; the commands above verify implementation head `dcdc73c95fb08a10c9718c189ce00c5ba8dff6a0`. The prior independent review at `bca318eb9e38723fc492009c71ac082a0cf885e3` found the two repaired authority and request-bound defects and is superseded. A different reviewer must inspect and approve the final exact head before merge.
+The exact base for this series is `f8d09056f713925baf585d99fc35aca79242108c`; the commands above verify implementation head `da055d31dc45d7594531d4e90ede9091ca2245c6`. The independent review at `c8931253b12daad300534c115822657e170853af` found the repaired direct-transport validation and stale-evidence defects and is superseded. A different reviewer must inspect and approve the final exact head before merge.
 
 ## Remaining Release Work
 
