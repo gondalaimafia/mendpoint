@@ -33,6 +33,7 @@ const REPOSITORY_REVISION = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const FIXTURE_DIGEST = /^[0-9a-f]{64}$/;
 const DEPLOYMENT_REVISION = /^(?!main$|master$|latest$|head$)[a-zA-Z0-9][a-zA-Z0-9._-]{6,127}$/i;
 export const PERFORMANCE_OBSERVATION_LIMIT = 10_000;
+export const PERFORMANCE_PROBE_RESPONSE_BYTE_LIMIT = 1_048_576;
 
 export type PerformanceMetricMeasurement = Readonly<{
   durationMs: number;
@@ -156,6 +157,8 @@ function validateMetadata(options: RunPerformanceProbeOptions): void {
     !Number.isSafeInteger(options.repository.files) || options.repository.files < 1 ||
     !Number.isSafeInteger(options.repository.sourceLines) || options.repository.sourceLines < 1 ||
     !Number.isSafeInteger(options.repository.bytes) || options.repository.bytes < 1 ||
+    !Number.isSafeInteger(options.repository.maxFileBytes) || options.repository.maxFileBytes < 1 ||
+    options.repository.maxFileBytes > options.repository.bytes ||
     options.repository.languages.length === 0
   ) {
     invalid("performance_repository_shape_invalid");
@@ -320,6 +323,7 @@ export async function runPerformanceProbe(
   let observedRepository: PerformanceEvidenceBinding["repository"] | null = null;
   let unobservedFailure = false;
   let evidenceOverflow = false;
+  let internalAbortReason: "probe_failure_unobserved" | "evidence_budget_exceeded" | "duration_elapsed" | null = null;
   const eventSources = new Map(
     (contract.metricDictionary ?? WARDEN_PERFORMANCE_CONTRACT.metricDictionary!).map(
       (definition) => [definition.metric, definition.eventSource],
@@ -372,6 +376,7 @@ export async function runPerformanceProbe(
         );
         if (!recorded) {
           evidenceOverflow = true;
+          internalAbortReason = "evidence_budget_exceeded";
           controller.abort("evidence_budget_exceeded");
         }
       } catch {
@@ -393,8 +398,10 @@ export async function runPerformanceProbe(
         );
         if (!recorded) {
           evidenceOverflow = true;
+          internalAbortReason = "evidence_budget_exceeded";
           controller.abort("evidence_budget_exceeded");
         } else {
+          internalAbortReason = "probe_failure_unobserved";
           controller.abort("probe_failure_unobserved");
         }
       } finally {
@@ -437,6 +444,14 @@ export async function runPerformanceProbe(
     : completeSamples && observedRepository && !unobservedFailure && !evidenceOverflow
       ? "completed"
       : "incomplete";
+  if (
+    status === "incomplete" &&
+    internalAbortReason === null &&
+    controller.signal.aborted &&
+    controller.signal.reason === "duration_elapsed"
+  ) {
+    internalAbortReason = "duration_elapsed";
+  }
 
   return Object.freeze({
     schemaVersion: 2,
@@ -464,9 +479,7 @@ export async function runPerformanceProbe(
     endedAt: new Date(Math.max(0, endedMs)).toISOString(),
     elapsedMs: Math.max(0, endedMs - startedMs),
     status,
-    abortReason: evidenceOverflow
-      ? "evidence_budget_exceeded"
-      : externallyAborted ? abortReason(options.signal?.reason) : null,
+    abortReason: externallyAborted ? abortReason(options.signal?.reason) : internalAbortReason,
     cancelledInvocationCount,
     ok: status === "completed" && evaluation?.ok === true,
     observations: Object.freeze(observations),
@@ -521,14 +534,64 @@ export function createHttpPerformanceProbe(options: Readonly<{
       signal: context.signal,
     });
     if (!response.ok) throw new Error(`performance_probe_http_${response.status}`);
-    const payload = await response.json() as {
-      observed?: unknown;
-      metrics?: unknown;
-    };
+    const responseBytes = await readBoundedPerformanceResponse(response);
+    let payload: { observed?: unknown; metrics?: unknown };
+    try {
+      payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(responseBytes)) as {
+        observed?: unknown;
+        metrics?: unknown;
+      };
+    } catch {
+      throw new Error("performance_probe_response_invalid");
+    }
     const measurement = { observed: payload.observed, metrics: payload.metrics } as PerformanceProbeMeasurement;
     validateMeasurement(measurement, context);
     return measurement;
   };
+}
+
+async function readBoundedPerformanceResponse(response: Response): Promise<Uint8Array> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null) {
+    if (!/^(?:0|[1-9][0-9]*)$/.test(declaredLength)) {
+      throw new Error("performance_probe_response_length_invalid");
+    }
+    const declaredBytes = Number(declaredLength);
+    if (!Number.isSafeInteger(declaredBytes)) {
+      throw new Error("performance_probe_response_length_invalid");
+    }
+    if (declaredBytes > PERFORMANCE_PROBE_RESPONSE_BYTE_LIMIT) {
+      throw new Error("performance_probe_response_too_large");
+    }
+  }
+  if (!response.body) throw new Error("performance_probe_response_invalid");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      totalBytes += next.value.byteLength;
+      if (totalBytes > PERFORMANCE_PROBE_RESPONSE_BYTE_LIMIT) {
+        await reader.cancel("performance_probe_response_too_large").catch(() => undefined);
+        throw new Error("performance_probe_response_too_large");
+      }
+      chunks.push(next.value);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === "performance_probe_response_too_large") throw error;
+    throw new Error("performance_probe_response_invalid");
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 export function persistPerformanceProbeReport(
@@ -652,6 +715,7 @@ export function parsePerformanceCliArguments(
   const repositoryFiles = Number(option(args, "repository-files"));
   const repositorySourceLines = Number(option(args, "repository-source-lines"));
   const repositoryBytes = Number(option(args, "repository-bytes"));
+  const repositoryMaxFileBytes = Number(option(args, "repository-max-file-bytes"));
   const repositoryLanguages = option(args, "repository-languages")?.split(",").map((value) => value.trim()).filter(Boolean);
   const distribution = option(args, "repository-language-source-lines");
   if (
@@ -664,7 +728,8 @@ export function parsePerformanceCliArguments(
       "--tenant-id=<tenant> --repository-id=<repository> --correlation-id=<correlation> " +
       "--probe-source=<source> --repository-revision=<immutable-id> " +
       "--repository-files=<count> --repository-source-lines=<count> " +
-      "--repository-bytes=<count> --repository-languages=<comma-list> " +
+      "--repository-bytes=<count> --repository-max-file-bytes=<count> " +
+      "--repository-languages=<comma-list> " +
       "--repository-language-source-lines=<language:count,...> " +
       "--deployment-revision=<immutable-id> --fixture-digest=<sha256> --output=<path>",
     );
@@ -682,6 +747,8 @@ export function parsePerformanceCliArguments(
     !Number.isSafeInteger(repositoryFiles) || repositoryFiles < 1 ||
     !Number.isSafeInteger(repositorySourceLines) || repositorySourceLines < 1 ||
     !Number.isSafeInteger(repositoryBytes) || repositoryBytes < 1 ||
+    !Number.isSafeInteger(repositoryMaxFileBytes) || repositoryMaxFileBytes < 1 ||
+    repositoryMaxFileBytes > repositoryBytes ||
     Object.keys(languageSourceLines).length !== repositoryLanguages.length ||
     repositoryLanguages.some((language) => !(language in languageSourceLines)) ||
     Object.values(languageSourceLines).reduce((sum, lines) => sum + lines, 0) !== repositorySourceLines
@@ -694,6 +761,7 @@ export function parsePerformanceCliArguments(
       files: repositoryFiles,
       sourceLines: repositorySourceLines,
       bytes: repositoryBytes,
+      maxFileBytes: repositoryMaxFileBytes,
       languages: repositoryLanguages,
       languageSourceLines,
     },

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 export const MCU_VERSION = "mcu-v1" as const;
 export const MCU_MICROS = 1_000_000;
+export const MCU_FINANCE_AUTHORIZATION_VERSION = "mcu-finance-authorization-v1" as const;
 
 export const MCU_SCHEDULE_V1 = Object.freeze({
   version: MCU_VERSION,
@@ -63,6 +64,27 @@ export const MCU_LEDGER_ENTRY_TYPES = [
 
 export type McuLedgerEntryType = typeof MCU_LEDGER_ENTRY_TYPES[number];
 
+export type McuFinanceAuthorization = Readonly<{
+  schemaVersion: typeof MCU_FINANCE_AUTHORIZATION_VERSION;
+  approvalId: string;
+  approvedByPrincipalId: string;
+  approvedByRole: "finance_owner";
+  tenantId: string;
+  invoiceReference: string;
+  actorId: string;
+  consumedMcuMicrosDelta: number;
+  reasonCode: string;
+  entryOccurredAt: string;
+  approvedAt: string;
+  authorizationDigest: string;
+}>;
+
+export type McuFinanceAuthorizationInput = Omit<McuFinanceAuthorization, "authorizationDigest">;
+
+export type McuFinanceAuthorizationVerifier = (
+  authorization: McuFinanceAuthorization,
+) => boolean;
+
 export type McuLedgerEntry = {
   id: string;
   tenantId: string;
@@ -82,13 +104,16 @@ export type McuLedgerEntry = {
   actorId: string;
   reasonCode: string;
   occurredAt: string;
+  financeAuthorization?: McuFinanceAuthorization | null;
   previousEntryHash: string | null;
   entryHash: string;
 };
 
 export type McuLedgerEntryInput = Omit<McuLedgerEntry,
   "id" | "priceVersion" | "formulaVersion" | "formulaDigest" |
-  "entrySequence" | "previousEntryHash" | "entryHash">;
+  "entrySequence" | "previousEntryHash" | "entryHash" | "financeAuthorization"> & {
+    financeAuthorization?: McuFinanceAuthorization | null;
+  };
 
 export type McuLedgerLifecycle = {
   scheduleVersion: typeof MCU_VERSION;
@@ -112,6 +137,7 @@ export type McuLedgerReconciliation = Readonly<{
   lastOccurredAt: string;
   actorIds: readonly string[];
   reasonCodes: readonly string[];
+  financeAuthorizationDigests: readonly string[];
   reservationMcuMicros: number;
   settledMcuMicros: number;
   adjustmentMcuMicros: number;
@@ -145,6 +171,23 @@ function mcuEntryId(input: Omit<McuLedgerEntry, "id" | "entryHash">): string {
 
 export function mcuLedgerEntryDigest(entry: Omit<McuLedgerEntry, "entryHash">): string {
   return `sha256:${createHash("sha256").update(canonicalJson(entry), "utf8").digest("hex")}`;
+}
+
+export function mcuFinanceAuthorizationDigest(
+  authorization: McuFinanceAuthorizationInput,
+): string {
+  return `sha256:${createHash("sha256")
+    .update(canonicalJson(authorization), "utf8")
+    .digest("hex")}`;
+}
+
+export function createMcuFinanceAuthorization(
+  input: McuFinanceAuthorizationInput,
+): McuFinanceAuthorization {
+  return Object.freeze({
+    ...input,
+    authorizationDigest: mcuFinanceAuthorizationDigest(input),
+  });
 }
 
 export function createMcuLedgerEntry(
@@ -181,8 +224,65 @@ function safeLedgerSum(values: readonly number[]): number {
   return result;
 }
 
+function validateFinanceAuthorization(
+  entry: McuLedgerEntry,
+  verifier: McuFinanceAuthorizationVerifier | undefined,
+): void {
+  const authorization = entry.financeAuthorization;
+  if (!authorization) throw new Error("mcu_finance_authority_required");
+  if (authorization.schemaVersion !== MCU_FINANCE_AUTHORIZATION_VERSION) {
+    throw new Error("mcu_finance_authority_version_invalid");
+  }
+  requiredLedgerId(authorization.approvalId, "mcu_finance_approval_id");
+  requiredLedgerId(authorization.approvedByPrincipalId, "mcu_finance_principal_id");
+  requiredLedgerId(authorization.tenantId, "mcu_finance_tenant_id");
+  requiredLedgerId(authorization.invoiceReference, "mcu_finance_invoice_reference");
+  requiredLedgerId(authorization.actorId, "mcu_finance_actor_id");
+  requiredLedgerId(authorization.reasonCode, "mcu_finance_reason_code");
+  ledgerMicros(authorization.consumedMcuMicrosDelta, "mcu_finance_consumed_micros");
+  if (authorization.approvedByRole !== MCU_SCHEDULE_V1.approval.requiredRole) {
+    throw new Error("mcu_finance_authority_role_invalid");
+  }
+  const approvedAt = Date.parse(authorization.approvedAt);
+  const entryOccurredAt = Date.parse(authorization.entryOccurredAt);
+  if (
+    !Number.isFinite(approvedAt) ||
+    new Date(approvedAt).toISOString() !== authorization.approvedAt ||
+    !Number.isFinite(entryOccurredAt) ||
+    new Date(entryOccurredAt).toISOString() !== authorization.entryOccurredAt ||
+    approvedAt > entryOccurredAt
+  ) {
+    throw new Error("mcu_finance_authority_time_invalid");
+  }
+  if (
+    authorization.tenantId !== entry.tenantId ||
+    authorization.invoiceReference !== entry.invoiceReference ||
+    authorization.actorId !== entry.actorId ||
+    authorization.consumedMcuMicrosDelta !== entry.consumedMcuMicrosDelta ||
+    authorization.reasonCode !== entry.reasonCode ||
+    authorization.entryOccurredAt !== entry.occurredAt
+  ) {
+    throw new Error("mcu_finance_authority_binding_invalid");
+  }
+  const { authorizationDigest, ...content } = authorization;
+  if (authorizationDigest !== mcuFinanceAuthorizationDigest(content)) {
+    throw new Error("mcu_finance_authority_digest_invalid");
+  }
+  if (!verifier) throw new Error("mcu_finance_authority_verifier_required");
+  let authorized = false;
+  try {
+    authorized = verifier(authorization) === true;
+  } catch {
+    authorized = false;
+  }
+  if (!authorized) throw new Error("mcu_finance_authority_rejected");
+}
+
 export function reconcileMcuLedgerLifecycle(
   lifecycle: McuLedgerLifecycle,
+  options: Readonly<{
+    verifyFinanceAuthorization?: McuFinanceAuthorizationVerifier;
+  }> = {},
 ): McuLedgerReconciliation {
   if (lifecycle.scheduleVersion !== MCU_VERSION) throw new Error("mcu_schedule_version_invalid");
   if (lifecycle.scheduleDigest !== MCU_SCHEDULE_DIGEST) {
@@ -321,14 +421,24 @@ export function reconcileMcuLedgerLifecycle(
         throw new Error("mcu_ledger_adjustment_binding_invalid");
       }
       if (entry.entryType === "adjustment") {
-        if (entry.consumedMcuMicrosDelta === 0) throw new Error("mcu_adjustment_invalid");
+        if (entry.consumedMcuMicrosDelta <= 0) throw new Error("mcu_adjustment_invalid");
+        validateFinanceAuthorization(entry, options.verifyFinanceAuthorization);
         adjusted = safeLedgerSum([adjusted, entry.consumedMcuMicrosDelta]);
       } else if (entry.entryType === "credit") {
         if (entry.consumedMcuMicrosDelta >= 0) throw new Error("mcu_credit_invalid");
+        validateFinanceAuthorization(entry, options.verifyFinanceAuthorization);
         credited = safeLedgerSum([credited, -entry.consumedMcuMicrosDelta]);
       } else {
         throw new Error("mcu_reservation_duplicate");
       }
+    }
+    if (
+      entry.entryType !== "adjustment" &&
+      entry.entryType !== "credit" &&
+      entry.financeAuthorization !== null &&
+      entry.financeAuthorization !== undefined
+    ) {
+      throw new Error("mcu_finance_authority_unexpected");
     }
     if (!entry.invoiceReference) throw new Error("mcu_invoice_mapping_required");
     requiredLedgerId(entry.invoiceReference, "mcu_invoice_reference");
@@ -362,6 +472,10 @@ export function reconcileMcuLedgerLifecycle(
     lastOccurredAt: lifecycle.entries.at(-1)!.occurredAt,
     actorIds: Object.freeze([...new Set(lifecycle.entries.map((entry) => entry.actorId))].sort(compareText)),
     reasonCodes: Object.freeze([...new Set(lifecycle.entries.map((entry) => entry.reasonCode))].sort(compareText)),
+    financeAuthorizationDigests: Object.freeze(lifecycle.entries
+      .map((entry) => entry.financeAuthorization?.authorizationDigest)
+      .filter((digest): digest is string => digest !== undefined)
+      .sort(compareText)),
     reservationMcuMicros: reservation.reservedMcuMicrosDelta,
     settledMcuMicros: settled,
     adjustmentMcuMicros: adjusted,

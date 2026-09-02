@@ -74,6 +74,7 @@ function measurement(
         files: 10,
         sourceLines: 100,
         bytes: 1_000,
+        maxFileBytes: 100,
         languages: ["typescript"],
         languageSourceLines: { typescript: 100 },
       },
@@ -98,6 +99,7 @@ function metadata() {
       files: 10,
       sourceLines: 100,
       bytes: 1_000,
+      maxFileBytes: 100,
       languages: ["typescript"],
       languageSourceLines: { typescript: 100 },
     },
@@ -118,6 +120,7 @@ describe("performance runner", () => {
       `--fixture-digest=sha256:${"c".repeat(64)}`, "--correlation-id=corr-fettler-performance",
       "--probe-source=fettler-production-probe", "--repository-files=10",
       "--repository-source-lines=100", "--repository-bytes=1000",
+      "--repository-max-file-bytes=100",
       "--repository-languages=typescript", "--repository-language-source-lines=typescript:100",
       `--output=${output}`,
     ];
@@ -156,6 +159,7 @@ describe("performance runner", () => {
       "--repository-files=1000",
       "--repository-source-lines=50000",
       "--repository-bytes=25000000",
+      "--repository-max-file-bytes=1000000",
       "--repository-languages=typescript",
       "--repository-language-source-lines=typescript:50000",
       "--output=runs/performance/load.json",
@@ -168,6 +172,7 @@ describe("performance runner", () => {
         files: 1_000,
         sourceLines: 50_000,
         bytes: 25_000_000,
+        maxFileBytes: 1_000_000,
         languages: ["typescript"],
         languageSourceLines: { typescript: 50_000 },
       },
@@ -182,6 +187,7 @@ describe("performance runner", () => {
       `--fixture-digest=sha256:${"c".repeat(64)}`, "--correlation-id=correlation-example",
       "--probe-source=fettler-production-probe", "--repository-files=1000",
       "--repository-source-lines=50000", "--repository-bytes=25000000",
+      "--repository-max-file-bytes=1000000",
       "--repository-languages=typescript", "--repository-language-source-lines=javascript:50000",
       "--output=runs/performance/load.json",
     ])).toThrow("performance_repository_language_distribution_invalid");
@@ -214,6 +220,7 @@ describe("performance runner", () => {
         files: 1_000,
         sourceLines: 50_000,
         bytes: 25_000_000,
+        maxFileBytes: 1_000_000,
         languages: ["typescript"],
         languageSourceLines: { typescript: 50_000 },
       },
@@ -226,6 +233,7 @@ describe("performance runner", () => {
             files: 1_000,
             sourceLines: 50_000,
             bytes: 25_000_000,
+            maxFileBytes: 1_000_000,
             languages: ["typescript"],
             languageSourceLines: { typescript: 50_000 },
           },
@@ -625,20 +633,15 @@ describe("performance runner", () => {
   });
 
   it("rejects an oversized declared response before reading its body", async () => {
-    let pulls = 0;
-    const body = new ReadableStream<Uint8Array>({
-      pull(controller) {
-        pulls += 1;
-        controller.enqueue(new TextEncoder().encode(JSON.stringify(measurement())));
-        controller.close();
-      },
-    });
+    const read = vi.fn();
     const probe = createHttpPerformanceProbe({
       endpoint: "https://probe.invalid/performance",
-      fetch: async () => new Response(body, {
+      fetch: async () => ({
+        ok: true,
         status: 200,
-        headers: { "content-length": String(EXPECTED_RESPONSE_BYTE_LIMIT + 1) },
-      }),
+        headers: new Headers({ "content-length": String(EXPECTED_RESPONSE_BYTE_LIMIT + 1) }),
+        body: { getReader: () => ({ read }) },
+      }) as unknown as Response,
     });
 
     await expect(probe({
@@ -649,7 +652,7 @@ describe("performance runner", () => {
       correlationId: "corr-fettler-performance", source: "fettler-production-probe",
       repository: metadata().repository, signal: new AbortController().signal,
     })).rejects.toThrow("performance_probe_response_too_large");
-    expect(pulls).toBe(0);
+    expect(read).not.toHaveBeenCalled();
   });
 
   it("cancels and rejects an undeclared streaming response overrun with a stable code", async () => {
@@ -659,10 +662,7 @@ describe("performance runner", () => {
       pull(controller) {
         emitted += 1;
         if (emitted === 1) controller.enqueue(new Uint8Array(EXPECTED_RESPONSE_BYTE_LIMIT));
-        else {
-          controller.enqueue(new Uint8Array(1));
-          controller.close();
-        }
+        else controller.enqueue(new Uint8Array(1));
       },
       cancel() {
         cancelled += 1;

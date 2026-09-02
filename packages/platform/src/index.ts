@@ -124,6 +124,9 @@ export type {
   McuLedgerEntryInput,
   McuLedgerLifecycle,
   McuLedgerReconciliation,
+  McuFinanceAuthorization,
+  McuFinanceAuthorizationInput,
+  McuFinanceAuthorizationVerifier,
 } from "./mcu.js";
 export {
   MCU_VERSION,
@@ -131,8 +134,11 @@ export {
   MCU_SCHEDULE_V1,
   MCU_SCHEDULE_DIGEST,
   MCU_LEDGER_ENTRY_TYPES,
+  MCU_FINANCE_AUTHORIZATION_VERSION,
   mcuScheduleDigest,
   mcuLedgerEntryDigest,
+  mcuFinanceAuthorizationDigest,
+  createMcuFinanceAuthorization,
   createMcuLedgerEntry,
   reconcileMcuLedgerLifecycle,
   assertMcuScheduleChange,

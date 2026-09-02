@@ -109,6 +109,7 @@ export type PerformanceEvidenceBinding = Readonly<{
     files: number;
     sourceLines: number;
     bytes: number;
+    maxFileBytes: number;
     languages: readonly string[];
     languageSourceLines?: Readonly<Record<string, number>>;
   }>;
@@ -512,6 +513,10 @@ function validateEvidenceBinding(
   positiveInteger(evidence.repository.files, "performance_repository_files");
   positiveInteger(evidence.repository.sourceLines, "performance_repository_source_lines");
   positiveInteger(evidence.repository.bytes, "performance_repository_bytes");
+  positiveInteger(evidence.repository.maxFileBytes, "performance_repository_max_file_bytes");
+  if (evidence.repository.maxFileBytes > evidence.repository.bytes) {
+    fail("performance_repository_max_file_bytes_invalid");
+  }
   uniqueIds([...evidence.repository.languages], "performance_repository_languages");
   const languageSourceLines = evidence.repository.languageSourceLines;
   if (contract.version === PERFORMANCE_CONTRACT_VERSION) {
@@ -520,6 +525,9 @@ function validateEvidenceBinding(
       evidence.repository.sourceLines < tier.repository.minimumSourceLines! ||
       evidence.repository.bytes < tier.repository.minimumBytes!
     ) fail("performance_repository_shape_below_tier");
+    if (evidence.repository.maxFileBytes > tier.repository.maxFileBytes!) {
+      fail("performance_repository_file_bytes_exceeds_tier");
+    }
     if (!languageSourceLines || typeof languageSourceLines !== "object") {
       fail("performance_repository_language_distribution_invalid");
     }

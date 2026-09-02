@@ -3,13 +3,14 @@ import { describe, expect, it } from "vitest";
 import {
   assertMcuScheduleChange,
   calculateMcuV1,
+  createMcuFinanceAuthorization,
   createMcuLedgerEntry,
   formatMcu,
   MCU_SCHEDULE_DIGEST,
   MCU_MICROS,
   MCU_SCHEDULE_V1,
   mcuScheduleDigest,
-  reconcileMcuLedgerLifecycle,
+  reconcileMcuLedgerLifecycle as reconcileRawMcuLedgerLifecycle,
   type McuLedgerEntry,
   type McuLedgerLifecycle,
 } from "./mcu.js";
@@ -54,10 +55,33 @@ function attachFinanceAuthority(entries: McuLedgerEntry[]): McuLedgerEntry[] {
   )) as McuLedgerEntry[]);
 }
 
+function reconcileMcuLedgerLifecycle(evidence: McuLedgerLifecycle) {
+  return reconcileRawMcuLedgerLifecycle(evidence, {
+    verifyFinanceAuthorization: (authorization) =>
+      authorization.approvedByPrincipalId === "finance-owner" &&
+      authorization.approvedByRole === "finance_owner",
+  });
+}
+
 function lifecycle(): McuLedgerLifecycle {
   const entries: McuLedgerEntry[] = [];
   const append = (input: Parameters<typeof createMcuLedgerEntry>[0]) => {
-    const entry = createMcuLedgerEntry(input, entries.at(-1) ?? null);
+    const financeAuthorization = input.entryType === "adjustment" || input.entryType === "credit"
+      ? createMcuFinanceAuthorization({
+        schemaVersion: "mcu-finance-authorization-v1",
+        approvalId: `approval-${input.idempotencyKey}`,
+        approvedByPrincipalId: "finance-owner",
+        approvedByRole: "finance_owner",
+        tenantId: input.tenantId,
+        invoiceReference: input.invoiceReference!,
+        actorId: input.actorId,
+        consumedMcuMicrosDelta: input.consumedMcuMicrosDelta,
+        reasonCode: input.reasonCode,
+        entryOccurredAt: input.occurredAt,
+        approvedAt: input.occurredAt,
+      })
+      : undefined;
+    const entry = createMcuLedgerEntry({ ...input, financeAuthorization }, entries.at(-1) ?? null);
     entries.push(entry);
     return entry;
   };
@@ -212,6 +236,10 @@ describe("migration compute units", () => {
         "task_usage_settled",
         "verified_usage_adjustment",
       ],
+      financeAuthorizationDigests: evidence.entries
+        .map((entry) => entry.financeAuthorization?.authorizationDigest)
+        .filter((digest): digest is string => digest !== undefined)
+        .sort(),
       reservationMcuMicros: 4_000_000,
       settledMcuMicros: 3_000_000,
       adjustmentMcuMicros: 500_000,
@@ -290,14 +318,12 @@ describe("migration compute units", () => {
 
   it("rejects finance mutations without exact durable finance authority", () => {
     const missingAuthority = lifecycle();
-    for (const entry of missingAuthority.entries) {
-      if (entry.entryType === "adjustment" || entry.entryType === "credit") {
-        delete (entry as unknown as Record<string, unknown>).financeAuthorization;
-      }
-    }
-    missingAuthority.entries = rechain(missingAuthority.entries);
+    missingAuthority.entries = rechain(missingAuthority.entries.map((entry) => {
+      const { financeAuthorization: _financeAuthorization, ...withoutAuthority } = entry;
+      return withoutAuthority as McuLedgerEntry;
+    }));
 
-    expect(() => reconcileMcuLedgerLifecycle(missingAuthority))
+    expect(() => reconcileRawMcuLedgerLifecycle(missingAuthority))
       .toThrow("mcu_finance_authority_required");
   });
 
@@ -305,9 +331,9 @@ describe("migration compute units", () => {
     const fabricated = lifecycle();
     fabricated.entries = attachFinanceAuthority(fabricated.entries);
 
-    expect(() => reconcileMcuLedgerLifecycle(fabricated, {
+    expect(() => reconcileRawMcuLedgerLifecycle(fabricated, {
       verifyFinanceAuthorization: () => false,
-    } as never)).toThrow("mcu_finance_authority_rejected");
+    })).toThrow("mcu_finance_authority_rejected");
   });
 
   it.each([
@@ -325,9 +351,9 @@ describe("migration compute units", () => {
       : entry) as McuLedgerEntry[];
     drifted.entries = rechain(drifted.entries);
 
-    expect(() => reconcileMcuLedgerLifecycle(drifted, {
+    expect(() => reconcileRawMcuLedgerLifecycle(drifted, {
       verifyFinanceAuthorization: () => true,
-    } as never)).toThrow("mcu_finance_authority_binding_invalid");
+    })).toThrow("mcu_finance_authority_binding_invalid");
   });
 
   it("rejects finance authority whose immutable digest was changed", () => {
@@ -346,9 +372,9 @@ describe("migration compute units", () => {
     }) as McuLedgerEntry[];
     tampered.entries = rechain(tampered.entries);
 
-    expect(() => reconcileMcuLedgerLifecycle(tampered, {
+    expect(() => reconcileRawMcuLedgerLifecycle(tampered, {
       verifyFinanceAuthorization: () => true,
-    } as never)).toThrow("mcu_finance_authority_digest_invalid");
+    })).toThrow("mcu_finance_authority_digest_invalid");
   });
 
   it("creates reproducible settled entry identities", () => {
@@ -388,7 +414,7 @@ describe("migration compute units", () => {
       ...overflow.entries[2]!,
       consumedMcuMicrosDelta: Number.MAX_SAFE_INTEGER,
     };
-    overflow.entries = rechain(overflow.entries);
+    overflow.entries = attachFinanceAuthority(overflow.entries);
     expect(() => reconcileMcuLedgerLifecycle(overflow)).toThrow("mcu_ledger_overflow");
 
     const incomplete = lifecycle();

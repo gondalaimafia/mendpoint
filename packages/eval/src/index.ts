@@ -141,6 +141,8 @@ export {
   type PerformanceTier,
 } from "./performance-contract.js";
 export {
+  PERFORMANCE_OBSERVATION_LIMIT,
+  PERFORMANCE_PROBE_RESPONSE_BYTE_LIMIT,
   createHttpPerformanceProbe,
   persistPerformanceProbeReport,
   runPerformanceProbe,
