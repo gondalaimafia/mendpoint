@@ -39,7 +39,7 @@ status: complete
 actuals:
   tokens: 14077
   tasks: 3
-  commits: 8
+  commits: 18
 ---
 
 # Phase 01 Plan 01: Fettler Executable Operating Contracts Summary
@@ -53,7 +53,10 @@ Fettler now has executable, digest-bound performance and migration-compute autho
 - Bound the MCU schedule to reservation, settlement, release, adjustment, credit, reconciliation, invoice mapping, idempotency, and safe-integer arithmetic.
 - Added one canonical closure artifact that consumes both contract digests and records production measurements and ledger evidence as `not_observed` instead of inferring success.
 - Added exact-byte generation and checking with stable failures for missing and stale artifacts.
-- Exposed the exact-byte check as `npm run fettler:closure:check` after the protected package-file overlap cleared.
+- Enforced the exact-byte check inside the existing GA preflight without changing the protected package manifest.
+- Projected all 68 canonical Fettler requirements from the validated register, including audited revisions, acceptance identifiers, exact source digest, target release, status, and external blockers.
+- Bound performance evidence to the exact deployment, repository revision, fixture, tier definition, and observed concurrency, and rejected stale evaluation clocks.
+- Rejected migration-compute settlement that exceeds its released reservation.
 
 ## Task Commits
 
@@ -74,15 +77,15 @@ Fettler now has executable, digest-bound performance and migration-compute autho
 |---|---|
 | `npm test -w @mendpoint/eval -- src/performance-contract.test.ts` | Passed, 5 tests. |
 | `npm test -w @mendpoint/platform -- src/mcu.test.ts` | Passed, 7 tests. |
-| `npx vitest run scripts/fettler-production-closure.test.ts` | Passed, 3 tests. |
+| `npx vitest run scripts/fettler-production-closure.test.ts` | Passed, 4 tests. |
 | Affected workspace and scripts typechecks | Passed. |
-| `npm run fettler:closure:check` | Passed exact committed-byte check through the canonical workspace command. |
+| `npm run ga:check` | Passed with the exact committed-byte closure check inside the existing GA preflight. |
 | `npm run spec:check` | Passed, 101 canonical requirements across 3 register sets. |
 | `npm run typecheck` | Passed across the full workspace. |
 | `npm run build` | Passed optimized Next.js production build, 64 static pages generated. |
 | `git diff --check` | Passed. |
 | Scope, banned-language, secret-pattern, and requirement-status scans | Passed; package.json and requirement status remained unchanged. |
-| `npm test` | Passed the full workspace and root script suites on the current-main successor. |
+| `npm test` | All workspace suites passed. The root script batch exposed the protected-manifest drift and host timeouts; after the design repair, the complete 33-test proposal-authority suite and 4 closure tests passed with a 60-second host budget. |
 
 The local host used Node.js 24.14.1. The repository continuous-integration environment remains responsible for the project-pinned Node.js 22 proof.
 
@@ -108,6 +111,25 @@ Pull request 592 merged before this successor was created. The seven safe Plan 0
 - **Files modified:** `packages/eval/src/performance-contract.test.ts`
 - **Commit:** `8dc4bb01`
 
+**3. [Rule 1 - Bug] Removed protected package-manifest drift from the closure gate**
+- **Found during:** Full repository script suite
+- **Issue:** Adding a convenience package command changed a protected authority surface, so the proposal correctly failed its own authority checks.
+- **Fix:** Restored `package.json` byte-for-byte to current main and called the closure checker from the existing unprotected GA preflight.
+- **Files modified:** `package.json`, `scripts/ga-check.ts`, `scripts/fettler-production-closure.test.ts`
+- **Commit:** `14bd5bc5`
+
+**4. [Rule 1 - Bug] Bound performance evidence and settlement to real authority**
+- **Found during:** Independent review
+- **Issue:** Performance evidence lacked deployment and workload identity, used a stale observation clock, and MCU settlement could exceed released reservation.
+- **Fix:** Added exact deployment, repository, fixture, tier, and concurrency bindings with current-time freshness, and rejected over-reservation settlement.
+- **Commits:** `e55a1c39`, `85ddfb97`, `6855864e`, `3e357cae`
+
+**5. [Rule 3 - Blocking] Replaced the three-row sample closure with all canonical Fettler requirements**
+- **Found during:** Independent review
+- **Issue:** The artifact could not serve as a production closure authority because it represented only three requirements and lacked the register byte digest and audited source revisions.
+- **Fix:** Validate the canonical register and project exactly 68 sorted unique Fettler requirements with explicit unqualified production evidence.
+- **Commits:** `ac6e0148`, `0fca7394`
+
 ### Resolved Protected Overlap
 
 - The conflicted merge attempt was aborted without committing any conflict resolution.
@@ -126,4 +148,4 @@ None.
 
 ## Self-Check: PASSED
 
-All eight implementation, test, artifact, and manifest files, this summary, and all eight recorded task commits exist in the current-main successor worktree. Focused tests, full typecheck, optimized production build, GA gate, and diff integrity pass. Independent exact-head review remains required before push or merge.
+The current-main successor contains the complete 68-row closure projection, exact workload-bound performance authority, bounded MCU settlement, and an authority-safe GA integration. Focused tests, full workspace typecheck, optimized production build, every GA gate, all workspace tests, the complete proposal-authority suite, and diff integrity pass. Independent exact-head review remains required before push or merge. The pre-existing transitive `@xmldom/xmldom` advisory remains a separate protected-lockfile repair and is not concealed by this plan.

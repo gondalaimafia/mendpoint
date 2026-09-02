@@ -526,3 +526,8 @@
 **Mistake:** I described Fettler's implemented components without first proving that a real production input had crossed every durable stage and produced the promised reviewable draft.
 **Correction:** Talal said to make the complete provider-change-to-reviewable-PR path real.
 **Rule:** A production capability exists only after one exact live input traverses every producer, claim, persistence, verification, authorization, and delivery boundary. Code presence, enabled flags, synthetic tests, and healthy processes are prerequisites, not capability proof.
+
+### 2026-09-02 — Keep build lanes moving while release gates wait
+**Mistake:** I let authority and verification waits consume the visible execution lane instead of immediately filling all independent engineering lanes.
+**Correction:** Talal required continuous parallel building and asked why building had stopped while other work waited.
+**Rule:** Keep one serialized shipping lane and fill every remaining independent lane with bounded build, repair, or review work. A blocked gate parks only its exact increment; it never pauses unrelated engineering.

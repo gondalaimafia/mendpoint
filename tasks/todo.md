@@ -4573,6 +4573,10 @@ Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, ba
 
 ### Review
 
-- Local exact head: `648b7d15`; branch `codex/601-fettler-operating-contracts-successor`; ten commits ahead of current-main base `1ae5e9a2`.
+- Local implementation head: `14bd5bc5`; branch `codex/601-fettler-operating-contracts-successor`; eighteen commits ahead of current-main base `1ae5e9a2` before this documentation update.
 - No source, claims, authority, or Claude-owned conflict was overwritten. The failed merge was aborted, and the successor branch contains only the scoped plan transplant, the RED/GREEN package binding, the completion summary, and this task record.
-- Nothing has been pushed, merged, deployed, activated, or promoted. Independent review and current-base protected continuous integration remain required.
+- Independent review findings were repaired: all 68 canonical requirements are projected, performance evidence is bound to exact workload and deployment identity, MCU over-settlement is rejected, and the protected package manifest is unchanged.
+- Verification passes: 179 evaluation tests, 257 platform tests, 4 closure tests, full workspace typecheck, optimized 64-route build, all GA gates, all workspace tests, and all 33 proposal-authority tests with an appropriate host timeout.
+- Production backup run `33655513368` completed and restored `/livez`, `/healthz`, and `/readyz` to 200 on `mendpoint-fettler-production`; the durable cadence repair remains in its separate lane.
+- The pre-existing `@xmldom/xmldom` 0.8.13 advisory requires a protected lockfile rotation to 0.8.15 and remains a separate release-control repair.
+- Nothing on this branch has been pushed, merged, deployed, activated, or promoted. Independent exact-head review and current-base protected continuous integration remain required.
