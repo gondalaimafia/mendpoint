@@ -1222,9 +1222,9 @@
       "kind": "runtime",
       "rotationId": "rotation-20260902-023",
       "previousRotationId": "rotation-20260902-022",
-      "baseRevision": "cda4fd8ff266dbeaf31f40cd8b61d197e1b39db8",
-      "issuedAt": "2026-09-02T20:56:13.273Z",
-      "expiresAt": "2026-09-03T20:56:13.273Z",
+      "baseRevision": "65adf7cbd5fcfd6f382be155d1b69237ff35235a",
+      "issuedAt": "2026-09-02T21:12:47.194Z",
+      "expiresAt": "2026-09-03T21:12:47.194Z",
       "baseLedgerSha256": "sha256:aa74840a0d9d196c66093fc86cf525685d3191e0bd135d199cb34f935074acc3",
       "basePolicySha256": "sha256:d20d8688f709fe50cfa3c790e7522d76a2d630175c3f8ff7c92ae4a0127aef41",
       "proposedPolicySha256": "sha256:b4f7912e3f2f7d99164c6c4196d58a45f49de422a4e6004da6b43480d8ddef0e",
@@ -1240,7 +1240,7 @@
         {
           "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
           "fromSha256": "sha256:0e8689914eedab28e475eaf65a61ecf2c6483b2b9efaaacbe851b1ade86d951a",
-          "toSha256": "sha256:90b9d8ee118e374e31cbe69081a8f03df063ffcace48ac8dc089867de0db817d",
+          "toSha256": "sha256:3644962f0f2801943e03b483393a29952ed1018cafc169773b4b7cfdd757eba0",
           "fromMode": "100644",
           "toMode": "100644"
         },
