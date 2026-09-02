@@ -221,7 +221,13 @@ describe("Warden CI repair dispatch", () => {
       .toHaveLength(1);
   });
 
-  it("does not revive stale Mission authority from the original source job", async () => {
+  // The guarantee is that stale AUTHORITY (the pre-delivery task revision) is
+  // never revived. The plain claimed `missionId` is a different thing and is
+  // carried through UNBOUND: dropping it made resolveBoundMissionForJob return
+  // undefined for the successor, which silently skipped the Mission policy
+  // evaluation main applied to it. Carrying it keeps policy on; the absence of
+  // authority is recorded rather than inferred from silence.
+  it("carries the claimed Mission through unbound without reviving stale authority", async () => {
     const { db, evidence, job, root } = fixture(
       { failures: [{ name: "unit", text: "expected 1 received 2" }] },
       { missionId: "mission-claimed-a" },
@@ -234,8 +240,13 @@ describe("Warden CI repair dispatch", () => {
     });
     const repairJob = listJobs(db, 50, "tenant-a").find((candidate) => candidate.type === "agent.run" &&
       candidate.id !== "initial-agent-job")!;
-    expect(JSON.parse(repairJob.payload_json)).toMatchObject({ consumerId: "consumer-a" });
-    expect(JSON.parse(repairJob.payload_json)).not.toHaveProperty("missionId");
+    const payload = JSON.parse(repairJob.payload_json);
+    expect(payload).toMatchObject({ consumerId: "consumer-a", missionId: "mission-claimed-a" });
+    // Unbound: the stale task revision is NOT revived.
+    expect(payload).not.toHaveProperty("missionAuthority");
+    // ...and proceeding unbound is on the durable record.
+    expect(db.raw.prepare(`SELECT resource_id FROM audit_events
+      WHERE action = 'fettler.ci_repair.mission_authority_absent'`).get()).toBeTruthy();
   });
 
   it("omits padded or empty missionId rather than inventing a Mission", async () => {

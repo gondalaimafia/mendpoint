@@ -179,13 +179,7 @@ describe("Warden candidate delivery outbox", () => {
   // rather than silent, so it stays visible until that decision is made.
   it("enqueues a campaign-bound run unbound, and says so (open gap, not a fix)", () => {
     const db = fixture({ goal: "Repair the SDK", consumerId: "consumer-1", fettlerCampaignId: "campaign-1" });
-    const warnings: string[] = [];
-    const warn = console.warn;
-    console.warn = (line: unknown) => { warnings.push(String(line)); };
-
-    let delivery;
-    try {
-      delivery = enqueueWardenCandidateDelivery(db, {
+    const delivery = enqueueWardenCandidateDelivery(db, {
         tenantId: "tenant-a",
         runId: "warden-run-1",
         repositoryId: "repo-1",
@@ -196,17 +190,19 @@ describe("Warden candidate delivery outbox", () => {
         sealedSha256: `sha256:${"b".repeat(64)}`,
         requesterPrincipalId: "human:reviewer@example.com",
         rationale: "The target and regression checks pass.",
-        now: NOW,
-      });
-    } finally { console.warn = warn; }
+      now: NOW,
+    });
 
     // Current behaviour: accepted, unbound, no authority required.
     expect(delivery.status).toBe("delivery_pending");
     expect(delivery.missionAuthority).toBeNull();
-    // ...and the gap is on the record.
-    expect(warnings.some((line) =>
-      line.includes("warden_candidate_delivery_campaign_binding_not_enforced") &&
-      line.includes("campaign-1"))).toBe(true);
+    // ...and the gap is on the durable record, not merely logged.
+    expect(db.raw.prepare(`SELECT action, resource_id, metadata_json FROM audit_events
+      WHERE action = 'fettler.candidate_delivery.campaign_binding_not_enforced'`).get())
+      .toMatchObject({ resource_id: delivery.id });
+    expect(String((db.raw.prepare(`SELECT metadata_json AS m FROM audit_events
+      WHERE action = 'fettler.candidate_delivery.campaign_binding_not_enforced'`).get() as { m: string }).m))
+      .toContain("campaign-1");
   });
 
   // §12 UPGRADE PATH. POST /agent/runs has always written `payload.missionId`,
@@ -236,6 +232,10 @@ describe("Warden candidate delivery outbox", () => {
     expect(delivery.missionAuthority).toBeNull();
     expect(JSON.parse(getJob(db, delivery.jobId, "tenant-a")!.payload_json))
       .not.toHaveProperty("missionAuthority");
+    // "Proceeded unbound" is RECORDED, never silent: delete the record and this dies.
+    expect(db.raw.prepare(`SELECT resource_id FROM audit_events
+      WHERE action = 'fettler.candidate_delivery.mission_authority_absent'`).get())
+      .toEqual({ resource_id: delivery.id });
   });
 
   it("atomically enqueues one deterministic tenant-scoped draft delivery", () => {

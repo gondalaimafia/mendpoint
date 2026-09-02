@@ -3,6 +3,7 @@ import {
   beginWardenCiRepair,
   completeJob,
   enqueueJob,
+  recordAudit,
   exhaustWardenCiCycle,
   getAgentRun,
   getJob,
@@ -67,6 +68,13 @@ function parseOriginalPayload(value: string): Readonly<Record<string, unknown> &
   if (!parsed || typeof parsed !== "object" || typeof (parsed as Record<string, unknown>).consumerId !== "string" ||
       !(parsed as Record<string, unknown>).consumerId) throw new Error("warden_ci_source_job_invalid");
   return Object.freeze({ ...(parsed as Record<string, unknown>), consumerId: String((parsed as Record<string, unknown>).consumerId) });
+}
+
+function claimedMissionId(payload: Readonly<Record<string, unknown>>): string | undefined {
+  if (typeof payload.missionId !== "string") return undefined;
+  const missionId = payload.missionId.trim();
+  if (!missionId || missionId !== payload.missionId) return undefined;
+  return missionId;
 }
 
 function evidenceAuthority(bytes: Uint8Array): Readonly<{
@@ -162,10 +170,31 @@ export async function runWardenCiRepairDispatch(input: WardenCiRepairDispatchInp
     observationDigest: observation.observationDigest, evidenceArtifactId: observation.evidenceArtifactId,
     evidenceDigest: observation.evidenceDigest, trigger,
     reviewFeedbackDigest: evidenceAuthorityValue.reviewFeedbackDigest });
-  // The CI cycle retains the latest post-review authority. Never revive the
-  // original candidate job's pre-delivery task revision after a later handoff.
+  // THREE states, the same doctrine as the two delivery gates.
+  // The cycle's retained authority wins when present: never revive the original
+  // candidate job's pre-delivery task revision after a later handoff.
+  // When the cycle has NONE (every cycle created before the authority contract),
+  // carry the source run's CLAIMED missionId through UNBOUND rather than dropping
+  // it. Dropping it makes resolveBoundMissionForJob return undefined, which
+  // silently skips the Mission policy evaluation main applied to that successor
+  // (apps/worker/src/agent-run-policy.ts) - a policy hole opened by a hardening
+  // change, which is exactly what this PR exists to prevent.
   const missionAuthority = cycle.missionAuthority;
-  const missionId = missionAuthority?.missionId ?? null;
+  const claimed = claimedMissionId(originalPayload);
+  const missionId = missionAuthority?.missionId ?? claimed ?? null;
+  if (!missionAuthority && claimed) {
+    recordAudit(input.db, {
+      id: `audit_${createHash("sha256")
+        .update(`${cycle.tenantId}\0${ids.jobId}\0ci_repair_authority_absent`)
+        .digest("hex")}`,
+      tenantId: cycle.tenantId,
+      actor: "fettler-ci-repair",
+      action: "fettler.ci_repair.mission_authority_absent",
+      resourceType: "fettler_ci_cycle",
+      resourceId: cycle.id,
+      metadata: { jobId: ids.jobId, claimedMissionId: claimed, reason: "authority_never_minted" },
+    });
+  }
   const agentPayload = Object.freeze({
     goal: trigger === "review_feedback"
       ? `Address the authoritative review feedback on draft pull request ${cycle.pullRequestNumber} at exact head ${cycle.currentHeadSha}.`

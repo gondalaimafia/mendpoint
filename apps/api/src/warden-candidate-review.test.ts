@@ -1157,6 +1157,46 @@ describe("Warden candidate human review", () => {
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get()).toEqual({ count: 0 });
   });
 
+  // The reviewed task's handoff resolution goes through transitionMissionTask,
+  // which now runs the task-scoped dispatch fence and throws
+  // mission_mutation_dispatch_in_flight when a dispatch for that task is already
+  // in flight. That code was not in WARDEN_REVIEW_ERRORS, so mappedErrorResponse
+  // fell through to internal_error and the route answered HTTP 500 on an ordinary
+  // race. Remove the mapping and this goes back to 500.
+  it("conflicts, not 500s, when a dispatch for the reviewed task is already in flight", async () => {
+    const { app, db } = fixture({ sealApproval: async () => ({ path: "C:\sealed-in-flight.json",
+      sha256: `sha256:${"b".repeat(64)}`, created: true }) });
+    seedReviewedSnapshot(db);
+    bindMission(db);
+    scopeMission(db);
+    workingTask(db);
+    openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID,
+      reason: "architecture_decision_required", question: "Approve this candidate?",
+      context: "The candidate itself is ready.", ownerPrincipalId: "trust-human-a",
+      correlationId: "corr", createdAt: NOW,
+    });
+    // A remote mutation for THIS task is mid-flight.
+    db.raw.prepare(`INSERT INTO mission_mutation_dispatches
+      (id, tenant_id, mission_id, job_id, mutation_kind, aggregate_id, authority_json,
+       intent_digest, state, lease_owner, lease_generation, authorized_at, dispatching_at, updated_at)
+      VALUES ('d-inflight', 'tenant-a', 'm1', 'job-inflight', 'fettler_candidate_delivery',
+        'agg-1', ?, ?, 'dispatching', 'worker-a', 1, ?, ?, ?)`)
+      .run(JSON.stringify({ taskId: REVIEW_TASK_ID }), `sha256:${"c".repeat(64)}`, NOW, NOW, NOW);
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "Approve the exact bounded repair." }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "mission_mutation_dispatch_in_flight" });
+    // The in-flight mutation is untouched and the review did not land.
+    expect(db.raw.prepare("SELECT state FROM mission_mutation_dispatches WHERE id = 'd-inflight'").get())
+      .toEqual({ state: "dispatching" });
+    expect(getAgentRun(db, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
+  });
+
   // §12 UPGRADE PATH, at the route. A legacy run: POST /agent/runs wrote
   // `payload.missionId`, nothing opened a task-bound blocker, so review resolves
   // nothing and mints no authority. It must approve and enqueue its delivery
@@ -1180,6 +1220,47 @@ describe("Warden candidate human review", () => {
     // Unbound, honestly: no authority is invented for a run that never had one.
     expect(db.raw.prepare("SELECT mission_authority_json AS a FROM fettler_candidate_deliveries").get())
       .toEqual({ a: null });
+  });
+
+  // The regenerate arm MINTS authority, and until now nothing pinned that:
+  // deleting missionAuthorityAfterResolution on this path left the suite green,
+  // because the only bound-regenerate test had no validated snapshot binding and
+  // therefore never minted anything. This run CAN carry authority - scoped
+  // Mission, seeded snapshot, resolved task-bound blocker - so the successor must
+  // carry it forward.
+  it("mints Mission authority onto the regenerate successor when the run can carry it", async () => {
+    const { app, db } = fixture();
+    // The regenerate arm only reconstructs a validated snapshot binding on the
+    // CI-repair path (main computes it for approve/CI only), so that is the shape
+    // in which a regenerate CAN mint authority.
+    seedCiRepairCandidate(db);
+    bindMission(db);
+    scopeMission(db);
+    workingTask(db);
+    openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID,
+      reason: "architecture_decision_required", question: "Regenerate this candidate?",
+      context: "The candidate changed the request mapping.", ownerPrincipalId: "trust-human-a",
+      correlationId: "corr", createdAt: NOW,
+    });
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "Keep the public signature." }),
+    });
+
+    expect(response.status).toBe(202);
+    const body = await response.json() as { supersedingJobId: string };
+    const successor = JSON.parse(getJob(db, body.supersedingJobId, "tenant-a")!.payload_json);
+    expect(successor.missionId).toBe("m1");
+    expect(successor.missionAuthority).toMatchObject({
+      schemaVersion: 1,
+      missionId: "m1",
+      taskId: REVIEW_TASK_ID,
+      repositoryId: "repo-1",
+      snapshotId: "snapshot-1",
+      resolvedSha: "d".repeat(40),
+    });
   });
 
   // §12, regenerate arm. The successor inherits `missionId` through

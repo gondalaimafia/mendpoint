@@ -108,6 +108,22 @@ const WARDEN_REVIEW_ERRORS = [
     "warden_ci_repair_rebind_not_authorized",
     "warden_ci_budget_exhausted",
     "warden_ci_mutation_in_flight",
+    // Mission authority + durable dispatch. Every one of these is a conflict on
+    // exact authority, the same shape as warden_ci_mutation_in_flight above.
+    // Unmapped they fell through mappedErrorResponse to internal_error, so a
+    // Mission-bound approve racing one `dispatching` row answered HTTP 500.
+    "warden_candidate_delivery_source_invalid",
+    "mission_mutation_authority_invalid",
+    "mission_mutation_authority_stale",
+    "mission_mutation_authority_blocked",
+    "mission_mutation_dispatch_in_flight",
+    "mission_mutation_dispatch_authority_invalid",
+    "mission_mutation_dispatch_conflict",
+    "mission_mutation_dispatch_revoked",
+    "mission_mutation_dispatch_settled",
+    "mission_mutation_dispatch_not_authorized",
+    "mission_mutation_dispatch_lease_lost",
+    "mission_task_job_authority_mismatch",
   ].map((internalCode) => ({ internalCode, status: 409 as const })),
   { internalCode: "human_review_required", status: 403 },
   { internalCode: "warden_candidate_expired", status: 410 },

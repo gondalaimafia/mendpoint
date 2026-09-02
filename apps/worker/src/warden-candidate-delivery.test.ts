@@ -328,6 +328,11 @@ describe("Warden exact candidate draft delivery", () => {
     // Unbound means unbound: no dispatch row is armed for a run with no authority.
     expect(value.db.raw.prepare(`SELECT COUNT(*) AS n FROM mission_mutation_dispatches
       WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ n: 0 });
+    // ...and proceeding unbound is RECORDED, never silent. Delete the record and
+    // this dies, which is the whole point of calling it a third state.
+    expect(value.db.raw.prepare(`SELECT resource_id FROM audit_events
+      WHERE action = 'fettler.candidate_delivery.mission_authority_absent'`).get())
+      .toEqual({ resource_id: value.delivery.id });
   });
 
   // The other two states still behave: a MISMATCHED authority is refused.

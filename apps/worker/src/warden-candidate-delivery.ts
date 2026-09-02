@@ -338,12 +338,21 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
     // upgrade, and no later write can mint the authority it is missing.
     // Absent -> proceed unbound as main does. Mismatched -> still fail, below.
     if (authorityBindings.length > 0 && !payload.missionAuthority) {
-      console.warn(JSON.stringify({
-        event: "warden_candidate_delivery_mission_authority_absent",
-        tenantId: input.job.tenant_id, jobId: input.job.id,
-        deliveryId: delivery.id, runId: delivery.runId,
-        claimedMissionIds: [...new Set(authorityBindings)],
-      }));
+      recordAudit(input.db, {
+        id: `audit_${createHash("sha256")
+          .update(`${input.job.tenant_id}\0${input.job.id}\0mission_authority_absent`)
+          .digest("hex")}`,
+        tenantId: input.job.tenant_id,
+        actor: "fettler-candidate-delivery",
+        action: "fettler.candidate_delivery.mission_authority_absent",
+        resourceType: "fettler_candidate_delivery",
+        resourceId: delivery.id,
+        metadata: {
+          jobId: input.job.id, runId: delivery.runId,
+          claimedMissionIds: [...new Set(authorityBindings)],
+          reason: "authority_never_minted",
+        },
+      });
     }
     if (payload.missionAuthority && (!payload.missionId ||
         authorityBindings.some((missionId) => missionId !== payload.missionAuthority!.missionId) ||

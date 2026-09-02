@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 import type { AppDb } from "./index.js";
+// Value import from the barrel, the same shape fettler-delegation-evidence.ts uses.
+// Called at runtime only, so the module cycle resolves.
+import { recordAudit } from "./index.js";
 import { assertMissionMutationAuthority, completeMissionMutationAuthorityTask, parseMissionMutationAuthority,
   refreshMissionMutationAuthority, type MissionMutationAuthorityV1 } from "./mission-mutation-authority.js";
 
@@ -9,6 +12,9 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const BRANCH = /^(?!\/)(?!.*(?:\.\.|\/\/|@\{))[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/;
 const DEFERRED_MISSION_OUTCOME_SETTLEMENT_ERRORS = new Set([
+  // A fence collision is transient: another writer holds the Mission mid-flight.
+  // Without this it is logged as a replay FAILURE, which reads as data loss.
+  "mission_mutation_dispatch_in_flight",
   "mission_mutation_authority_stale",
   "mission_mutation_authority_blocked",
   "mission_mutation_authority_task_missing",
@@ -678,10 +684,17 @@ export function enqueueWardenCandidateDelivery(
       if (!missionAuthority) {
         // Recorded, never silent: "not checked" must stay distinguishable from
         // "checked and clean" for anyone reading this delivery later.
-        console.warn(JSON.stringify({
-          event: "warden_candidate_delivery_mission_authority_absent",
-          tenantId, runId, deliveryId: deterministic.deliveryId, claimedMissionId,
-        }));
+        recordAudit(db, {
+          id: `audit_${createHash("sha256")
+            .update(`${tenantId}\0${deterministic.deliveryId}\0mission_authority_absent`)
+            .digest("hex")}`,
+          tenantId,
+          actor: "fettler-candidate-delivery",
+          action: "fettler.candidate_delivery.mission_authority_absent",
+          resourceType: "fettler_candidate_delivery",
+          resourceId: deterministic.deliveryId,
+          metadata: { runId, claimedMissionId, reason: "authority_never_minted" },
+        });
       } else if (missionAuthority.missionId !== claimedMissionId) {
         throw new Error("warden_candidate_delivery_binding_mismatch");
       }
@@ -698,10 +711,17 @@ export function enqueueWardenCandidateDelivery(
         .map((key) => (sourcePayload as Record<string, unknown>)[key])
         .find((value): value is string => typeof value === "string" && value.trim().length > 0);
       if (campaignHint) {
-        console.warn(JSON.stringify({
-          event: "warden_candidate_delivery_campaign_binding_not_enforced",
-          tenantId, runId, deliveryId: deterministic.deliveryId, campaignHint,
-        }));
+        recordAudit(db, {
+          id: `audit_${createHash("sha256")
+            .update(`${tenantId}\0${deterministic.deliveryId}\0campaign_binding_not_enforced`)
+            .digest("hex")}`,
+          tenantId,
+          actor: "fettler-candidate-delivery",
+          action: "fettler.candidate_delivery.campaign_binding_not_enforced",
+          resourceType: "fettler_candidate_delivery",
+          resourceId: deterministic.deliveryId,
+          metadata: { runId, campaignHint, reason: "reader_consults_mission_id_only" },
+        });
       }
     }
   }

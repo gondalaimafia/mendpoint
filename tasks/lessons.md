@@ -205,6 +205,17 @@
 **Mistake:** Upgrade fences protected delivery and update workers, but the public run producer could still enqueue a bare Mission id that no canonical review handoff could later resolve.
 **Correction:** The review traced the active `POST /agent/runs` producer through claim, candidate completion, and human review, exposing a job that could finish but never acquire the repository-scoped task authority required for approval or regeneration.
 **Rule:** When tightening a durable authority contract, inventory every active producer as well as every consumer. A producer must either write the complete canonical authority payload or reject the unsupported shape before persistence. Never accept a partial identity that can survive execution but strand the next state transition.
+
+**DEFERRED — not the rule this PR ships.** PR #499 restored `POST /agent/runs`
+acceptance of a bare `missionId` and made the delivery gates three-state, so a
+partial identity IS accepted today and proceeds unbound with the absence
+recorded. Rejecting the unsupported shape would strand every run enqueued before
+the authority contract existed, because nothing can mint authority for them
+retroactively. The owner chose to split that: the production review path binds
+and mints once #433 lands, and removing `missionId` from the public contract is a
+separate follow-up PR. Treat the rule above as the destination, not as a
+description of the shipped code.
+
 ### 2026-08-26 — Attribute shipped work precisely
 **Mistake:** I reported all repository merges as my own shipping output even when Claude or Cursor authored them and another process merged them.
 **Correction:** Talal required attribution of Codex work separately from Claude/Cursor work.
