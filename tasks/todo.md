@@ -4237,6 +4237,21 @@ Repository controlled engineering and external proof are reported separately. Na
 - The repository index captures one exact source set, validates file identity and the complete directory-entry set against same-size metadata mutation, late files, and late links, then passes only those captured bytes into full or incremental call-graph extraction. The call graph never falls back to a mutable disk read when snapshot sources are supplied.
 - The public retrieval contract now accepts and enforces `maxFiles`, `maxBytes`, `maxFileBytes`, `maxTraversalDepth`, and `maxCandidates` on graph and non-graph paths. Traversal-depth exhaustion produces an idempotent abstention artifact, evidence record, audit event, and domain event bound to the exact repository snapshot, revision, content digest, limits, and usage.
 - Full affected verification passes: call graph 25 tests, codebase index 34 tests, code impact 123 tests, and pipeline 256 tests, for 438 tests total. All four affected workspace typechecks and diff integrity pass. No requirement, availability, or public claim is promoted.
+## 2026-08-30 GSD Plan 08-04 adapter lifecycle proof review repair
+
+- [x] Centralize exact lifecycle-proof validation for file and exported programmatic execution, including version, timeout, idempotency, rollback reason, nested arrays, credential names, and recomputed semantic input digest.
+- [x] Replace inferred pre-rollback eligibility with a durable tenant-bound domain-event checkpoint that binds the exact input, eligibility request and observation, and rollback request before rollback.
+- [x] Require exact authenticated checkpoint replay when registration already reports `rolled_back`; fail closed when the checkpoint is absent, substituted, or the tenant event chain is invalid.
+- [x] Expose the checkpoint through the authenticated tenant-admin API and cover the production request path.
+- [x] Register the proof signing key, key identifier, and exact API origin in the canonical protected runtime configuration manifest.
+- [x] Run hostile and complete affected tests, affected typechecks, configuration completeness, full build, and diff integrity.
+
+### Review
+
+- A resumed lifecycle can claim `eligibleBeforeRollback` only from the exact hash-chain checkpoint created while the adapter was eligible. The checkpoint binds the recomputed canonical input digest, canonical eligibility request, observed eligible response digest, and the artifact, reason, and idempotency key of the rollback request.
+- Direct callers now traverse the same validator as file callers before proof authority or API credentials are read. Bare `token` and `secret`, normalized compound credential names, invalid nested array members, malformed versions, timeouts, idempotency keys, rollback reasons, and substituted input digests all fail before network access.
+- The affected proof, configuration, Pipeline, and API matrix passes 80 of 80 focused tests. Complete Pipeline coverage passes 250 of 250 tests; complete API coverage passes. Pipeline, API, and scripts typechecks pass; `npm run config:check`, the optimized workspace build, and `git diff --check` pass.
+- This repair does not promote a requirement, change a public claim, deploy, or assert live adapter qualification. Exact-head review, current-base protected CI, protected merge, and exact-revision production evidence remain required.
 ## 2026-08-31 GSD Plan 06-05/06-06: Fettler real provider change to exact draft
 
 - [x] Audit the complete production producer-to-consumer chain from feed revision through exact draft delivery, including every durable transition and claim predicate.
@@ -4290,3 +4305,26 @@ Repository controlled engineering and external proof are reported separately. Na
 - The projection mints a `repository:`-scoped `REVIEW_PREFERENCE` candidate per reviewed outcome, and both live consumers of Organization Memory read it tenant-wide with no scope filter. The ReGauge plan consult picked one inferred candidate per layer by sorting on a sha256, so which repository's reviewer preference governed a plan was arbitrary; the Mission Context Compiler caps each section, so unrelated repositories could crowd out relevant memory. A single shared predicate now bounds repository-scoped memory to the repositories a consult is actually about, applied at both sites.
 - `subjectKey` components are escaped so a colon inside one component cannot collide with a different component split. Both values are enum-ish today, so this is a structural guard, not a live defect.
 - Not changed here, and routed to the schema owner instead: revoking governed-learning consent is forward-looking and does not retract already-projected candidates. That matches the append-only learning-corpus model and is a consent-policy decision, not a defect in this plan.
+
+## 2026-09-02 Issue authority refresh for #433
+
+- [x] Bind issue-authority record #433 to its exact live GitHub state and `updatedAt` value without changing requirement status, availability, or claims.
+- [x] Recompute the issue-authority integrity digest from the complete proposed matrix; the release-train digest is untouched because no release-train record changed.
+- [x] Prove every other issue-authority record still matches live GitHub (14 of 15 matched before the change; only #433 had drifted).
+- [x] Run the closure, specification, ledger, and GA validators plus the focused authority suites and diff integrity.
+
+### Root cause
+
+- `docs/PRODUCTION_CLOSURE_MATRIX.json` pinned issue #433 at `updatedAt` `2026-08-30T23:49:27Z` (the reopen). A claim comment on the issue at `2026-08-31T18:03:50Z` advanced GitHub's `updated_at`, so `closure:github:check` on every push to `main` since `5501de99` failed with `ISSUE_METADATA_MISMATCH 433`, one failed workflow run per merge. The pull-request observation scope does not verify that record, which is why pull requests stayed green while `main` stayed red.
+
+### Scope and rollback
+
+- Owned files: `docs/PRODUCTION_CLOSURE_MATRIX.json` and this task record. No issue, requirement, public claim, workflow, policy, credential, or production runtime is mutated by this branch.
+- Rollback is a single commit revert. The main authority observer remains fail closed until a refreshed matrix is merged and a new exact-main observation passes.
+
+### Review
+
+- Live GitHub readback at `2026-09-02T00:05:21.467Z` confirmed issue #433 is open, titled `Production closure FC 04: Fettler customer proof`, assigned to `gondalaimafia`, with `updatedAt` `2026-08-31T18:03:50Z`; the record retains its owner, title, URL, and requirement mappings.
+- The complete matrix recomputation produced issue-authority digest `sha256:11036b890a56a523c87ee8de129fa6d95431abec949a92dc86cb356db1269fd9`. The release-train digest remains `sha256:55d1f00bbe1af30a9787d5a5468779b94d1cd7aecb2bc9952c9e833914645a96`.
+- `npm run closure:check`, `npm run spec:check`, `npm run ledger:check`, and `npm run ga:check` exit 0. The focused GitHub authority, closure-matrix, and proposal-authority suites pass all 129 tests; the proposal-authority process exited 1 twice on a vitest worker `Timeout calling "onTaskUpdate"` under host load with 33 of 33 tests passed, not on an assertion. `git diff --check` passes; the edited blob has 0 CR bytes.
+- The same drift will recur whenever anyone comments on any of the 15 authority issues, because the record pins a volatile timestamp; that is a design decision to revisit separately, not something this refresh changes.

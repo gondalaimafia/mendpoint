@@ -2,6 +2,46 @@
   "schemaVersion": 1,
   "runtimeEntries": [
     {
+      "name": "MENDPOINT_ADAPTER_PROOF_SIGNING_KEY_B64",
+      "type": "secret",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "npm run adapter:lifecycle:proof",
+      "note": "HMAC key used only to authenticate create-only adapter lifecycle proof reports"
+    },
+    {
+      "name": "MENDPOINT_ADAPTER_PROOF_SIGNING_KEY_ID",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "npm run adapter:lifecycle:proof",
+      "note": "Protected identifier for the adapter lifecycle proof signing key"
+    },
+    {
+      "name": "MENDPOINT_ADAPTER_PROOF_VERIFICATION_KEYRING_JSON",
+      "type": "secret",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "npm run adapter:lifecycle:proof",
+      "note": "Retained verification keys and revoked key identifiers for authenticating lifecycle proof reports across signing-key rotation"
+    },
+    {
+      "name": "MENDPOINT_API_KEY",
+      "type": "secret",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "npm run adapter:lifecycle:proof",
+      "note": "Bearer credential for the exact protected API origin used by the adapter lifecycle proof"
+    },
+    {
+      "name": "MENDPOINT_API_BASE_URL",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "npm run adapter:lifecycle:proof",
+      "note": "Exact protected API origin; proof inputs cannot select a different destination"
+    },
+    {
       "name": "MENDPOINT_ENVELOPE_KEY_CATALOG_JSON",
       "type": "secret",
       "scope": "protected_application_environment",

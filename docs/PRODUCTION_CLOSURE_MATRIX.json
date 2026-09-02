@@ -1824,8 +1824,8 @@
   "issueAuthority": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-30T23:49:47.272Z",
-    "observationDigest": "sha256:87e9f68ce12947e833983dd4bf68bc97e070b0c08a3b249105f3c0d967c21083",
+    "observedAt": "2026-09-02T00:05:21.467Z",
+    "observationDigest": "sha256:11036b890a56a523c87ee8de129fa6d95431abec949a92dc86cb356db1269fd9",
     "issues": [
       {
         "number": 350,
@@ -1945,7 +1945,7 @@
         "owner": "gondalaimafia",
         "title": "Production closure FC 04: Fettler customer proof",
         "url": "https://github.com/gondalaimafia/mendpoint/issues/433",
-        "updatedAt": "2026-08-30T23:49:27.000Z",
+        "updatedAt": "2026-08-31T18:03:50.000Z",
         "requirementIds": [
           "ME-WAR-004",
           "ME-WAR-006",
