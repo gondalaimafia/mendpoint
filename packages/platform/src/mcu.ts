@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export const MCU_VERSION = "mcu-v1" as const;
 export const MCU_MICROS = 1_000_000;
 
@@ -25,6 +27,222 @@ export const MCU_SCHEDULE_V1 = Object.freeze({
     Object.freeze({ label: "Verification", work: Object.freeze({ verificationVcpuMinutes: 0.5, verificationGibMinutes: 1 }), expectedMicros: 1_000_000 }),
   ]),
 });
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .filter((key) => record[key] !== undefined)
+    .sort(compareText)
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(",")}}`;
+}
+
+export function mcuScheduleDigest(schedule: unknown): string {
+  return `sha256:${createHash("sha256").update(canonicalJson(schedule), "utf8").digest("hex")}`;
+}
+
+export const MCU_SCHEDULE_DIGEST = mcuScheduleDigest(MCU_SCHEDULE_V1);
+
+export const MCU_LEDGER_ENTRY_TYPES = [
+  "reservation",
+  "settlement",
+  "release",
+  "adjustment",
+  "credit",
+] as const;
+
+export type McuLedgerEntryType = typeof MCU_LEDGER_ENTRY_TYPES[number];
+
+export type McuLedgerEntry = {
+  id: string;
+  tenantId: string;
+  entryType: McuLedgerEntryType;
+  entitlementId: string;
+  idempotencyKey: string;
+  taskId: string;
+  campaignId: string | null;
+  reservationId: string | null;
+  priceVersion: string;
+  reservedMcuMicrosDelta: number;
+  consumedMcuMicrosDelta: number;
+  invoiceReference: string | null;
+  entrySequence: number;
+};
+
+export type McuLedgerLifecycle = {
+  scheduleVersion: typeof MCU_VERSION;
+  scheduleDigest: string;
+  entries: McuLedgerEntry[];
+};
+
+export type McuLedgerReconciliation = Readonly<{
+  scheduleVersion: typeof MCU_VERSION;
+  scheduleDigest: string;
+  reservationMcuMicros: number;
+  settledMcuMicros: number;
+  adjustmentMcuMicros: number;
+  creditedMcuMicros: number;
+  outstandingReservationMcuMicros: number;
+  invoiceMappings: ReadonlyArray<Readonly<{
+    invoiceReference: string;
+    mcuMicros: number;
+  }>>;
+  reconciled: true;
+}>;
+
+function requiredLedgerId(value: string, field: string): void {
+  if (typeof value !== "string" || value.length === 0 || value.length > 256) {
+    throw new Error(`${field}_invalid`);
+  }
+}
+
+function ledgerMicros(value: number, field: string): number {
+  if (!Number.isSafeInteger(value)) throw new Error(`${field}_invalid`);
+  return value;
+}
+
+function safeLedgerSum(values: readonly number[]): number {
+  let result = 0;
+  for (const value of values) {
+    result += value;
+    if (!Number.isSafeInteger(result)) throw new Error("mcu_ledger_overflow");
+  }
+  return result;
+}
+
+export function reconcileMcuLedgerLifecycle(
+  lifecycle: McuLedgerLifecycle,
+): McuLedgerReconciliation {
+  if (lifecycle.scheduleVersion !== MCU_VERSION) throw new Error("mcu_schedule_version_invalid");
+  if (lifecycle.scheduleDigest !== MCU_SCHEDULE_DIGEST) {
+    throw new Error("mcu_schedule_changed_without_version");
+  }
+  if (!Array.isArray(lifecycle.entries) || lifecycle.entries.length === 0) {
+    throw new Error("mcu_ledger_entries_required");
+  }
+  const ids = new Set<string>();
+  const idempotencyKeys = new Set<string>();
+  let previousSequence = 0;
+  for (const entry of lifecycle.entries) {
+    requiredLedgerId(entry.id, "mcu_ledger_id");
+    requiredLedgerId(entry.idempotencyKey, "mcu_ledger_idempotency_key");
+    if (ids.has(entry.id)) throw new Error("mcu_ledger_duplicate_id");
+    if (idempotencyKeys.has(entry.idempotencyKey)) {
+      throw new Error("mcu_ledger_duplicate_idempotency_key");
+    }
+    ids.add(entry.id);
+    idempotencyKeys.add(entry.idempotencyKey);
+    if (!MCU_LEDGER_ENTRY_TYPES.includes(entry.entryType)) {
+      throw new Error("mcu_ledger_entry_type_invalid");
+    }
+    if (!Number.isSafeInteger(entry.entrySequence) || entry.entrySequence <= previousSequence) {
+      throw new Error("mcu_ledger_sequence_invalid");
+    }
+    previousSequence = entry.entrySequence;
+    requiredLedgerId(entry.tenantId, "mcu_ledger_tenant_id");
+    requiredLedgerId(entry.entitlementId, "mcu_ledger_entitlement_id");
+    requiredLedgerId(entry.taskId, "mcu_ledger_task_id");
+    requiredLedgerId(entry.priceVersion, "mcu_ledger_price_version");
+    ledgerMicros(entry.reservedMcuMicrosDelta, "mcu_ledger_reserved_micros");
+    ledgerMicros(entry.consumedMcuMicrosDelta, "mcu_ledger_consumed_micros");
+  }
+
+  const reservations = lifecycle.entries.filter((entry) => entry.entryType === "reservation");
+  if (reservations.length !== 1) throw new Error("mcu_reservation_required");
+  const reservation = reservations[0]!;
+  if (lifecycle.entries[0] !== reservation) throw new Error("mcu_reservation_must_be_first");
+  if (
+    reservation.reservationId !== null ||
+    reservation.reservedMcuMicrosDelta <= 0 ||
+    reservation.consumedMcuMicrosDelta !== 0 ||
+    reservation.invoiceReference !== null
+  ) {
+    throw new Error("mcu_reservation_invalid");
+  }
+  const identity = [
+    reservation.tenantId,
+    reservation.entitlementId,
+    reservation.taskId,
+    reservation.priceVersion,
+  ] as const;
+  let reserved = reservation.reservedMcuMicrosDelta;
+  let consumed = 0;
+  let settled = 0;
+  let adjusted = 0;
+  let credited = 0;
+  const invoices = new Map<string, number>();
+
+  for (const entry of lifecycle.entries.slice(1)) {
+    if (
+      entry.tenantId !== identity[0] ||
+      entry.entitlementId !== identity[1] ||
+      entry.taskId !== identity[2] ||
+      entry.priceVersion !== identity[3]
+    ) {
+      throw new Error("mcu_ledger_binding_mismatch");
+    }
+    if (entry.entryType === "settlement" || entry.entryType === "release") {
+      if (
+        entry.reservationId !== reservation.id ||
+        entry.reservedMcuMicrosDelta >= 0 ||
+        -entry.reservedMcuMicrosDelta > reserved
+      ) {
+        throw new Error("mcu_reservation_transition_invalid");
+      }
+      reserved = safeLedgerSum([reserved, entry.reservedMcuMicrosDelta]);
+      if (entry.entryType === "release") {
+        if (entry.consumedMcuMicrosDelta !== 0 || entry.invoiceReference !== null) {
+          throw new Error("mcu_release_invalid");
+        }
+        continue;
+      }
+      if (entry.consumedMcuMicrosDelta < 0) throw new Error("mcu_settlement_invalid");
+      settled = safeLedgerSum([settled, entry.consumedMcuMicrosDelta]);
+    } else {
+      if (entry.reservationId !== null || entry.reservedMcuMicrosDelta !== 0) {
+        throw new Error("mcu_ledger_adjustment_binding_invalid");
+      }
+      if (entry.entryType === "adjustment") {
+        if (entry.consumedMcuMicrosDelta === 0) throw new Error("mcu_adjustment_invalid");
+        adjusted = safeLedgerSum([adjusted, entry.consumedMcuMicrosDelta]);
+      } else if (entry.entryType === "credit") {
+        if (entry.consumedMcuMicrosDelta >= 0) throw new Error("mcu_credit_invalid");
+        credited = safeLedgerSum([credited, -entry.consumedMcuMicrosDelta]);
+      } else {
+        throw new Error("mcu_reservation_duplicate");
+      }
+    }
+    if (!entry.invoiceReference) throw new Error("mcu_invoice_mapping_required");
+    requiredLedgerId(entry.invoiceReference, "mcu_invoice_reference");
+    invoices.set(
+      entry.invoiceReference,
+      safeLedgerSum([invoices.get(entry.invoiceReference) ?? 0, entry.consumedMcuMicrosDelta]),
+    );
+    consumed = safeLedgerSum([consumed, entry.consumedMcuMicrosDelta]);
+    if (consumed < 0) throw new Error("mcu_credit_exceeds_consumption");
+  }
+  if (reserved !== 0) throw new Error("mcu_reservation_not_closed");
+
+  return Object.freeze({
+    scheduleVersion: MCU_VERSION,
+    scheduleDigest: MCU_SCHEDULE_DIGEST,
+    reservationMcuMicros: reservation.reservedMcuMicrosDelta,
+    settledMcuMicros: settled,
+    adjustmentMcuMicros: adjusted,
+    creditedMcuMicros: credited,
+    outstandingReservationMcuMicros: reserved,
+    invoiceMappings: Object.freeze([...invoices.entries()]
+      .sort(([left], [right]) => compareText(left, right))
+      .map(([invoiceReference, mcuMicros]) => Object.freeze({ invoiceReference, mcuMicros }))),
+    reconciled: true,
+  });
+}
 
 export function assertMcuScheduleChange(input: Readonly<{
   currentVersion: string;
