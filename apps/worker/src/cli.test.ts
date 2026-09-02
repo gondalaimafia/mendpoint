@@ -664,6 +664,16 @@ describe("worker runtime", () => {
       retryable: true,
       retryPastMaxAttempts: true,
     });
+    // ...but uncertainty must NOT outrank the authorization exclusion. A
+    // credential refused now is refused on every retry, so letting an uncertain
+    // remote effect win here spins a permanently failing job past max_attempts.
+    expect(classifyJobFailure(Object.assign(new Error("bad credentials"), {
+      remoteSideEffectUncertain: true,
+    }))).toMatchObject({
+      errorCode: "authorization_failed",
+      retryable: false,
+      retryPastMaxAttempts: false,
+    });
   });
 
   it("validates intervals and applies bounded backoff", () => {

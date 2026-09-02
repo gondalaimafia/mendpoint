@@ -9,6 +9,8 @@ import {
   createDb,
   createMission,
   createMissionTask,
+  createWardenCampaign,
+  linkFettlerCampaignToMission,
   enqueueJob,
   evaluateMissionExceptions,
   fettlerCampaignMissionTaskId,
@@ -762,7 +764,11 @@ describe("Warden candidate human review", () => {
     expect(count.n).toBe(0);
   });
 
-  function bindMission(db: AppDb, product: "fettler" | "regauge" = "fettler"): void {
+  function bindMission(
+    db: AppDb,
+    product: "fettler" | "regauge" = "fettler",
+    options: { viaCampaign?: boolean } = {},
+  ): void {
     createMission(db, {
       id: "m1", tenantId: "tenant-a", product, triggerKind: "migration_objective",
       objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
@@ -774,6 +780,20 @@ describe("Warden candidate human review", () => {
       correlationId: "corr", createdAt: NOW,
     });
     const src = getJob(db, "source-job-1", "tenant-a")!;
+    if (options.viaCampaign) {
+      // SYNTHETIC BY CONSTRUCTION: production has no campaign -> agent.run
+      // originator yet, so no real source job carries a campaign hint. Built by
+      // hand to pin the rule ahead of that join. See the PR body.
+      createWardenCampaign(db, { id: "campaign-1", tenantId: "tenant-a", name: "SDK migration",
+        ownerPrincipalId: "trust-human-a", concurrencyLimit: 1, completionPolicy: "all",
+        eventId: "ev-campaign", idempotencyKey: "cm-campaign", correlationId: "corr", createdAt: NOW });
+      linkFettlerCampaignToMission(db, { tenantId: "tenant-a", campaignId: "campaign-1",
+        missionId: "m1", actorPrincipalId: "trust-human-a", eventId: "ev-campaign-link",
+        idempotencyKey: "cm-campaign-link", correlationId: "corr", createdAt: NOW });
+      db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
+        .run(JSON.stringify({ ...JSON.parse(src.payload_json), campaignId: "campaign-1" }));
+      return;
+    }
     db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
       .run(JSON.stringify({ ...JSON.parse(src.payload_json), missionId: "m1" }));
   }
@@ -915,6 +935,34 @@ describe("Warden candidate human review", () => {
     expect(response.status).toBe(409);
     expect(evaluateMissionExceptions(db, "tenant-a", "m1").blocking).toHaveLength(2);
     expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("human_review_required");
+    expect((db.raw.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count).toBe(jobsBefore);
+  });
+
+  // Same refusal, reached through a CAMPAIGN hint instead of an explicit
+  // missionId. Swap this reader back to a raw `payload.missionId` read and the
+  // run looks unbound: no Mission checks run at all and the review returns 202.
+  it("fails closed on a CAMPAIGN-bound source job with ambiguous blockers (fixture-minted state; production has no campaign to agent.run originator yet)", async () => {
+    const { app, db } = fixture();
+    seedReviewedSnapshot(db);
+    bindMission(db, "fettler", { viaCampaign: true });
+    workingTask(db);
+    for (const suffix of ["a", "b"]) {
+      openTaskHandoff(db, {
+        tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID,
+        reason: "architecture_decision_required", question: `Resolve ambiguity ${suffix}?`,
+        context: `Blocking context ${suffix}.`, ownerPrincipalId: "trust-human-a",
+        correlationId: `corr-${suffix}`, createdAt: suffix === "a" ? NOW : "2026-08-06T12:00:01.000Z",
+      });
+    }
+    const jobsBefore = (db.raw.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count;
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "Do not guess which blocker this resolves." }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1").blocking).toHaveLength(2);
     expect((db.raw.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count).toBe(jobsBefore);
   });
 
