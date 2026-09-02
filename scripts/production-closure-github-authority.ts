@@ -215,6 +215,10 @@ export interface StaticPullRequestRecord {
   mergeRevision: string | null;
   requirementIds: string[];
   reviewRemediationPullRequest?: number | null;
+  // See ReleaseTrainPullRequest in production-closure-matrix.ts: a closed record
+  // superseded by a merged pull request that reciprocally lists it in supersedes.
+  supersededBy?: number | null;
+  supersedes?: number[];
   checkState?: string;
   owner?: { actor: ReleaseOwnerActor };
   review?: {
@@ -811,14 +815,43 @@ export async function verifyGitHubClosureAuthority(
     const trackedPullRequests = new Map(
       matrix.releaseTrain.pullRequests.map((record) => [record.number, record]),
     );
+    // A closed record superseded by a merged pull request that reciprocally
+    // lists it discharges a dependency exactly as a merged revision does. The
+    // predicate is byte-for-byte the same shape as supersededByMerged in
+    // production-closure-matrix.ts, so both gates read the same release-train
+    // data the same way. The two gates do NOT report the same thing about it:
+    // the matrix gate additionally reports PR_SUPERSEDED_BY_INVALID and
+    // PR_SUPERSEDES_INVALID for an incoherent declaration, while this gate only
+    // declines to discharge and emits nothing of its own. That direction is
+    // safe - this gate can never accept something the matrix gate rejects - but
+    // an incoherent declaration is named only by the matrix gate.
+    const supersededByMerged = (record: StaticPullRequestRecord): boolean => {
+      const target = record.supersededBy ?? null;
+      if (target === null || !Number.isInteger(target) || target < 1) return false;
+      if (record.state !== "closed") return false; // (A)
+      const superseder = trackedPullRequests.get(target);
+      return Boolean(
+        superseder &&
+          superseder.number !== record.number &&
+          superseder.state === "merged" && // (C)
+          (superseder.supersededBy ?? null) === null &&
+          (superseder.supersedes ?? []).includes(record.number), // (E)
+      );
+    };
     for (const dependencyNumber of bootstrap.dependencies.pullRequests) {
       const dependency = trackedPullRequests.get(dependencyNumber);
-      if (!dependency || dependency.state !== "merged" || !dependency.mergeRevision) {
+      if (
+        !dependency ||
+        !(
+          (dependency.state === "merged" && dependency.mergeRevision) ||
+          supersededByMerged(dependency)
+        )
+      ) {
         add(
           issues,
           "CURRENT_PR_DEPENDENCY_UNSATISFIED",
           String(bootstrap.number),
-          `current pull request dependency ${dependencyNumber} is not a tracked merged revision`,
+          `current pull request dependency ${dependencyNumber} is not a tracked merged revision or a closed record superseded by a merged pull request`,
         );
       }
     }

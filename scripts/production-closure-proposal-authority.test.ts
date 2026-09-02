@@ -53,9 +53,25 @@ function policy() {
  * every refresh that lands after that literal — a failure about the calendar,
  * not about the authority. This fixture is production-shaped (same schema, same
  * claims, same auditedRevision, real surface paths and requirement IDs) with
- * its live evidence pinned around OBSERVED_AT: observed before it, fresh past
- * it. The frozen clock is therefore still exercised — see the future and stale
- * cases below — while a genuine re-probe of production cannot break this suite.
+ * its live evidence observed before OBSERVED_AT and fresh far past it. The
+ * frozen clock is therefore still exercised — see the future and stale cases
+ * below — while a genuine re-probe of production cannot break this suite.
+ *
+ * `freshUntil` is deliberately set in the far future (2099) rather than a
+ * plausible-looking week after `observedAt`. Not every case here judges at the
+ * frozen OBSERVED_AT: the rotation case below evaluates at
+ * `max(OBSERVED_AT, latest ledger receipt issuedAt + 60s)`, which advances with
+ * real time as rotations land, so any near-term `freshUntil` eventually expires
+ * under it and turns this suite red on a calendar boundary rather than on a
+ * defect. That is exactly what happened once already. The validator's
+ * LIVE_EVIDENCE_FRESHNESS_WINDOW rule only requires `freshUntil > observedAt`
+ * and imposes no maximum, and a synthetic fixture asserts no provenance, so a
+ * far-future stamp costs nothing and makes the fixture clock-invariant. Do not
+ * "correct" these back to a realistic-looking window.
+ *
+ * `observedAt` must stay before OBSERVED_AT (LIVE_EVIDENCE_FUTURE) and must
+ * keep distinct non-`.000Z` milliseconds (LIVE_EVIDENCE_BATCH_STAMP buckets
+ * only whole-second stamps shared across locators).
  */
 function claimsFixture(): PublicClaimRegistry {
   return JSON.parse(
