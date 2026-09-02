@@ -57,6 +57,11 @@ describe("Fettler production closure operating contracts", () => {
             status: "not_observed",
             reason: "production_ledger_not_supplied",
           },
+          selfCheck: {
+            reconciled: true,
+            entryCount: 2,
+            settledEntryIds: [expect.stringMatching(/^mcu-entry-[a-f0-9]{64}$/)],
+          },
         },
       },
     });
