@@ -330,6 +330,30 @@ function closeTracked(db: Db): void {
   if (index >= 0) openDbs.splice(index, 1);
 }
 
+function expectOmittedTenantInsertsRejected(
+  database: Pick<DatabaseSync, "exec">,
+  suffix: string,
+): void {
+  const statements = [
+    `INSERT INTO jobs (id, type, payload_json, created_at)
+     VALUES ('jobs-omitted-${suffix}', 'repair', '{}', '${TS}')`,
+    `INSERT INTO repair_sessions (id, repo_path, status, created_at)
+     VALUES ('repair_sessions-omitted-${suffix}', '/repo', 'pending', '${TS}')`,
+    `INSERT INTO agent_runs (id, goal, repo_path, status, created_at)
+     VALUES ('agent_runs-omitted-${suffix}', 'repair', '/repo', 'pending', '${TS}')`,
+    `INSERT INTO audit_events
+       (id, actor, action, resource_type, metadata_json, created_at)
+     VALUES ('audit_events-omitted-${suffix}', 'legacy', 'legacy.observed', 'legacy', '{}', '${TS}')`,
+    `INSERT INTO suppressed_patterns (id, pattern, created_at)
+     VALUES ('suppressed_patterns-omitted-${suffix}', 'legacy-pattern', '${TS}')`,
+  ];
+  for (const statement of statements) {
+    expect.soft(() => database.exec(statement)).toThrow(
+      "legacy_tenant_ownership_attestation_required",
+    );
+  }
+}
+
 const LEGACY_OWNERSHIP_TABLES = [
   "jobs",
   "repair_sessions",
@@ -667,6 +691,30 @@ describe("Fettler/Regauge logical database names", () => {
       });
     },
   );
+
+  it("rejects omitted tenant ownership across repair, rollback, and restart", () => {
+    const path = join(newDir("tenant-omitted-repair-rollback-restart"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    attestExactReconciliationScope(path);
+
+    const repaired = boot(path);
+    expectOmittedTenantInsertsRejected(repaired.raw, "repair");
+    closeTracked(repaired);
+
+    const rollback = new DatabaseSync(path);
+    try {
+      applyReleasedFallbackBackfill(path);
+      expectOmittedTenantInsertsRejected(rollback, "rollback");
+    } finally {
+      rollback.close();
+    }
+
+    const restarted = boot(path);
+    expectOmittedTenantInsertsRejected(restarted.raw, "restart");
+  });
 
   it("seals the discovered row set against later scope insertion", () => {
     const path = join(newDir("tenant-scope-sealed"), "legacy.sqlite");
