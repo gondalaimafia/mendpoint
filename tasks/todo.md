@@ -4305,6 +4305,90 @@ Repository controlled engineering and external proof are reported separately. Na
 - `subjectKey` components are escaped so a colon inside one component cannot collide with a different component split. Both values are enum-ish today, so this is a structural guard, not a live defect.
 - Not changed here, and routed to the schema owner instead: revoking governed-learning consent is forward-looking and does not retract already-projected candidates. That matches the append-only learning-corpus model and is a consent-policy decision, not a defect in this plan.
 
+## 2026-08-30 Plan 09-01 MCU ledger closure
+
+- [x] Prove the remaining production-shaped gap without rebuilding the verified MCU calculator or usage ledger.
+- [x] RED: reproduce the split between job-scoped settled usage and MissionTask-scoped execution cost at the authenticated gross-margin API.
+- [x] GREEN: reconcile only an exact tenant-local execution ID and leave ambiguous or mismatched attribution closed.
+- [x] Preserve versioned prices, immutable ledgers, reservation conservation, idempotency, corrections, and tenant scope without changing their writers or hashes.
+- [x] Run the focused database and API tests, affected typechecks, diff integrity, and final diff inspection.
+
+### Review
+
+- ME-COM-001, ME-COM-002, and ME-COM-004 already had verified calculator, ledger, and API evidence. The literal uncovered gap was their production join: usage settles with the stable run or job ID, while a mission-bound cost row uses the deterministic MissionTask ID and retains that same job ID as `executionId`.
+- Gross-margin reconciliation now bridges those identifiers only when one cost task and one revenue task have a unique exact execution-ID relationship inside the authenticated tenant. Multiple candidates stay separate and therefore retain the existing `actual_cost_missing` and `settlement_missing` fail-closed reasons.
+- The tracer proves the customer-facing API returns exact revenue, actual cost, route, campaign, accepted outcome, and gross margin for that production-shaped relationship. A separate regression proves a campaign disagreement still yields null margin and `campaign_mismatch`.
+- Focused verification passes 10 tests across the database and API suites. Both `@mendpoint/db` and `@mendpoint/api` typechecks pass, and `git diff --check` is clean.
+- No schema, historical hash, reservation or settlement writer, charging path, payment processor, pricing policy, or production system changed. Automatic metering coverage for every MCU component and finance-approved customer charging remain later activation work.
+- Exact-head repair closes all four P1 chains: terminal success and terminal failure now record accepted or rejected outcomes instead of defaulting every worker row to immutable unresolved; cross-task attribution requires persisted tenant-local job, MissionTask creation event, and Mission lineage; any unmeasured cost component makes margin explicitly incomplete and non-exact; and the immutable cost write joins the terminal job transaction so a failure rolls back terminal state for normal lease retry or recovery.
+- Repair verification passes 22 of 22 focused database, bridge, and authenticated API tests plus all 89 worker CLI regressions. The database, worker, and API typechecks pass, and diff integrity is clean. The tests include forged execution identity rejection, exact durable lineage, unmeasured-component closure, accepted and rejected terminal states, caller-transaction participation, and rollback of job completion when cost persistence fails.
+- Final-chain repair isolates every Fettler lease generation under an exact routing run and envelope, accounts only terminal executed rows with immutable provenance, and replaces the bounded prior-attempt scan with an indexed exact lookup. ReGauge now persists its exact routing identity in the durable handoff, settles the route before importing candidate, trajectory, and MCU cost in one owned transaction, and acknowledges the cross-store handoff only after commit.
+- Outcome accounting now binds a strictly newer, unused authority record to the exact immutable cost entry and digest; revalidates current unsuperseded review or terminal domain-event authority; rejects malformed outcome identifiers and broken event chains; and requires unique verified MissionTask, job, and Mission lineage. Historical v1 and v2 cost hashes remain readable while new v3 rows authenticate the stronger provenance.
+- Verification passes the 235-test focused matrix, all four affected workspace typechecks, and the complete `npm test` workspace and scripts catalog. The broad run completed with every test file green; diff integrity and debug-artifact scans are clean. No push, deployment, or production authority action occurred.
+
+## 2026-08-30 Plan 09-01 exact-head recovery repair
+
+- [x] RED: reproduce a paid Fettler model attempt whose deferred routing outcome rolls back, then prove a new lease generation cannot wedge or settle the same provider work twice.
+- [x] GREEN: reconcile the exact authenticated prior reservation and routing attempt before retry accounting, preserving lease fencing, immutable cost provenance, and exactly-once settlement.
+- [x] RED: open a pre-change ReGauge volume containing a pending adaptive candidate handoff without routing identifiers or a review tier.
+- [x] GREEN: normalize only records with exact durable routing authority, default legacy review authority to fail-closed, and leave ambiguous state undrained.
+- [x] RED and GREEN: make customer gross-margin execution-cost diagnostics fail whenever either immutable cost rows or their outcome authority ledger fails integrity.
+- [x] Run focused database, Worker, Transformer, and API suites, affected typechecks, diff integrity, inspect the complete repair, and commit locally without pushing.
+
+### Scope and rollback
+
+- This repair changes recovery and diagnostics only. It does not create new spend, repeat provider execution, relax ReGauge review authority, alter historical ledger hashes, or promote any requirement or public claim.
+- Rollback is the isolated repair commit. Existing immutable model reservations, routing decisions, MCU cost entries, and ReGauge campaign history remain retained.
+
+### Review
+
+- A retried Fettler lease now imports each exact prior paid attempt from its terminal model-reservation evidence before current execution. Recovery completes only the matching nonterminal routing envelope and records the corresponding historical Mission cost in one transaction; replay is a no-op and the settled reservation remains byte-for-byte unchanged.
+- Restored ReGauge campaigns now normalize only pending pre-change handoffs that have an exact same-attempt durable routing settlement. Missing review authority defaults to `blocked`; missing or conflicting routing authority aborts store startup without mutating the campaign.
+- Gross-margin reconciliation now exposes outcome-ledger integrity to its caller, and the authenticated API reports execution-cost diagnostics unhealthy when either cost rows or their authority outcomes fail integrity.
+- Verification passes 191 focused tests across database, Worker, Transformer, and API packages, including the 90-test live Worker job-loop suite and both restored-volume migration outcomes. All four affected workspace typechecks pass, and diff integrity is clean. No provider call, settlement rewrite, push, deployment, or protected-authority action occurred.
+
+## 2026-08-30 Plan 09-01 authenticated recovery follow-up
+
+- [x] RED and GREEN: recompute the complete versioned reservation and settlement fingerprints before importing a paid attempt; reject stored-field or digest tampering without creating routing or cost evidence.
+- [x] RED and GREEN: validate every pending adaptive handoff against the exact same-attempt routing binding, expose it only after terminal settlement, preserve blocked review authority, and reject populated conflicts.
+- [x] RED and GREEN: serialize legacy handoff normalization under a write lock so constructor migration cannot overwrite a concurrent campaign update.
+- [x] Rebase onto current `origin/main`, resolve only owned overlaps, and rerun focused/full affected suites, four workspace typechecks, and diff integrity.
+- [x] Commit the reviewed repair locally without pushing, then report the exact head for fresh review.
+
+### Safety boundary
+
+- Recovery must derive evidence only from authenticated durable rows and never rerun or resettle provider work. Migration may repair missing compatibility fields but may not invent routing authority, expose unsettled work, or overwrite a concurrent state transition.
+
+### Review
+
+- Paid-attempt recovery now verifies the complete reservation fingerprint and a versioned settlement fingerprint reconstructed from every persisted settlement field. New settlements use the complete v2 digest; compatible v1 rows are recomputed under their original contract plus deterministic charged-field validation. Reservation or settlement tampering fails before any routing outcome or immutable cost row is written.
+- Pending adaptive handoffs are bound to the exact campaign, route, envelope, attempt, lease generation, and lease-token digest at creation and restored-volume startup. They remain invisible and cannot be marked imported until the matching routing outcome is terminal and durably settled; missing authority defaults to blocked only when an exact routing binding exists, and populated conflicts fail startup.
+- Restored-volume normalization now acquires `BEGIN IMMEDIATE` before reading campaign state, holds the write lock through validation and update, and rolls back on any conflict. This removes the prior read-then-lock lost-update window.
+- The branch rebased cleanly onto current `origin/main` `94185f82`; the sole task-ledger conflict retained both main and MCU records. Verification passes the complete 471-test database suite, complete 450-test Transformer suite, 127 affected Worker tests including the 90-test job loop, and 42 affected API tests: 1,090 tests total. Database, Worker, Transformer, and API typechecks pass, and diff integrity is clean. No push, PR, merge, deployment, provider call, or settlement replay occurred.
+
+### Independent-review repair
+
+- A later paid Fettler lease no longer requires an earlier cost row. When an earlier immutable row exists, including a measured zero-cost execution, fallback lineage retains it; when no row exists, the later lease proceeds without fabricating a predecessor.
+- Outcome authority remains append-only while accepting repeated rejection, correction, and rollback observations from distinct, strictly newer durable evidence. The latest row alone carries current authority; superseded accepted evidence cannot remain public.
+- Authenticated execution-cost reads now validate both immutable ledgers before returning outcome state, include the tenant-scoped Mission identifier, and fail closed when current authority is stale or storage provenance is malformed. Stored measurement provenance is parsed as an exact object with known string fields; corrupt JSON, arrays, and invalid values produce one deterministic integrity failure.
+- Hostile verification passes 40 tests across database, Worker, and API suites. The exact retry-lineage follow-up additionally passes all 102 affected Worker tests, including the 90-test job loop, plus 18 database tests. Database, Worker, Transformer, and API typechecks pass, and diff integrity is clean. No push, merge, deployment, provider call, settlement rewrite, requirement promotion, or public-claim promotion occurred.
+
+## 2026-08-31 PR 587 review repair
+
+- [x] Stop a never-observed model call being attested as a measured cost at the reservation ceiling.
+- [x] Cover the new outcome ledger's tenant filters with cross-tenant tests and prove them by mutation.
+- [x] Correct the two claims this branch could not support, rather than leaving them standing.
+
+### Review
+
+- BLOCKER fixed. `reconcilePriorPaidWardenAttempts` rejected only `active` reservations, so a `status = "unknown"` reservation passed every guard. `settleUnknownReservation` writes `charged_* = maximum_*` precisely BECAUSE nothing was observed, leaving `reported_cost_usd` NULL, and that ceiling reached `recordExecutionCostFromRoutingLedger` as a non-null `cost_usd`. The append-only cost row was therefore written with `model_cost_measured = 1` at the ceiling and a provenance string with no `:cost_unmeasured` marker: an affirmative attestation of a routing-ledger measurement for a call nobody ever saw, permanent under the entries table's append-only triggers and visible on `GET /execution-costs`. Both `unknown`-producing paths are production-wired (the fenced-failure sweep and the lease-expiry sweep), and process death between reserve and terminal is the primary case this recovery exists for.
+- The fix carries the lease through recovery instead of excluding it, so the pending routing row is still closed and the paid attempt is still recorded, but with a null cost and null tokens whenever any reservation settled without a reported cost. `modelCostMeasured` then resolves false, money-micros is 0, and the provenance gets its `:cost_unmeasured` suffix. Excluding `unknown` leases was rejected: it would leave the routing row pending forever and would discard the genuinely measured reservations in a mixed lease.
+- The predicate is `reported_cost_usd !== null` rather than `status !== "unknown"`. That is the same defect shape and it also closes `failed` and `over_budget` settlements that reported no usage, which likewise charge the ceiling with nothing observed. It never marks measured anything that was not.
+- Tenant scope on the new outcome ledger was entirely untested. `recordExecutionCostOutcome`'s cost lookup and `listExecutionCostOutcomes`' filter are both correct today, but nothing would have caught a regression on a billing read that feeds `GET /execution-costs` and the `isAcceptedOutcome` decision behind revenue attribution. A cross-tenant test now puts the same execution id in two tenants and kills both mutations.
+- Claim corrected, not code. The test asserting that accounting failures "remain retryable" proved only that the DB primitive joins the caller's transaction. In production `recordJobMissionExecutionCost` only ever runs after `applyRoutingOutcome` set `routingFinalizationStarted`, so `mcu_accounting_persistence_failed` is always wrapped in `WardenAtomicFinalizationError`, rethrown at `apps/worker/src/cli.ts:4423`, and escapes `processJobsOnceUnfenced`. It recovers by lease expiry and prior-paid-attempt reconciliation, not by a `failJob` retry with backoff. That is fail-safe, so the escape is left alone and the claim is narrowed. `mcu_settlement_persistence_failed` from `settleFanoutRunUsage` does reach the classifier, so the regex branch is not wholly dead.
+- Coverage removal declared. `origin/main` had four `recordJobMissionExecutionCost` call sites; this branch has two. `warden.campaign.execute` and both `pipeline.fanout` success paths no longer write a mission cost row. This is a consequence of the redesign, not an oversight: the new signature requires an exact routing run and envelope id, and those job types never go through the Fettler routing runtime, so there is no envelope to cite. Fabricating one would defeat the provenance discipline this branch exists to establish. The omission is fail-closed for margin (a revenue task with no cost row yields `actual_cost_missing` and `complete = false`), and restoring coverage requires giving those two job types real routing identity, which is separate work.
+- Known-null surface, recorded not changed. `recordExecutionCostFromRoutingLedger` hardcodes the five non-model components unmeasured, and `reconcileGrossMargin` marks any execution with an unmeasured component incomplete, so `attributedGrossMarginMoneyMicros` is null for every real execution today. `recordExecutionCostOutcome`'s only production caller is the new POST route, so nothing in the worker marks a cost accepted and attributed revenue is 0. Both are honest and fail-closed; this branch delivers the API boundary, not an end-to-end margin number.
+- Recorded, deliberately not changed: `durableRevenueJobForCost` matches `? LIKE j.id || ':lease-%'`, where an underscore in a job id is a single-character wildcard. An `ESCAPE` clause was written and then reverted. The clause is a no-op today because the query's `EXISTS` on `mission_task.created` pins `correlation_id` to exactly one job, so no decoy can ever join the result set, and the branch has zero test coverage anywhere: replacing `':lease-%'` with a never-matching literal leaves the db, API, and platform gross-margin suites green at 19/19 and 38/38. An unverifiable edit to a billing query was not worth shipping; the missing coverage is the real finding.
 ## 2026-08-30 GSD Plan 10-04: recovery qualification collector
 
 Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, backup, restore, migration, rollback, regional failure, and recurring drills across the database, graph, artifacts, change-source state, ReGauge control plane, ReGauge execution state, and configuration. Production backup-provider, cross-region, and real regional-failover observations remain an explicit external leaf.

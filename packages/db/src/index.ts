@@ -953,6 +953,7 @@ CREATE TABLE IF NOT EXISTS actual_execution_cost_entries (
   graph_cost_measured INTEGER NOT NULL DEFAULT 1 CHECK (graph_cost_measured IN (0, 1)),
   sandbox_cost_measured INTEGER NOT NULL DEFAULT 1 CHECK (sandbox_cost_measured IN (0, 1)),
   verification_cost_measured INTEGER NOT NULL DEFAULT 1 CHECK (verification_cost_measured IN (0, 1)),
+  measurement_provenance_json TEXT NOT NULL DEFAULT '{}',
   -- Hash-payload version. 1 = original field set (pre-change rows, hashed
   -- without the columns above so a pre-change volume still verifies); 2 =
   -- includes mission id and the measurement flags in the hash.
@@ -967,6 +968,8 @@ CREATE TABLE IF NOT EXISTS actual_execution_cost_entries (
 );
 CREATE INDEX IF NOT EXISTS actual_execution_cost_task_idx
   ON actual_execution_cost_entries(tenant_id, task_id, campaign_id, entry_sequence);
+CREATE INDEX IF NOT EXISTS actual_execution_cost_task_attempt_idx
+  ON actual_execution_cost_entries(tenant_id, task_id, attempt_number DESC, entry_sequence DESC);
 CREATE INDEX IF NOT EXISTS actual_execution_cost_route_idx
   ON actual_execution_cost_entries(tenant_id, task_class, route, outcome_status);
 CREATE TRIGGER IF NOT EXISTS actual_execution_cost_entries_append_only_update
@@ -976,6 +979,41 @@ END;
 CREATE TRIGGER IF NOT EXISTS actual_execution_cost_entries_append_only_delete
 BEFORE DELETE ON actual_execution_cost_entries BEGIN
   SELECT RAISE(ABORT, 'actual_execution_cost_entries_append_only');
+END;
+
+CREATE TABLE IF NOT EXISTS actual_execution_cost_outcomes (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  idempotency_key TEXT NOT NULL,
+  cost_entry_id TEXT NOT NULL REFERENCES actual_execution_cost_entries(id),
+  execution_id TEXT NOT NULL,
+  outcome_status TEXT NOT NULL CHECK (
+    outcome_status IN ('accepted', 'rejected', 'corrected', 'rolled_back')
+  ),
+  accepted_outcome_id TEXT,
+  authority_kind TEXT NOT NULL CHECK (authority_kind IN ('reviewer', 'delivery', 'rollback')),
+  authority_digest TEXT NOT NULL CHECK (length(authority_digest) = 64),
+  actor_principal_id TEXT NOT NULL REFERENCES principals(id),
+  outcome_sequence INTEGER NOT NULL CHECK (outcome_sequence > 0),
+  prev_hash TEXT,
+  entry_hash TEXT NOT NULL CHECK (length(entry_hash) = 64),
+  created_at TEXT NOT NULL,
+  CHECK (
+    (outcome_status IN ('accepted', 'corrected') AND accepted_outcome_id IS NOT NULL) OR
+    (outcome_status IN ('rejected', 'rolled_back') AND accepted_outcome_id IS NULL)
+  ),
+  UNIQUE (tenant_id, idempotency_key),
+  UNIQUE (tenant_id, cost_entry_id, outcome_sequence)
+);
+CREATE INDEX IF NOT EXISTS actual_execution_cost_outcomes_execution_idx
+  ON actual_execution_cost_outcomes(tenant_id, execution_id, outcome_sequence);
+CREATE TRIGGER IF NOT EXISTS actual_execution_cost_outcomes_append_only_update
+BEFORE UPDATE ON actual_execution_cost_outcomes BEGIN
+  SELECT RAISE(ABORT, 'actual_execution_cost_outcomes_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS actual_execution_cost_outcomes_append_only_delete
+BEFORE DELETE ON actual_execution_cost_outcomes BEGIN
+  SELECT RAISE(ABORT, 'actual_execution_cost_outcomes_append_only');
 END;
 
 CREATE TABLE IF NOT EXISTS fettler_campaigns (
@@ -3294,6 +3332,11 @@ function migrateProvidersFeedColumns(db: AppDb) {
       name: "cost_schema_version",
       sql: "INTEGER NOT NULL DEFAULT 1 CHECK (cost_schema_version >= 1)",
     },
+    {
+      table: "actual_execution_cost_entries",
+      name: "measurement_provenance_json",
+      sql: "TEXT NOT NULL DEFAULT '{}'",
+    },
     // Which executor actually ran, recorded at outcome time (recordRoutingOutcome).
     // Mirrors the CREATE TABLE above so a pre-change volume (which has the table
     // but not this column) converges on boot. Nullable, no default: a decision
@@ -4614,6 +4657,8 @@ export type {
   ExecutionCostFromRoutingLedgerInput,
   ExecutionCostIntegrity,
   ExecutionOutcomeStatus,
+  ExecutionOutcomeResolutionStatus,
+  ExecutionCostOutcome,
   GrossMarginAttribution,
   GrossMarginIncompleteAttribution,
   GrossMarginReconciliation,
@@ -4882,11 +4927,15 @@ export type {
   WardenRunVersionReference,
 } from "./warden-replay.js";
 export {
+  getLatestActualExecutionCostForTaskBeforeAttempt,
   listActualExecutionCosts,
   reconcileGrossMargin,
   recordActualExecutionCost,
+  recordExecutionCostOutcome,
+  listExecutionCostOutcomes,
   recordExecutionCostFromRoutingLedger,
   verifyExecutionCostIntegrity,
+  verifyExecutionOutcomeIntegrity,
 } from "./gross-margin.js";
 
 export type SuppressedPattern = {

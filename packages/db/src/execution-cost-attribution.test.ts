@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
   createMission,
+  getLatestActualExecutionCostForTaskBeforeAttempt,
   insertPrincipal,
+  listActualExecutionCosts,
   recordActualExecutionCost,
   recordExecutionCostFromRoutingLedger,
   recordRoutingDecision,
@@ -55,7 +57,7 @@ function seedRoutingLedger(
   cost: { costUsd: number | null; inputTokens: number; outputTokens: number },
 ) {
   const envelopeId = `envelope-${runId}`;
-  recordRoutingDecision(db, {
+  const routingLedgerId = recordRoutingDecision(db, {
     tenantId: "tenant_default",
     jobId: `job-${runId}`,
     runId,
@@ -79,15 +81,138 @@ function seedRoutingLedger(
     envelopeId,
     action: "route",
     outcome: "succeeded",
+    executorId: "executor-frontier",
     inputTokens: cost.inputTokens,
     outputTokens: cost.outputTokens,
     totalTokens: cost.inputTokens + cost.outputTokens,
     costUsd: cost.costUsd,
+    completedAt: at,
     observedAt: at,
   });
+  return { jobId: `job-${runId}`, envelopeId, routingLedgerId };
 }
 
 describe("execution cost attribution", () => {
+  it("accounts only the exact terminal executed routing envelopes", () => {
+    const db = setupDb();
+    const first = seedRoutingLedger(db, "shared-session", {
+      costUsd: 0.1,
+      inputTokens: 100,
+      outputTokens: 20,
+    });
+    const secondEnvelopeId = "envelope-shared-session-retry";
+    const secondRoutingLedgerId = recordRoutingDecision(db, {
+      tenantId: "tenant_default",
+      jobId: first.jobId,
+      runId: "shared-session",
+      taskKind: "agent.run",
+      envelopeId: secondEnvelopeId,
+      policySnapshotId: "policy-retry",
+      taskSnapshotId: "task-retry",
+      action: "route",
+      selectedExecutorId: "executor-frontier",
+      providerId: "provider-frontier",
+      eliminated: [], fallback: [], breaker: [], handoffRequired: false,
+      decision: {}, createdAt: at,
+    });
+    recordRoutingOutcome(db, {
+      tenantId: "tenant_default",
+      jobId: first.jobId,
+      envelopeId: secondEnvelopeId,
+      action: "completed",
+      outcome: "succeeded",
+      executorId: "executor-frontier",
+      inputTokens: 50,
+      outputTokens: 10,
+      totalTokens: 60,
+      costUsd: 0.2,
+      completedAt: at,
+      observedAt: at,
+    });
+
+    const entry = recordExecutionCostFromRoutingLedger(db, {
+      tenantId: "tenant_default",
+      routingEvidence: {
+        jobId: first.jobId,
+        runId: "shared-session",
+        envelopeIds: [secondEnvelopeId],
+      },
+      executionId: "execution-retry-only",
+      taskId: "task-retry",
+      taskClass: "agent.run",
+      route: "fettler",
+      actorPrincipalId: "principal-cost",
+      createdAt: at,
+    });
+
+    expect(entry.modelCostMoneyMicros).toBe(200_000);
+    expect(entry.inputTokens).toBe(50);
+    expect(entry.measurementProvenance.model).toContain(secondRoutingLedgerId);
+    expect(entry.measurementProvenance.model).not.toContain(first.routingLedgerId);
+    expect(verifyExecutionCostIntegrity(db, "tenant_default").ok).toBe(true);
+    db.raw.prepare("UPDATE routing_ledger SET cost_usd = ? WHERE id = ?")
+      .run(0.3, secondRoutingLedgerId);
+    expect(verifyExecutionCostIntegrity(db, "tenant_default")).toMatchObject({
+      ok: false,
+      error: `execution_cost_routing_provenance_digest:${entry.id}`,
+    });
+  });
+
+  it("rejects routing evidence that is not terminal and executed", () => {
+    const db = setupDb();
+    recordRoutingDecision(db, {
+      tenantId: "tenant_default", jobId: "job-pending", runId: "run-pending",
+      taskKind: "agent.run", envelopeId: "envelope-pending", policySnapshotId: "policy",
+      taskSnapshotId: "task", action: "route", selectedExecutorId: "executor-frontier",
+      providerId: "provider-frontier", eliminated: [], fallback: [], breaker: [],
+      handoffRequired: false, decision: {}, createdAt: at,
+    });
+    recordRoutingOutcome(db, {
+      tenantId: "tenant_default",
+      jobId: "job-pending",
+      envelopeId: "envelope-pending",
+      action: "route",
+      outcome: "pending",
+      executorId: "executor-frontier",
+      inputTokens: 1,
+      outputTokens: 1,
+      totalTokens: 2,
+      costUsd: 0.01,
+      completedAt: at,
+      observedAt: at,
+    });
+    expect(() => recordExecutionCostFromRoutingLedger(db, {
+      tenantId: "tenant_default",
+      routingEvidence: {
+        jobId: "job-pending",
+        runId: "run-pending",
+        envelopeIds: ["envelope-pending"],
+      },
+      executionId: "execution-pending",
+      taskId: "task-pending",
+      taskClass: "agent.run",
+      route: "fettler",
+      actorPrincipalId: "principal-cost",
+      createdAt: at,
+    })).toThrow("execution_cost_routing_evidence_not_terminal");
+  });
+
+  it("uses the exact indexed task-attempt lookup for retry lineage", () => {
+    const db = setupDb();
+    const plan = db.raw.prepare(
+      `EXPLAIN QUERY PLAN SELECT * FROM actual_execution_cost_entries
+       WHERE tenant_id = ? AND task_id = ? AND attempt_number < ?
+       ORDER BY attempt_number DESC, entry_sequence DESC LIMIT 1`,
+    ).all("tenant_default", "task-retry", 501) as Array<{ detail: string }>;
+    expect(plan.some((row) =>
+      row.detail.includes("actual_execution_cost_task_attempt_idx")
+    )).toBe(true);
+    expect(getLatestActualExecutionCostForTaskBeforeAttempt(db, {
+      tenantId: "tenant_default",
+      taskId: "task-retry",
+      attemptNumber: 501,
+    })).toBeUndefined();
+  });
   it("derives the model component from routing_ledger and marks the other five unmeasured", () => {
     const db = setupDb();
     seedRoutingLedger(db, "run-measured", {
@@ -98,7 +223,11 @@ describe("execution cost attribution", () => {
 
     const entry = recordExecutionCostFromRoutingLedger(db, {
       tenantId: "tenant_default",
-      sourceRunId: "run-measured",
+      routingEvidence: {
+        jobId: "job-run-measured",
+        runId: "run-measured",
+        envelopeIds: ["envelope-run-measured"],
+      },
       executionId: "execution-measured",
       taskId: "unit-1",
       taskClass: "regauge.adaptive_candidate",
@@ -162,7 +291,11 @@ describe("execution cost attribution", () => {
     seedRoutingLedger(db, "run-nocost", { costUsd: null, inputTokens: 0, outputTokens: 0 });
     const unmeasured = recordExecutionCostFromRoutingLedger(db, {
       tenantId: "tenant_default",
-      sourceRunId: "run-nocost",
+      routingEvidence: {
+        jobId: "job-run-nocost",
+        runId: "run-nocost",
+        envelopeIds: ["envelope-run-nocost"],
+      },
       executionId: "execution-unmeasured",
       taskId: "task-b",
       taskClass: "regauge.adaptive_candidate",
@@ -239,7 +372,11 @@ describe("execution cost attribution", () => {
     });
     const entry = recordExecutionCostFromRoutingLedger(db, {
       tenantId: "tenant_default",
-      sourceRunId: "run-mission",
+      routingEvidence: {
+        jobId: "job-run-mission",
+        runId: "run-mission",
+        envelopeIds: ["envelope-run-mission"],
+      },
       executionId: "execution-mission",
       taskId: "unit-mission",
       taskClass: "regauge.adaptive_candidate",
@@ -255,7 +392,11 @@ describe("execution cost attribution", () => {
     expect(() =>
       recordExecutionCostFromRoutingLedger(db, {
         tenantId: "tenant_default",
-        sourceRunId: "run-mission",
+        routingEvidence: {
+          jobId: "job-run-mission",
+          runId: "run-mission",
+          envelopeIds: ["envelope-run-mission"],
+        },
         executionId: "execution-mission-bad",
         taskId: "unit-mission",
         taskClass: "regauge.adaptive_candidate",
@@ -409,8 +550,9 @@ describe("execution cost attribution", () => {
     // 3) The legacy (version-1) row still verifies after the schema change.
     expect(verifyExecutionCostIntegrity(db, "tenant_default").ok).toBe(true);
 
-    // 4) Appending a version-2 row keeps the mixed chain verifying.
-    recordActualExecutionCost(db, {
+    // 4) Materialize an authentic historical v2 payload (mission + measurement
+    // flags, but no provenance in its hash), then append today's v3 writer.
+    const writtenV2 = recordActualExecutionCost(db, {
       id: "cost-v2",
       tenantId: "tenant_default",
       idempotencyKey: "cost-v2",
@@ -439,8 +581,31 @@ describe("execution cost attribution", () => {
       createdAt: at,
       gpuCostMeasured: false,
     });
+    const { entryHash: _v3Hash, measurementProvenance: _v3Provenance,
+      ...historicalV2Base } = writtenV2;
+    const historicalV2 = { ...historicalV2Base, costSchemaVersion: 2 };
+    const historicalV2Hash = createHash("sha256")
+      .update(JSON.stringify(historicalV2)).digest("hex");
+    db.raw.exec("DROP TRIGGER actual_execution_cost_entries_append_only_update");
+    db.raw.prepare(`UPDATE actual_execution_cost_entries
+      SET cost_schema_version = 2, measurement_provenance_json = '{}', entry_hash = ?
+      WHERE id = ?`).run(historicalV2Hash, writtenV2.id);
+    recordActualExecutionCost(db, {
+      id: "cost-v3", tenantId: "tenant_default", idempotencyKey: "cost-v3",
+      executionId: "execution-v3", taskId: "task-v3", taskClass: "api-migration",
+      route: "regauge", attemptNumber: 1, retryNumber: 0, outcomeStatus: "unresolved",
+      inputTokens: 2, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0,
+      modelId: "model-v3", modelPriceVersion: "v3", modelCostMoneyMicros: 7,
+      cacheCostMoneyMicros: 0, gpuMillis: 0, gpuCostMoneyMicros: 0,
+      graphCostMoneyMicros: 0, sandboxCostMoneyMicros: 0,
+      verificationCostMoneyMicros: 0, currency: "USD",
+      actorPrincipalId: "principal-legacy", createdAt: at,
+      measurementProvenance: { model: "  invoice:model-v3  " },
+    });
     const integrity = verifyExecutionCostIntegrity(db, "tenant_default");
     expect(integrity.ok).toBe(true);
-    expect(integrity.checked).toBe(2);
+    expect(integrity.checked).toBe(3);
+    expect(listActualExecutionCosts(db, "tenant_default")[0]?.measurementProvenance)
+      .toEqual({ model: "invoice:model-v3" });
   });
 });

@@ -112,6 +112,10 @@ function digest(value: unknown): string {
     .digest("hex")}`;
 }
 
+function versionedDigest(version: number, value: unknown): string {
+  return `v${version}:${digest(value)}`;
+}
+
 function requireId(value: string, code: string): string {
   if (!ID.test(value)) throw new Error(code);
   return value;
@@ -193,6 +197,251 @@ function reservationFingerprint(input: WardenModelReservationInput): string {
 function settlementFingerprint(input: WardenModelSettlementInput): string {
   const { observedAt: _observedAt, ...evidence } = input;
   return digest(evidence);
+}
+
+function storedSettlementFingerprint(row: WardenModelReservationRow): string {
+  return versionedDigest(2, {
+    schemaVersion: "mendpoint.warden-model-settlement/2",
+    reservationDigest: row.reservation_digest,
+    reservationId: row.id,
+    tenantId: row.tenant_id,
+    jobId: row.job_id,
+    runId: row.run_id,
+    workerId: row.worker_id,
+    leaseGeneration: row.lease_generation,
+    callIndex: row.call_index,
+    provider: row.provider,
+    configuredModel: row.configured_model,
+    actualModel: row.actual_model,
+    endpointHost: row.endpoint_host,
+    bodyRequestId: row.body_request_id,
+    headerRequestId: row.header_request_id,
+    status: row.status,
+    maximumInputTokens: row.maximum_input_tokens,
+    maximumOutputTokens: row.maximum_output_tokens,
+    maximumTotalTokens: row.maximum_total_tokens,
+    maximumCostUsd: row.maximum_cost_usd,
+    jobBudgetUsd: row.job_budget_usd,
+    reportedInputTokens: row.reported_input_tokens,
+    reportedOutputTokens: row.reported_output_tokens,
+    reportedTotalTokens: row.reported_total_tokens,
+    reportedCostUsd: row.reported_cost_usd,
+    chargedInputTokens: row.charged_input_tokens,
+    chargedOutputTokens: row.charged_output_tokens,
+    chargedTotalTokens: row.charged_total_tokens,
+    chargedCostUsd: row.charged_cost_usd,
+    errorCode: row.error_code,
+    reservedAt: row.reserved_at,
+    settledAt: row.settled_at,
+  });
+}
+
+function settleUnknownReservation(
+  db: AppDb,
+  reservation: WardenModelReservationRow,
+  observedAt: string,
+  errorCode: string,
+): void {
+  const settled: WardenModelReservationRow = {
+    ...reservation,
+    status: "unknown",
+    charged_input_tokens: reservation.maximum_input_tokens,
+    charged_output_tokens: reservation.maximum_output_tokens,
+    charged_total_tokens: reservation.maximum_total_tokens,
+    charged_cost_usd: reservation.maximum_cost_usd,
+    error_code: errorCode,
+    settled_at: observedAt,
+  };
+  const settlementDigest = storedSettlementFingerprint(settled);
+  const updated = db.raw.prepare(
+    `UPDATE fettler_model_reservations
+     SET status = 'unknown', settlement_digest = ?,
+         charged_input_tokens = maximum_input_tokens,
+         charged_output_tokens = maximum_output_tokens,
+         charged_total_tokens = maximum_total_tokens,
+         charged_cost_usd = maximum_cost_usd,
+         error_code = ?, settled_at = ?
+     WHERE id = ? AND tenant_id = ? AND status = 'active'
+       AND worker_id = ? AND lease_generation = ?`,
+  ).run(
+    settlementDigest,
+    errorCode,
+    observedAt,
+    reservation.id,
+    reservation.tenant_id,
+    reservation.worker_id,
+    reservation.lease_generation,
+  );
+  if (Number(updated.changes) !== 1) throw new Error("warden_model_job_lease_stale");
+}
+
+export type WardenModelReservationIntegrity = Readonly<{
+  ok: boolean;
+  reservationDigestVersion: 1;
+  settlementDigestVersion: 1 | 2 | null;
+  error?: string;
+}>;
+
+export function verifyWardenModelReservationIntegrity(
+  row: WardenModelReservationRow,
+): WardenModelReservationIntegrity {
+  const expectedReservation = reservationFingerprint({
+    id: row.id,
+    tenantId: row.tenant_id,
+    jobId: row.job_id,
+    runId: row.run_id,
+    workerId: row.worker_id,
+    leaseGeneration: row.lease_generation,
+    callIndex: row.call_index,
+    requestDigest: row.request_digest,
+    provider: row.provider,
+    configuredModel: row.configured_model,
+    endpointHost: row.endpoint_host,
+    maximumInputTokens: row.maximum_input_tokens,
+    maximumOutputTokens: row.maximum_output_tokens,
+    maximumTotalTokens: row.maximum_total_tokens,
+    maximumCostUsd: row.maximum_cost_usd,
+    jobBudgetUsd: row.job_budget_usd,
+    observedAt: row.reserved_at,
+  });
+  if (row.reservation_digest !== expectedReservation) {
+    return {
+      ok: false,
+      reservationDigestVersion: 1,
+      settlementDigestVersion: null,
+      error: "warden_model_reservation_digest_mismatch",
+    };
+  }
+  if (row.status === "active") {
+    return row.settlement_digest === null && row.settled_at === null
+      ? { ok: true, reservationDigestVersion: 1, settlementDigestVersion: null }
+      : {
+          ok: false,
+          reservationDigestVersion: 1,
+          settlementDigestVersion: null,
+          error: "warden_model_settlement_state_invalid",
+        };
+  }
+  if (!row.settlement_digest || !row.settled_at) {
+    return {
+      ok: false,
+      reservationDigestVersion: 1,
+      settlementDigestVersion: null,
+      error: "warden_model_settlement_state_invalid",
+    };
+  }
+  if (row.settlement_digest.startsWith("v2:")) {
+    return row.settlement_digest === storedSettlementFingerprint(row)
+      ? { ok: true, reservationDigestVersion: 1, settlementDigestVersion: 2 }
+      : {
+          ok: false,
+          reservationDigestVersion: 1,
+          settlementDigestVersion: 2,
+          error: "warden_model_settlement_digest_mismatch",
+        };
+  }
+  let expectedSettlement: string;
+  if (row.status === "unknown") {
+    expectedSettlement = row.error_code === "warden_model_lease_expired"
+      ? digest({ status: "unknown", errorCode: row.error_code })
+      : digest({
+          status: "unknown",
+          jobId: row.job_id,
+          workerId: row.worker_id,
+          leaseGeneration: row.lease_generation,
+          errorCode: row.error_code,
+        });
+    if (
+      row.charged_input_tokens !== row.maximum_input_tokens ||
+      row.charged_output_tokens !== row.maximum_output_tokens ||
+      row.charged_total_tokens !== row.maximum_total_tokens ||
+      row.charged_cost_usd !== row.maximum_cost_usd
+    ) {
+      expectedSettlement = "invalid";
+    }
+  } else {
+    const legacyInput: WardenModelSettlementInput = {
+      tenantId: row.tenant_id,
+      jobId: row.job_id,
+      reservationId: row.id,
+      workerId: row.worker_id,
+      leaseGeneration: row.lease_generation,
+      status: row.status === "failed" ? "failed" : "succeeded",
+      ...(row.actual_model !== null ? { actualModel: row.actual_model } : {}),
+      ...(row.body_request_id !== null ? { bodyRequestId: row.body_request_id } : {}),
+      ...(row.header_request_id !== null ? { headerRequestId: row.header_request_id } : {}),
+      ...(row.reported_input_tokens !== null ? { inputTokens: row.reported_input_tokens } : {}),
+      ...(row.reported_output_tokens !== null ? { outputTokens: row.reported_output_tokens } : {}),
+      ...(row.reported_total_tokens !== null ? { totalTokens: row.reported_total_tokens } : {}),
+      ...(row.reported_cost_usd !== null ? { costUsd: row.reported_cost_usd } : {}),
+      ...(row.error_code !== null ? { errorCode: row.error_code } : {}),
+      observedAt: row.settled_at,
+    };
+    expectedSettlement = settlementFingerprint(legacyInput);
+    const materialized = materializeSettlement(row, legacyInput);
+    if (
+      materialized.status !== row.status ||
+      materialized.actual_model !== row.actual_model ||
+      materialized.body_request_id !== row.body_request_id ||
+      materialized.header_request_id !== row.header_request_id ||
+      materialized.reported_input_tokens !== row.reported_input_tokens ||
+      materialized.reported_output_tokens !== row.reported_output_tokens ||
+      materialized.reported_total_tokens !== row.reported_total_tokens ||
+      materialized.reported_cost_usd !== row.reported_cost_usd ||
+      materialized.charged_input_tokens !== row.charged_input_tokens ||
+      materialized.charged_output_tokens !== row.charged_output_tokens ||
+      materialized.charged_total_tokens !== row.charged_total_tokens ||
+      materialized.charged_cost_usd !== row.charged_cost_usd ||
+      materialized.error_code !== row.error_code
+    ) expectedSettlement = "invalid";
+  }
+  return row.settlement_digest === expectedSettlement
+    ? { ok: true, reservationDigestVersion: 1, settlementDigestVersion: 1 }
+    : {
+        ok: false,
+        reservationDigestVersion: 1,
+        settlementDigestVersion: 1,
+        error: "warden_model_settlement_digest_mismatch",
+      };
+}
+
+function materializeSettlement(
+  reservation: WardenModelReservationRow,
+  input: WardenModelSettlementInput,
+): WardenModelReservationRow {
+  const completeMeasured =
+    Number.isSafeInteger(input.inputTokens) && input.inputTokens! > 0 &&
+    Number.isSafeInteger(input.outputTokens) && input.outputTokens! > 0 &&
+    Number.isSafeInteger(input.totalTokens) && input.totalTokens === input.inputTokens! + input.outputTokens! &&
+    typeof input.costUsd === "number" && Number.isFinite(input.costUsd) && input.costUsd > 0;
+  const withinReservation = completeMeasured &&
+    input.inputTokens! <= reservation.maximum_input_tokens &&
+    input.outputTokens! <= reservation.maximum_output_tokens &&
+    input.totalTokens! <= reservation.maximum_total_tokens &&
+    input.costUsd! <= reservation.maximum_cost_usd;
+  const exact = input.status === "succeeded" && withinReservation;
+  const finalStatus: WardenModelReservationStatus = exact
+    ? "succeeded"
+    : input.status === "succeeded" ? "over_budget" : "failed";
+  return {
+    ...reservation,
+    settlement_digest: null,
+    actual_model: input.actualModel?.trim() || null,
+    body_request_id: input.bodyRequestId?.trim() || null,
+    header_request_id: input.headerRequestId?.trim() || null,
+    status: finalStatus,
+    reported_input_tokens: input.inputTokens ?? null,
+    reported_output_tokens: input.outputTokens ?? null,
+    reported_total_tokens: input.totalTokens ?? null,
+    reported_cost_usd: input.costUsd ?? null,
+    charged_input_tokens: exact ? input.inputTokens! : reservation.maximum_input_tokens,
+    charged_output_tokens: exact ? input.outputTokens! : reservation.maximum_output_tokens,
+    charged_total_tokens: exact ? input.totalTokens! : reservation.maximum_total_tokens,
+    charged_cost_usd: exact ? input.costUsd! : reservation.maximum_cost_usd,
+    error_code: input.errorCode?.trim().slice(0, 128) ||
+      (finalStatus === "over_budget" ? "warden_model_budget_exceeded" : null),
+    settled_at: input.observedAt,
+  };
 }
 
 export function getWardenModelReservation(
@@ -301,15 +550,16 @@ export function settleWardenModelCall(
   requireId(input.workerId, "warden_model_worker_invalid");
   requireInteger(input.leaseGeneration, "warden_model_lease_generation_invalid");
   requireIso(input.observedAt, "warden_model_observed_at_invalid");
-  const settlementDigest = settlementFingerprint(input);
-
   return transaction(db, () => {
     const reservation = getRow(db, input.tenantId, input.reservationId);
     if (!reservation || reservation.job_id !== input.jobId) {
       throw new Error("warden_model_reservation_not_found");
     }
     if (reservation.status !== "active") {
-      if (reservation.settlement_digest === settlementDigest) return reservation;
+      const proposed = materializeSettlement(reservation, input);
+      if (reservation.settlement_digest === settlementFingerprint(input) ||
+          (reservation.settlement_digest?.startsWith("v2:") &&
+            reservation.settlement_digest === storedSettlementFingerprint(proposed))) return reservation;
       throw new Error("warden_model_settlement_idempotency_conflict");
     }
     assertLease(db, input);
@@ -319,26 +569,8 @@ export function settleWardenModelCall(
     ) {
       throw new Error("warden_model_job_lease_stale");
     }
-    const completeMeasured =
-      Number.isSafeInteger(input.inputTokens) && input.inputTokens! > 0 &&
-      Number.isSafeInteger(input.outputTokens) && input.outputTokens! > 0 &&
-      Number.isSafeInteger(input.totalTokens) && input.totalTokens === input.inputTokens! + input.outputTokens! &&
-      typeof input.costUsd === "number" && Number.isFinite(input.costUsd) && input.costUsd > 0;
-    const withinReservation = completeMeasured &&
-      input.inputTokens! <= reservation.maximum_input_tokens &&
-      input.outputTokens! <= reservation.maximum_output_tokens &&
-      input.totalTokens! <= reservation.maximum_total_tokens &&
-      input.costUsd! <= reservation.maximum_cost_usd;
-    const exact = input.status === "succeeded" && withinReservation;
-    const finalStatus: WardenModelReservationStatus = exact
-      ? "succeeded"
-      : input.status === "succeeded"
-        ? "over_budget"
-        : "failed";
-    const chargedInput = exact ? input.inputTokens! : reservation.maximum_input_tokens;
-    const chargedOutput = exact ? input.outputTokens! : reservation.maximum_output_tokens;
-    const chargedTotal = exact ? input.totalTokens! : reservation.maximum_total_tokens;
-    const chargedCost = exact ? input.costUsd! : reservation.maximum_cost_usd;
+    const settledRow = materializeSettlement(reservation, input);
+    const settlementDigest = storedSettlementFingerprint(settledRow);
     const updated = db.raw.prepare(
       `UPDATE fettler_model_reservations
        SET settlement_digest = ?, actual_model = ?, body_request_id = ?, header_request_id = ?,
@@ -353,17 +585,17 @@ export function settleWardenModelCall(
       input.actualModel?.trim() || null,
       input.bodyRequestId?.trim() || null,
       input.headerRequestId?.trim() || null,
-      finalStatus,
-      input.inputTokens ?? null,
-      input.outputTokens ?? null,
-      input.totalTokens ?? null,
-      input.costUsd ?? null,
-      chargedInput,
-      chargedOutput,
-      chargedTotal,
-      chargedCost,
-      input.errorCode?.trim().slice(0, 128) || (finalStatus === "over_budget" ? "warden_model_budget_exceeded" : null),
-      input.observedAt,
+      settledRow.status,
+      settledRow.reported_input_tokens,
+      settledRow.reported_output_tokens,
+      settledRow.reported_total_tokens,
+      settledRow.reported_cost_usd,
+      settledRow.charged_input_tokens,
+      settledRow.charged_output_tokens,
+      settledRow.charged_total_tokens,
+      settledRow.charged_cost_usd,
+      settledRow.error_code,
+      settledRow.settled_at,
       input.reservationId,
       input.tenantId,
       input.workerId,
@@ -382,29 +614,28 @@ export function settleExpiredWardenModelReservations(
   requireIso(observedAt, "warden_model_observed_at_invalid");
   assertTenantScope(tenantId);
   if (tenantId) requireId(tenantId, "warden_model_tenant_invalid");
-  const settlementDigest = digest({ status: "unknown", errorCode: "warden_model_lease_expired" });
-  const updated = db.raw.prepare(
-    `UPDATE fettler_model_reservations
-     SET status = 'unknown', settlement_digest = ?,
-         charged_input_tokens = maximum_input_tokens,
-         charged_output_tokens = maximum_output_tokens,
-         charged_total_tokens = maximum_total_tokens,
-         charged_cost_usd = maximum_cost_usd,
-         error_code = 'warden_model_lease_expired', settled_at = ?
-     WHERE status = 'active'
-       AND ${tenantId ? "tenant_id = ? AND" : ""}
-       EXISTS (
-         SELECT 1 FROM jobs
-         WHERE jobs.id = fettler_model_reservations.job_id
-           AND jobs.tenant_id = fettler_model_reservations.tenant_id
-           AND jobs.status = 'running'
-           AND jobs.lease_owner = fettler_model_reservations.worker_id
-           AND jobs.lease_generation = fettler_model_reservations.lease_generation
-           AND jobs.lease_expires_at IS NOT NULL
-           AND jobs.lease_expires_at <= ?
-       )`,
-  ).run(settlementDigest, observedAt, ...(tenantId ? [tenantId] : []), observedAt);
-  return Number(updated.changes);
+  return transaction(db, () => {
+    const reservations = db.raw.prepare(
+      `SELECT fettler_model_reservations.* FROM fettler_model_reservations
+       WHERE status = 'active'
+         AND ${tenantId ? "tenant_id = ? AND" : ""}
+         EXISTS (
+           SELECT 1 FROM jobs
+           WHERE jobs.id = fettler_model_reservations.job_id
+             AND jobs.tenant_id = fettler_model_reservations.tenant_id
+             AND jobs.status = 'running'
+             AND jobs.lease_owner = fettler_model_reservations.worker_id
+             AND jobs.lease_generation = fettler_model_reservations.lease_generation
+             AND jobs.lease_expires_at IS NOT NULL
+             AND jobs.lease_expires_at <= ?
+         )
+       ORDER BY tenant_id, id`,
+    ).all(...(tenantId ? [tenantId] : []), observedAt) as WardenModelReservationRow[];
+    for (const reservation of reservations) {
+      settleUnknownReservation(db, reservation, observedAt, "warden_model_lease_expired");
+    }
+    return reservations.length;
+  });
 }
 
 export function settleActiveWardenModelReservationsForFence(
@@ -422,22 +653,9 @@ export function settleActiveWardenModelReservationsForFence(
   requireInteger(input.leaseGeneration, "warden_model_lease_generation_invalid");
   requireIso(input.observedAt, "warden_model_observed_at_invalid");
   const errorCode = requireId(input.errorCode, "warden_model_error_code_invalid");
-  const settlementDigest = digest({
-    status: "unknown",
-    jobId: input.jobId,
-    workerId: input.workerId,
-    leaseGeneration: input.leaseGeneration,
-    errorCode,
-  });
   return transaction(db, () => {
-    const updated = db.raw.prepare(
-      `UPDATE fettler_model_reservations
-       SET status = 'unknown', settlement_digest = ?,
-           charged_input_tokens = maximum_input_tokens,
-           charged_output_tokens = maximum_output_tokens,
-           charged_total_tokens = maximum_total_tokens,
-           charged_cost_usd = maximum_cost_usd,
-           error_code = ?, settled_at = ?
+    const reservations = db.raw.prepare(
+      `SELECT fettler_model_reservations.* FROM fettler_model_reservations
        WHERE status = 'active'
          AND job_id = ? AND worker_id = ? AND lease_generation = ?
          AND EXISTS (
@@ -449,17 +667,18 @@ export function settleActiveWardenModelReservationsForFence(
              AND jobs.lease_generation = fettler_model_reservations.lease_generation
              AND jobs.lease_expires_at IS NOT NULL
              AND jobs.lease_expires_at > ?
-         )`,
-    ).run(
-      settlementDigest,
-      errorCode,
-      input.observedAt,
+         )
+       ORDER BY tenant_id, id`,
+    ).all(
       input.jobId,
       input.workerId,
       input.leaseGeneration,
       input.observedAt,
-    );
-    return Number(updated.changes);
+    ) as WardenModelReservationRow[];
+    for (const reservation of reservations) {
+      settleUnknownReservation(db, reservation, input.observedAt, errorCode);
+    }
+    return reservations.length;
   });
 }
 
