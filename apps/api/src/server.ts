@@ -60,6 +60,7 @@ import {
   BILLING_PLANS,
   adjustUsage,
   createUsageEntitlement,
+  createUsageFinanceAuthorization,
   createUsagePriceVersion,
   creditUsage,
   getUsageSummary,
@@ -499,10 +500,25 @@ const USAGE_ERRORS = [
     "usage_reservation_mcu_micros_invalid",
     "usage_settlement_mcu_micros_invalid",
     "usage_adjustment_mcu_micros_invalid",
+    "usage_adjustment_invalid",
+    "usage_credit_invalid",
+    "usage_invoice_reference_required",
+    "usage_finance_authorization_id_invalid",
+    "usage_finance_approved_by_principal_id_invalid",
+    "usage_finance_actor_principal_id_invalid",
+    "usage_finance_approved_at_invalid",
+    "usage_finance_expires_at_invalid",
+    "usage_finance_authorization_window_invalid",
     "usage_reservation_empty",
     "usage_plan_unknown",
     "usage_plan_seats_invalid",
     "usage_plan_quota_overflow",
+  ),
+  ...publicErrorRules(
+    403,
+    "usage_finance_owner_required",
+    "usage_finance_owner_inactive",
+    "usage_finance_actor_inactive",
   ),
   ...publicErrorRules(
     409,
@@ -514,6 +530,13 @@ const USAGE_ERRORS = [
     "usage_reservation_closed",
     "usage_settlement_exceeds_reservation",
     "usage_credit_exceeds_consumption",
+    "usage_credit_exceeds_invoice_allocation",
+    "usage_invoice_allocation_not_found",
+    "usage_finance_authorization_conflict",
+    "usage_finance_authorization_required",
+    "usage_finance_authorization_binding_invalid",
+    "usage_finance_authorization_expired",
+    "usage_finance_authorization_consumed",
   ),
   { internalCode: "usage_reservation_not_found", status: 404 },
 ] satisfies readonly PublicErrorRule[];
@@ -3632,6 +3655,58 @@ app.post("/billing/usage/reservations/:id/release", async (c) => {
   }
 });
 
+app.post("/billing/usage/finance-authorizations", async (c) => {
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "unauthorized" }, 401);
+  if (principal.role !== "owner") return c.json({ error: "forbidden" }, 403);
+  const body = await c.req.json<{
+    entryType?: "adjustment" | "credit";
+    invoiceReference?: string;
+    idempotencyKey?: string;
+    mcuMicrosDelta?: number;
+    reason?: string;
+  }>().catch(() => ({} as {
+    entryType?: "adjustment" | "credit";
+    invoiceReference?: string;
+    idempotencyKey?: string;
+    mcuMicrosDelta?: number;
+    reason?: string;
+  }));
+  const approvedAt = nowIso();
+  const approvedAtMs = Date.parse(approvedAt);
+  try {
+    const actorPrincipalId = c.get("trustPrincipalId");
+    if (!actorPrincipalId) return c.json({ error: "forbidden" }, 403);
+    const authorization = createUsageFinanceAuthorization(db, {
+      id: newId(),
+      tenantId: requestTenantId(c),
+      approvedByPrincipalId: actorPrincipalId,
+      actorPrincipalId,
+      entryType: body.entryType ?? "adjustment",
+      invoiceReference: body.invoiceReference ?? "",
+      entryIdempotencyKey: body.idempotencyKey ?? "",
+      mcuMicrosDelta: body.mcuMicrosDelta ?? 0,
+      reason: body.reason ?? "",
+      approvedAt,
+      expiresAt: new Date(approvedAtMs + 5 * 60_000).toISOString(),
+    });
+    requestAudit(c, {
+      actor: principal.id,
+      action: "billing.usage_finance_authorized",
+      resourceType: "usage_finance_authorization",
+      resourceId: authorization.id,
+      metadata: {
+        entryType: authorization.entryType,
+        invoiceReference: authorization.invoiceReference,
+        entryIdempotencyKey: authorization.entryIdempotencyKey,
+      },
+    });
+    return c.json(authorization, 201);
+  } catch (error) {
+    return mappedErrorResponse(c, error, USAGE_ERRORS);
+  }
+});
+
 app.post("/billing/usage/:kind", async (c) => {
   const kind = c.req.param("kind");
   if (kind !== "adjustments" && kind !== "credits") {
@@ -3644,6 +3719,8 @@ app.post("/billing/usage/:kind", async (c) => {
     mcuMicrosDelta?: number;
     invoiceReference?: string | null;
     reason?: string;
+    financeAuthorizationId?: string;
+    financeAuthorizationDigest?: string;
   }>().catch(() => ({} as {
     idempotencyKey?: string;
     taskId?: string;
@@ -3651,6 +3728,8 @@ app.post("/billing/usage/:kind", async (c) => {
     mcuMicrosDelta?: number;
     invoiceReference?: string | null;
     reason?: string;
+    financeAuthorizationId?: string;
+    financeAuthorizationDigest?: string;
   }));
   try {
     const operation = kind === "credits" ? creditUsage : adjustUsage;
@@ -3663,6 +3742,8 @@ app.post("/billing/usage/:kind", async (c) => {
       mcuMicrosDelta: body.mcuMicrosDelta ?? 0,
       invoiceReference: body.invoiceReference,
       reason: body.reason ?? "",
+      financeAuthorizationId: body.financeAuthorizationId,
+      financeAuthorizationDigest: body.financeAuthorizationDigest,
       actorPrincipalId: c.get("trustPrincipalId"),
       createdAt: nowIso(),
     });

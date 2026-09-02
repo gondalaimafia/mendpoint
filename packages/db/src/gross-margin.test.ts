@@ -15,6 +15,7 @@ import {
   ensureMissionTaskForJob,
   insertPrincipal,
   insertTenant,
+  putTenantMembership,
   insertArtifactManifest,
   insertReviewDecision,
   listActualExecutionCosts,
@@ -68,6 +69,25 @@ function setupTenant(db: AppDb, tenantId: string, suffix: string) {
     displayName: `Cost recorder ${suffix}`,
     createdAt: at,
   });
+  insertPrincipal(db, {
+    id: `finance-owner-${suffix}`,
+    tenantId,
+    kind: "human",
+    subject: `https://identity.example.test|finance-owner-${suffix}`,
+    displayName: `Finance owner ${suffix}`,
+    audience: "https://identity.example.test",
+    createdAt: at,
+  });
+  putTenantMembership(db, {
+    tenantId,
+    issuer: "https://identity.example.test",
+    subject: `finance-owner-${suffix}`,
+    email: `finance-owner-${suffix}@example.test`,
+    displayName: `Finance owner ${suffix}`,
+    role: "owner",
+    status: "active",
+    updatedAt: at,
+  });
   createUsagePriceVersion(db, {
     id: `price-${suffix}`,
     tenantId,
@@ -103,7 +123,7 @@ function financeAuthorization(db: AppDb, input: {
   const authorization = createUsageFinanceAuthorization(db, {
     id: `finance-${input.idempotencyKey}`,
     tenantId: input.tenantId,
-    approvedByPrincipalId: input.actorPrincipalId,
+    approvedByPrincipalId: `finance-owner-${input.tenantId === "tenant_default" ? "a" : input.tenantId.slice(-1)}`,
     actorPrincipalId: input.actorPrincipalId,
     entryType: "credit",
     invoiceReference: input.invoiceReference,

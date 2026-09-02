@@ -14,6 +14,7 @@ import {
   getInvoiceExport,
   insertPrincipal,
   insertTenant,
+  putTenantMembership,
   reconcileInvoiceExport,
   reserveUsage,
   settleUsageReservation,
@@ -70,9 +71,20 @@ function seed(db: AppDb) {
       id: `actor-${tenant.at(-1)}`,
       tenantId: tenant,
       kind: "human",
-      subject: `finance-${tenant}@example.test`,
+      subject: `https://identity.example.test|finance-${tenant}`,
       displayName: `Finance ${tenant}`,
+      audience: "https://identity.example.test",
       createdAt: PERIOD_START,
+    });
+    putTenantMembership(db, {
+      tenantId: tenant,
+      issuer: "https://identity.example.test",
+      subject: `finance-${tenant}`,
+      email: `finance-${tenant}@example.test`,
+      displayName: `Finance ${tenant}`,
+      role: "owner",
+      status: "active",
+      updatedAt: PERIOD_START,
     });
     createUsagePriceVersion(db, {
       id: `price-${tenant}`,

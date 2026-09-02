@@ -773,6 +773,55 @@ CREATE INDEX IF NOT EXISTS usage_ledger_task_idx
   ON usage_ledger_entries(tenant_id, task_id, campaign_id);
 CREATE INDEX IF NOT EXISTS usage_ledger_reservation_idx
   ON usage_ledger_entries(tenant_id, reservation_id);
+
+CREATE TABLE IF NOT EXISTS usage_finance_authorizations (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  approved_by_principal_id TEXT NOT NULL REFERENCES principals(id),
+  approved_by_role TEXT NOT NULL CHECK (approved_by_role = 'finance_owner'),
+  actor_principal_id TEXT NOT NULL REFERENCES principals(id),
+  entry_type TEXT NOT NULL CHECK (entry_type IN ('adjustment', 'credit')),
+  invoice_reference TEXT NOT NULL,
+  entry_idempotency_key TEXT NOT NULL,
+  mcu_micros_delta INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  intent_digest TEXT NOT NULL,
+  authorization_digest TEXT NOT NULL,
+  approved_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  consumed_entry_id TEXT REFERENCES usage_ledger_entries(id),
+  UNIQUE (tenant_id, entry_idempotency_key),
+  UNIQUE (tenant_id, authorization_digest)
+);
+CREATE INDEX IF NOT EXISTS usage_finance_authorizations_invoice_idx
+  ON usage_finance_authorizations(tenant_id, invoice_reference, approved_at, id);
+CREATE TRIGGER IF NOT EXISTS usage_finance_authorizations_guard_update
+BEFORE UPDATE ON usage_finance_authorizations
+WHEN OLD.id <> NEW.id
+  OR OLD.tenant_id <> NEW.tenant_id
+  OR OLD.approved_by_principal_id <> NEW.approved_by_principal_id
+  OR OLD.approved_by_role <> NEW.approved_by_role
+  OR OLD.actor_principal_id <> NEW.actor_principal_id
+  OR OLD.entry_type <> NEW.entry_type
+  OR OLD.invoice_reference <> NEW.invoice_reference
+  OR OLD.entry_idempotency_key <> NEW.entry_idempotency_key
+  OR OLD.mcu_micros_delta <> NEW.mcu_micros_delta
+  OR OLD.reason <> NEW.reason
+  OR OLD.intent_digest <> NEW.intent_digest
+  OR OLD.authorization_digest <> NEW.authorization_digest
+  OR OLD.approved_at <> NEW.approved_at
+  OR OLD.expires_at <> NEW.expires_at
+  OR OLD.consumed_at IS NOT NULL
+  OR NEW.consumed_at IS NULL
+  OR NEW.consumed_entry_id IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'usage_finance_authorizations_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_finance_authorizations_guard_delete
+BEFORE DELETE ON usage_finance_authorizations BEGIN
+  SELECT RAISE(ABORT, 'usage_finance_authorizations_append_only');
+END;
 CREATE TRIGGER IF NOT EXISTS usage_entitlements_append_only_update
 BEFORE UPDATE ON usage_entitlements BEGIN
   SELECT RAISE(ABORT, 'usage_entitlements_append_only');
@@ -4646,6 +4695,7 @@ export {
 export type {
   UsagePriceVersion,
   UsageEntitlement,
+  UsageFinanceAuthorization,
   UsageLedgerEntry,
   UsageSummary,
 } from "./usage.js";
@@ -4881,6 +4931,7 @@ export {
   createUsagePriceVersion,
   getUsagePriceVersion,
   createUsageEntitlement,
+  createUsageFinanceAuthorization,
   getActiveUsageEntitlement,
   reserveUsage,
   settleUsageReservation,

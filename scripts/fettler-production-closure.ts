@@ -18,7 +18,11 @@ import {
 import {
   createDb,
   createUsageEntitlement,
+  createUsageFinanceAuthorization,
   createUsagePriceVersion,
+  creditUsage,
+  insertPrincipal,
+  putTenantMembership,
   listUsageLedger,
   reconcileUsageLedger,
   reserveUsage,
@@ -57,6 +61,25 @@ function validateMigrationComputeAuthority() {
       periodEnd: "2026-10-01T00:00:00.000Z",
       createdAt: "2026-09-01T00:00:00.000Z",
     });
+    insertPrincipal(db, {
+      id: "principal-fettler-finance-owner",
+      tenantId: "tenant_default",
+      kind: "human",
+      subject: "https://identity.example.test|fettler-finance-owner",
+      displayName: "Fettler Finance Owner",
+      audience: "https://identity.example.test",
+      createdAt: "2026-09-01T00:00:00.000Z",
+    });
+    putTenantMembership(db, {
+      tenantId: "tenant_default",
+      issuer: "https://identity.example.test",
+      subject: "fettler-finance-owner",
+      email: "fettler-finance-owner@example.test",
+      displayName: "Fettler Finance Owner",
+      role: "owner",
+      status: "active",
+      updatedAt: "2026-09-01T00:00:00.000Z",
+    });
     const reservation = reserveUsage(db, {
       id: "reservation-fettler-closure",
       tenantId: "tenant_default",
@@ -67,7 +90,7 @@ function validateMigrationComputeAuthority() {
       reason: "operating-contract-self-check",
       createdAt: "2026-09-01T00:00:00.000Z",
     });
-    const settlement = settleUsageReservation(db, {
+    settleUsageReservation(db, {
       id: "settlement-fettler-closure",
       tenantId: reservation.tenantId,
       idempotencyKey: "fettler-closure-settlement",
@@ -76,6 +99,33 @@ function validateMigrationComputeAuthority() {
       invoiceReference: "invoice-fettler-closure",
       reason: "operating-contract-self-check",
       createdAt: "2026-09-01T00:00:01.000Z",
+    });
+    const financeAuthorization = createUsageFinanceAuthorization(db, {
+      id: "finance-authorization-fettler-closure",
+      tenantId: reservation.tenantId,
+      approvedByPrincipalId: "principal-fettler-finance-owner",
+      actorPrincipalId: "principal-fettler-finance-owner",
+      entryType: "credit",
+      invoiceReference: "invoice-fettler-closure",
+      entryIdempotencyKey: "fettler-closure-credit",
+      mcuMicrosDelta: -1,
+      reason: "operating-contract-credit-self-check",
+      approvedAt: "2026-09-01T00:00:01.500Z",
+      expiresAt: "2026-09-01T00:05:00.000Z",
+    });
+    const credit = creditUsage(db, {
+      id: "credit-fettler-closure",
+      tenantId: reservation.tenantId,
+      idempotencyKey: "fettler-closure-credit",
+      taskId: reservation.taskId,
+      campaignId: reservation.campaignId,
+      mcuMicrosDelta: -1,
+      invoiceReference: "invoice-fettler-closure",
+      reason: "operating-contract-credit-self-check",
+      actorPrincipalId: "principal-fettler-finance-owner",
+      financeAuthorizationId: financeAuthorization.id,
+      financeAuthorizationDigest: financeAuthorization.authorizationDigest,
+      createdAt: "2026-09-01T00:00:02.000Z",
     });
     const reconciliation = reconcileUsageLedger(db, reservation.tenantId);
     if (!reconciliation.ok) {
@@ -86,9 +136,14 @@ function validateMigrationComputeAuthority() {
       reconciled: true as const,
       entryCount: reconciliation.checked,
       storageAuthority: "usage_ledger_entries" as const,
-      ledgerHeadHash: settlement.entryHash,
+      ledgerHeadHash: credit.entryHash,
+      financeAuthorizationDigest: financeAuthorization.authorizationDigest,
       settledEntryIds: entries
         .filter((entry) => entry.entryType === "settlement")
+        .map((entry) => entry.id)
+        .sort(),
+      creditEntryIds: entries
+        .filter((entry) => entry.entryType === "credit")
         .map((entry) => entry.id)
         .sort(),
     };

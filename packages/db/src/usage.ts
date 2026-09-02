@@ -66,6 +66,25 @@ export type UsageSummary = Readonly<{
   currency: string | null;
 }>;
 
+export type UsageFinanceAuthorization = Readonly<{
+  id: string;
+  tenantId: string;
+  approvedByPrincipalId: string;
+  approvedByRole: "finance_owner";
+  actorPrincipalId: string;
+  entryType: "adjustment" | "credit";
+  invoiceReference: string;
+  entryIdempotencyKey: string;
+  mcuMicrosDelta: number;
+  reason: string;
+  intentDigest: string;
+  authorizationDigest: string;
+  approvedAt: string;
+  expiresAt: string;
+  consumedAt: string | null;
+  consumedEntryId: string | null;
+}>;
+
 type PriceRow = {
   id: string;
   tenant_id: string;
@@ -112,6 +131,25 @@ type EntryRow = {
   created_at: string;
 };
 
+type FinanceAuthorizationRow = {
+  id: string;
+  tenant_id: string;
+  approved_by_principal_id: string;
+  approved_by_role: "finance_owner";
+  actor_principal_id: string;
+  entry_type: "adjustment" | "credit";
+  invoice_reference: string;
+  entry_idempotency_key: string;
+  mcu_micros_delta: number;
+  reason: string;
+  intent_digest: string;
+  authorization_digest: string;
+  approved_at: string;
+  expires_at: string;
+  consumed_at: string | null;
+  consumed_entry_id: string | null;
+};
+
 function one<T>(db: AppDb, sql: string, params: SQLInputValue[] = []): T | undefined {
   return db.raw.prepare(sql).get(...params) as T | undefined;
 }
@@ -121,6 +159,7 @@ function many<T>(db: AppDb, sql: string, params: SQLInputValue[] = []): T[] {
 }
 
 function required(name: string, value: string): string {
+  if (typeof value !== "string") throw new Error(`${name}_invalid`);
   const normalized = value.trim();
   if (!normalized || normalized.length > 256) throw new Error(`${name}_invalid`);
   return normalized;
@@ -192,6 +231,64 @@ function entryFromRow(row: EntryRow): UsageLedgerEntry {
     previousHash: row.prev_hash,
     entryHash: row.entry_hash,
     createdAt: row.created_at,
+  });
+}
+
+function financeAuthorizationFromRow(row: FinanceAuthorizationRow): UsageFinanceAuthorization {
+  return Object.freeze({
+    id: row.id,
+    tenantId: row.tenant_id,
+    approvedByPrincipalId: row.approved_by_principal_id,
+    approvedByRole: row.approved_by_role,
+    actorPrincipalId: row.actor_principal_id,
+    entryType: row.entry_type,
+    invoiceReference: row.invoice_reference,
+    entryIdempotencyKey: row.entry_idempotency_key,
+    mcuMicrosDelta: row.mcu_micros_delta,
+    reason: row.reason,
+    intentDigest: row.intent_digest,
+    authorizationDigest: row.authorization_digest,
+    approvedAt: row.approved_at,
+    expiresAt: row.expires_at,
+    consumedAt: row.consumed_at,
+    consumedEntryId: row.consumed_entry_id,
+  });
+}
+
+function sha256(value: unknown): string {
+  return `sha256:${createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex")}`;
+}
+
+function usageFinanceIntent(input: Pick<UsageFinanceAuthorization,
+  "tenantId" | "actorPrincipalId" | "entryType" | "invoiceReference" |
+  "entryIdempotencyKey" | "mcuMicrosDelta" | "reason">) {
+  return {
+    tenantId: input.tenantId,
+    actorPrincipalId: input.actorPrincipalId,
+    entryType: input.entryType,
+    invoiceReference: input.invoiceReference,
+    entryIdempotencyKey: input.entryIdempotencyKey,
+    mcuMicrosDelta: input.mcuMicrosDelta,
+    reason: input.reason,
+  } as const;
+}
+
+function usageFinanceAuthorizationDigest(input: Omit<UsageFinanceAuthorization,
+  "authorizationDigest" | "consumedAt" | "consumedEntryId">): string {
+  return sha256({
+    id: input.id,
+    tenantId: input.tenantId,
+    approvedByPrincipalId: input.approvedByPrincipalId,
+    approvedByRole: input.approvedByRole,
+    actorPrincipalId: input.actorPrincipalId,
+    entryType: input.entryType,
+    invoiceReference: input.invoiceReference,
+    entryIdempotencyKey: input.entryIdempotencyKey,
+    mcuMicrosDelta: input.mcuMicrosDelta,
+    reason: input.reason,
+    intentDigest: input.intentDigest,
+    approvedAt: input.approvedAt,
+    expiresAt: input.expiresAt,
   });
 }
 
@@ -274,6 +371,165 @@ function assertActor(db: AppDb, tenantId: string, actorPrincipalId?: string | nu
     [actorPrincipalId, tenantId],
   );
   if (!actor) throw new Error("usage_actor_tenant_mismatch");
+}
+
+function assertActiveActorAt(
+  db: AppDb,
+  tenantId: string,
+  actorPrincipalId: string,
+  observedAt: string,
+) {
+  const actor = one<{ id: string }>(
+    db,
+    `SELECT id FROM principals
+     WHERE id = ? AND tenant_id = ? AND created_at <= ? AND revoked_at IS NULL
+       AND (expires_at IS NULL OR expires_at > ?)`,
+    [actorPrincipalId, tenantId, observedAt, observedAt],
+  );
+  if (!actor) throw new Error("usage_finance_actor_inactive");
+}
+
+function assertFinanceOwnerAt(
+  db: AppDb,
+  tenantId: string,
+  principalId: string,
+  observedAt: string,
+) {
+  const owner = one<{ id: string }>(
+    db,
+    `SELECT p.id
+     FROM principals p
+     JOIN tenant_memberships m
+       ON m.tenant_id = p.tenant_id
+      AND p.kind = 'human'
+      AND p.audience = m.issuer
+      AND p.subject = m.issuer || '|' || m.subject
+     WHERE p.id = ? AND p.tenant_id = ?
+       AND p.created_at <= ? AND p.revoked_at IS NULL
+       AND (p.expires_at IS NULL OR p.expires_at > ?)
+       AND m.role = 'owner' AND m.status = 'active' AND m.updated_at <= ?`,
+    [principalId, tenantId, observedAt, observedAt, observedAt],
+  );
+  if (!owner) {
+    const principal = one<{ id: string }>(
+      db,
+      `SELECT id FROM principals
+       WHERE id = ? AND tenant_id = ? AND created_at <= ?
+         AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
+      [principalId, tenantId, observedAt, observedAt],
+    );
+    throw new Error(principal ? "usage_finance_owner_required" : "usage_finance_owner_inactive");
+  }
+}
+
+export function createUsageFinanceAuthorization(
+  db: AppDb,
+  input: Readonly<{
+    id: string;
+    tenantId: string;
+    approvedByPrincipalId: string;
+    actorPrincipalId: string;
+    entryType: "adjustment" | "credit";
+    invoiceReference: string;
+    entryIdempotencyKey: string;
+    mcuMicrosDelta: number;
+    reason: string;
+    approvedAt: string;
+    expiresAt: string;
+  }>,
+): UsageFinanceAuthorization {
+  const id = required("usage_finance_authorization_id", input.id);
+  const tenantId = required("tenant_id", input.tenantId);
+  const approvedByPrincipalId = required(
+    "usage_finance_approved_by_principal_id",
+    input.approvedByPrincipalId,
+  );
+  const actorPrincipalId = required("usage_finance_actor_principal_id", input.actorPrincipalId);
+  const invoiceReference = required("usage_invoice_reference", input.invoiceReference);
+  const entryIdempotencyKey = required(
+    "usage_idempotency_key",
+    input.entryIdempotencyKey,
+  );
+  const reason = required("usage_reason", input.reason);
+  const delta = micros("usage_adjustment_mcu_micros", input.mcuMicrosDelta, true);
+  if (
+    (input.entryType === "adjustment" && delta <= 0) ||
+    (input.entryType === "credit" && delta >= 0)
+  ) {
+    throw new Error(input.entryType === "adjustment"
+      ? "usage_adjustment_invalid"
+      : "usage_credit_invalid");
+  }
+  const approvedAtMs = time("usage_finance_approved_at", input.approvedAt);
+  const expiresAtMs = time("usage_finance_expires_at", input.expiresAt);
+  if (expiresAtMs <= approvedAtMs) throw new Error("usage_finance_authorization_window_invalid");
+  assertFinanceOwnerAt(db, tenantId, approvedByPrincipalId, input.approvedAt);
+  assertActiveActorAt(db, tenantId, actorPrincipalId, input.approvedAt);
+  const intent = usageFinanceIntent({
+    tenantId,
+    actorPrincipalId,
+    entryType: input.entryType,
+    invoiceReference,
+    entryIdempotencyKey,
+    mcuMicrosDelta: delta,
+    reason,
+  });
+  const intentDigest = sha256(intent);
+  const content = {
+    id,
+    tenantId,
+    approvedByPrincipalId,
+    approvedByRole: "finance_owner" as const,
+    actorPrincipalId,
+    entryType: input.entryType,
+    invoiceReference,
+    entryIdempotencyKey,
+    mcuMicrosDelta: delta,
+    reason,
+    intentDigest,
+    approvedAt: input.approvedAt,
+    expiresAt: input.expiresAt,
+  };
+  const authorizationDigest = usageFinanceAuthorizationDigest(content);
+  const existing = one<FinanceAuthorizationRow>(
+    db,
+    `SELECT * FROM usage_finance_authorizations
+     WHERE tenant_id = ? AND (id = ? OR entry_idempotency_key = ?)`,
+    [tenantId, id, entryIdempotencyKey],
+  );
+  if (existing) {
+    const authorization = financeAuthorizationFromRow(existing);
+    if (authorization.authorizationDigest !== authorizationDigest) {
+      throw new Error("usage_finance_authorization_conflict");
+    }
+    return authorization;
+  }
+  db.raw.prepare(
+    `INSERT INTO usage_finance_authorizations
+     (id, tenant_id, approved_by_principal_id, approved_by_role, actor_principal_id,
+      entry_type, invoice_reference, entry_idempotency_key, mcu_micros_delta, reason,
+      intent_digest, authorization_digest, approved_at, expires_at)
+     VALUES (?, ?, ?, 'finance_owner', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    tenantId,
+    approvedByPrincipalId,
+    actorPrincipalId,
+    input.entryType,
+    invoiceReference,
+    entryIdempotencyKey,
+    delta,
+    reason,
+    intentDigest,
+    authorizationDigest,
+    input.approvedAt,
+    input.expiresAt,
+  );
+  return financeAuthorizationFromRow(one<FinanceAuthorizationRow>(
+    db,
+    "SELECT * FROM usage_finance_authorizations WHERE id = ? AND tenant_id = ?",
+    [id, tenantId],
+  )!);
 }
 
 export function createUsageEntitlement(
@@ -737,6 +993,8 @@ function signedUsageChange(
   db: AppDb,
   input: Omit<EntryInput, "entryType" | "entitlementId" | "priceVersion" | "reservedDelta" | "consumedDelta" | "reservationId"> & {
     mcuMicrosDelta: number;
+    financeAuthorizationId?: string;
+    financeAuthorizationDigest?: string;
   },
   entryType: "adjustment" | "credit",
 ) {
@@ -767,6 +1025,63 @@ function signedUsageChange(
       `SELECT * FROM usage_ledger_entries WHERE tenant_id = ? AND idempotency_key = ?`,
       [input.tenantId, input.idempotencyKey],
     );
+    const authorization = one<FinanceAuthorizationRow>(
+      db,
+      `SELECT * FROM usage_finance_authorizations WHERE id = ? AND tenant_id = ?`,
+      [required("usage_finance_authorization_id", input.financeAuthorizationId ?? ""), input.tenantId],
+    );
+    if (!authorization) throw new Error("usage_finance_authorization_required");
+    const finance = financeAuthorizationFromRow(authorization);
+    const actorPrincipalId = required(
+      "usage_finance_actor_principal_id",
+      input.actorPrincipalId ?? "",
+    );
+    const expectedIntent = usageFinanceIntent({
+      tenantId: input.tenantId,
+      actorPrincipalId,
+      entryType,
+      invoiceReference,
+      entryIdempotencyKey: input.idempotencyKey,
+      mcuMicrosDelta: delta,
+      reason: input.reason,
+    });
+    if (
+      finance.approvedByRole !== "finance_owner" ||
+      finance.intentDigest !== sha256(expectedIntent) ||
+      finance.authorizationDigest !== input.financeAuthorizationDigest ||
+      finance.authorizationDigest !== usageFinanceAuthorizationDigest({
+        id: finance.id,
+        tenantId: finance.tenantId,
+        approvedByPrincipalId: finance.approvedByPrincipalId,
+        approvedByRole: finance.approvedByRole,
+        actorPrincipalId: finance.actorPrincipalId,
+        entryType: finance.entryType,
+        invoiceReference: finance.invoiceReference,
+        entryIdempotencyKey: finance.entryIdempotencyKey,
+        mcuMicrosDelta: finance.mcuMicrosDelta,
+        reason: finance.reason,
+        intentDigest: finance.intentDigest,
+        approvedAt: finance.approvedAt,
+        expiresAt: finance.expiresAt,
+      })
+    ) {
+      throw new Error("usage_finance_authorization_binding_invalid");
+    }
+    const occurredAtMs = time("usage_created_at", input.createdAt);
+    if (
+      occurredAtMs < time("usage_finance_approved_at", finance.approvedAt) ||
+      occurredAtMs >= time("usage_finance_expires_at", finance.expiresAt)
+    ) {
+      throw new Error("usage_finance_authorization_expired");
+    }
+    assertFinanceOwnerAt(db, input.tenantId, finance.approvedByPrincipalId, input.createdAt);
+    assertActiveActorAt(db, input.tenantId, actorPrincipalId, input.createdAt);
+    if (
+      finance.consumedEntryId !== null &&
+      (!existing || finance.consumedEntryId !== existing.id)
+    ) {
+      throw new Error("usage_finance_authorization_consumed");
+    }
     if (!existing) {
       const invoiceAllocation = one<{ allocated: number }>(
         db,
@@ -787,6 +1102,14 @@ function signedUsageChange(
       }
     }
     const result = insertEntry(db, entry);
+    if (finance.consumedEntryId === null) {
+      const consumed = db.raw.prepare(
+        `UPDATE usage_finance_authorizations
+         SET consumed_at = ?, consumed_entry_id = ?
+         WHERE id = ? AND tenant_id = ? AND consumed_at IS NULL AND consumed_entry_id IS NULL`,
+      ).run(input.createdAt, result.id, finance.id, input.tenantId);
+      if (consumed.changes !== 1) throw new Error("usage_finance_authorization_consumed");
+    }
     db.raw.exec("COMMIT");
     return result;
   } catch (error) {
