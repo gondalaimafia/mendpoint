@@ -20,13 +20,13 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 - `packages/platform/src/external-kek-client.ts`: bounded HTTPS transport with mandatory TLS, exact destination authority, public-address validation by default, explicit exact private-address authorization, DNS-rebinding checks, timeout, response-size, redirect, content-type, and redacted-error enforcement.
 - `packages/platform/src/vault-envelope.ts`: `createExternalKeyEncryptionKeyProvider` factory and fail-closed external provider implementation using the unchanged `KeyEncryptionKeyProvider` interface.
 - `packages/platform/src/index.ts`: public factory, client, configuration, and transport exports.
-- `packages/platform/src/external-kek-client.test.ts`: denial, malformed-body, oversize-body, timeout, HTTPS, request-shape, IPv4 and IPv6 address-class, private-authorization, and DNS-rebinding coverage.
+- `packages/platform/src/external-kek-client.test.ts`: denial, malformed-body, oversize-body, timeout, HTTPS, request-shape, native all-address lookup, IPv4 and IPv6 address-class, private-authorization, and DNS-rebinding coverage.
 - `packages/platform/src/vault-envelope.test.ts`: authority mutation, stale attestation, invalid data-key length, redaction, and full envelope seal-and-open coverage.
 
 ## Verification
 
-- `npm test -w @mendpoint/platform -- src/vault-envelope.test.ts src/external-kek-client.test.ts`: 59 tests passed.
-- `npm test -w @mendpoint/platform`: 295 tests passed across 20 files.
+- `npm test -w @mendpoint/platform -- src/vault-envelope.test.ts src/external-kek-client.test.ts`: 60 tests passed.
+- `npm test -w @mendpoint/platform`: 296 tests passed across 20 files.
 - `npm run typecheck -w @mendpoint/platform`: passed.
 - `git diff --check`: passed.
 
@@ -36,7 +36,7 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 - The endpoint must match an explicit host-and-port authority. A scheme alone grants no destination authority.
 - Public mode rejects loopback, unspecified, multicast, link-local, metadata, private, shared, documentation, benchmarking, and reserved IPv4 and IPv6 destinations.
 - Private mode requires explicit operator authorization bound to the exact authority and exact private addresses; it cannot authorize loopback, metadata, link-local, multicast, or unspecified destinations.
-- All resolved addresses are checked before every request, and the default HTTPS requester pins the socket lookup to a validated address so connection setup cannot perform a second, rebound DNS lookup.
+- All resolved addresses are checked before every request, and the default HTTPS requester pins the socket lookup to one validated address for both scalar and Node all-address lookup callbacks so connection setup cannot perform a second, rebound DNS lookup.
 - Provider bodies, credentials, plaintext data keys, and wrapped bytes are never copied into errors.
 - Responses with the wrong provider, tenant, key identifier, key version, attestation, or key-material fingerprint are rejected.
 - Unwrapped data keys must decode canonically to exactly 32 bytes.

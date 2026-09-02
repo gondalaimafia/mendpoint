@@ -167,8 +167,22 @@ const defaultHttpsRequester: ExternalKeyHttpsRequester = async (input) =>
       method: "POST",
       headers: input.headers,
       signal: input.signal,
-      lookup: (_hostname, _options, callback) => {
-        callback(null, selectedAddress, family);
+      lookup: (_hostname, options, callback) => {
+        // Node 20+ may request all address records for family autoselection. The
+        // transport still pins exactly one prevalidated address, but must honor
+        // the callback shape Node requested or TLS fails before connecting.
+        if (options.all) {
+          (callback as (error: null, addresses: Array<{ address: string; family: number }>) => void)(
+            null,
+            [{ address: selectedAddress, family }],
+          );
+          return;
+        }
+        (callback as (error: null, address: string, family: number) => void)(
+          null,
+          selectedAddress,
+          family,
+        );
       },
       ...(isIP(input.url.hostname.replace(/^\[|\]$/g, "")) === 0
         ? { servername: input.url.hostname }

@@ -1,6 +1,14 @@
+import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { createHttpsExternalKeyTransport } from "./external-kek-client.js";
 import type { ExternalKeyHttpsRequester } from "./external-kek-client.js";
+
+const nativeHttps = vi.hoisted(() => ({ request: vi.fn() }));
+
+vi.mock("node:https", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:https")>(),
+  request: nativeHttps.request,
+}));
 
 const locator = {
   provider: "customer-kms",
@@ -23,6 +31,47 @@ function jsonRequester(value: unknown = { accepted: true }) {
 }
 
 describe("HTTPS external key transport", () => {
+  it("pins the native requester to one validated address for all-address lookup", async () => {
+    nativeHttps.request.mockImplementationOnce((_url, options, onResponse) => {
+      options.lookup("vault.example.test", { all: true }, (
+        error: Error | null,
+        addresses: Array<{ address: string; family: number }>,
+      ) => {
+        expect(error).toBeNull();
+        expect(addresses).toEqual([{ address: "93.184.216.34", family: 4 }]);
+      });
+
+      const response = new EventEmitter() as EventEmitter & {
+        headers: Record<string, string>;
+        statusCode: number;
+        destroy: (error?: Error) => void;
+      };
+      response.headers = { "content-type": "application/json" };
+      response.statusCode = 200;
+      response.destroy = (error) => {
+        if (error) response.emit("error", error);
+      };
+      onResponse(response);
+      queueMicrotask(() => {
+        response.emit("data", Buffer.from('{"accepted":true}'));
+        response.emit("end");
+      });
+
+      const request = new EventEmitter() as EventEmitter & { end: (body: string) => void };
+      request.end = vi.fn();
+      return request;
+    });
+
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses: resolvePublicAddress,
+    });
+
+    await expect(transport.attestKey(locator, "tenant-a")).resolves.toEqual({ accepted: true });
+    expect(nativeHttps.request).toHaveBeenCalledTimes(1);
+  });
+
   it("sends only the existing provider contract over HTTPS", async () => {
     const requestImpl = jsonRequester();
     const transport = createHttpsExternalKeyTransport({
