@@ -13,9 +13,9 @@ provides:
 affects: [01-18, model-runtime-binding, github-delivery-binding, production-readiness]
 
 actuals:
-  tokens: 37942
+  tokens: 40550
   tasks: 3
-  commits: 13
+  commits: 15
 
 tech-stack:
   added: []
@@ -32,7 +32,12 @@ key-files:
     - packages/db/src/dependency-outage-queue.ts
     - packages/db/src/dependency-outage-queue.test.ts
     - packages/db/src/dependency-outage-export.test.ts
+    - apps/api/src/dependency-outage-routes.ts
+    - apps/api/src/dependency-outage-routes.test.ts
   modified:
+    - packages/agent/src/agent.ts
+    - packages/agent/src/agent.test.ts
+    - packages/agent/src/attempt-engine.ts
     - packages/agent/src/model-providers.ts
     - packages/agent/src/model-providers.test.ts
     - packages/agent/src/index.ts
@@ -94,10 +99,10 @@ coverage:
     requirement: ME-ENT-008
     verification:
       - kind: integration
-        ref: packages/pipeline/src/index.test.ts and packages/ops/src/disaster-recovery.test.ts
+        ref: packages/agent/src/agent.test.ts, apps/worker/src/cli.ts, packages/pipeline/src/index.test.ts, and packages/ops/src/disaster-recovery.test.ts
         status: pass
     human_judgment: true
-    rationale: The real API and worker pipeline callers inject the shared outage policy, exact-draft delivery is the only SCM write path, and backup recovery is proven. The generic model port remains available for the first production model caller because no non-test model invocation exists in the repository.
+    rationale: The real checkpointed Fettler model effect and exact-draft GitHub delivery both use the shared durable queue. Worker composition binds tenant, effect request digest, model authority, retry budget, expiry, and lease identity. Queue state can reopen only a proven safe retry; ambiguous, claimed, blocked, failed, or uncheckpointed completed outcomes never repeat automatically.
 
 duration: 1h 20m
 completed: 2026-09-02
@@ -123,6 +128,8 @@ status: complete
 - Added read-only GitHub reconciliation that verifies the exact branch, commit identity, parent, full tree delta, file content, file mode, and draft pull request before any repeated blob, tree, commit, reference, or pull request write.
 - Made authority identity mandatory for model and GitHub operations, proved an authentication block can resume only after exact authority rotation, and bound GitHub delivery to an installation and credential digest.
 - Added the supported database root export, API and worker policy injection, production pipeline composition, and restart plus encrypted backup and restore proof over the primary database.
+- Routed the live checkpointed Fettler model effect through the worker-supplied tenant queue while retaining the checkpoint ledger as completion authority and preserving its unknown-outcome no-repeat rule.
+- Added a bounded authenticated `/dependency-outages` health projection with digest-only operation identity, standing, provider, retry, expiry, circuit, authority-block reason, last transition, stale state, and strict tenant isolation.
 - Removed the legacy branch, commit, and pull-request write sequence from the real pipeline so every customer draft passes through `deliverExactDraft` and durable reconciliation.
 - Enforced exact authority equality before queued, claimed, or expired-lease work can execute, while preserving explicit blocked-operation reactivation after a validated authority rotation.
 - Classified GitHub primary and secondary rate-limit `403` responses as throttling before the generic permission rule, while true permission failures remain permanent.
@@ -140,6 +147,8 @@ status: complete
 8. **Current rebased evidence series:** `e73e1f03`, `64ed119a`, `1275ba67`, `939de04c`, `39c372e7`, `295b6fe4`, `6209a222`, `a472e346`, `02b81eb5`, `7dda371e`, `33bb3808`
 9. **Independent review RED tests:** `ad811437`
 10. **Exact-head outage delivery repair:** `a0862179`
+11. **Review RED tests for live model reachability and health:** `b82e30bc`
+12. **Live model queue binding and bounded tenant health:** `7f3546e7`
 
 Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/605), open, issue body read back with exact `Owner: Codex` claim.
 
@@ -151,6 +160,8 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - `packages/db/src/dependency-outage-queue.test.ts` - Restart, fencing, lost-response, authority, tamper, and tenant tests.
 - `packages/agent/src/model-providers.ts` - Model failure evidence mapping and injected recovery operation.
 - `packages/agent/src/model-providers.test.ts` - Model classification and completed-request reconciliation tests.
+- `packages/agent/src/agent.ts`, `packages/agent/src/attempt-engine.ts`, `apps/worker/src/cli.ts` - Real checkpointed model effect binding with worker-supplied tenant queue authority.
+- `apps/api/src/dependency-outage-routes.ts` - Authenticated bounded tenant health projection without provider payloads or raw operation identifiers.
 - `packages/github/src/app-runtime.ts` - GitHub failure evidence mapping and injected exact-draft recovery operation.
 - `packages/github/src/app-runtime.test.ts` - GitHub outage scope, classification, and bounded operation identifier tests.
 - `packages/agent/src/index.ts`, `packages/github/src/index.ts`, `packages/ops/src/index.ts`, `packages/db/src/index.ts` - Minimal public exports for the new seams.
@@ -198,10 +209,18 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - **Verification:** 106 focused tests, seven affected type checks, full database, GitHub, ops, and pipeline suites, protected authority test, optimized production build, and diff integrity pass.
 - **Committed in:** `ad811437`, `a0862179`
 
+**5. Current-main review found the production model seam and degraded-state surface were still unreachable**
+- **Found during:** independent exact-head review of pull request #606 at `aacad6dc`
+- **Issue:** The production `agent.ts` model call bypassed the durable queue, the operator could not enumerate tenant degraded state, and the summary claimed both links existed.
+- **Fix:** Bound the real encrypted checkpoint model effect through a worker-supplied queue using the checkpoint effect and request digests, retained unknown outcomes as non-repeatable, blocked reconciliation-required outcomes from authority reactivation, and added an authenticated digest-only tenant health route.
+- **Files modified:** agent runtime and attempt engine, worker composition, durable queue and database barrel, API route and server composition, paired hostile tests, and this summary
+- **Verification:** 206 focused agent, model, database, operations, and API tests plus four affected typechecks pass.
+- **Committed in:** `b82e30bc`, `7f3546e7`
+
 ---
 
-**Total deviations:** 4: one architectural correction, one ownership-preserving deferral, and two independently reviewed reliability repairs.
-**Impact on plan:** The engineering behavior and real GitHub production link are complete and tested. Requirement promotion still needs exact deployed-revision outage proof.
+**Total deviations:** 5: one architectural correction, one ownership-preserving deferral, and three independently reviewed reliability repairs.
+**Impact on plan:** The engineering behavior and both live production call paths are implemented and tested. Requirement promotion still needs exact deployed-revision outage and rollback proof.
 
 ## Issues Encountered
 
@@ -213,6 +232,7 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 
 - Exact plan commands plus hostile review regressions cover database, agent, GitHub, pipeline, ops, authority rotation, package resolution, and backup recovery.
 - Focused outage, backup, adapter, caller, and resolver matrix: 106 of 106 tests passed.
+- Current model and visibility repair: agent and model 185 of 185, queue 13 of 13, outage policy 6 of 6, and API health 2 of 2 tests passed.
 - Full package regressions: database passed 501 tests, GitHub passed 195 tests, ops passed 180 tests, and pipeline passed 272 tests.
 - Protected authority: exact base-interpreted rotation test passed with `package-lock.json` restored to SHA-256 `193181927b3e5813f43471c60c343c0300c6c71540a9b3921968a215cb57cd0d`.
 - TypeScript: ops, database, agent, GitHub, pipeline, API, and worker package checks passed with no errors.
@@ -224,17 +244,17 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 
 ## User Setup Required
 
-None for the core contract. Production activation requires code binding, not a secret or dashboard action.
+None for the engineering contract. Exact deployed-revision failure, recovery, rollback, and health observations remain release evidence, not missing code.
 
 ## Next Phase Readiness
 
-Before ME-ENT-008 promotion, deploy the exact revision and capture live GitHub failure, degraded-state, authority-rotation, recovery, and rollback evidence. Bind the already typed model port when the repository gains its first production model invocation; no non-test model caller exists on this base.
+Before ME-ENT-008 promotion, deploy the exact revision and capture live model and GitHub failure, degraded-state, authority-rotation, recovery, no-repeat, and rollback evidence.
 
 ## Self-Check: PASSED
 
 - RED, GREEN, and repair summary commits are present in the exact PR branch history.
 - Every implementation and test file named by the repair exists at the recorded exact head.
-- The worktree is clean and the remote pull request head matches the local head after push.
+- The implementation commits are ready for final current-main refresh, independent exact-head review, and protected push evidence.
 
 ---
 *Phase: 01-release-authority-and-fettler-readiness*
