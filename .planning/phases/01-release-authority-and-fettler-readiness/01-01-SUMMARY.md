@@ -14,9 +14,9 @@ provides:
 affects: [01-02-readiness, 05-economics, 06-final-qualification]
 
 actuals:
-  tokens: 24071
+  tokens: 25292
   tasks: 3
-  commits: 30
+  commits: 35
 
 tech-stack:
   added: []
@@ -39,6 +39,8 @@ key-decisions:
   - "Performance evidence is valid only when exact tenant, repository, deployment, fixture, source, correlation, measured concurrency, repository shape, and nonzero run interval bindings agree."
   - "Every observation must be fresh and carry a runtime-validated boolean outcome; reports publish immutably and authenticated probes never follow redirects or use plaintext transport."
   - "Observation freshness is evaluated against the authenticated run window plus the metric freshness allowance, and a fixed evidence budget makes high-throughput overflow explicitly incomplete."
+  - "Credits and every negative economic correction require independently verified finance authority bound to tenant, invoice, actor, amount, reason, entry time, approval time, and immutable digest."
+  - "Performance runs enforce the declared maximum file size and a one-megabyte response ceiling at the producer boundary while retaining explicit incomplete abort reasons."
   - "The existing protected ga-check executable invokes closure validation so package authority bytes and rotation digests remain unchanged."
 
 patterns-established:
@@ -53,7 +55,7 @@ coverage:
     requirement: ME-FND-006
     verification:
       - kind: unit
-        ref: packages/eval/src/performance-contract.test.ts and performance-runner.test.ts, 23 tests
+        ref: packages/eval/src/performance-contract.test.ts and performance-runner.test.ts, 41 tests
         status: pass
     human_judgment: false
   - id: D2
@@ -72,7 +74,7 @@ coverage:
     requirement: ME-FND-008
     verification:
       - kind: unit
-        ref: packages/platform/src/mcu.test.ts, 10 tests
+        ref: packages/platform/src/mcu.test.ts, 20 tests
         status: pass
     human_judgment: false
 
@@ -109,6 +111,7 @@ status: complete
 4. **Exact-head performance review repair:** `89192456`, `b2a16f55`
 5. **Adversarial evidence-boundary repair:** `30ca1a5d`, `7c4f5280`
 6. **Long-run availability and evidence-budget repair:** `288d9bc6`, `7049be3a`, `880bb666`
+7. **Finance authority, producer limits, and bounded response repair:** `65d719eb`, `8b797dc2`, `8cf7704b`
 
 ## Files Created or Modified
 
@@ -171,14 +174,23 @@ status: complete
 - **Verification:** Four canonical medium and large load and soak regressions plus one high-throughput overflow regression failed before implementation; the repaired evaluator suite passes 38 of 38 and the broader focused matrix passes 51 of 51.
 - **Committed in:** `288d9bc6`, `7049be3a`, `880bb666`
 
+**6. [Rule 1 and Rule 2 - Bug and Missing Critical] Closed five exact-head finance and performance-runner authority gaps**
+- **Found during:** Independent exact-head review of pull request 610 at `55614d0413cde759b04ee5a58aa6b004707d6546`
+- **Issue:** Negative adjustments could reduce consumption without credit classification or finance authority; declared maximum file bytes were neither enforced nor retained; probe responses were buffered without a byte ceiling; internal abort reasons collapsed into null; and operator documentation did not disclose the 10,000-observation incomplete boundary.
+- **Fix:** Require verified digest-bound finance authority for credits and adjustments, prohibit negative adjustments, enforce and retain the declared maximum file size, stream and cap response bodies at 1,048,576 bytes before parsing, retain explicit abort reasons, and document the exact observation and invocation ceilings.
+- **Files modified:** `packages/platform/src/mcu.ts`, `packages/platform/src/mcu.test.ts`, `packages/platform/src/index.ts`, `packages/eval/src/performance-contract.ts`, `packages/eval/src/performance-contract.test.ts`, `packages/eval/src/performance-runner.ts`, `packages/eval/src/performance-runner.test.ts`, `packages/eval/src/index.ts`, `docs/PERFORMANCE_CONTRACT.md`
+- **Verification:** The hostile RED suite exposed every gap. The repaired focused matrix passes 64 of 64, full workspace typecheck and optimized build pass, the protected general availability checks pass, the 19-test revert suite passes serially with a 30-second per-test allowance, and diff integrity passes.
+- **Committed in:** `65d719eb`, `8b797dc2`, `8cf7704b`
+
 ---
 
-**Total deviations:** 5 auto-fixed, three bugs and two missing correctness seams.
-**Impact on plan:** All changes are limited to the operating-contract producer, authority, public exports, and protected gate needed to close the six review findings.
+**Total deviations:** 6 auto-fixed, four bugs and three missing correctness seams across the six repair rounds.
+**Impact on plan:** All changes are limited to the operating-contract producer, authority, public exports, operator contract, and protected gate needed to close the review findings.
 
 ## Issues Encountered
 
 - The full workspace package and application suites passed. The root scripts run reported an existing Windows timing failure in `build-public-docs.test.ts` and Vitest worker update timeouts in the long proposal-authority suite. After the protected-package fix, all 36 proposal and closure assertions pass; the remaining worker remote procedure call timeout is test-harness timing rather than an assertion failure.
+- The standard five-second revert-obligation test command timed out in six Windows synthetic-repository cases while its assertions and current-tree checks remained sound. The same 19-test suite passed serially with a 30-second per-test allowance, and both the direct revert checker and protected general availability preflight passed.
 
 ## Verification
 
@@ -207,10 +219,17 @@ status: complete
 - Long-run repair protected `npm run ga:check`: passed, including strict evidence reachability and revert obligations.
 - Current-base range diff: all 30 pre-refresh patches are patch-identical after rebasing from `f8d09056f713925baf585d99fc35aca79242108c` to `e1d5b7483c057578c9cc8c8b795cfa633f53878f`.
 - Current-base rerun: focused and broader matrix 51 of 51, all three affected typechecks, optimized 64-page build, protected `npm run ga:check`, and diff integrity passed.
+- Pull request 610 repair RED proof: hostile regressions exposed untrusted credits and negative adjustments, every finance-binding drift, ignored maximum file size, unbounded fixed and chunked response bodies, missing cancellation, collapsed abort reasons, and incomplete operator guidance.
+- Pull request 610 repair GREEN proof: migration compute 20 of 20, evaluator contract and runner 41 of 41, and closure 3 of 3, for 64 of 64 focused tests.
+- Pull request 610 repair full workspace typecheck: passed for all packages, applications, and scripts.
+- Pull request 610 repair optimized production build: passed, 64 pages generated.
+- Pull request 610 repair protected general availability checks: specification, closure, configuration, claims, actions, architecture, model, naming, architecture decision record, third-state, strict evidence reachability, serial revert obligations, and general availability preflight passed.
+- Pull request 610 repair current base: `origin/main` at `8456b36ebe94a48560982d5265aedbfab30710e3`.
+- Pull request 610 tested implementation head: `8cf7704b2855faa1105e41134aba4fc54d432372`; the returned exact head adds this summary-only evidence update.
 
 ## TDD Gate Compliance
 
-- RED and GREEN commits exist for the performance, migration compute, protected gate, and live reachability repairs.
+- RED and GREEN commits exist for the performance, migration compute, protected gate, live reachability, finance authority, producer limit, bounded response, abort-reason, and operator-contract repairs.
 
 ## Known Stubs
 
@@ -228,7 +247,7 @@ None.
 ## Self-Check: PASSED
 
 - All 14 changed implementation, test, export, gate, and artifact files exist.
-- All 30 rebased implementation, test, and prior evidence commits are present on `codex/601-fettler-operating-contracts`; this current-base refresh adds one summary-only successor rather than amending history.
+- All 34 rebased implementation, test, and prior evidence commits are present on `agent-610-review-repair`; this repair adds one summary-only successor rather than amending history.
 - The tested implementation head is based on current `origin/main`; the returned release-update head is its summary-only successor.
 
 ---
