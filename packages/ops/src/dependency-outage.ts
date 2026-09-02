@@ -76,6 +76,17 @@ export type DependencyOutageDecision = Readonly<{
 
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
+const FAILURE_KINDS: ReadonlySet<string> = new Set<DependencyFailureKind>([
+  "timeout",
+  "throttled",
+  "transient",
+  "invalid_response",
+  "authentication",
+  "permission",
+  "permanent",
+  "expired",
+  "completed",
+]);
 const CIRCUIT_FAILURE_THRESHOLD = 3;
 const DEFAULT_CIRCUIT_COOLDOWN_MS = 30_000;
 const MAX_RETRY_DELAY_MS = 60_000;
@@ -185,6 +196,9 @@ export function classifyDependencyOutage(
   requiredIdentity(input.tenantId, "dependency_outage_tenant_invalid");
   requiredIdentity(input.providerId, "dependency_outage_provider_invalid");
   if (!SHA256.test(input.operationDigest)) throw new Error("dependency_outage_digest_invalid");
+  if (!FAILURE_KINDS.has(input.failureKind)) {
+    throw new Error("dependency_outage_failure_kind_invalid");
+  }
   integer(input.attempt, "dependency_outage_attempt_invalid");
   integer(input.retryBudget, "dependency_outage_retry_budget_invalid");
   const now = timestamp(input.now, "dependency_outage_now_invalid");
