@@ -47,9 +47,9 @@
     "scripts/production-closure-github-authority.ts": "sha256:551404bce6c205304e4f59fcc5befa906c974dfe8c21006849744eb597b8baf4",
     "scripts/production-closure-authority-rotation.ts": "sha256:e5557ab767353b4817ef07c235ee97b24dbb59d14b8697a92f1b781cab1717e7",
     "scripts/production-closure-matrix.ts": "sha256:5c2d948443d32ecb9f2ef86b1e4ce7823d18f13eebc227d674851d6c4efc5654",
-    "scripts/public-claims-check.ts": "sha256:31ce71d0cc998a4b534714bf8fd17f577876b235ca1255a2a76c8e38815ea248",
+    "scripts/public-claims-check.ts": "sha256:07be1c40f0667cd3b25736ec3af88a678c4c048d6e3d4775c4e46629276572da",
     "packages/contract/src/product-requirements.ts": "sha256:a0ee9719e472bee1a73f44c44df9626f5f91d881608c628d5b2eb4c9fb7f4e98",
-    "packages/contract/src/public-claims.ts": "sha256:10b9739ff30ea52f17a8d1ca9822268f8c57e09b5a5f2d31a3b9a9189ad6aac0",
+    "packages/contract/src/public-claims.ts": "sha256:bf381f35221172597e8dd6571643873f3d5e622259b22bcae99086c277382555",
     ".github/workflows/closure-authority-systemic-escalation.yml": "sha256:955f0df2589cb71181621b8aa29ca4215d3bf4a29684985d74bf391d2b98e422"
   }
 }
