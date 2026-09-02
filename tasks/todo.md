@@ -75,6 +75,17 @@
 
 ## Plan 01-01: Durable secret lifecycle SCM tracer
 
+### Pull request 610 exact-head repair
+
+- [x] Reject replayed or provenance-free performance producer observations by binding them to the current invocation.
+- [x] Remove caller-asserted MCU schedule authority from the public Platform surface.
+- [x] Bind adjustments and credits to positive invoice allocation, correct signs, and exact invoice-local limits.
+- [x] Require a live tenant owner to issue one short-lived, digest-bound finance authorization and consume it atomically once.
+- [x] Exercise reserve, settle, authorized credit, and reconciliation through the protected Fettler closure self-check.
+- [x] Pass focused database, evaluator, closure, and affected typecheck gates.
+- [x] Pass complete workspace tests, full typecheck, optimized production build, and protected GA checks.
+- [ ] Obtain exact-head independent review, current-base CI, protected merge, deployment, and production readback.
+
 - [x] RED: add database lifecycle tests for encrypted envelopes, tenant scope, rotation, expiry, retirement, and immutable incident revocation.
 - [x] GREEN: implement the additive secret lifecycle schema and atomic persistence module.
 - [x] RED: add provider and SCM materialization tests for durable lifecycle resolution, fail-closed audit, rotation, revocation, and pre-transport denial.

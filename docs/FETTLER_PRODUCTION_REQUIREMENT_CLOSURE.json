@@ -34,11 +34,15 @@
       },
       "selfCheck": {
         "reconciled": true,
-        "entryCount": 2,
+        "entryCount": 3,
         "storageAuthority": "usage_ledger_entries",
-        "ledgerHeadHash": "eb5dae75597ea200f642c9ba62c73726cd754cee37e8431a75f4e3b307411580",
+        "ledgerHeadHash": "4b089771c83af6a92024f3b68b49a425c9e1e74cc54312e56b8b362773eb73ad",
+        "financeAuthorizationDigest": "sha256:7bc9c9a7740f3e538d08d3f4c3eef6ce485a67328b751964b4064a8eab875ca9",
         "settledEntryIds": [
           "settlement-fettler-closure"
+        ],
+        "creditEntryIds": [
+          "credit-fettler-closure"
         ]
       }
     }

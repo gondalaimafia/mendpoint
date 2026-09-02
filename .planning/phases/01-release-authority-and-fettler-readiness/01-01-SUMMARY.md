@@ -201,9 +201,17 @@ status: complete
 - **Verification:** The RED test proved the synthetic lifecycle was still selected. The repaired closure suite passes 3 of 3, the complete platform suite passes 271 of 271, and platform, database, and scripts typechecks pass.
 - **Committed in:** `de16cca7`, `338b308b`
 
+**9. [Rule 1 and Rule 2 - Bug and Missing Critical] Bound performance and finance evidence to durable authority**
+- **Found during:** Independent exact-head review of pull request 610 at `8f8b5dd5a7471859105525447403659646998534`
+- **Issue:** A replayed producer response could satisfy a later performance run without proving which invocation emitted it; the durable usage ledger accepted adjustment and credit mutations without the public schedule authority; invoice-local allocation and sign invariants were incomplete; and the protected closure self-check never exercised a finance-authorized mutation.
+- **Fix:** Bind every producer observation to a fresh invocation identifier, nonce, sequence, timestamp, and event source; remove the caller-asserted schedule helper from the public Platform surface; require a live tenant owner to issue a short-lived, digest-bound, single-use finance authorization; consume that authorization atomically with the exact invoice-local adjustment or credit; reject inactive owners and actors at consumption; and run the closure self-check through reserve, settle, authorized credit, and reconciliation.
+- **Files modified:** `packages/eval/src/performance-contract.ts`, `packages/eval/src/performance-runner.ts`, `packages/eval/src/performance-runner.test.ts`, `packages/platform/src/index.ts`, `packages/db/src/index.ts`, `packages/db/src/usage.ts`, `packages/db/src/usage.test.ts`, `packages/db/src/invoice-export.test.ts`, `packages/db/src/gross-margin.test.ts`, `apps/api/src/server.ts`, `scripts/fettler-production-closure.ts`, `scripts/fettler-production-closure.test.ts`, `docs/FETTLER_PRODUCTION_REQUIREMENT_CLOSURE.json`
+- **Verification:** The focused finance matrix passes 20 of 20; the complete workspace and root test runner exits successfully, including the final owner-lifecycle regression and 633 root-script tests; full workspace typecheck passes; the optimized production build generates 64 routes; protected GA preflight passes; the closure suite passes 3 of 3; and diff integrity passes.
+- **Committed in:** `e94acec8`, `f947166e`, `475dbebd`, `aecc9eda`, `4b75196f`, `ed68a592`, `d9ffaaab`
+
 ---
 
-**Total deviations:** 8 auto-fixed, six bugs and four missing correctness seams across the eight repair rounds.
+**Total deviations:** 9 auto-fixed across nine repair rounds.
 **Impact on plan:** All changes are limited to the operating-contract producer, authority, public exports, operator contract, and protected gate needed to close the review findings.
 
 ## Issues Encountered
@@ -243,6 +251,7 @@ status: complete
 - Pull request 610 repair full workspace typecheck: passed for all packages, applications, and scripts.
 - Pull request 610 repair optimized production build: passed, 64 pages generated.
 - Pull request 610 repair protected general availability checks: specification, closure, configuration, claims, actions, architecture, model, naming, architecture decision record, third-state, strict evidence reachability, the standard 19-test revert-obligation command, and general availability preflight passed.
+- Pull request 610 final authority repair: the complete workspace and root test runner exits 0, full workspace typecheck exits 0, the optimized production build generates 64 routes, and the protected general availability command exits 0 on implementation head `d9ffaaab`.
 - Pull request 610 repair current base: `origin/main` at `c246b777bf71d377126bbe33a16cda2160d51ef9`.
 - Pull request 610 tested implementation head: `701757be`; the returned exact head adds summary-only evidence updates.
 
