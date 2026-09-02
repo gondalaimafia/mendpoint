@@ -94,7 +94,7 @@ describe("Fettler performance contract", () => {
       concurrency: 2,
     });
     expect(validated.metricDictionary).toHaveLength(5);
-    expect(validated.metricDictionary[0]).toMatchObject({
+    expect(validated.metricDictionary![0]).toMatchObject({
       eventSource: expect.stringMatching(/^fettler\.performance\./),
       dimensions: expect.arrayContaining(["deployment_revision", "repository_revision"]),
       freshnessSeconds: expect.any(Number),
@@ -123,14 +123,14 @@ describe("Fettler performance contract", () => {
     const base = contract();
     const reordered = {
       ...base,
-      metricDictionary: base.metricDictionary.map((definition) => ({ ...definition })),
+      metricDictionary: base.metricDictionary!.map((definition) => ({ ...definition })),
     };
     expect(performanceContractDigest(reordered)).toBe(performanceContractDigest(base));
 
     const changed = contract();
-    changed.metricDictionary[0] = {
-      ...changed.metricDictionary[0]!,
-      freshnessSeconds: changed.metricDictionary[0]!.freshnessSeconds + 1,
+    changed.metricDictionary![0] = {
+      ...changed.metricDictionary![0]!,
+      freshnessSeconds: changed.metricDictionary![0]!.freshnessSeconds + 1,
     };
     expect(performanceContractDigest(changed)).not.toBe(performanceContractDigest(base));
   });
@@ -163,7 +163,7 @@ describe("Fettler performance contract", () => {
       .toThrow("performance_tier_duplicate");
 
     const incompleteDictionary = contract();
-    incompleteDictionary.metricDictionary.pop();
+    incompleteDictionary.metricDictionary!.pop();
     expect(() => validatePerformanceContract(incompleteDictionary))
       .toThrow("performance_metric_dictionary_incomplete");
 
