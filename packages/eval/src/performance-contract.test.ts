@@ -312,7 +312,7 @@ describe("Fettler performance contract", () => {
     expect(() => evaluatePerformanceRun(contract(), mixed, binding({
       startedAt: "2026-09-02T00:00:00.000Z",
       endedAt: "2026-09-02T00:10:00.000Z",
-    }), "load", "2026-09-02T00:10:00.000Z"))
+    }), "load", "2026-09-02T00:15:01.000Z"))
       .toThrow("performance_observation_stale");
   });
 

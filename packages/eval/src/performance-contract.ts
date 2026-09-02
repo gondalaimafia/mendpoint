@@ -615,11 +615,14 @@ export function evaluatePerformanceRun(
   );
   const evaluatedAtMs = isoTime(evaluatedAtValue, "performance_evaluated_at");
   if (evaluatedAtMs < endedAtMs) fail("performance_evaluated_before_run_end");
+  const runDurationMs = endedAtMs - startedAtMs;
   observations.forEach((observation, index) => {
     const ageMs = evaluatedAtMs - observationTimes[index]!;
     if (ageMs < 0) fail("performance_observation_future");
     const definition = dictionary.get(observation.metric)!;
-    if (ageMs > definition.freshnessSeconds * 1_000) fail("performance_observation_stale");
+    if (ageMs > runDurationMs + definition.freshnessSeconds * 1_000) {
+      fail("performance_observation_stale");
+    }
   });
 
   const results: PerformanceReport["results"] = [];

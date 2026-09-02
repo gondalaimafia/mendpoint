@@ -32,6 +32,7 @@ const METRICS: readonly PerformanceMetric[] = [
 const REPOSITORY_REVISION = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const FIXTURE_DIGEST = /^[0-9a-f]{64}$/;
 const DEPLOYMENT_REVISION = /^(?!main$|master$|latest$|head$)[a-zA-Z0-9][a-zA-Z0-9._-]{6,127}$/i;
+export const PERFORMANCE_OBSERVATION_LIMIT = 10_000;
 
 export type PerformanceMetricMeasurement = Readonly<{
   durationMs: number;
@@ -230,7 +231,8 @@ function recordInvocation(
     "fixtureDigest" | "correlationId" | "source">,
   eventSources: ReadonlyMap<PerformanceMetric, string>,
   bindingSource: "probe_observed" | "request_context",
-): void {
+): boolean {
+  if (observations.length + METRICS.length > PERFORMANCE_OBSERVATION_LIMIT) return false;
   for (const metric of METRICS) {
     const value = measurement.metrics[metric];
     observations.push({
@@ -252,6 +254,7 @@ function recordInvocation(
       bindingSource,
     });
   }
+  return true;
 }
 
 function failedMeasurement(durationMs: number): Pick<PerformanceProbeMeasurement, "metrics"> {
@@ -316,6 +319,7 @@ export async function runPerformanceProbe(
   let measuredConcurrency = 0;
   let observedRepository: PerformanceEvidenceBinding["repository"] | null = null;
   let unobservedFailure = false;
+  let evidenceOverflow = false;
   const eventSources = new Map(
     (contract.metricDictionary ?? WARDEN_PERFORMANCE_CONTRACT.metricDictionary!).map(
       (definition) => [definition.metric, definition.eventSource],
@@ -355,7 +359,7 @@ export async function runPerformanceProbe(
           repository: options.repository,
         });
         observedRepository ??= producerRepository;
-        recordInvocation(
+        const recorded = recordInvocation(
           observations,
           tier.id,
           options.mode,
@@ -366,13 +370,17 @@ export async function runPerformanceProbe(
           eventSources,
           "probe_observed",
         );
+        if (!recorded) {
+          evidenceOverflow = true;
+          controller.abort("evidence_budget_exceeded");
+        }
       } catch {
         if (controller.signal.aborted || now() >= deadlineMs) {
           cancelledInvocationCount += 1;
           continue;
         }
         unobservedFailure = true;
-        recordInvocation(
+        const recorded = recordInvocation(
           observations,
           tier.id,
           options.mode,
@@ -383,7 +391,12 @@ export async function runPerformanceProbe(
           eventSources,
           "request_context",
         );
-        controller.abort("probe_failure_unobserved");
+        if (!recorded) {
+          evidenceOverflow = true;
+          controller.abort("evidence_budget_exceeded");
+        } else {
+          controller.abort("probe_failure_unobserved");
+        }
       } finally {
         activeInvocationCount -= 1;
       }
@@ -416,12 +429,12 @@ export async function runPerformanceProbe(
     startedAt: new Date(Math.max(0, startedMs)).toISOString(),
     endedAt: new Date(Math.max(0, endedMs)).toISOString(),
   };
-  const evaluation = !externallyAborted && !unobservedFailure && observedRepository && completeSamples
+  const evaluation = !externallyAborted && !unobservedFailure && !evidenceOverflow && observedRepository && completeSamples
     ? evaluatePerformanceRun(selectedTierContract, observations, performanceEvidence, options.mode)
     : null;
   const status = externallyAborted
     ? "aborted"
-    : completeSamples && observedRepository && !unobservedFailure
+    : completeSamples && observedRepository && !unobservedFailure && !evidenceOverflow
       ? "completed"
       : "incomplete";
 
@@ -451,7 +464,9 @@ export async function runPerformanceProbe(
     endedAt: new Date(Math.max(0, endedMs)).toISOString(),
     elapsedMs: Math.max(0, endedMs - startedMs),
     status,
-    abortReason: externallyAborted ? abortReason(options.signal?.reason) : null,
+    abortReason: evidenceOverflow
+      ? "evidence_budget_exceeded"
+      : externallyAborted ? abortReason(options.signal?.reason) : null,
     cancelledInvocationCount,
     ok: status === "completed" && evaluation?.ok === true,
     observations: Object.freeze(observations),
