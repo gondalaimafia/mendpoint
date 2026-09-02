@@ -448,6 +448,7 @@ export function reconcileMcuLedgerLifecycle(
       settledEntryIds: [],
     };
     invoice.mcuMicros = safeLedgerSum([invoice.mcuMicros, entry.consumedMcuMicrosDelta]);
+    if (invoice.mcuMicros < 0) throw new Error("mcu_credit_exceeds_invoice_consumption");
     invoice.sourceEntryIds.push(entry.id);
     if (entry.entryType === "settlement") invoice.settledEntryIds.push(entry.id);
     invoices.set(entry.invoiceReference, invoice);
