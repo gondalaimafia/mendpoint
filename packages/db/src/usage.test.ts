@@ -196,6 +196,10 @@ describe("usage ledger", () => {
       ...creditInput,
       ...creditAuthorization,
     });
+    expect(credit).toMatchObject({
+      financeAuthorizationId: creditAuthorization.financeAuthorizationId,
+      financeAuthorizationDigest: creditAuthorization.financeAuthorizationDigest,
+    });
     expect(creditUsage(db, { ...creditInput, ...creditAuthorization })).toEqual(credit);
     expect(() => creditUsage(db, {
       ...creditInput,
@@ -232,6 +236,14 @@ describe("usage ledger", () => {
       ok: true,
       checked: 3,
       invoices: { "invoice-2026-08": 3_500_000 },
+    });
+    db.raw.exec("DROP TRIGGER usage_ledger_entries_append_only_update");
+    db.raw.prepare(
+      "UPDATE usage_ledger_entries SET finance_authorization_digest = ? WHERE id = ?",
+    ).run(`sha256:${"0".repeat(64)}`, credit.id);
+    expect(reconcileUsageLedger(db, "tenant_default")).toMatchObject({
+      ok: false,
+      error: `usage_integrity:${credit.id}`,
     });
   });
 
@@ -515,5 +527,31 @@ describe("usage ledger", () => {
       financeAuthorizationDigest: authorization.authorizationDigest,
       createdAt: "2026-08-01T12:02:00.000Z",
     })).toThrow("usage_finance_owner_inactive");
+
+    db.raw.prepare(
+      "UPDATE principals SET revoked_at = NULL WHERE id = ?",
+    ).run("finance-owner");
+    const consumed = creditUsage(db, {
+      id: "revoked-owner-credit",
+      tenantId: "tenant_default",
+      idempotencyKey: "revoked-owner-credit",
+      taskId: "finance-lifecycle-task",
+      mcuMicrosDelta: -1,
+      invoiceReference: "invoice-a",
+      reason: "approval before revocation",
+      actorPrincipalId: "finance-owner",
+      financeAuthorizationId: authorization.id,
+      financeAuthorizationDigest: authorization.authorizationDigest,
+      createdAt: "2026-08-01T12:02:00.000Z",
+    });
+    expect(reconcileUsageLedger(db, "tenant_default")).toMatchObject({ ok: true });
+    db.raw.exec("DROP TRIGGER usage_finance_authorizations_guard_update");
+    db.raw.prepare(
+      "UPDATE usage_finance_authorizations SET consumed_entry_id = ? WHERE id = ?",
+    ).run("finance-lifecycle-settlement", authorization.id);
+    expect(reconcileUsageLedger(db, "tenant_default")).toMatchObject({
+      ok: false,
+      error: `usage_finance_authorization_invalid:${consumed.id}`,
+    });
   });
 });
