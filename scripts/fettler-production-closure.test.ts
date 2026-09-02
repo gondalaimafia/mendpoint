@@ -17,12 +17,19 @@ describe("Fettler production closure operating contracts", () => {
       scripts: Record<string, string>;
     };
     const gaGate = readFileSync(join(import.meta.dirname, "ga-check.ts"), "utf8");
+    const closureSource = readFileSync(
+      join(import.meta.dirname, "fettler-production-closure.ts"),
+      "utf8",
+    );
     expect(FETTLER_PERFORMANCE_CONTRACT.version).toBe("2026-09-02.v3");
     expect(MCU_SCHEDULE_V1.version).toBe("mcu-v1");
     expect(manifest.scripts["ga:check"])
       .toContain("tsx scripts/ga-check.ts");
     expect(gaGate).toContain("checkFettlerProductionClosureArtifact");
     expect(gaGate).toContain("checkFettlerProductionClosureArtifact();");
+    expect(closureSource).toContain("reserveUsage");
+    expect(closureSource).toContain("reconcileUsageLedger");
+    expect(closureSource).not.toContain("createMcuLedgerEntry");
   });
 
   it("binds performance and metric definitions without claiming a measurement", () => {
@@ -60,7 +67,9 @@ describe("Fettler production closure operating contracts", () => {
           selfCheck: {
             reconciled: true,
             entryCount: 2,
-            settledEntryIds: [expect.stringMatching(/^mcu-entry-[a-f0-9]{64}$/)],
+            storageAuthority: "usage_ledger_entries",
+            ledgerHeadHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+            settledEntryIds: ["settlement-fettler-closure"],
           },
         },
       },
