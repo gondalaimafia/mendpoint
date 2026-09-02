@@ -1292,108 +1292,8 @@ function processIsAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    // EPERM means the pid exists but belongs to another user, e.g. a root-owned
-    // SSH-triggered run. Alive, and never ours to reap.
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
-}
-
-/**
- * Tolerance when matching a marker's recorded start time against the live pid's.
- * The marker stores `Date.now() - process.uptime() * 1000`; /proc derives the same
- * instant from whole-second btime plus clock ticks. Seconds of slack covers that,
- * and is far below the gap pid reuse across a machine restart produces.
- */
-export const PID_START_TIME_TOLERANCE_MS = 30_000;
-
-/** USER_HZ. 100 on every Linux this runs on; /proc exposes no way to read it. */
-const CLOCK_TICKS_PER_SECOND = 100;
-
-/**
- * Wall-clock start time of a live pid, or null when this platform cannot say.
- * Only /proc can answer, so anything else returns null and callers fail closed.
- */
-export function livePidStartedAtMs(
-  pid: number,
-  readProcFile: (path: string) => string = (path) => readFileSync(path, "utf8"),
-): number | null {
-  try {
-    const bootLine = readProcFile("/proc/stat")
-      .split("\n")
-      .find((line) => line.startsWith("btime "));
-    if (!bootLine) return null;
-    const bootSeconds = Number(bootLine.slice("btime ".length).trim());
-    if (!Number.isFinite(bootSeconds)) return null;
-    const stat = readProcFile(`/proc/${pid}/stat`);
-    // The comm field is parenthesised and may itself contain spaces or ")", so
-    // fields are counted from the LAST ")" rather than by splitting the line.
-    const afterComm = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/);
-    // Fields resume at 3 (state), so field 22 (starttime) is index 19.
-    const startTicks = Number(afterComm[19]);
-    if (!Number.isFinite(startTicks)) return null;
-    return bootSeconds * 1_000 + (startTicks / CLOCK_TICKS_PER_SECOND) * 1_000;
-  } catch {
-    return null;
-  }
-}
-
-export type FenceOwnerLiveness =
-  | { alive: true; determinable: true }
-  /** Alive, but nothing here can prove it is the SAME process. Fail closed. */
-  | { alive: true; determinable: false; reason: string }
-  | { alive: false; determinable: true };
-
-export interface FenceOwnerLivenessDeps {
-  isAlive?: (pid: number) => boolean;
-  startedAtMs?: (pid: number) => number | null;
-}
-
-/**
- * THE single authority on whether a fence marker's owner is still running.
- *
- * pid existence alone is not enough. A Firecracker restart resets the pid
- * namespace, so a dead owner's pid is readily reoccupied by an unrelated
- * process; the marker then looks alive forever, `recoverStaleMutationMarker`
- * refuses, and `initializeWithMutationLease` blocks every boot. The marker
- * carries `processStartedAt`, so compare it.
- *
- * This lives here, beside the fence itself, because a second copy in a caller
- * would be inert: `recoverStaleMutationMarker` re-tests liveness itself, so a
- * caller deciding "dead" by a smarter rule and then delegating would simply be
- * overruled here. One authority, used by the scheduler, the boot reap and
- * scripts/backup-fence-recover.ts alike.
- *
- * The third state is explicit. "Could not determine" is reported as such rather
- * than collapsed into "alive", so a caller can log the difference between an
- * owner that is running and an owner it merely cannot rule out.
- */
-export function fenceMarkerOwnerLiveness(
-  marker: Readonly<{ pid: number; processStartedAt: string }>,
-  deps: FenceOwnerLivenessDeps = {},
-): FenceOwnerLiveness {
-  const isAlive = deps.isAlive ?? processIsAlive;
-  const startedAtMs = deps.startedAtMs ?? ((pid: number) => livePidStartedAtMs(pid));
-  if (!isAlive(marker.pid)) return { alive: false, determinable: true };
-  const liveStart = startedAtMs(marker.pid);
-  if (liveStart === null) {
-    return { alive: true, determinable: false, reason: "process_start_time_unavailable" };
-  }
-  const markerStart = Date.parse(marker.processStartedAt);
-  if (!Number.isFinite(markerStart)) {
-    return { alive: true, determinable: false, reason: "marker_start_time_unparseable" };
-  }
-  // A live process that started materially later than the marker claims is a
-  // DIFFERENT process wearing a recycled pid.
-  return Math.abs(liveStart - markerStart) <= PID_START_TIME_TOLERANCE_MS
-    ? { alive: true, determinable: true }
-    : { alive: false, determinable: true };
-}
-
-export function fenceMarkerOwnerIsAlive(
-  marker: Readonly<{ pid: number; processStartedAt: string }>,
-  deps: FenceOwnerLivenessDeps = {},
-): boolean {
-  return fenceMarkerOwnerLiveness(marker, deps).alive;
 }
 
 export function recoverStaleMutationMarker(input: {
@@ -1402,11 +1302,6 @@ export function recoverStaleMutationMarker(input: {
   markerId: string;
   expectedMarkerSha256: string;
   ownerTerminationEvidence: string;
-  /**
-   * Owner-liveness predicate. Defaults to the start-time-aware authority above,
-   * so a recycled pid is not mistaken for the original owner. Injected in tests.
-   */
-  ownerIsAlive?: (marker: Readonly<{ pid: number; processStartedAt: string }>) => boolean;
 }): { recovered: true; kind: "writer" | "exclusive"; markerId: string; auditSha256: string } {
   const markerId = requiredText(input.markerId, "backup_fence_recovery_marker_id");
   if (!CUSTOMER_BACKUP_ID.test(markerId)) throw new Error("backup_fence_recovery_marker_id_invalid");
@@ -1439,8 +1334,7 @@ export function recoverStaleMutationMarker(input: {
     if (!safeEqualHex(inspected.markerSha256, input.expectedMarkerSha256)) {
       throw new Error("backup_fence_recovery_marker_evidence_mismatch");
     }
-    const ownerIsAlive = input.ownerIsAlive ?? ((marker) => fenceMarkerOwnerIsAlive(marker));
-    if (inspected.hostname === hostname() && ownerIsAlive(inspected)) {
+    if (inspected.hostname === hostname() && processIsAlive(inspected.pid)) {
       throw new Error("backup_fence_recovery_owner_still_alive");
     }
     const audit = {
@@ -1478,29 +1372,10 @@ function wait(delayMs: number): Promise<void> {
   return new Promise((resolveWait) => setTimeout(resolveWait, delayMs));
 }
 
-/**
- * Filesystem-identity seam. The privileged branch below only executes as root,
- * which no test process is, so without injection the chown path is unreachable
- * and a caller that creates a ROOT-OWNED recovery-audit.jsonl looks correct right
- * up until a uid-1000 backup fails on it in production.
- */
-export interface FenceOwnershipAuthority {
-  getuid?: () => number;
-  chown?: (path: string, uid: number, gid: number) => void;
-  chmod?: (path: string, mode: number) => void;
-  access?: (path: string, mode: number) => void;
-}
-
 export function prepareMutationFenceDirectories(
   fenceRoot: string,
   owner: { uid: number; gid: number } = { uid: 1000, gid: 1000 },
-  identity: FenceOwnershipAuthority = {},
 ): void {
-  const getuid = identity.getuid ?? (typeof process.getuid === "function" ? process.getuid.bind(process) : undefined);
-  const chown = identity.chown ?? chownSync;
-  const chmod = identity.chmod ?? chmodSync;
-  const access = identity.access ?? accessSync;
-  const privileged = typeof getuid === "function" && getuid() === 0;
   const safeFenceRoot = assertSafePrivilegedRoot(fenceRoot, "backup_fence_root");
   assertNoExistingFilesystemRedirect(
     safeFenceRoot,
@@ -1510,19 +1385,19 @@ export function prepareMutationFenceDirectories(
   for (const directory of [paths.root, paths.writers]) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     assertNoSymlink(directory);
-    if (privileged) {
-      chown(directory, owner.uid, owner.gid);
-      chmod(directory, 0o700);
+    if (typeof process.getuid === "function" && process.getuid() === 0) {
+      chownSync(directory, owner.uid, owner.gid);
+      chmodSync(directory, 0o700);
     }
-    access(directory, constants.R_OK | constants.W_OK);
+    accessSync(directory, constants.R_OK | constants.W_OK);
   }
   if (existsSync(paths.audit)) {
     assertNoSymlink(paths.audit);
-    if (privileged) {
-      chown(paths.audit, owner.uid, owner.gid);
-      chmod(paths.audit, 0o600);
+    if (typeof process.getuid === "function" && process.getuid() === 0) {
+      chownSync(paths.audit, owner.uid, owner.gid);
+      chmodSync(paths.audit, 0o600);
     }
-    access(paths.audit, constants.R_OK | constants.W_OK);
+    accessSync(paths.audit, constants.R_OK | constants.W_OK);
   }
 }
 
