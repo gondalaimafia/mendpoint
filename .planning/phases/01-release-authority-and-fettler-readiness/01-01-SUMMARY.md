@@ -16,7 +16,7 @@ affects: [01-02-readiness, 05-economics, 06-final-qualification]
 actuals:
   tokens: 25292
   tasks: 3
-  commits: 35
+  commits: 36
 
 tech-stack:
   added: []
@@ -111,7 +111,7 @@ status: complete
 4. **Exact-head performance review repair:** `89192456`, `b2a16f55`
 5. **Adversarial evidence-boundary repair:** `30ca1a5d`, `7c4f5280`
 6. **Long-run availability and evidence-budget repair:** `288d9bc6`, `7049be3a`, `880bb666`
-7. **Finance authority, producer limits, and bounded response repair:** `65d719eb`, `8b797dc2`, `8cf7704b`
+7. **Finance authority, producer limits, and bounded response repair:** `d74df5ae`, `e60f3a90`, `701757be`
 
 ## Files Created or Modified
 
@@ -180,7 +180,7 @@ status: complete
 - **Fix:** Require verified digest-bound finance authority for credits and adjustments, prohibit negative adjustments, enforce and retain the declared maximum file size, stream and cap response bodies at 1,048,576 bytes before parsing, retain explicit abort reasons, and document the exact observation and invocation ceilings.
 - **Files modified:** `packages/platform/src/mcu.ts`, `packages/platform/src/mcu.test.ts`, `packages/platform/src/index.ts`, `packages/eval/src/performance-contract.ts`, `packages/eval/src/performance-contract.test.ts`, `packages/eval/src/performance-runner.ts`, `packages/eval/src/performance-runner.test.ts`, `packages/eval/src/index.ts`, `docs/PERFORMANCE_CONTRACT.md`
 - **Verification:** The hostile RED suite exposed every gap. The repaired focused matrix passes 64 of 64, full workspace typecheck and optimized build pass, the protected general availability checks pass, the 19-test revert suite passes serially with a 30-second per-test allowance, and diff integrity passes.
-- **Committed in:** `65d719eb`, `8b797dc2`, `8cf7704b`
+- **Committed in:** `d74df5ae`, `e60f3a90`, `701757be`
 
 ---
 
@@ -190,7 +190,7 @@ status: complete
 ## Issues Encountered
 
 - The full workspace package and application suites passed. The root scripts run reported an existing Windows timing failure in `build-public-docs.test.ts` and Vitest worker update timeouts in the long proposal-authority suite. After the protected-package fix, all 36 proposal and closure assertions pass; the remaining worker remote procedure call timeout is test-harness timing rather than an assertion failure.
-- The standard five-second revert-obligation test command timed out in six Windows synthetic-repository cases while its assertions and current-tree checks remained sound. The same 19-test suite passed serially with a 30-second per-test allowance, and both the direct revert checker and protected general availability preflight passed.
+- An earlier standard five-second revert-obligation run timed out in six Windows synthetic-repository cases while its assertions and current-tree checks remained sound. After the final current-main rebase, the unchanged standard protected command passed all 19 tests, the direct revert checker, and the general availability preflight without a timeout override.
 
 ## Verification
 
@@ -223,9 +223,9 @@ status: complete
 - Pull request 610 repair GREEN proof: migration compute 20 of 20, evaluator contract and runner 41 of 41, and closure 3 of 3, for 64 of 64 focused tests.
 - Pull request 610 repair full workspace typecheck: passed for all packages, applications, and scripts.
 - Pull request 610 repair optimized production build: passed, 64 pages generated.
-- Pull request 610 repair protected general availability checks: specification, closure, configuration, claims, actions, architecture, model, naming, architecture decision record, third-state, strict evidence reachability, serial revert obligations, and general availability preflight passed.
-- Pull request 610 repair current base: `origin/main` at `8456b36ebe94a48560982d5265aedbfab30710e3`.
-- Pull request 610 tested implementation head: `8cf7704b2855faa1105e41134aba4fc54d432372`; the returned exact head adds this summary-only evidence update.
+- Pull request 610 repair protected general availability checks: specification, closure, configuration, claims, actions, architecture, model, naming, architecture decision record, third-state, strict evidence reachability, the standard 19-test revert-obligation command, and general availability preflight passed.
+- Pull request 610 repair current base: `origin/main` at `c246b777bf71d377126bbe33a16cda2160d51ef9`.
+- Pull request 610 tested implementation head: `701757be`; the returned exact head adds summary-only evidence updates.
 
 ## TDD Gate Compliance
 
@@ -247,7 +247,7 @@ None.
 ## Self-Check: PASSED
 
 - All 14 changed implementation, test, export, gate, and artifact files exist.
-- All 34 rebased implementation, test, and prior evidence commits are present on `agent-610-review-repair`; this repair adds one summary-only successor rather than amending history.
+- All 34 rebased implementation, test, and prior evidence commits are present on `agent-610-review-repair`; this repair adds two summary-only successors rather than amending history.
 - The tested implementation head is based on current `origin/main`; the returned release-update head is its summary-only successor.
 
 ---
