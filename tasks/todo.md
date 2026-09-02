@@ -4257,3 +4257,25 @@ Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, ba
 - NOT CONTINUOUS, deliberately: no workflow runs `recovery:proof`, so the RPO check does not fire on a schedule and cannot catch backups that silently stop. Wiring it into `customer-backup.yml` was considered and rejected on two grounds. That workflow executes on the customer machine through `flyctl ssh console`, where the proof would contend for the same mutation fence as the backup it is meant to verify; and it would need a full restore plus a rollback copy of production data on the production host. The proof stays operator-run, and continuous RPO monitoring remains owed work under `ME-ENT-007`.
 - Twenty-one heavy tests ran real AES-GCM, SQLite, and whole-tree copies under the 5000ms default; twelve failed on timeout on a Windows host while CI stayed green. The genuinely heavy cases carry per-test budgets in the existing repository idiom rather than a suite-wide override, so a real hang in a fast test still fails fast.
 - Not changed: `tenantId` was reported as bound only into `requestDigest`. It is a top-level field of both the passing and failed envelopes, covered by the HMAC that `signEvidence` computes over the whole unsigned object, and re-checked against the caller on replay, so editing it in a retained file already fails authentication. No cryptographic binding can stop an operator from labelling their own single-tenant run, so nothing was added.
+## 2026-09-02 Issue authority refresh for #433
+
+- [x] Bind issue-authority record #433 to its exact live GitHub state and `updatedAt` value without changing requirement status, availability, or claims.
+- [x] Recompute the issue-authority integrity digest from the complete proposed matrix; the release-train digest is untouched because no release-train record changed.
+- [x] Prove every other issue-authority record still matches live GitHub (14 of 15 matched before the change; only #433 had drifted).
+- [x] Run the closure, specification, ledger, and GA validators plus the focused authority suites and diff integrity.
+
+### Root cause
+
+- `docs/PRODUCTION_CLOSURE_MATRIX.json` pinned issue #433 at `updatedAt` `2026-08-30T23:49:27Z` (the reopen). A claim comment on the issue at `2026-08-31T18:03:50Z` advanced GitHub's `updated_at`, so `closure:github:check` on every push to `main` since `5501de99` failed with `ISSUE_METADATA_MISMATCH 433`, one failed workflow run per merge. The pull-request observation scope does not verify that record, which is why pull requests stayed green while `main` stayed red.
+
+### Scope and rollback
+
+- Owned files: `docs/PRODUCTION_CLOSURE_MATRIX.json` and this task record. No issue, requirement, public claim, workflow, policy, credential, or production runtime is mutated by this branch.
+- Rollback is a single commit revert. The main authority observer remains fail closed until a refreshed matrix is merged and a new exact-main observation passes.
+
+### Review
+
+- Live GitHub readback at `2026-09-02T00:05:21.467Z` confirmed issue #433 is open, titled `Production closure FC 04: Fettler customer proof`, assigned to `gondalaimafia`, with `updatedAt` `2026-08-31T18:03:50Z`; the record retains its owner, title, URL, and requirement mappings.
+- The complete matrix recomputation produced issue-authority digest `sha256:11036b890a56a523c87ee8de129fa6d95431abec949a92dc86cb356db1269fd9`. The release-train digest remains `sha256:55d1f00bbe1af30a9787d5a5468779b94d1cd7aecb2bc9952c9e833914645a96`.
+- `npm run closure:check`, `npm run spec:check`, `npm run ledger:check`, and `npm run ga:check` exit 0. The focused GitHub authority, closure-matrix, and proposal-authority suites pass all 129 tests; the proposal-authority process exited 1 twice on a vitest worker `Timeout calling "onTaskUpdate"` under host load with 33 of 33 tests passed, not on an assertion. `git diff --check` passes; the edited blob has 0 CR bytes.
+- The same drift will recur whenever anyone comments on any of the 15 authority issues, because the record pins a volatile timestamp; that is a design decision to revisit separately, not something this refresh changes.
