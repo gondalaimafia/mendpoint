@@ -203,6 +203,9 @@ export function reconcileMcuLedgerLifecycle(
         continue;
       }
       if (entry.consumedMcuMicrosDelta < 0) throw new Error("mcu_settlement_invalid");
+      if (entry.consumedMcuMicrosDelta > -entry.reservedMcuMicrosDelta) {
+        throw new Error("mcu_settlement_exceeds_reservation");
+      }
       settled = safeLedgerSum([settled, entry.consumedMcuMicrosDelta]);
     } else {
       if (entry.reservationId !== null || entry.reservedMcuMicrosDelta !== 0) {
