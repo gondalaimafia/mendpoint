@@ -269,7 +269,143 @@ function rowCount(db: Db, table: string): number {
   return (db.raw.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
 }
 
+type LegacyJobTenantShape = "missing" | "nullable";
+
+function buildLegacyJobVolume(
+  path: string,
+  tenantShape: LegacyJobTenantShape,
+  rows: ReadonlyArray<{ id: string; tenantId: string | null }>,
+): void {
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`
+    CREATE TABLE jobs (
+      id TEXT PRIMARY KEY,
+      ${tenantShape === "nullable" ? "tenant_id TEXT," : ""}
+      type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 3,
+      error TEXT,
+      result_json TEXT,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT
+    );
+  `);
+  for (const row of rows) {
+    if (tenantShape === "nullable") {
+      legacy.prepare(
+        `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+         VALUES (?, ?, 'repair', '{}', ?)`,
+      ).run(row.id, row.tenantId, TS);
+    } else {
+      legacy.prepare(
+        `INSERT INTO jobs (id, type, payload_json, created_at)
+         VALUES (?, 'repair', '{}', ?)`,
+      ).run(row.id, TS);
+    }
+  }
+  legacy.close();
+}
+
+function jobTenants(db: Db): Array<{ id: string; tenant_id: string | null }> {
+  return db.raw
+    .prepare("SELECT id, tenant_id FROM jobs ORDER BY id")
+    .all() as Array<{ id: string; tenant_id: string | null }>;
+}
+
+function closeTracked(db: Db): void {
+  db.raw.close();
+  const index = openDbs.indexOf(db);
+  if (index >= 0) openDbs.splice(index, 1);
+}
+
 describe("Fettler/Regauge logical database names", () => {
+  it("keeps a fresh legacy row unattributable when the tenant column is introduced", () => {
+    const path = join(newDir("tenant-fresh-upgrade"), "legacy.sqlite");
+    buildLegacyJobVolume(path, "missing", [{ id: "fresh-unknown", tenantId: null }]);
+
+    const migrated = boot(path);
+
+    expect(jobTenants(migrated)).toEqual([{ id: "fresh-unknown", tenant_id: null }]);
+    expect(
+      migrated.raw
+        .prepare("SELECT id FROM jobs WHERE tenant_id = 'tenant_default'")
+        .all(),
+    ).toEqual([]);
+  });
+
+  it("preserves aged null, empty, and valid tenant ownership without laundering", () => {
+    const path = join(newDir("tenant-aged-upgrade"), "aged.sqlite");
+    buildLegacyJobVolume(path, "nullable", [
+      { id: "aged-empty", tenantId: "" },
+      { id: "aged-null", tenantId: null },
+      { id: "aged-valid", tenantId: "tenant_customer" },
+    ]);
+
+    const migrated = boot(path);
+
+    expect(jobTenants(migrated)).toEqual([
+      { id: "aged-empty", tenant_id: "" },
+      { id: "aged-null", tenant_id: null },
+      { id: "aged-valid", tenant_id: "tenant_customer" },
+    ]);
+    expect(
+      migrated.raw
+        .prepare("SELECT id FROM jobs WHERE tenant_id = 'tenant_default'")
+        .all(),
+    ).toEqual([]);
+  });
+
+  it("resumes an interrupted tenant-column upgrade without claiming unknown rows", () => {
+    const path = join(newDir("tenant-interrupted-upgrade"), "interrupted.sqlite");
+    buildLegacyJobVolume(path, "missing", [{ id: "interrupted-null", tenantId: null }]);
+    const interrupted = new DatabaseSync(path);
+    interrupted.exec("ALTER TABLE jobs ADD COLUMN tenant_id TEXT");
+    interrupted.prepare(
+      `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+       VALUES ('interrupted-valid', 'tenant_customer', 'repair', '{}', ?)`,
+    ).run(TS);
+    interrupted.close();
+
+    const migrated = boot(path);
+
+    expect(jobTenants(migrated)).toEqual([
+      { id: "interrupted-null", tenant_id: null },
+      { id: "interrupted-valid", tenant_id: "tenant_customer" },
+    ]);
+  });
+
+  it("keeps the quarantine stable on rerun and rejects new unattributed writes", () => {
+    const path = join(newDir("tenant-rerun-upgrade"), "rerun.sqlite");
+    buildLegacyJobVolume(path, "nullable", [
+      { id: "rerun-empty", tenantId: "" },
+      { id: "rerun-null", tenantId: null },
+    ]);
+
+    const first = boot(path);
+    closeTracked(first);
+    const second = boot(path);
+
+    expect(jobTenants(second)).toEqual([
+      { id: "rerun-empty", tenant_id: "" },
+      { id: "rerun-null", tenant_id: null },
+    ]);
+    expect(() =>
+      second.raw.prepare(
+        `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+         VALUES ('new-null', NULL, 'repair', '{}', ?)`,
+      ).run(TS),
+    ).toThrow("tenant_id_required");
+    expect(() =>
+      second.raw.prepare(
+        `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+         VALUES ('new-empty', '', 'repair', '{}', ?)`,
+      ).run(TS),
+    ).toThrow("tenant_id_required");
+  });
+
   it("boots a legacy volume, converges byte-for-byte with fresh, and preserves every row", () => {
     const legacyPath = join(newDir("rename-legacy"), "legacy.sqlite");
     buildVolume(legacyPath, new Set(NEW_TABLES));
