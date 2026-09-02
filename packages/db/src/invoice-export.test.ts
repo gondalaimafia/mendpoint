@@ -728,6 +728,7 @@ describe("signed invoice exports", () => {
   it("migrates legacy adjustment and credit rows as explicit unverified authority without rewriting bytes", () => {
     const opened = open("legacy-finance-upgrade.sqlite");
     seed(opened.db);
+    const historicalInvoice = createInvoiceExport(opened.db, createInput());
     const previous = opened.db.raw.prepare(
       `SELECT entry_sequence, entry_hash FROM usage_ledger_entries
        WHERE tenant_id = 'tenant-a' ORDER BY entry_sequence DESC LIMIT 1`,
@@ -891,39 +892,63 @@ describe("signed invoice exports", () => {
       name: "usage_finance_authorizations_allocation_guard_update",
     });
     expect(reconcileUsageLedger(upgraded, "tenant-a")).toMatchObject({
-      ok: true,
+      ok: false,
+      error: "usage_finance_authority_legacy_unverified",
+      financeAuthorityStatus: "legacy_unverified",
       legacyUnverifiedFinanceEntryIds: ["legacy-adjustment-a", "legacy-credit-a"],
       invoices: { "invoice-a": 4_150_000 },
     });
-    const invoice = createInvoiceExport(upgraded, createInput());
-    expect(invoice.lines.map((line) => [line.usageEntryId, line.kind, line.moneyMicros])).toEqual([
-      ["settlement-a", "usage", 80_000],
-      ["legacy-adjustment-a", "adjustment", 5_000],
-      ["legacy-credit-a", "credit", -2_000],
-    ]);
-    expect(reconcileInvoiceExport(upgraded, "tenant-a", invoice.id, hmacSigner())).toMatchObject({
-      complete: true,
+    expect(() => createInvoiceExport(upgraded, createInput({
+      id: "invoice-after-legacy-upgrade",
+      idempotencyKey: "invoice-after-legacy-upgrade",
+    }))).toThrow("invoice_export_usage_chain_invalid");
+    expect(reconcileInvoiceExport(
+      upgraded,
+      "tenant-a",
+      historicalInvoice.id,
+      hmacSigner(),
+    )).toMatchObject({
+      complete: false,
+      issues: expect.arrayContaining(["invoice_usage_chain_invalid"]),
       usageChain: {
-        ok: true,
+        ok: false,
+        financeAuthorityStatus: "legacy_unverified",
         legacyUnverifiedFinanceEntryIds: ["legacy-adjustment-a", "legacy-credit-a"],
       },
     });
     expect(reconcileGrossMargin(upgraded, "tenant-a")).toMatchObject({
+      complete: false,
       usageIntegrity: {
-        ok: true,
+        ok: false,
+        financeAuthorityStatus: "legacy_unverified",
         legacyUnverifiedFinanceEntryIds: ["legacy-adjustment-a", "legacy-credit-a"],
       },
-      adjustedMcuMicros: 250_000,
-      creditedMcuMicros: 100_000,
-      netRevenueMoneyMicros: 83_000,
+      exactGrossMarginMoneyMicros: null,
     });
+
+    // Model a process crash after both ALTER statements committed but before
+    // the legacy evidence INSERT ran. The next boot must independently repair
+    // this state even though neither column is newly added on that boot.
     upgraded.raw.exec("DROP TRIGGER usage_legacy_finance_evidence_guard_delete");
-    upgraded.raw.prepare(
-      "DELETE FROM usage_legacy_finance_evidence WHERE entry_id = ?",
-    ).run("legacy-credit-a");
-    expect(reconcileUsageLedger(upgraded, "tenant-a")).toMatchObject({
-      ok: false,
-      error: "usage_finance_authorization_invalid:legacy-credit-a",
-    });
+    upgraded.raw.exec("DELETE FROM usage_legacy_finance_evidence");
+    upgraded.raw.close();
+    databases.pop();
+    const resumedUpgrade = createDb(opened.path);
+    databases.push(resumedUpgrade);
+    expect(resumedUpgrade.raw.prepare(
+      `SELECT entry_id, authority_status, entry_hash
+       FROM usage_legacy_finance_evidence ORDER BY entry_id`,
+    ).all()).toEqual([
+      {
+        entry_id: "legacy-adjustment-a",
+        authority_status: "legacy_unverified",
+        entry_hash: adjustmentHash,
+      },
+      {
+        entry_id: "legacy-credit-a",
+        authority_status: "legacy_unverified",
+        entry_hash: legacyUsageEntryHash(credit),
+      },
+    ]);
   });
 });
