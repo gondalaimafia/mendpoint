@@ -288,12 +288,17 @@ describe("public claim registry validation", () => {
 });
 
 describe("claim staleness against shipped code", () => {
+  const auditedFor = (
+    entries: Record<string, readonly string[]>,
+  ): ReadonlyMap<string, readonly string[]> => new Map(Object.entries(entries));
+
   it("reports a claim whose surface path changed since the audited revision", () => {
     const input = registry();
     const issues = detectStaleClaims(input, {
       status: "comparable",
       headRevision: "1111111111111111111111111111111111111111",
       changedPaths: ["apps/web/app/page.tsx"],
+      auditedSurfacePathsByClaim: auditedFor({ "CLM-001": ["apps/web/app/page.tsx"] }),
     });
     const stale = issues.filter((issue) => issue.code === "CLAIM_SURFACE_STALE");
     expect(stale).toHaveLength(1);
@@ -309,8 +314,64 @@ describe("claim staleness against shipped code", () => {
       status: "comparable",
       headRevision: "2222222222222222222222222222222222222222",
       changedPaths: ["apps/api/src/unrelated.ts", "README.md"],
+      auditedSurfacePathsByClaim: auditedFor({ "CLM-001": ["apps/web/app/page.tsx"] }),
     });
     expect(issues).toEqual([]);
+  });
+
+  it("reports a claim that dropped an audited surface even when the current surfaces are untouched (the bypass)", () => {
+    const input = registry();
+    // The audit mapped page.tsx; the claim now points elsewhere and nothing in
+    // the changed set is currently mapped, so the earlier current-surfaces-only
+    // intersection passed. The audited baseline still sees the dropped surface.
+    input.claims[0].surfacePaths = ["apps/web/app/other.tsx"];
+    const issues = detectStaleClaims(input, {
+      status: "comparable",
+      headRevision: "3333333333333333333333333333333333333333",
+      changedPaths: [],
+      auditedSurfacePathsByClaim: auditedFor({ "CLM-001": ["apps/web/app/page.tsx"] }),
+    });
+    const retargeted = issues.filter(
+      (issue) => issue.code === "CLAIM_SURFACE_RETARGETED",
+    );
+    expect(retargeted).toHaveLength(1);
+    expect(retargeted[0].subject).toBe("CLM-001");
+    expect(retargeted[0].message).toContain("apps/web/app/page.tsx");
+    expect(issues.some((issue) => issue.code === "CLAIM_SURFACE_STALE")).toBe(false);
+  });
+
+  it("reports a claim that did not exist at the audited revision", () => {
+    const input = registry();
+    const issues = detectStaleClaims(input, {
+      status: "comparable",
+      headRevision: "4444444444444444444444444444444444444444",
+      changedPaths: [],
+      auditedSurfacePathsByClaim: auditedFor({}),
+    });
+    const added = issues.filter((issue) => issue.code === "CLAIM_ADDED_AFTER_AUDIT");
+    expect(added).toHaveLength(1);
+    expect(added[0].subject).toBe("CLM-001");
+    // A brand-new claim is not double-flagged as a retarget of a surface it
+    // never had at the audit.
+    expect(issues.some((issue) => issue.code === "CLAIM_SURFACE_RETARGETED")).toBe(false);
+  });
+
+  it("normalizes anchored and dot-relative surface paths before comparing", () => {
+    for (const spelling of ["apps/web/app/page.tsx#L10", "./apps/web/app/page.tsx"]) {
+      const input = registry();
+      input.claims[0].surfacePaths = [spelling];
+      const issues = detectStaleClaims(input, {
+        status: "comparable",
+        headRevision: "5555555555555555555555555555555555555555",
+        changedPaths: ["apps/web/app/page.tsx"],
+        auditedSurfacePathsByClaim: auditedFor({ "CLM-001": ["apps/web/app/page.tsx"] }),
+      });
+      const stale = issues.filter((issue) => issue.code === "CLAIM_SURFACE_STALE");
+      expect(stale.map((issue) => `${spelling}:${issue.subject}`)).toEqual([
+        `${spelling}:CLM-001`,
+      ]);
+      expect(issues.some((issue) => issue.code === "CLAIM_SURFACE_RETARGETED")).toBe(false);
+    }
   });
 
   it("fails closed when the comparison is indeterminate rather than passing", () => {
