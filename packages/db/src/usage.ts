@@ -49,6 +49,8 @@ export type UsageLedgerEntry = Readonly<{
   invoiceReference: string | null;
   reason: string;
   actorPrincipalId: string | null;
+  financeAuthorizationId: string | null;
+  financeAuthorizationDigest: string | null;
   entrySequence: number;
   previousHash: string | null;
   entryHash: string;
@@ -125,6 +127,8 @@ type EntryRow = {
   invoice_reference: string | null;
   reason: string;
   actor_principal_id: string | null;
+  finance_authorization_id: string | null;
+  finance_authorization_digest: string | null;
   entry_sequence: number;
   prev_hash: string | null;
   entry_hash: string;
@@ -227,6 +231,8 @@ function entryFromRow(row: EntryRow): UsageLedgerEntry {
     invoiceReference: row.invoice_reference,
     reason: row.reason,
     actorPrincipalId: row.actor_principal_id,
+    financeAuthorizationId: row.finance_authorization_id,
+    financeAuthorizationDigest: row.finance_authorization_digest,
     entrySequence: row.entry_sequence,
     previousHash: row.prev_hash,
     entryHash: row.entry_hash,
@@ -717,6 +723,8 @@ type EntryInput = {
   invoiceReference?: string | null;
   reason: string;
   actorPrincipalId?: string | null;
+  financeAuthorizationId?: string | null;
+  financeAuthorizationDigest?: string | null;
   createdAt: string;
 };
 
@@ -736,10 +744,34 @@ function usageEntryHash(input: {
   invoiceReference: string | null;
   reason: string;
   actorPrincipalId: string | null;
+  financeAuthorizationId?: string | null;
+  financeAuthorizationDigest?: string | null;
   previousHash: string | null;
   createdAt: string;
 }) {
-  return createHash("sha256").update(JSON.stringify(input)).digest("hex");
+  const content = input.financeAuthorizationId === null ||
+    input.financeAuthorizationId === undefined
+    ? {
+        id: input.id,
+        tenantId: input.tenantId,
+        entrySequence: input.entrySequence,
+        entryType: input.entryType,
+        entitlementId: input.entitlementId,
+        idempotencyKey: input.idempotencyKey,
+        taskId: input.taskId,
+        campaignId: input.campaignId,
+        reservationId: input.reservationId,
+        priceVersion: input.priceVersion,
+        reservedDelta: input.reservedDelta,
+        consumedDelta: input.consumedDelta,
+        invoiceReference: input.invoiceReference,
+        reason: input.reason,
+        actorPrincipalId: input.actorPrincipalId,
+        previousHash: input.previousHash,
+        createdAt: input.createdAt,
+      }
+    : input;
+  return createHash("sha256").update(JSON.stringify(content)).digest("hex");
 }
 
 function insertEntry(db: AppDb, input: EntryInput): UsageLedgerEntry {
@@ -762,7 +794,9 @@ function insertEntry(db: AppDb, input: EntryInput): UsageLedgerEntry {
       row.consumedMcuMicrosDelta === input.consumedDelta &&
       row.invoiceReference === (input.invoiceReference ?? null) &&
       row.reason === input.reason &&
-      row.actorPrincipalId === (input.actorPrincipalId ?? null);
+      row.actorPrincipalId === (input.actorPrincipalId ?? null) &&
+      row.financeAuthorizationId === (input.financeAuthorizationId ?? null) &&
+      row.financeAuthorizationDigest === (input.financeAuthorizationDigest ?? null);
     if (!same) throw new Error("usage_idempotency_conflict");
     return row;
   }
@@ -790,6 +824,8 @@ function insertEntry(db: AppDb, input: EntryInput): UsageLedgerEntry {
     invoiceReference: input.invoiceReference ?? null,
     reason: input.reason,
     actorPrincipalId: input.actorPrincipalId ?? null,
+    financeAuthorizationId: input.financeAuthorizationId ?? null,
+    financeAuthorizationDigest: input.financeAuthorizationDigest ?? null,
     previousHash,
     createdAt: input.createdAt,
   });
@@ -797,9 +833,9 @@ function insertEntry(db: AppDb, input: EntryInput): UsageLedgerEntry {
     `INSERT INTO usage_ledger_entries
      (id, tenant_id, entry_type, entitlement_id, idempotency_key, task_id, campaign_id, reservation_id,
       price_version, reserved_mcu_micros_delta, consumed_mcu_micros_delta,
-      invoice_reference, reason, actor_principal_id, entry_sequence, prev_hash, entry_hash,
-      created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      invoice_reference, reason, actor_principal_id, finance_authorization_id,
+      finance_authorization_digest, entry_sequence, prev_hash, entry_hash, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.id,
     input.tenantId,
@@ -815,6 +851,8 @@ function insertEntry(db: AppDb, input: EntryInput): UsageLedgerEntry {
     input.invoiceReference ?? null,
     input.reason,
     input.actorPrincipalId ?? null,
+    input.financeAuthorizationId ?? null,
+    input.financeAuthorizationDigest ?? null,
     entrySequence,
     previousHash,
     entryHash,
@@ -835,6 +873,15 @@ function prepareEntry(db: AppDb, input: EntryInput) {
   required("usage_reason", input.reason);
   if (input.campaignId) required("usage_campaign_id", input.campaignId);
   if (input.invoiceReference) required("usage_invoice_reference", input.invoiceReference);
+  if (input.financeAuthorizationId) {
+    required("usage_finance_authorization_id", input.financeAuthorizationId);
+  }
+  if (input.financeAuthorizationDigest) {
+    required("usage_finance_authorization_digest", input.financeAuthorizationDigest);
+  }
+  if (Boolean(input.financeAuthorizationId) !== Boolean(input.financeAuthorizationDigest)) {
+    throw new Error("usage_finance_authorization_binding_invalid");
+  }
   time("usage_created_at", input.createdAt);
   micros("usage_reserved_delta", input.reservedDelta, true);
   micros("usage_consumed_delta", input.consumedDelta, true);
@@ -1018,6 +1065,8 @@ function signedUsageChange(
       priceVersion: entitlement.priceVersionId,
       reservedDelta: 0,
       consumedDelta: delta,
+      financeAuthorizationId: input.financeAuthorizationId ?? null,
+      financeAuthorizationDigest: input.financeAuthorizationDigest ?? null,
     };
     prepareEntry(db, entry);
     const existing = one<EntryRow>(
@@ -1132,6 +1181,57 @@ export function creditUsage(
   return signedUsageChange(db, input, "credit");
 }
 
+function financeAuthorizationMatchesEntry(db: AppDb, entry: UsageLedgerEntry): boolean {
+  if (entry.entryType !== "adjustment" && entry.entryType !== "credit") {
+    return entry.financeAuthorizationId === null && entry.financeAuthorizationDigest === null;
+  }
+  if (
+    !entry.financeAuthorizationId ||
+    !entry.financeAuthorizationDigest ||
+    !entry.invoiceReference ||
+    !entry.actorPrincipalId
+  ) {
+    return false;
+  }
+  const row = one<FinanceAuthorizationRow>(
+    db,
+    `SELECT * FROM usage_finance_authorizations WHERE tenant_id = ? AND id = ?`,
+    [entry.tenantId, entry.financeAuthorizationId],
+  );
+  if (!row) return false;
+  const finance = financeAuthorizationFromRow(row);
+  const expectedIntentDigest = sha256(usageFinanceIntent({
+    tenantId: entry.tenantId,
+    actorPrincipalId: entry.actorPrincipalId,
+    entryType: entry.entryType,
+    invoiceReference: entry.invoiceReference,
+    entryIdempotencyKey: entry.idempotencyKey,
+    mcuMicrosDelta: entry.consumedMcuMicrosDelta,
+    reason: entry.reason,
+  }));
+  const expectedAuthorizationDigest = usageFinanceAuthorizationDigest({
+    id: finance.id,
+    tenantId: finance.tenantId,
+    approvedByPrincipalId: finance.approvedByPrincipalId,
+    approvedByRole: finance.approvedByRole,
+    actorPrincipalId: finance.actorPrincipalId,
+    entryType: finance.entryType,
+    invoiceReference: finance.invoiceReference,
+    entryIdempotencyKey: finance.entryIdempotencyKey,
+    mcuMicrosDelta: finance.mcuMicrosDelta,
+    reason: finance.reason,
+    intentDigest: finance.intentDigest,
+    approvedAt: finance.approvedAt,
+    expiresAt: finance.expiresAt,
+  });
+  return finance.entryType === entry.entryType &&
+    finance.intentDigest === expectedIntentDigest &&
+    finance.authorizationDigest === expectedAuthorizationDigest &&
+    finance.authorizationDigest === entry.financeAuthorizationDigest &&
+    finance.consumedEntryId === entry.id &&
+    finance.consumedAt === entry.createdAt;
+}
+
 export function reconcileUsageLedger(db: AppDb, tenantId: string) {
   const entries = many<EntryRow>(
     db,
@@ -1161,6 +1261,8 @@ export function reconcileUsageLedger(db: AppDb, tenantId: string) {
       invoiceReference: entry.invoiceReference,
       reason: entry.reason,
       actorPrincipalId: entry.actorPrincipalId,
+      financeAuthorizationId: entry.financeAuthorizationId,
+      financeAuthorizationDigest: entry.financeAuthorizationDigest,
       previousHash,
       createdAt: entry.createdAt,
     });
@@ -1170,6 +1272,13 @@ export function reconcileUsageLedger(db: AppDb, tenantId: string) {
       entry.entryHash !== expectedHash
     ) {
       return { ok: false, checked: index, error: `usage_integrity:${entry.id}` };
+    }
+    if (!financeAuthorizationMatchesEntry(db, entry)) {
+      return {
+        ok: false,
+        checked: index,
+        error: `usage_finance_authorization_invalid:${entry.id}`,
+      };
     }
     reserved += entry.reservedMcuMicrosDelta;
     consumed += entry.consumedMcuMicrosDelta;

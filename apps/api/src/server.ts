@@ -504,6 +504,7 @@ const USAGE_ERRORS = [
     "usage_credit_invalid",
     "usage_invoice_reference_required",
     "usage_finance_authorization_id_invalid",
+    "usage_finance_authorization_digest_invalid",
     "usage_finance_approved_by_principal_id_invalid",
     "usage_finance_actor_principal_id_invalid",
     "usage_finance_approved_at_invalid",
