@@ -330,7 +330,7 @@ function closeTracked(db: Db): void {
   if (index >= 0) openDbs.splice(index, 1);
 }
 
-function expectOmittedTenantInsertsRejected(
+function expectUnattestedDefaultTenantInsertsRejected(
   database: Pick<DatabaseSync, "exec">,
   suffix: string,
 ): void {
@@ -705,7 +705,7 @@ describe("Fettler/Regauge logical database names", () => {
     },
   );
 
-  it("rejects omitted tenant ownership across repair, rollback, and restart", () => {
+  it("rejects omitted and explicit default ownership across repair, rollback, and restart", () => {
     const path = join(newDir("tenant-omitted-repair-rollback-restart"), "legacy.sqlite");
     buildLegacyOwnershipVolume(path);
     applyExactReleasedPredecessorTenantMigration(path);
@@ -714,19 +714,43 @@ describe("Fettler/Regauge logical database names", () => {
     attestExactReconciliationScope(path);
 
     const repaired = boot(path);
-    expectOmittedTenantInsertsRejected(repaired.raw, "repair");
+    expectUnattestedDefaultTenantInsertsRejected(repaired.raw, "repair");
     closeTracked(repaired);
 
     const rollback = new DatabaseSync(path);
     try {
       applyReleasedFallbackBackfill(path);
-      expectOmittedTenantInsertsRejected(rollback, "rollback");
+      expectUnattestedDefaultTenantInsertsRejected(rollback, "rollback");
     } finally {
       rollback.close();
     }
 
     const restarted = boot(path);
-    expectOmittedTenantInsertsRejected(restarted.raw, "restart");
+    expectUnattestedDefaultTenantInsertsRejected(restarted.raw, "restart");
+  });
+
+  it("preserves explicit default tenant inserts on fresh schemas", () => {
+    const fresh = boot(join(newDir("tenant-explicit-default-fresh"), "fresh.sqlite"));
+    fresh.raw.exec(`
+      INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+      VALUES ('jobs-explicit-fresh', 'tenant_default', 'repair', '{}', '${TS}');
+      INSERT INTO repair_sessions (id, tenant_id, repo_path, status, created_at)
+      VALUES ('repair_sessions-explicit-fresh', 'tenant_default', '/repo', 'pending', '${TS}');
+      INSERT INTO agent_runs (id, tenant_id, goal, repo_path, status, created_at)
+      VALUES ('agent_runs-explicit-fresh', 'tenant_default', 'repair', '/repo', 'pending', '${TS}');
+      INSERT INTO audit_events
+        (id, tenant_id, actor, action, resource_type, metadata_json, created_at)
+      VALUES ('audit_events-explicit-fresh', 'tenant_default', 'legacy',
+        'legacy.observed', 'legacy', '{}', '${TS}');
+      INSERT INTO suppressed_patterns (id, tenant_id, pattern, created_at)
+      VALUES ('suppressed_patterns-explicit-fresh', 'tenant_default',
+        'legacy-pattern', '${TS}');
+    `);
+    for (const table of LEGACY_OWNERSHIP_TABLES) {
+      expect(fresh.raw.prepare(
+        `SELECT tenant_id FROM ${table} WHERE id = ?`,
+      ).get(`${table}-explicit-fresh`)).toEqual({ tenant_id: "tenant_default" });
+    }
   });
 
   it("seals the discovered row set against later scope insertion", () => {

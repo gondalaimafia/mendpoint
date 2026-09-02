@@ -3959,7 +3959,7 @@ function reconcileLegacyTenantOwnership(
           [legacyTenantOwnershipQuarantineScopeDigest(db), discoveredAt],
         );
       }
-      installLegacyTenantOwnershipRecoveryGuards(db);
+      installLegacyTenantOwnershipRecoveryGuards(db, releasedFallbackTenantTables);
       db.raw.exec("COMMIT");
     } catch (error) {
       if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
@@ -3973,7 +3973,7 @@ function reconcileLegacyTenantOwnership(
   const ownsRecoveryTransaction = !db.raw.isTransaction;
   if (ownsRecoveryTransaction) db.raw.exec("BEGIN IMMEDIATE");
   try {
-    installLegacyTenantOwnershipRecoveryGuards(db);
+    installLegacyTenantOwnershipRecoveryGuards(db, releasedFallbackTenantTables);
 
   const sealedDiscoveryState = get<{ scope_digest: string }>(
     db,
@@ -4168,7 +4168,10 @@ function installTenantNonblankGuards(db: AppDb, tables: readonly string[]): void
   }
 }
 
-function installLegacyTenantOwnershipRecoveryGuards(db: AppDb): void {
+function installLegacyTenantOwnershipRecoveryGuards(
+  db: AppDb,
+  releasedFallbackTenantTables: ReadonlySet<string>,
+): void {
   const ownsTransaction = !db.raw.isTransaction;
   if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
   try {
@@ -4189,11 +4192,45 @@ function installLegacyTenantOwnershipRecoveryGuards(db: AppDb): void {
        BEFORE INSERT ON legacy_tenant_ownership_quarantine_scope
        BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_quarantine_scope_sealed'); END`,
     );
+    installLegacyTenantOwnershipDefaultAttributionGuards(
+      db,
+      releasedFallbackTenantTables,
+    );
     installLegacyTenantOwnershipSourceGuards(db);
     if (ownsTransaction) db.raw.exec("COMMIT");
   } catch (error) {
     if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
     throw error;
+  }
+}
+
+function installLegacyTenantOwnershipDefaultAttributionGuards(
+  db: AppDb,
+  releasedFallbackTenantTables: ReadonlySet<string>,
+): void {
+  for (const table of LEGACY_TENANT_OWNERSHIP_TABLES) {
+    const trigger = `${table}_legacy_tenant_ownership_default_insert`;
+    db.raw.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+    if (!releasedFallbackTenantTables.has(table)) continue;
+    db.raw.exec(`
+      CREATE TRIGGER ${trigger}
+      BEFORE INSERT ON ${table}
+      WHEN NEW.tenant_id = 'tenant_default'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM legacy_tenant_ownership_reconciliation_scope scope
+          INNER JOIN legacy_tenant_ownership_attestations attestation
+            ON attestation.table_name = scope.table_name
+           AND attestation.row_id = scope.row_id
+           AND attestation.tenant_id = scope.tenant_id
+          WHERE scope.table_name = '${table}'
+            AND scope.row_id = NEW.id
+            AND scope.tenant_id = NEW.tenant_id
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'legacy_tenant_ownership_attestation_required');
+      END;
+    `);
   }
 }
 
