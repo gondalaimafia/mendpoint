@@ -89,5 +89,5 @@ List remaining risks.
 - [ ] Peer review complete
 - [ ] P0/P1 findings resolved
 - [ ] P2 findings resolved or explicitly accepted/escalated
-- [ ] CI green
+- [ ] all required status checks per branch protection are green
 - [ ] Ready for human merge

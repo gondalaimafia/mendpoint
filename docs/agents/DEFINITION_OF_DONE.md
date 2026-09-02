@@ -19,7 +19,7 @@ A task is DONE only when:
 - P0/P1 findings are resolved
 - P2 findings are resolved or explicitly accepted/escalated
 - peer review is rerun after substantive changes
-- CI is green
+- all required status checks per branch protection are green
 - rollback implications are understood
 - known risks are documented
 - the PR is ready for human merge
