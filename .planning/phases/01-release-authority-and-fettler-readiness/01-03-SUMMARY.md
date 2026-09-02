@@ -13,21 +13,23 @@ requirements: [ME-ENT-003]
 
 Implemented a preparatory customer-managed key adapter without changing the merged envelope, lifecycle, rotation, revocation, access-audit, or break-glass contracts from pull request #578. This adapter is not production activation evidence on its own.
 
-The adapter keeps key-encryption-key material outside Mendpoint. It sends only the existing tenant, provider, key, version, wrapped-key, and data-key fields through an injected HTTPS transport. Every external response is bound to the configured tenant, provider, key identifier, key version, customer-managed classification, attestation, and key-material fingerprint. Every request also requires an exact destination authority and fresh validation of every resolved address.
+The adapter keeps key-encryption-key material outside Mendpoint. It sends only the existing tenant, provider, key, version, wrapped-key, and data-key fields through an injected HTTPS transport. Every external response is bound to the configured tenant, provider, key identifier, key version, customer-managed classification, attestation, and key-material fingerprint. The exact fingerprint is now also bound durably through a versioned attestation digest and the envelope's outer authenticated data. Every request requires an exact destination authority, a hard pre-network request-byte ceiling, and fresh validation of every resolved address.
 
 ## Artifacts
 
-- `packages/platform/src/external-kek-client.ts`: bounded HTTPS transport with mandatory TLS, exact destination authority, public-address validation by default, explicit exact private-address authorization, DNS-rebinding and socket-reuse controls, timeout, response-size, redirect, exact JSON media-type, and redacted-error enforcement.
+- `packages/platform/src/external-kek-client.ts`: bounded HTTPS transport with mandatory TLS, exact destination authority, public-address validation by default, explicit exact private-address authorization, DNS-rebinding and socket-reuse controls, pre-network request-size validation, timeout, response-size, redirect, exact JSON media-type, and redacted-error enforcement.
 - `packages/platform/src/vault-envelope.ts`: `createExternalKeyEncryptionKeyProvider` factory and fail-closed external provider implementation using the unchanged `KeyEncryptionKeyProvider` interface.
 - `packages/platform/src/index.ts`: public factory, client, configuration, and transport exports.
-- `packages/platform/src/external-kek-client.test.ts`: denial, malformed-body, oversize-body, timeout, HTTPS, request-shape, native all-address lookup, socket-reuse mutation, exact media-type, IPv4 and IPv6 address-class, private-authorization, and DNS-rebinding coverage.
-- `packages/platform/src/vault-envelope.test.ts`: authority mutation, stale attestation, invalid data-key length, redaction, and full envelope seal-and-open coverage.
+- `packages/platform/src/external-kek-client.test.ts`: denial, malformed-body, request and response overrun, timeout, abort settlement, HTTPS, request-shape, native all-address lookup, socket-reuse mutation, exact media-type, IPv4 and IPv6 address-class, private-authorization, and DNS-rebinding coverage.
+- `packages/platform/src/vault-envelope.test.ts`: authority mutation, fingerprint-only restart drift, stale attestation, invalid data-key length, redaction, and full envelope seal-and-open coverage.
 
 ## Verification
 
-- `npm test -w @mendpoint/platform -- src/vault-envelope.test.ts src/external-kek-client.test.ts`: 65 tests passed.
-- `npm test -w @mendpoint/platform`: 301 tests passed across 20 files.
+- RED verification: the 69-test focused suite failed only on fingerprint-only restart drift and a direct oversized request reaching the requester; 67 tests passed.
+- `npm test -w @mendpoint/platform -- src/vault-envelope.test.ts src/external-kek-client.test.ts`: 69 tests passed.
+- `npm test -w @mendpoint/platform`: 305 tests passed across 20 files.
 - `npm run typecheck -w @mendpoint/platform`: passed.
+- `npm run build`: optimized production build passed, including all 64 static pages.
 - `git diff --check`: passed.
 
 ## Security and Compatibility
@@ -40,7 +42,9 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 - Native requests do not use the authority-keyed global socket pool, preventing a socket authorized by one address policy from being reused under a disjoint policy for the same hostname.
 - Provider responses require the exact `application/json` media type, with parameters such as a valid charset accepted only after the media type is parsed exactly.
 - Provider bodies, credentials, plaintext data keys, and wrapped bytes are never copied into errors.
+- Serialized requests larger than 128 KiB are rejected before timeout setup, destination resolution, or requester invocation.
 - Responses with the wrong provider, tenant, key identifier, key version, attestation, or key-material fingerprint are rejected.
+- Customer-managed attestations require a canonical fingerprint and bind it into version 2 of the attestation authority. Previously persisted customer-managed envelopes without that binding fail closed; local and other non-customer-managed digests remain byte-compatible.
 - Unwrapped data keys must decode canonically to exactly 32 bytes.
 - Existing local and configured providers remain Mendpoint-custodied and retain their signatures and serialized formats.
 - No purpose or request-digest guarantee was added to the provider interface.
@@ -55,8 +59,10 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 - `5dfe79fe`: validated socket isolation repair, patch-identical to pre-rebase `e25bf527`.
 - `4b808f24`: oversized declared-response listener ordering and single-settlement repair, patch-identical to pre-rebase `31f04f9e`.
 - `f7481e39`: evidence-only exact-head binding, patch-identical to pre-rebase `3b1a50a9`.
+- `37dc160a`: hostile regressions for fingerprint-only restart drift, oversized direct requests, native streaming overrun, and aborted response settlement.
+- `dcdc73c9`: versioned customer-managed fingerprint binding and pre-network request ceiling repair.
 
-The exact base for this series is `e69d997b7eef88ffcc7786a3e51da46eb1e677d4`; the commands above verify the current repaired tree. The independent review of pre-rebase head `3b1a50a9bff1ac4928e160602d6618bc37c1e0e0` is superseded by this history rewrite. A different reviewer must inspect and approve the new exact head before merge.
+The exact base for this series is `e69d997b7eef88ffcc7786a3e51da46eb1e677d4`; the commands above verify implementation head `dcdc73c95fb08a10c9718c189ce00c5ba8dff6a0`. The prior independent review at `bca318eb9e38723fc492009c71ac082a0cf885e3` found the two repaired authority and request-bound defects and is superseded. A different reviewer must inspect and approve the final exact head before merge.
 
 ## Remaining Release Work
 
