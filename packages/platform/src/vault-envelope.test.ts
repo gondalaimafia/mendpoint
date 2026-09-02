@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ConfiguredEnvelopeKeyProvider,
+  createExternalKeyEncryptionKeyProvider,
   DisabledExternalVaultProvider,
   DurableEnvelopeSecretProvider,
   EnvelopeKeyLifecycleRegistry,
@@ -12,6 +13,7 @@ import {
   type EnvelopeKeyReference,
   type DurableEnvelopeSecretVersion,
 } from "./vault-envelope.js";
+import type { ExternalKeyTransport } from "./external-kek-client.js";
 
 const at = "2026-08-02T00:00:00.000Z";
 const key1: EnvelopeKeyReference = {
@@ -45,6 +47,172 @@ function setup() {
   });
   return { registry, provider, events, vault };
 }
+
+const externalBinding = {
+  tenantId: "tenant-a",
+  keyId: "tenant-key",
+  version: "1",
+  attestation: "customer-kms:key/tenant-key:version/1",
+  keyMaterialFingerprint: "a".repeat(64),
+} as const;
+
+function externalResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    provider: "customer-kms",
+    tenantId: "tenant-a",
+    keyId: "tenant-key",
+    version: "1",
+    customerManaged: true,
+    attestation: externalBinding.attestation,
+    keyMaterialFingerprint: externalBinding.keyMaterialFingerprint,
+    ...overrides,
+  };
+}
+
+function externalTransport(overrides: Partial<ExternalKeyTransport> = {}): ExternalKeyTransport {
+  return {
+    attestKey: async () => externalResponse(),
+    wrapDataKey: async () => externalResponse({ wrappedDataKey: "d3JhcHBlZA==" }),
+    unwrapDataKey: async () => externalResponse({ dataKeyBase64: Buffer.alloc(32, 9).toString("base64") }),
+    ...overrides,
+  };
+}
+
+describe("external customer-managed key provider", () => {
+  it("wraps and unwraps without importing key-encryption-key material", async () => {
+    const transport = externalTransport();
+    const provider = createExternalKeyEncryptionKeyProvider({
+      provider: "customer-kms",
+      keys: [externalBinding],
+    }, transport);
+    const key = {
+      provider: "customer-kms",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: true,
+    } as const;
+
+    expect(provider.enabled).toBe(true);
+    expect(provider.keyMaterialFingerprints()).toEqual([externalBinding.keyMaterialFingerprint]);
+    await expect(provider.keyMaterialFingerprint(key, "tenant-a"))
+      .resolves.toBe(externalBinding.keyMaterialFingerprint);
+    await expect(provider.attestKey(key, "tenant-a")).resolves.toMatchObject({
+      ...key,
+      attestation: externalBinding.attestation,
+      attestationSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    await expect(provider.wrapDataKey(key, "tenant-a", Buffer.alloc(32, 8)))
+      .resolves.toBe("d3JhcHBlZA==");
+    await expect(provider.unwrapDataKey(key, "tenant-a", "d3JhcHBlZA=="))
+      .resolves.toEqual(Buffer.alloc(32, 9));
+  });
+
+  it("seals and opens through the unchanged envelope contract", async () => {
+    let wrapped: string | undefined;
+    let remoteDataKey: Buffer | undefined;
+    const provider = createExternalKeyEncryptionKeyProvider({
+      provider: "customer-kms",
+      keys: [externalBinding],
+    }, externalTransport({
+      wrapDataKey: async (_key, tenantId, dataKey) => {
+        expect(tenantId).toBe("tenant-a");
+        remoteDataKey = Buffer.from(dataKey);
+        wrapped = Buffer.from("remote-wrapped-data-key").toString("base64");
+        return externalResponse({ wrappedDataKey: wrapped });
+      },
+      unwrapDataKey: async (_key, tenantId, wrappedDataKey) => {
+        expect(tenantId).toBe("tenant-a");
+        expect(wrappedDataKey).toBe(wrapped);
+        return externalResponse({ dataKeyBase64: remoteDataKey?.toString("base64") });
+      },
+    }));
+    const key = {
+      provider: "customer-kms",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: true,
+    } as const;
+    const registry = new EnvelopeKeyLifecycleRegistry();
+    registry.register(lifecycle(key, 1));
+    const vault = new EnvelopeSecretVault(registry, [provider], () => undefined);
+
+    const envelope = await vault.encrypt("github-token", "customer-secret", key, context);
+    expect(envelope.wrappedDataKey).toBe(wrapped);
+    expect(JSON.stringify(envelope)).not.toContain("customer-secret");
+    await expect(vault.decrypt(envelope, context)).resolves.toBe("customer-secret");
+  });
+
+  it.each([
+    ["wrong tenant", { tenantId: "tenant-b" }],
+    ["wrong provider", { provider: "forged-kms" }],
+    ["wrong key", { keyId: "other-key" }],
+    ["wrong key version", { version: "2" }],
+    ["stale attestation", { attestation: "stale-attestation" }],
+    ["wrong key fingerprint", { keyMaterialFingerprint: "b".repeat(64) }],
+  ])("rejects %s authority responses", async (_name, mutation) => {
+    const provider = createExternalKeyEncryptionKeyProvider({
+      provider: "customer-kms",
+      keys: [externalBinding],
+    }, externalTransport({ attestKey: async () => externalResponse(mutation) }));
+
+    await expect(provider.attestKey({
+      provider: "customer-kms",
+      keyId: "tenant-key",
+      version: "1",
+    }, "tenant-a")).rejects.toThrow("external_kek_operation_failed");
+  });
+
+  it("rejects invalid data-key lengths and redacts transport failures", async () => {
+    const provider = createExternalKeyEncryptionKeyProvider({
+      provider: "customer-kms",
+      keys: [externalBinding],
+    }, externalTransport({
+      unwrapDataKey: async () => externalResponse({
+        dataKeyBase64: Buffer.alloc(31, 9).toString("base64"),
+        privateProviderBody: "do-not-echo",
+      }),
+    }));
+    const key = {
+      provider: "customer-kms",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: true,
+    } as const;
+
+    const invalidLength = await provider.unwrapDataKey(key, "tenant-a", "d3JhcHBlZA==")
+      .catch((caught: unknown) => caught);
+    expect(invalidLength).toEqual(new Error("external_kek_operation_failed"));
+    expect(String(invalidLength)).not.toContain("do-not-echo");
+
+    const failing = createExternalKeyEncryptionKeyProvider({
+      provider: "customer-kms",
+      keys: [externalBinding],
+    }, externalTransport({
+      attestKey: async () => { throw new Error("credential data-key wrapped-bytes provider-body"); },
+    }));
+    const redacted = await failing.attestKey(key, "tenant-a").catch((caught: unknown) => caught);
+    expect(redacted).toEqual(new Error("external_kek_operation_failed"));
+    expect(String(redacted)).not.toMatch(/credential|data-key|wrapped-bytes|provider-body/);
+  });
+
+  it("rejects invalid configuration and non-customer-managed use", async () => {
+    expect(() => createExternalKeyEncryptionKeyProvider({
+      provider: "customer-kms",
+      keys: [{ ...externalBinding, keyMaterialFingerprint: "not-a-digest" }],
+    }, externalTransport())).toThrow("external_kek_configuration_invalid");
+
+    const provider = createExternalKeyEncryptionKeyProvider({
+      provider: "customer-kms",
+      keys: [externalBinding],
+    }, externalTransport());
+    await expect(provider.wrapDataKey({
+      provider: "customer-kms",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: false,
+    }, "tenant-a", Buffer.alloc(32, 1))).rejects.toThrow("external_kek_operation_failed");
+  });
+});
 
 describe("envelope secret lifecycle", () => {
   it("persists provider attestation in outer AAD and rejects authority drift after restart", async () => {
