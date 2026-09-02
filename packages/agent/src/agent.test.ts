@@ -114,11 +114,8 @@ describe("runtime model authority", () => {
 describe("runtime model outage classification", () => {
   it("blocks reconciliation after a post-dispatch connection loss", () => {
     const error = modelPlanOutageError({ status: "request_failed", call: null });
-    expect(classifyModelProviderFailure({ error })).toMatchObject({
-      failureKind: "completed",
-      retryable: false,
-      remoteSideEffectUncertain: true,
-    });
+    expect(error).toMatchObject({ remoteSideEffectUncertain: true });
+    expect(classifyModelProviderFailure({ error })).toEqual({ failureKind: "completed" });
   });
 });
 

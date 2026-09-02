@@ -2179,7 +2179,7 @@ type ModelPlanStatus =
   | "budget_exceeded"
   | "response_invalid";
 
-type ModelPlanResult = Readonly<{
+export type ModelPlanResult = Readonly<{
   status: ModelPlanStatus;
   call: ToolCall | null;
   effectId?: string;
@@ -3163,7 +3163,7 @@ function modelOutageScope(
   });
 }
 
-function modelPlanOutageError(plan: ModelPlanResult): Error {
+export function modelPlanOutageError(plan: ModelPlanResult): Error {
   if (plan.status === "response_invalid" || plan.status === "response_too_large") {
     return new SyntaxError(`warden_runtime_model_${plan.status}`);
   }
@@ -3172,10 +3172,8 @@ function modelPlanOutageError(plan: ModelPlanResult): Error {
     code?: string;
     remoteSideEffectUncertain?: boolean;
   };
-  if (plan.status === "request_timeout") {
+  if (plan.status === "request_timeout" || plan.status === "request_failed") {
     error.remoteSideEffectUncertain = true;
-  } else if (plan.status === "request_failed") {
-    error.code = "ECONNREFUSED";
   } else if (plan.status === "rate_limited") {
     error.status = 429;
   } else if (plan.status === "http_transient_error") {

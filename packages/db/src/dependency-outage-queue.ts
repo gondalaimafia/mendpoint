@@ -179,6 +179,10 @@ type HealthRow = OutageRow & {
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const OPERATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,499}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
+const FAILURE_KINDS = new Set([
+  "timeout", "throttled", "transient", "invalid_response", "authentication",
+  "permission", "permanent", "expired", "completed",
+]);
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -208,6 +212,45 @@ function validateScope(scope: DependencyOutageScope): void {
   if (!IDENTITY.test(scope.providerId)) throw new Error("dependency_outage_provider_invalid");
   if (!OPERATION_ID.test(scope.operationId)) throw new Error("dependency_outage_operation_id_invalid");
   if (!SHA256.test(scope.operationDigest)) throw new Error("dependency_outage_digest_invalid");
+}
+
+function validateFailureDecision(decision: DependencyOutageFailureDecision): void {
+  if (decision.schemaVersion !== 1 || !FAILURE_KINDS.has(decision.failureKind) ||
+      typeof decision.retryable !== "boolean" || !IDENTITY.test(decision.reason)) {
+    throw new Error("dependency_outage_decision_invalid");
+  }
+  validateCircuit(decision.circuit);
+  if (decision.circuitState !== decision.circuit.state) {
+    throw new Error("dependency_outage_circuit_decision_mismatch");
+  }
+  if (decision.nextAttemptAt !== null) iso(decision.nextAttemptAt, "dependency_outage_next_attempt_invalid");
+  const schedulesRetry = decision.action === "retry" || decision.action === "wait";
+  if (schedulesRetry !== decision.retryable || schedulesRetry !== (decision.nextAttemptAt !== null)) {
+    throw new Error("dependency_outage_decision_invalid");
+  }
+  if (decision.action === "reconcile" && decision.failureKind !== "completed") {
+    throw new Error("dependency_outage_decision_invalid");
+  }
+  if (decision.action === "await_authority" &&
+      decision.failureKind !== "authentication" && decision.failureKind !== "permission") {
+    throw new Error("dependency_outage_decision_invalid");
+  }
+}
+
+function validateReconciliation<T>(value: unknown): DependencyOutageReconciliation<T> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("dependency_outage_reconciliation_invalid");
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (record.status === "missing" && keys.length === 1 && keys[0] === "status") {
+    return value as DependencyOutageReconciliation<T>;
+  }
+  if (record.status === "completed" && keys.join(",") === "completionDigest,status,value" &&
+      typeof record.completionDigest === "string" && SHA256.test(record.completionDigest)) {
+    return value as DependencyOutageReconciliation<T>;
+  }
+  throw new Error("dependency_outage_reconciliation_invalid");
 }
 
 function fromRow(row: OutageRow): DependencyOutageRecord {
@@ -627,14 +670,7 @@ export class DependencyOutageQueue {
   ): DependencyOutageRecord {
     validateScope(claim);
     iso(observedAt, "dependency_outage_timestamp_invalid");
-    if (decision.schemaVersion !== 1) throw new Error("dependency_outage_decision_version_invalid");
-    validateCircuit(decision.circuit);
-    if (decision.circuitState !== decision.circuit.state) {
-      throw new Error("dependency_outage_circuit_decision_mismatch");
-    }
-    if (decision.nextAttemptAt !== null) {
-      iso(decision.nextAttemptAt, "dependency_outage_next_attempt_invalid");
-    }
+    validateFailureDecision(decision);
     return withImmediateTransaction(this.db, () => {
       const current = this.row(claim);
       if (!current || current.operation_digest !== claim.operationDigest) {
@@ -777,7 +813,7 @@ export class DependencyOutageQueue {
     if (!claim) {
       const record = this.get(operation)!;
       if (record.status === "completed") {
-        const observed = await operation.reconcile();
+        const observed = validateReconciliation<T>(await operation.reconcile());
         if (observed.status !== "completed" || observed.completionDigest !== record.completionDigest) {
           throw new Error("dependency_outage_completed_effect_not_reconciled");
         }
@@ -789,15 +825,15 @@ export class DependencyOutageQueue {
         record,
       });
     }
-    try {
-      const observed = await operation.reconcile();
-      if (observed.status === "completed") {
-        const completed = this.complete(claim, observed.completionDigest, this.now());
-        if (!completed.applied && completed.record.status !== "completed") {
-          throw new Error("dependency_outage_completion_fence_lost");
-        }
-        return Object.freeze({ status: "recovered", value: observed.value, record: completed.record });
+    const observed = validateReconciliation<T>(await operation.reconcile());
+    if (observed.status === "completed") {
+      const completed = this.complete(claim, observed.completionDigest, this.now());
+      if (!completed.applied && completed.record.status !== "completed") {
+        throw new Error("dependency_outage_completion_fence_lost");
       }
+      return Object.freeze({ status: "recovered", value: observed.value, record: completed.record });
+    }
+    try {
       const executed = await operation.execute();
       const completed = this.complete(claim, executed.completionDigest, this.now());
       if (!completed.applied) throw new Error("dependency_outage_completion_fence_lost");
