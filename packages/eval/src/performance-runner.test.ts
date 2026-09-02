@@ -13,6 +13,7 @@ import {
   persistPerformanceProbeReport,
   runPerformanceCli,
   runPerformanceProbe,
+  type PerformanceProbeContext,
   type PerformanceProbeMeasurement,
 } from "./performance-runner.js";
 
@@ -70,6 +71,10 @@ function measurement(
       fixtureDigest: `sha256:${"c".repeat(64)}`,
       correlationId: "corr-fettler-performance",
       probeSource: "fettler-production-probe",
+      invocationId: "test-tier.load.00000000",
+      invocationNonce: "nonce-test-tier-load-00000000",
+      sequence: 0,
+      observedAt: "1970-01-01T00:00:00.000Z",
       repository: {
         files: 10,
         sourceLines: 100,
@@ -81,7 +86,11 @@ function measurement(
       ...observedOverrides,
     },
     metrics: Object.fromEntries(
-      METRICS.map((metric) => [metric, { durationMs, success }]),
+      METRICS.map((metric) => [metric, {
+        durationMs,
+        success,
+        eventSource: `fettler.performance.${metric}`,
+      }]),
     ) as PerformanceProbeMeasurement["metrics"],
   };
 }
@@ -110,6 +119,8 @@ function metadata() {
 function probeContext(correlationId = "corr-fettler-performance") {
   return {
     invocationId: "test-tier.load.00000000",
+    invocationNonce: "nonce-test-tier-load-00000000",
+    invokedAt: "1970-01-01T00:00:00.000Z",
     sequence: 0,
     mode: "load" as const,
     tier: contract().tiers[0]!,
@@ -121,8 +132,27 @@ function probeContext(correlationId = "corr-fettler-performance") {
     correlationId,
     source: "fettler-production-probe",
     repository: metadata().repository,
+    metricEventSources: Object.fromEntries(
+      METRICS.map((metric) => [metric, `fettler.performance.${metric}`]),
+    ) as Record<PerformanceMetric, string>,
     signal: new AbortController().signal,
   };
+}
+
+function measurementFor(
+  context: Pick<PerformanceProbeContext,
+    "invocationId" | "invocationNonce" | "invokedAt" | "sequence">,
+  durationMs = 10,
+  success = true,
+  observedOverrides: Partial<PerformanceProbeMeasurement["observed"]> = {},
+): PerformanceProbeMeasurement {
+  return measurement(durationMs, success, {
+    invocationId: context.invocationId,
+    invocationNonce: context.invocationNonce,
+    sequence: context.sequence,
+    observedAt: context.invokedAt,
+    ...observedOverrides,
+  });
 }
 
 function testPerformanceTransport(request: typeof fetch) {
@@ -155,9 +185,9 @@ describe("performance runner", () => {
       contract: contract(),
       dependencyVersions: { node: "test" },
       now: () => now,
-      probe: async () => {
+      probe: async (context) => {
         now += 500;
-        return measurement();
+        return measurementFor(context);
       },
     });
 
@@ -251,9 +281,9 @@ describe("performance runner", () => {
         languageSourceLines: { typescript: 50_000 },
       },
       now: () => now,
-      probe: async () => {
+      probe: async (context) => {
         now += 500;
-        return measurement(10, true, {
+        return measurementFor(context, 10, true, {
           correlationId: "corr-legacy-cli",
           repository: {
             files: 1_000,
@@ -285,14 +315,15 @@ describe("performance runner", () => {
       mode: "load",
       ...metadata(),
       now: () => now,
-      probe: async ({ signal }) => {
+      probe: async (context) => {
+        const { signal } = context;
         expect(signal.aborted).toBe(false);
         active += 1;
         maximumActive = Math.max(maximumActive, active);
         await Promise.resolve();
         now += 250;
         active -= 1;
-        return measurement();
+        return measurementFor(context);
       },
     });
 
@@ -316,10 +347,10 @@ describe("performance runner", () => {
       ...metadata(),
       signal: guard.signal,
       now: () => 0,
-      probe: async () => {
+      probe: async (context) => {
         invocations += 1;
         if (invocations > EXPECTED_OBSERVATION_LIMIT / METRICS.length + 2) guard.abort("test_guard");
-        return measurement();
+        return measurementFor(context);
       },
     });
 
@@ -341,9 +372,9 @@ describe("performance runner", () => {
       mode: "load",
       ...metadata(),
       now: () => now,
-      probe: async () => {
+      probe: async (context) => {
         now += 500;
-        return measurement();
+        return measurementFor(context);
       },
     });
 
@@ -361,10 +392,10 @@ describe("performance runner", () => {
       mode: "soak",
       ...metadata(),
       now: () => now,
-      probe: async () => {
+      probe: async (context) => {
         invocation += 1;
         now += 500;
-        return measurement(10, invocation !== 1);
+        return measurementFor(context, 10, invocation !== 1);
       },
     });
 
@@ -401,7 +432,7 @@ describe("performance runner", () => {
       mode: "load",
       ...metadata(),
       now: () => 0,
-      probe: async () => ({ ...measurement(), metrics: {} }) as PerformanceProbeMeasurement,
+      probe: async (context) => ({ ...measurementFor(context), metrics: {} }) as PerformanceProbeMeasurement,
     });
 
     expect(report.status).toBe("incomplete");
@@ -415,10 +446,10 @@ describe("performance runner", () => {
       tierId: "test-tier",
       mode: "load",
       ...metadata(),
-      probe: async () => ({
-        ...measurement(),
+      probe: async (context) => ({
+        ...measurementFor(context),
         observed: {
-          ...measurement().observed,
+          ...measurementFor(context).observed,
           repository: { ...metadata().repository, files: metadata().repository.files + 1 },
         },
       }),
@@ -454,9 +485,9 @@ describe("performance runner", () => {
       ...metadata(),
       repository: expectedRepository,
       now: () => now,
-      probe: async () => {
+      probe: async (context) => {
         now += 500;
-        return measurement(10, true, {
+        return measurementFor(context, 10, true, {
           repository: {
             languageSourceLines: { javascript: 20, typescript: 80 },
             languages: ["javascript", "typescript"],
@@ -482,11 +513,12 @@ describe("performance runner", () => {
       mode: "load",
       ...metadata(),
       signal: controller.signal,
-      probe: async ({ signal }) => {
+      probe: async (context) => {
+        const { signal } = context;
         invoked += 1;
         controller.abort("operator_stop");
         expect(signal.aborted).toBe(true);
-        return measurement();
+        return measurementFor(context);
       },
     });
 
@@ -533,9 +565,9 @@ describe("performance runner", () => {
       mode: "load",
       ...metadata(),
       now: () => now,
-      probe: async () => {
+      probe: async (context) => {
         now += 500;
-        return measurement();
+        return measurementFor(context);
       },
     });
     const directory = mkdtempSync(join(tmpdir(), "performance-runner-"));
@@ -559,7 +591,7 @@ describe("performance runner", () => {
     let now = 0;
     const report = await runPerformanceProbe({
       contract: contract(), tierId: "test-tier", mode: "load", ...metadata(), now: () => now,
-      probe: async () => { now += 500; return measurement(); },
+      probe: async (context) => { now += 500; return measurementFor(context); },
     });
     const directory = mkdtempSync(join(tmpdir(), "performance-immutable-"));
     temporaryDirectories.push(directory);
@@ -584,9 +616,9 @@ describe("performance runner", () => {
       mode: "load",
       ...metadata(),
       repositoryRevision: "main",
-      probe: async () => {
+      probe: async (context) => {
         invoked = true;
-        return measurement();
+        return measurementFor(context);
       },
     })).rejects.toThrow("performance_repository_revision_invalid");
     expect(invoked).toBe(false);
@@ -607,21 +639,7 @@ describe("performance runner", () => {
       endpoint: "https://probe.invalid/performance",
       ...testPerformanceTransport(request),
     });
-    const result = await probe({
-      invocationId: "test-tier.load.00000000",
-      sequence: 0,
-      mode: "load",
-      tier: contract().tiers[0]!,
-      repositoryRevision: "a".repeat(40),
-      deploymentRevision: "b".repeat(40),
-      fixtureDigest: "c".repeat(64),
-      tenantId: "tenant-fettler-production",
-      repositoryId: "github-1319732323",
-      correlationId: "corr-http-probe",
-      source: "fettler-production-probe",
-      repository: metadata().repository,
-      signal: new AbortController().signal,
-    });
+    const result = await probe(probeContext("corr-http-probe"));
 
     expect(result).toEqual(measurement(10, true, { correlationId: "corr-http-probe" }));
     expect(request).toHaveBeenCalledTimes(1);
@@ -678,6 +696,72 @@ describe("performance runner", () => {
 
     await expect(probe(probeContext())).resolves.toEqual(measurement());
     expect(pinnedRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a replayed producer response for a different invocation nonce", async () => {
+    const cached = measurement();
+    const probe = createHttpPerformanceProbe({
+      endpoint: "https://probe.example/performance",
+      approvedDestination: "https://probe.example/performance",
+      bearerToken: "secret-value",
+      ...testPerformanceTransport(async () => new Response(JSON.stringify(cached), { status: 200 })),
+    });
+
+    await expect(probe(probeContext())).resolves.toEqual(cached);
+    await expect(probe({
+      ...probeContext(),
+      invocationId: "test-tier.load.00000001",
+      invocationNonce: "nonce-test-tier-load-00000001",
+      sequence: 1,
+    })).rejects.toThrow("performance_probe_invocation_mismatch");
+  });
+
+  it("rejects producer evidence without exact invocation binding", async () => {
+    const valid = measurement();
+    const { invocationNonce: _omitted, ...unboundObserved } = valid.observed;
+    const probe = createHttpPerformanceProbe({
+      endpoint: "https://probe.example/performance",
+      ...testPerformanceTransport(async () => new Response(JSON.stringify({
+        ...valid,
+        observed: unboundObserved,
+      }), { status: 200 })),
+    });
+
+    await expect(probe(probeContext())).rejects.toThrow("performance_probe_invocation_nonce_mismatch");
+  });
+
+  it("rejects stale producer timestamps even when the identity matches", async () => {
+    const context = {
+      ...probeContext(),
+      invokedAt: "2026-09-02T12:00:00.000Z",
+    };
+    const stale = measurementFor(context, 10, true, {
+      observedAt: "2026-09-02T11:00:00.000Z",
+    });
+    const probe = createHttpPerformanceProbe({
+      endpoint: "https://probe.example/performance",
+      ...testPerformanceTransport(async () => new Response(JSON.stringify(stale), { status: 200 })),
+    });
+
+    await expect(probe(context)).rejects.toThrow("performance_probe_observed_at_invalid");
+  });
+
+  it("rejects metrics without producer event provenance", async () => {
+    const valid = measurement();
+    const probe = createHttpPerformanceProbe({
+      endpoint: "https://probe.example/performance",
+      ...testPerformanceTransport(async () => new Response(JSON.stringify({
+        ...valid,
+        metrics: {
+          ...valid.metrics,
+          verification: { durationMs: 10, success: true },
+        },
+      }), { status: 200 })),
+    });
+
+    await expect(probe(probeContext())).rejects.toThrow(
+      "performance_probe_metric_event_source_mismatch",
+    );
   });
 
   it("blocks a credentialed literal private address before opening a connection", async () => {
@@ -759,14 +843,7 @@ describe("performance runner", () => {
       ...testPerformanceTransport(request),
     });
 
-    await expect(probe({
-      invocationId: "test-tier.load.00000000", sequence: 0, mode: "load",
-      tier: contract().tiers[0]!, repositoryRevision: "a".repeat(40),
-      deploymentRevision: "b".repeat(40), fixtureDigest: "c".repeat(64),
-      tenantId: "tenant-fettler-production", repositoryId: "github-1319732323",
-      correlationId: "corr-fettler-performance", source: "fettler-production-probe",
-      repository: metadata().repository, signal: new AbortController().signal,
-    })).rejects.toThrow("performance_probe_http_302");
+    await expect(probe(probeContext())).rejects.toThrow("performance_probe_http_302");
     expect(request).toHaveBeenCalledTimes(1);
   });
 
@@ -778,21 +855,7 @@ describe("performance runner", () => {
         observed: { ...measurement().observed, repositoryId: "github-wrong" },
       }), { status: 200 })),
     });
-    await expect(probe({
-      invocationId: "test-tier.load.00000000",
-      sequence: 0,
-      mode: "load",
-      tier: contract().tiers[0]!,
-      repositoryRevision: "a".repeat(40),
-      deploymentRevision: "b".repeat(40),
-      fixtureDigest: "c".repeat(64),
-      tenantId: "tenant-fettler-production",
-      repositoryId: "github-1319732323",
-      correlationId: "corr-fettler-performance",
-      source: "fettler-production-probe",
-      repository: metadata().repository,
-      signal: new AbortController().signal,
-    })).rejects.toThrow("performance_probe_repository_mismatch");
+    await expect(probe(probeContext())).rejects.toThrow("performance_probe_repository_mismatch");
   });
 
   it("rejects an oversized declared response before reading its body", async () => {
@@ -807,14 +870,7 @@ describe("performance runner", () => {
       }) as unknown as Response),
     });
 
-    await expect(probe({
-      invocationId: "test-tier.load.00000000", sequence: 0, mode: "load",
-      tier: contract().tiers[0]!, repositoryRevision: "a".repeat(40),
-      deploymentRevision: "b".repeat(40), fixtureDigest: "c".repeat(64),
-      tenantId: "tenant-fettler-production", repositoryId: "github-1319732323",
-      correlationId: "corr-fettler-performance", source: "fettler-production-probe",
-      repository: metadata().repository, signal: new AbortController().signal,
-    })).rejects.toThrow("performance_probe_response_too_large");
+    await expect(probe(probeContext())).rejects.toThrow("performance_probe_response_too_large");
     expect(read).not.toHaveBeenCalled();
   });
 
@@ -836,14 +892,7 @@ describe("performance runner", () => {
       ...testPerformanceTransport(async () => new Response(body, { status: 200 })),
     });
 
-    await expect(probe({
-      invocationId: "test-tier.load.00000000", sequence: 0, mode: "load",
-      tier: contract().tiers[0]!, repositoryRevision: "a".repeat(40),
-      deploymentRevision: "b".repeat(40), fixtureDigest: "c".repeat(64),
-      tenantId: "tenant-fettler-production", repositoryId: "github-1319732323",
-      correlationId: "corr-fettler-performance", source: "fettler-production-probe",
-      repository: metadata().repository, signal: new AbortController().signal,
-    })).rejects.toThrow("performance_probe_response_too_large");
+    await expect(probe(probeContext())).rejects.toThrow("performance_probe_response_too_large");
     expect(cancelled).toBe(1);
   });
 });
