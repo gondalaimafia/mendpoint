@@ -157,10 +157,21 @@ const defaultAddressResolver: ExternalKeyAddressResolver = async (hostname) => {
 
 const defaultHttpsRequester: ExternalKeyHttpsRequester = async (input) =>
   new Promise<ExternalKeyHttpsResponse>((resolve, reject) => {
+    let settled = false;
+    const settleReject = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    const settleResolve = (response: ExternalKeyHttpsResponse) => {
+      if (settled) return;
+      settled = true;
+      resolve(response);
+    };
     const selectedAddress = input.resolvedAddresses[0];
     const family = selectedAddress ? isIP(selectedAddress) : 0;
     if (!selectedAddress || (family !== 4 && family !== 6)) {
-      reject(new Error("external_kek_destination_invalid"));
+      settleReject(new Error("external_kek_destination_invalid"));
       return;
     }
     const request = httpsRequest(input.url, {
@@ -193,35 +204,42 @@ const defaultHttpsRequester: ExternalKeyHttpsRequester = async (input) =>
     }, (response) => {
       const chunks: Buffer[] = [];
       let bytes = 0;
+      response.on("error", settleReject);
+      response.on("aborted", () => settleReject(new Error("external_kek_response_aborted")));
       const declared = Number(response.headers["content-length"]);
       if (Number.isFinite(declared) && declared > input.maxResponseBytes) {
-        response.destroy(new Error("external_kek_response_too_large"));
+        const error = new Error("external_kek_response_too_large");
+        settleReject(error);
+        response.destroy(error);
         return;
       }
       response.on("data", (chunk: Buffer | Uint8Array | string) => {
+        if (settled) return;
         const buffer = typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk);
         bytes += buffer.byteLength;
         if (bytes > input.maxResponseBytes) {
-          response.destroy(new Error("external_kek_response_too_large"));
+          const error = new Error("external_kek_response_too_large");
+          settleReject(error);
+          response.destroy(error);
           return;
         }
         chunks.push(buffer);
       });
-      response.on("error", reject);
       response.on("end", () => {
+        if (settled) return;
         try {
           const contentType = response.headers["content-type"];
-          resolve(Object.freeze({
+          settleResolve(Object.freeze({
             statusCode: response.statusCode ?? 0,
             contentType: Array.isArray(contentType) ? contentType.join(",") : contentType ?? "",
             text: new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)),
           }));
         } catch (error) {
-          reject(error);
+          settleReject(error instanceof Error ? error : new Error("external_kek_response_invalid"));
         }
       });
     });
-    request.on("error", reject);
+    request.on("error", settleReject);
     request.end(input.body);
   });
 

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createHttpsExternalKeyTransport } from "./external-kek-client.js";
 import type { ExternalKeyHttpsRequester } from "./external-kek-client.js";
 
@@ -16,7 +16,11 @@ type NativeResponse = EventEmitter & {
   destroy: (error?: Error) => void;
 };
 
-function nativeJsonRequest(expectedAddress: string) {
+function nativeJsonRequest(
+  expectedAddress: string,
+  headers: Record<string, string> = { "content-type": "application/json" },
+  onDestroy?: (hadErrorListener: boolean) => void,
+) {
   return (
     _url: unknown,
     options: {
@@ -36,9 +40,10 @@ function nativeJsonRequest(expectedAddress: string) {
     });
 
     const response = new EventEmitter() as NativeResponse;
-    response.headers = { "content-type": "application/json" };
+    response.headers = headers;
     response.statusCode = 200;
     response.destroy = (error) => {
+      onDestroy?.(response.listenerCount("error") > 0);
       if (error) response.emit("error", error);
     };
     onResponse(response);
@@ -74,6 +79,26 @@ function jsonRequester(value: unknown = { accepted: true }) {
 }
 
 describe("HTTPS external key transport", () => {
+  beforeEach(() => nativeHttps.request.mockReset());
+
+  it("rejects an oversized declared native response without an uncaught response error", async () => {
+    let destroyHadErrorListener = false;
+    nativeHttps.request.mockImplementationOnce(nativeJsonRequest("93.184.216.34", {
+      "content-type": "application/json",
+      "content-length": "2048",
+    }, (value) => { destroyHadErrorListener = value; }));
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses: resolvePublicAddress,
+      maxResponseBytes: 128,
+    });
+
+    await expect(transport.attestKey(locator, "tenant-a"))
+      .rejects.toThrow("external_kek_request_failed");
+    expect(destroyHadErrorListener).toBe(true);
+    expect(nativeHttps.request).toHaveBeenCalledTimes(1);
+  });
   it("pins the native requester to one validated address for all-address lookup", async () => {
     nativeHttps.request.mockImplementationOnce(nativeJsonRequest("93.184.216.34"));
 

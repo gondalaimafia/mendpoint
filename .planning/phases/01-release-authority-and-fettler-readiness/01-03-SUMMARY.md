@@ -25,8 +25,8 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 
 ## Verification
 
-- `npm test -w @mendpoint/platform -- src/vault-envelope.test.ts src/external-kek-client.test.ts`: 64 tests passed.
-- `npm test -w @mendpoint/platform`: 300 tests passed across 20 files.
+- `npm test -w @mendpoint/platform -- src/vault-envelope.test.ts src/external-kek-client.test.ts`: 65 tests passed.
+- `npm test -w @mendpoint/platform`: 301 tests passed across 20 files.
 - `npm run typecheck -w @mendpoint/platform`: passed.
 - `git diff --check`: passed.
 
@@ -45,10 +45,16 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 - Existing local and configured providers remain Mendpoint-custodied and retain their signatures and serialized formats.
 - No purpose or request-digest guarantee was added to the provider interface.
 
-## Commits
+## Commits and range-diff identity
 
-- `0f4d7cbc`: implementation and tests after current-base rebase.
-- `649d0ae2`: exact destination authority and DNS-rebinding review repair.
+- `9af8fad2`: external customer-managed key adapter, patch-identical to pre-rebase `0f4d7cbc`.
+- `4caa5a70`: verification evidence, patch-identical to pre-rebase `a244286f`.
+- `a5d8d387`: destination authority and DNS-rebinding repair, patch-identical to pre-rebase `649d0ae2`.
+- `24a35019`: refreshed exact-head evidence after rebase.
+- `775d80d7`: native all-address lookup compatibility repair.
+- `e25bf527`: validated socket isolation repair.
+
+The independent range-diff verified the first three old-to-new pairs as exact patch identities. The final three commits are additive repairs on the rebased series. The subsequent oversized-response settlement repair is the current review-fix commit and is verified by the commands above.
 
 ## Remaining Release Work
 
