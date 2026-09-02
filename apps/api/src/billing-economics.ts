@@ -10,13 +10,19 @@ import {
   createInvoiceExport,
   getInvoiceExport,
   listActualExecutionCosts,
+  listExecutionCostOutcomes,
   reconcileInvoiceExport,
   reconcileGrossMargin,
   recordActualExecutionCost,
+  recordExecutionCostOutcome,
   transitionInvoiceExportState,
+  verifyDomainEventIntegrity,
+  verifyExecutionCostIntegrity,
+  verifyExecutionOutcomeIntegrity,
   type ActualExecutionCostEntry,
   type ActualExecutionCostInput,
   type AppDb,
+  type ExecutionCostOutcome,
   type GrossMarginReconciliation,
   type InvoiceExport,
   type InvoiceExportSigner,
@@ -256,6 +262,10 @@ function authenticatedPrincipal(c: Context<ApiEnv>) {
   return { tenantId: principal.tenantId, actorPrincipalId };
 }
 
+function hasExactServiceScope(c: Context<ApiEnv>, scope: string): boolean {
+  return c.get("authMethod") === "api_key" && (c.get("authScopes") ?? []).includes(scope);
+}
+
 async function requireAuthenticatedPrincipal(c: Context<ApiEnv>, next: Next) {
   if (!authenticatedPrincipal(c)) {
     return errorResponse(c, "unauthorized", "Authentication is required", 401);
@@ -275,7 +285,10 @@ function recordId(tenantId: string, idempotencyKey: string): string {
     .slice(0, 32)}`;
 }
 
-function publicExecutionCost(entry: ActualExecutionCostEntry) {
+function publicExecutionCost(
+  entry: ActualExecutionCostEntry,
+  latestOutcome?: ExecutionCostOutcome,
+) {
   return {
     id: entry.id,
     executionId: entry.executionId,
@@ -286,8 +299,11 @@ function publicExecutionCost(entry: ActualExecutionCostEntry) {
     attemptNumber: entry.attemptNumber,
     retryNumber: entry.retryNumber,
     fallbackFromExecutionId: entry.fallbackFromExecutionId,
-    outcomeStatus: entry.outcomeStatus,
-    acceptedOutcomeId: entry.acceptedOutcomeId,
+    missionId: entry.missionId,
+    outcomeStatus: latestOutcome?.outcomeStatus ?? entry.outcomeStatus,
+    acceptedOutcomeId: latestOutcome
+      ? latestOutcome.acceptedOutcomeId
+      : entry.acceptedOutcomeId,
     inputTokens: entry.inputTokens,
     outputTokens: entry.outputTokens,
     cacheReadTokens: entry.cacheReadTokens,
@@ -301,6 +317,13 @@ function publicExecutionCost(entry: ActualExecutionCostEntry) {
     graphCostMoneyMicros: entry.graphCostMoneyMicros,
     sandboxCostMoneyMicros: entry.sandboxCostMoneyMicros,
     verificationCostMoneyMicros: entry.verificationCostMoneyMicros,
+    modelCostMeasured: entry.modelCostMeasured,
+    cacheCostMeasured: entry.cacheCostMeasured,
+    gpuCostMeasured: entry.gpuCostMeasured,
+    graphCostMeasured: entry.graphCostMeasured,
+    sandboxCostMeasured: entry.sandboxCostMeasured,
+    verificationCostMeasured: entry.verificationCostMeasured,
+    measurementProvenance: entry.measurementProvenance,
     totalCostMoneyMicros: entry.totalCostMoneyMicros,
     currency: entry.currency,
     createdAt: entry.createdAt,
@@ -313,7 +336,10 @@ function publicGrossMargin(report: GrossMarginReconciliation) {
     currency: report.currency,
     ledgers: {
       usage: { ok: report.usageIntegrity.ok, checked: report.usageIntegrity.checked },
-      executionCosts: { ok: report.costIntegrity.ok, checked: report.costIntegrity.checked },
+      executionCosts: {
+        ok: report.costIntegrity.ok && report.outcomeIntegrity.ok,
+        checked: report.costIntegrity.checked,
+      },
     },
     settledMcuMicros: report.settledMcuMicros,
     creditedMcuMicros: report.creditedMcuMicros,
@@ -370,6 +396,13 @@ function executionCostInput(
     graphCostMoneyMicros: body.graphCostMoneyMicros as number,
     sandboxCostMoneyMicros: body.sandboxCostMoneyMicros as number,
     verificationCostMoneyMicros: body.verificationCostMoneyMicros as number,
+    modelCostMeasured: body.modelCostMeasured as boolean,
+    cacheCostMeasured: body.cacheCostMeasured as boolean,
+    gpuCostMeasured: body.gpuCostMeasured as boolean,
+    graphCostMeasured: body.graphCostMeasured as boolean,
+    sandboxCostMeasured: body.sandboxCostMeasured as boolean,
+    verificationCostMeasured: body.verificationCostMeasured as boolean,
+    measurementProvenance: body.measurementProvenance as ActualExecutionCostInput["measurementProvenance"],
     currency: body.currency as string,
     actorPrincipalId: identity.actorPrincipalId,
     createdAt,
@@ -426,6 +459,9 @@ export function createBillingEconomicsRoutes({
 
   routes.post("/execution-costs", async (c) => {
     const identity = authenticatedPrincipal(c)!;
+    if (!hasExactServiceScope(c, "billing:execution-cost:write")) {
+      return errorResponse(c, "execution_cost_authority_required", "A purpose-bound accounting service key is required", 403);
+    }
     const idempotencyKey = requestId(c);
     if (!idempotencyKey) {
       return errorResponse(c, "request_id_invalid", "A valid request ID is required", 400);
@@ -434,6 +470,18 @@ export function createBillingEconomicsRoutes({
       const body = await c.req.json<unknown>();
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return errorResponse(c, "execution_cost_request_invalid", "The execution cost request is invalid", 400);
+      }
+      const record = body as JsonRecord;
+      const measuredFields = ["modelCostMeasured", "cacheCostMeasured", "gpuCostMeasured",
+        "graphCostMeasured", "sandboxCostMeasured", "verificationCostMeasured"];
+      const provenance = record.measurementProvenance;
+      if (record.outcomeStatus !== "unresolved" || record.acceptedOutcomeId != null ||
+          measuredFields.some((field) => typeof record[field] !== "boolean") ||
+          !provenance || typeof provenance !== "object" || Array.isArray(provenance) ||
+          ["model", "cache", "gpu", "graph", "sandbox", "verification"].some((field) =>
+            typeof (provenance as JsonRecord)[field] !== "string" ||
+            !(provenance as JsonRecord)[field]!.toString().trim())) {
+        return errorResponse(c, "execution_cost_observation_evidence_required", "Explicit measurement state and provenance are required", 400);
       }
       const entry = recordActualExecutionCost(
         db,
@@ -450,6 +498,114 @@ export function createBillingEconomicsRoutes({
     }
   });
 
+  routes.post("/execution-costs/:executionId/outcomes", async (c) => {
+    const identity = authenticatedPrincipal(c)!;
+    if (!hasExactServiceScope(c, "billing:execution-outcome:write")) {
+      return errorResponse(c, "execution_cost_outcome_authority_required", "A purpose-bound outcome authority key is required", 403);
+    }
+    const idempotencyKey = requestId(c);
+    if (!idempotencyKey) return errorResponse(c, "request_id_invalid", "A valid request ID is required", 400);
+    try {
+      const body = await c.req.json<JsonRecord>();
+      const evidenceId = typeof body.authorityEvidenceId === "string"
+        ? body.authorityEvidenceId.trim() : "";
+      if (!evidenceId) {
+        return errorResponse(c, "execution_cost_outcome_evidence_required", "Durable outcome evidence is required", 400);
+      }
+      const executionId = c.req.param("executionId");
+      const cost = db.raw.prepare(
+        `SELECT id, entry_hash FROM actual_execution_cost_entries
+         WHERE tenant_id = ? AND execution_id = ?`,
+      ).get(identity.tenantId, executionId) as { id: string; entry_hash: string } | undefined;
+      if (!cost) {
+        return errorResponse(c, "execution_cost_outcome_execution_not_found",
+          "The execution cost was not found", 404);
+      }
+      const review = db.raw.prepare(
+        `SELECT r.id, r.decision, r.candidate_artifact_id, r.reviewer_principal_id,
+                r.created_at, a.sha256 AS content_sha256, a.content_text
+         FROM review_decisions r JOIN artifact_manifests a
+           ON a.id = r.candidate_artifact_id AND a.tenant_id = r.tenant_id
+         WHERE r.id = ? AND r.tenant_id = ?
+           AND r.subject_type = 'execution_cost' AND r.subject_id = ?
+            AND NOT EXISTS (SELECT 1 FROM review_decisions s WHERE s.supersedes_id = r.id)
+            AND NOT EXISTS (SELECT 1 FROM review_decisions newer
+              WHERE newer.tenant_id = r.tenant_id AND newer.subject_type = r.subject_type
+                AND newer.subject_id = r.subject_id
+                AND (newer.created_at > r.created_at OR
+                  (newer.created_at = r.created_at AND newer.rowid > r.rowid)))`,
+      ).get(evidenceId, identity.tenantId, executionId) as {
+        id: string; decision: string; candidate_artifact_id: string;
+        reviewer_principal_id: string; created_at: string; content_sha256: string;
+        content_text: string | null;
+      } | undefined;
+      const domainIntegrity = review ? undefined : verifyDomainEventIntegrity(db, identity.tenantId);
+      const event = review || !domainIntegrity?.ok ? undefined : db.raw.prepare(
+        `SELECT id, event_type, actor_principal_id, payload_json, payload_sha256, event_hash, created_at
+         FROM domain_events WHERE id = ? AND tenant_id = ?
+           AND aggregate_type = 'execution_cost' AND aggregate_id = ?
+           AND event_type IN ('execution_cost.delivered','execution_cost.rolled_back')
+           AND event_sequence = (SELECT MAX(e2.event_sequence) FROM domain_events e2
+             WHERE e2.tenant_id = domain_events.tenant_id
+               AND e2.aggregate_type = 'execution_cost'
+               AND e2.aggregate_id = domain_events.aggregate_id
+               AND e2.event_type IN ('execution_cost.delivered','execution_cost.rolled_back'))`,
+      ).get(evidenceId, identity.tenantId, executionId) as {
+        id: string; event_type: string; actor_principal_id: string; payload_json: string;
+        payload_sha256: string; event_hash: string; created_at: string;
+      } | undefined;
+      if (!review && !event) {
+        return errorResponse(c, "execution_cost_outcome_evidence_invalid", "Tenant-bound outcome evidence was not found", 409);
+      }
+      const outcomes = listExecutionCostOutcomes(db, identity.tenantId, executionId);
+      const replay = outcomes.find((outcome) => outcome.idempotencyKey === idempotencyKey);
+      const prior = outcomes.at(-1);
+      const payload = event ? JSON.parse(event.payload_json) as JsonRecord : undefined;
+      const reviewPayload = review?.content_text
+        ? JSON.parse(review.content_text) as JsonRecord
+        : undefined;
+      const evidencePayload = reviewPayload ?? payload;
+      if (evidencePayload?.costEntryId !== cost.id ||
+          evidencePayload?.costEntryHash !== cost.entry_hash) {
+        return errorResponse(c, "execution_cost_outcome_cost_binding_invalid",
+          "Outcome evidence is not bound to the exact execution cost", 409);
+      }
+      const approved = review?.decision === "approve" || event?.event_type === "execution_cost.delivered";
+      const rejected = review?.decision === "reject";
+      const rolledBack = event?.event_type === "execution_cost.rolled_back";
+      if (!approved && !rejected && !rolledBack) {
+        return errorResponse(c, "execution_cost_outcome_evidence_invalid", "Evidence does not authorize an accounting outcome", 409);
+      }
+      const outcomeStatus = replay?.outcomeStatus ?? (rolledBack ? "rolled_back"
+        : approved && prior ? "corrected" : approved ? "accepted" : "rejected");
+      const acceptedOutcomeId = approved
+        ? (event && typeof payload?.outcomeId === "string" && payload.outcomeId.trim()
+            ? payload.outcomeId.trim()
+            : event ? null : review!.candidate_artifact_id)
+        : null;
+      if (approved && !acceptedOutcomeId) {
+        return errorResponse(c, "execution_cost_outcome_id_invalid",
+          "Delivered outcome evidence requires an exact outcome ID", 409);
+      }
+      const outcome = recordExecutionCostOutcome(db, {
+        id: recordId(identity.tenantId, `outcome:${idempotencyKey}`),
+        tenantId: identity.tenantId,
+        idempotencyKey,
+        executionId,
+        outcomeStatus,
+        acceptedOutcomeId,
+        authorityKind: rolledBack ? "rollback" : event ? "delivery" : "reviewer",
+        authorityEvidenceId: event?.id ?? review!.id,
+        authorityDigest: event?.event_hash ?? review!.content_sha256,
+        actorPrincipalId: event?.actor_principal_id ?? review!.reviewer_principal_id,
+        createdAt: event?.created_at ?? review!.created_at,
+      });
+      return c.json({ data: outcome }, 201);
+    } catch (error) {
+      return handleRecordError(c, error);
+    }
+  });
+
   routes.get("/execution-costs", (c) => {
     const identity = authenticatedPrincipal(c)!;
     const requestedLimit = c.req.query("limit");
@@ -457,7 +613,18 @@ export function createBillingEconomicsRoutes({
     if (!Number.isInteger(limit) || limit < 1 || limit > 5_000) {
       return errorResponse(c, "execution_cost_limit_invalid", "Limit must be an integer from 1 to 5000", 400);
     }
-    const records = listActualExecutionCosts(db, identity.tenantId, limit).map(publicExecutionCost);
+    const costIntegrity = verifyExecutionCostIntegrity(db, identity.tenantId);
+    const outcomeIntegrity = verifyExecutionOutcomeIntegrity(db, identity.tenantId);
+    if (!costIntegrity.ok || !outcomeIntegrity.ok) {
+      return errorResponse(c, "execution_cost_ledger_integrity_invalid",
+        "Execution cost authority is unresolved", 409);
+    }
+    const latestOutcomes = new Map<string, ExecutionCostOutcome>();
+    for (const outcome of listExecutionCostOutcomes(db, identity.tenantId)) {
+      latestOutcomes.set(outcome.costEntryId, outcome);
+    }
+    const records = listActualExecutionCosts(db, identity.tenantId, limit)
+      .map((entry) => publicExecutionCost(entry, latestOutcomes.get(entry.id)));
     return c.json({ data: records, meta: { count: records.length } });
   });
 

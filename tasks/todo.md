@@ -3642,6 +3642,95 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Safety evidence: only HTTPS uses the legacy formula. FTP, file, and custom hierarchical identifiers retain the domain-separated literal digest, while opaque IDs and URNs remain unchanged; the complete ingestion suite re-proves returned and durable secret redaction.
 - Verification evidence: the focused upgrade regression passes 2 of 2, the complete ingestion file passes 33 of 33, and the full Catalog suite passes 158 of 158 across eight files. Full-workspace typecheck passes, `npm audit --omit=dev` reports zero vulnerabilities, the changed production source secret scan has no matches, and the CRLF-aware diff check is clean.
 - EOL and scope evidence: the two Catalog files remain LF, the worker CLI remains `i/crlf w/crlf`, and only the two Catalog files plus `tasks/todo.md` and `tasks/lessons.md` changed. No remote mutation occurred.
+
+## 2026-08-28 Fettler and ReGauge 150 case production learning program
+
+Authority: the foundational specification is `C:\Users\Talal\Downloads\mendpoint_product_spec.md`. This program is tracked by GitHub issue #529 and starts from exact fetched `origin/main` revision `96801a319fc3d355cb2b28b4167b83023a192042` in isolated branch `codex/529-fettler-regauge-learning-program`. The dirty default checkout and every Claude, Cursor, shared, authority, and closure-ledger branch remain untouched. PR #518 owns the 101 row production closure ledger and the authority lane owns closure gates.
+
+### Wave 0: authority, coordination, and case contract
+
+- [x] Fetch `origin/main`, record the immutable base revision, and create an isolated `codex/*` worktree.
+- [x] Read the foundational product specification, current lessons, current plan, requirement register, production closure surfaces, learning contracts, security boundaries, and available live evidence without promoting stale claims.
+- [x] Read current GitHub coordination comments and establish collision boundaries before implementation.
+- [x] Define one versioned case schema covering product, case ID, cohort, evidence, repository provenance, fault or modernization pattern, expected diagnosis, expected repair or migration, deterministic oracle, allowed edit boundary, rollback, cleanup, security and tenant risk, and production acceptance.
+- [x] Define three valued evidence throughout: `verified`, `refuted`, and `unknown`; missing evidence must never become no impact, success, absence, or authorization.
+- [x] Add a requirement to case to test to production evidence matrix that preserves partial and external blockers.
+
+### Wave 1: sourced catalog and repository provenance
+
+- [x] Produce 50 common and 25 edge Fettler cases, plus 50 common and 25 edge ReGauge cases, with stable IDs and no duplicates.
+- [x] Ground each case in current primary evidence: official migration guides, security advisories and CVEs, issue trackers, public repository history, or incident postmortems. Popularity and frequency claims require explicit evidence or must be described qualitatively.
+- [x] Select a diverse set of reusable open source repositories and immutable commits that collectively cover the 150 cases.
+- [x] Clone all 10 selected repositories into the isolated pristine benchmark workspace and verify exact detached commit, clean status, license blob digest, dependency manifest evidence, and contained symlinks without executing repository code or dependencies.
+- [x] Record repository URL, exact commit SHA, SPDX license, license text digest, language, framework, dependency lockfiles, provenance, and intended governed learning use.
+- [x] Reject repositories or artifacts with incompatible licenses, unclear data terms, secrets, personal data, generated credentials, customer data, or unverifiable provenance.
+- [x] Verify catalog count, ID uniqueness, required field completeness, source URL form, provenance digest stability, and license policy with deterministic tests.
+
+### Wave 2: fixture and deterministic oracle substrate
+
+- [ ] Preserve a pristine content addressed snapshot for every selected repository and case binding.
+- [ ] Add a mutation or historical bug manifest for every case with exact patch, seed, expected impact graph, deterministic failure, allowed edit boundary, expected fix, rollback, and cleanup.
+- [x] Build mutation application, rollback, cleanup, and integrity tooling that refuses dirty, mismatched, symlink escaped, unlicensed, or unbound repositories.
+- [ ] Build deterministic oracles for diagnosis, changed path boundaries, compile or test behavior, security properties, migration completion, rollback, and negative controls.
+- [ ] Include positive controls, negative controls, ambiguous and insufficient evidence, multi repository dependency, partial coverage, stale or conflicting evidence, concurrency and replay, upgrade path, tenant isolation, SCM and webhook, authorization, provider outage, and model verifier failure cases.
+- [ ] Keep the sealed answer key outside every modeled control arm and prove predictions are invariant under case ID renaming and row reordering. The staged control contract and answer-key exclusion are implemented; metamorphic prediction invariance still requires actual runs.
+
+### Wave 3: production runner tracer
+
+- [x] Bind every run contract to exact production revision, tenant, repository identity, snapshot digest, graph version, policy version, model and router version, recipe version, consent decision, authorization, sandbox receipt, and execution digest.
+- [x] Require dedicated benchmark tenants and repositories with default deny egress, bounded time and cost budgets, draft PR only delivery, no merge authority, no customer deployment authority, and one open draft maximum per case.
+- [x] Fail closed in the benchmark preflight contract before model or tool execution when any binding or receipt is missing, stale, mismatched, cross tenant, or unverified. Production path integration and replay receipts remain open.
+- [ ] Add a Fettler tracer that enters the actual production job and worker path and records candidate, verification, review, delivery, replay, and rollback evidence.
+- [ ] Add a ReGauge tracer that enters the actual production campaign, task, recipe or adaptive execution, verification, review, delivery, replay, dependency restore, and rollback path.
+- [x] Keep DeepSeek advisory only in the production learning receipt and prove it cannot select candidates, mutate execution, deliver, merge, or deploy. Existing production authority remains untouched.
+
+### Wave 4: governed learning lineage
+
+- [ ] Admit accepted, rejected, corrected, failed, rolled back, and reviewer modified outcomes through the production governed learning contract. The benchmark event contract covers every outcome; production ingestion wiring remains open.
+- [x] Define required lineage for consent, license, provenance, repository snapshot, graph version, policy version, model, router, recipe, deterministic verification, cost, latency, and parent outcome.
+- [x] Route repository facts only to Change Graph, organization preferences only to Organization Memory, deterministic transformations only to recipes, and model failures only to sealed evaluation datasets in the benchmark admission contract.
+- [x] Reject shared training or external provider transmission without an exact compatible license and consent decision.
+- [ ] Prove tenant isolation, revocation, retention, replay, idempotency, lineage correction, and unknown evidence behavior.
+
+### Wave 5: development cohorts and sealed holdouts
+
+- [ ] Run development cases in safe cohorts under identical snapshots and budgets across production baseline, deterministic recipe, configured model or router, advisory verifier, and deterministic oracle. The equal-arm schema and validators are implemented; no modeled run is claimed.
+- [x] Reject any modeled control arm that contains the desired outcome or answer key material.
+- [x] Define and deterministically aggregate per-case and per-arm success, abstention quality, false repair or migration, false no impact, verification pass, rollback, tenant isolation, replay and idempotency, latency, cost, and severe regressions.
+- [ ] Freeze implementation and prompts before running sealed holdouts.
+- [ ] Run every sealed holdout once per configured arm, retain raw receipts, and prevent answer key access before prediction sealing.
+- [ ] Generate machine readable and human readable per case, cohort, product, and aggregate reports with confidence intervals only where sample design supports them.
+
+### Wave 6: verification and safe shipment
+
+- [ ] Run focused tests red first for behavior adding work, then affected workspace suites, full tests, full workspace typecheck, production build, GA and claims gates, dependency audit, container build and startup, local API probes, and strict diff integrity.
+- [ ] Independently review each exact branch head for correctness, security, data governance, evaluation leakage, license compliance, tenant isolation, and evidence honesty.
+- [ ] Push and open one safe PR per vertical slice. Require current base, intact branch protection, green protected checks, and resolved review before merge.
+- [ ] Merge and deploy one safe PR at a time. Verify exact production revision, public and authenticated endpoints, worker logs, receipts, and browser behavior before claiming production evidence.
+- [ ] Roll back immediately on regression and preserve exact rollback revision, image or deployment identity, health evidence, and incident timeline.
+- [ ] Never merge benchmark repository draft PRs, deploy to benchmark or customer repositories, set `MENDPOINT_CUSTOMER_READY`, promote blocked requirements, or fabricate unavailable proof.
+
+### Review
+
+The first evaluation-only slice remains draft and blocked from merge. It contains the repository controlled case and evidence contracts, 150 case catalog, 101 row requirement planning matrix, 10 repository provenance candidates, 150 blocked fixture plan rows, content addressed mutation and rollback tooling, signed production receipt preflight, signed governed learning provider authority, equal arm evaluation contract, and machine readable reports without changing production runtime or authority paths. All 10 pristine clones remain detached at declared commits, clean, license-digest matched, dependency-manifest checked, and free of escaping symlinks. Repository screening remains inconclusive, so zero repositories and zero fixtures are admitted.
+
+Focused production learning verification passes 39 of 39 tests. The eval TypeScript project passes, the complete 33-project workspace typecheck passed before the final test-only timeout annotation, the optimized 50-page production web build passed, `npm audit --omit=dev` reports zero vulnerabilities, and diff, banned-word, and high-confidence secret-pattern checks are clean. An unsupported root aggregate run passed 5,145 tests and failed 80 across 14 existing files under severe Windows process and disk contention. Isolation confirmed all 28 production closure assertions pass with a 60 second diagnostic timeout, although Vitest still emitted a worker RPC timeout after the 241-second file; the existing Agent attempt-engine file continues to fail 25 of 36 tests with `spawn EINVAL` and one 30-second filesystem timeout. No production learning source imports or changes those paths. Full-suite, container, production tracer, live sandbox, deployment, and production receipt evidence therefore remain open and are not promoted.
+
+The second exact-head review of `230d9a2c` found 11 P1 evidence and authority defects. Commit `92d31bd7` added signed authority and receipt binding, and commit `8f27e84f` fixed the Linux dangling-symlink detection exposed by protected CI. A further independent review of `8f27e84f` found six P1 defects: caller-controlled trust roots, fixture admission that did not govern repository screening or nested mutation, self-attested matrix promotion, three Slack cases mislabeled as native, cohort completeness that ignored absent cases, and self-attested grading results.
+
+Commit `db6ce84c` removed verifier configuration from every envelope API. Production learning, external provider, and grading issuers and key IDs are code fixed; their public keys and pinned SHA-256 digests must come from protected deployment configuration, and the exact production revision must come from `MENDPOINT_PRODUCTION_REVISION`. Missing trust roots, mismatched digests, expired signatures, wrong issuers or keys, tampering, and stale or absent revisions fail closed. Test support contains only public fixture roots and static signed envelopes; no private signing key is retained in the repository. Production activation still requires a real key ceremony and protected environment provisioning and is not claimed.
+
+Evaluation rows now require a separately verified grading authority that binds case, arm, tenant, repository, production revision, snapshot, fixture, execution, production receipt authority, sealed prediction, answer-key access receipt, grading chronology, and the exact metrics digest. Empty or partial registries cannot pass cohort validation. Fixture admission now validates full repository provenance, recursively freezes admitted inputs, registers runtime-opaque admissions, and revalidates every binding before mutation or rollback. Requirement promotion ignores all receipts that were not produced by a protected verifier, so the current matrix remains zero verified instead of accepting self-attested evidence. Slack `FET-C015` to `FET-C017` are honestly labeled synthetic substrates. Generated reports now distinguish 52 native case bindings from 98 synthetic substrate bindings.
+
+The independent exact-head review of `db6ce84c` found two additional P1 defects. First, a verified capability could remain usable after a production revision change, key rotation, or issuance-epoch revocation because consumption checked only process-local token identity. Second, no authentic producer could register a matrix execution receipt, so verified requirement promotion was impossible even with real production evidence.
+
+The current review repair stores immutable signed-authority context and revalidates current revision, expiry, pinned key digest, and minimum accepted issuance time at every production preflight, external provider transmission, evaluation grading, and matrix receipt consumption. A new signed case-execution evidence verifier binds the production authority digest, case and product, tenant, repository and immutable commit, snapshot, fixture identity and digest, execution digest, planned requirement subset, declared oracle subset, and non-empty oracle and production evidence IDs before issuing an opaque receipt token. Self-asserted, tampered, stale-revision, expired-epoch, or revoked-key receipts cannot promote the matrix.
+
+Review-repair verification passes 36 of 36 focused authority tests and 68 of 68 tests across all nine production learning files. The full 33-project workspace typecheck and optimized 50-page production build pass, and the production dependency audit reports zero vulnerabilities. Diff integrity, banned-word and high-confidence secret scans are clean; 135 holdout-only answer values have zero matches in public reports. Generated reports remain explicit: 150 cases, 30 assigned but unsealed holdouts, 101 unverified requirements, zero retained source snapshots, zero admitted repositories, zero admitted fixtures, zero completed runs of 750 required arms, and no customer readiness. A fresh independent exact-head rereview and protected CI remain required after the remediation commit. Existing wider-suite and external production evidence boundaries remain unchanged and are not promoted.
+
+The independent review of `03d12da7` found two P1 evidence-lineage defects. First, receipt issuance validated the case registry, but the opaque token discarded its repository, fixture, and oracle binding, so a caller could replace those current case fields and still promote authentic evidence by case ID alone. Second, rejected or revoked receipts were silently filtered and became indistinguishable from receipt absence. The follow-up repair stores a complete immutable case-catalog digest and production binding with the token, preserves explicit oracle-to-evidence pairs, and requires the exact current case digest at every matrix consumption. It also retains rejected receipt identity, authentic envelope digest, and stable rejection reason under an explicit absent, rejected, verified, or mixed receipt-evidence state without promoting rejected evidence. Repository, fixture, or oracle swaps and revision or key-epoch revocations now return every affected trace to unverified and production evidence to unknown while preserving the rejection lineage. The eight non-filesystem production learning files pass 61 of 61 tests, the isolated filesystem mutation file passes 8 of 8, and the eval TypeScript project passes. The combined run also passed all 69 tests but emitted a post-test Vitest worker RPC timeout under filesystem contention; the clean isolated runs are the authoritative local result. Reports were regenerated at the new schema with zero admitted receipts. A new immutable commit, independent rereview, and protected CI are still required.
+
+Repository controlled engineering and external proof are reported separately. Native GSD phase execution is unavailable because current main has no `.planning/STATE.md`, roadmap, or phase plans; the existing `tasks/todo.md` remains the authority, and the GSD execution and shipping gates are applied directly without creating a competing plan.
 ## 2026-08-28 Mendpoint Fettler and ReGauge production app cutover
 
 - [ ] Refresh `origin/main`, GitHub coordination comments, open PR overlap, Fly app inventory, current revisions, health, secret-name inventory, and volume inventory.
@@ -4128,7 +4217,6 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The complete matrix recomputation produced issue-authority digest `sha256:87e9f68ce12947e833983dd4bf68bc97e070b0c08a3b249105f3c0d967c21083`. The release-train digest remains `sha256:f4666ff849eca0a74d939d6a1f918042bc8e1091a7f6ae476bcdc1d5a7abf2c1` because no release-train record changed.
 - `npm run spec:check`, `npm run closure:check`, `npm run ledger:check`, and `npm run ga:check` pass. The focused GitHub authority, closure-matrix, and proposal-authority suite passes all 127 tests. `git diff --check` passes.
 - Review found no requirement, availability, public-claim, issue ownership, issue title, issue URL, requirement mapping, release-train, workflow, policy, credential, or runtime change. Protected GitHub authority and production acceptance remain pending until this exact change is reviewed, merged normally, and observed on the deployed main revision.
-
 ## 2026-08-30 Plan 05-03A final authority repair
 
 - [x] Restrict complete-graph short-circuiting to change classes the endpoint projection can represent, and materialize direct, wrapper, and test sites from graph evidence.
@@ -4148,6 +4236,21 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The repository index captures one exact source set, validates file identity and the complete directory-entry set against same-size metadata mutation, late files, and late links, then passes only those captured bytes into full or incremental call-graph extraction. The call graph never falls back to a mutable disk read when snapshot sources are supplied.
 - The public retrieval contract now accepts and enforces `maxFiles`, `maxBytes`, `maxFileBytes`, `maxTraversalDepth`, and `maxCandidates` on graph and non-graph paths. Traversal-depth exhaustion produces an idempotent abstention artifact, evidence record, audit event, and domain event bound to the exact repository snapshot, revision, content digest, limits, and usage.
 - Full affected verification passes: call graph 25 tests, codebase index 34 tests, code impact 123 tests, and pipeline 256 tests, for 438 tests total. All four affected workspace typechecks and diff integrity pass. No requirement, availability, or public claim is promoted.
+## 2026-08-30 GSD Plan 08-04 adapter lifecycle proof review repair
+
+- [x] Centralize exact lifecycle-proof validation for file and exported programmatic execution, including version, timeout, idempotency, rollback reason, nested arrays, credential names, and recomputed semantic input digest.
+- [x] Replace inferred pre-rollback eligibility with a durable tenant-bound domain-event checkpoint that binds the exact input, eligibility request and observation, and rollback request before rollback.
+- [x] Require exact authenticated checkpoint replay when registration already reports `rolled_back`; fail closed when the checkpoint is absent, substituted, or the tenant event chain is invalid.
+- [x] Expose the checkpoint through the authenticated tenant-admin API and cover the production request path.
+- [x] Register the proof signing key, key identifier, and exact API origin in the canonical protected runtime configuration manifest.
+- [x] Run hostile and complete affected tests, affected typechecks, configuration completeness, full build, and diff integrity.
+
+### Review
+
+- A resumed lifecycle can claim `eligibleBeforeRollback` only from the exact hash-chain checkpoint created while the adapter was eligible. The checkpoint binds the recomputed canonical input digest, canonical eligibility request, observed eligible response digest, and the artifact, reason, and idempotency key of the rollback request.
+- Direct callers now traverse the same validator as file callers before proof authority or API credentials are read. Bare `token` and `secret`, normalized compound credential names, invalid nested array members, malformed versions, timeouts, idempotency keys, rollback reasons, and substituted input digests all fail before network access.
+- The affected proof, configuration, Pipeline, and API matrix passes 80 of 80 focused tests. Complete Pipeline coverage passes 250 of 250 tests; complete API coverage passes. Pipeline, API, and scripts typechecks pass; `npm run config:check`, the optimized workspace build, and `git diff --check` pass.
+- This repair does not promote a requirement, change a public claim, deploy, or assert live adapter qualification. Exact-head review, current-base protected CI, protected merge, and exact-revision production evidence remain required.
 ## 2026-08-31 GSD Plan 06-05/06-06: Fettler real provider change to exact draft
 
 - [x] Audit the complete production producer-to-consumer chain from feed revision through exact draft delivery, including every durable transition and claim predicate.
@@ -4201,3 +4304,175 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The projection mints a `repository:`-scoped `REVIEW_PREFERENCE` candidate per reviewed outcome, and both live consumers of Organization Memory read it tenant-wide with no scope filter. The ReGauge plan consult picked one inferred candidate per layer by sorting on a sha256, so which repository's reviewer preference governed a plan was arbitrary; the Mission Context Compiler caps each section, so unrelated repositories could crowd out relevant memory. A single shared predicate now bounds repository-scoped memory to the repositories a consult is actually about, applied at both sites.
 - `subjectKey` components are escaped so a colon inside one component cannot collide with a different component split. Both values are enum-ish today, so this is a structural guard, not a live defect.
 - Not changed here, and routed to the schema owner instead: revoking governed-learning consent is forward-looking and does not retract already-projected candidates. That matches the append-only learning-corpus model and is a consent-policy decision, not a defect in this plan.
+
+## 2026-08-30 Plan 09-01 MCU ledger closure
+
+- [x] Prove the remaining production-shaped gap without rebuilding the verified MCU calculator or usage ledger.
+- [x] RED: reproduce the split between job-scoped settled usage and MissionTask-scoped execution cost at the authenticated gross-margin API.
+- [x] GREEN: reconcile only an exact tenant-local execution ID and leave ambiguous or mismatched attribution closed.
+- [x] Preserve versioned prices, immutable ledgers, reservation conservation, idempotency, corrections, and tenant scope without changing their writers or hashes.
+- [x] Run the focused database and API tests, affected typechecks, diff integrity, and final diff inspection.
+
+### Review
+
+- ME-COM-001, ME-COM-002, and ME-COM-004 already had verified calculator, ledger, and API evidence. The literal uncovered gap was their production join: usage settles with the stable run or job ID, while a mission-bound cost row uses the deterministic MissionTask ID and retains that same job ID as `executionId`.
+- Gross-margin reconciliation now bridges those identifiers only when one cost task and one revenue task have a unique exact execution-ID relationship inside the authenticated tenant. Multiple candidates stay separate and therefore retain the existing `actual_cost_missing` and `settlement_missing` fail-closed reasons.
+- The tracer proves the customer-facing API returns exact revenue, actual cost, route, campaign, accepted outcome, and gross margin for that production-shaped relationship. A separate regression proves a campaign disagreement still yields null margin and `campaign_mismatch`.
+- Focused verification passes 10 tests across the database and API suites. Both `@mendpoint/db` and `@mendpoint/api` typechecks pass, and `git diff --check` is clean.
+- No schema, historical hash, reservation or settlement writer, charging path, payment processor, pricing policy, or production system changed. Automatic metering coverage for every MCU component and finance-approved customer charging remain later activation work.
+- Exact-head repair closes all four P1 chains: terminal success and terminal failure now record accepted or rejected outcomes instead of defaulting every worker row to immutable unresolved; cross-task attribution requires persisted tenant-local job, MissionTask creation event, and Mission lineage; any unmeasured cost component makes margin explicitly incomplete and non-exact; and the immutable cost write joins the terminal job transaction so a failure rolls back terminal state for normal lease retry or recovery.
+- Repair verification passes 22 of 22 focused database, bridge, and authenticated API tests plus all 89 worker CLI regressions. The database, worker, and API typechecks pass, and diff integrity is clean. The tests include forged execution identity rejection, exact durable lineage, unmeasured-component closure, accepted and rejected terminal states, caller-transaction participation, and rollback of job completion when cost persistence fails.
+- Final-chain repair isolates every Fettler lease generation under an exact routing run and envelope, accounts only terminal executed rows with immutable provenance, and replaces the bounded prior-attempt scan with an indexed exact lookup. ReGauge now persists its exact routing identity in the durable handoff, settles the route before importing candidate, trajectory, and MCU cost in one owned transaction, and acknowledges the cross-store handoff only after commit.
+- Outcome accounting now binds a strictly newer, unused authority record to the exact immutable cost entry and digest; revalidates current unsuperseded review or terminal domain-event authority; rejects malformed outcome identifiers and broken event chains; and requires unique verified MissionTask, job, and Mission lineage. Historical v1 and v2 cost hashes remain readable while new v3 rows authenticate the stronger provenance.
+- Verification passes the 235-test focused matrix, all four affected workspace typechecks, and the complete `npm test` workspace and scripts catalog. The broad run completed with every test file green; diff integrity and debug-artifact scans are clean. No push, deployment, or production authority action occurred.
+
+## 2026-08-30 Plan 09-01 exact-head recovery repair
+
+- [x] RED: reproduce a paid Fettler model attempt whose deferred routing outcome rolls back, then prove a new lease generation cannot wedge or settle the same provider work twice.
+- [x] GREEN: reconcile the exact authenticated prior reservation and routing attempt before retry accounting, preserving lease fencing, immutable cost provenance, and exactly-once settlement.
+- [x] RED: open a pre-change ReGauge volume containing a pending adaptive candidate handoff without routing identifiers or a review tier.
+- [x] GREEN: normalize only records with exact durable routing authority, default legacy review authority to fail-closed, and leave ambiguous state undrained.
+- [x] RED and GREEN: make customer gross-margin execution-cost diagnostics fail whenever either immutable cost rows or their outcome authority ledger fails integrity.
+- [x] Run focused database, Worker, Transformer, and API suites, affected typechecks, diff integrity, inspect the complete repair, and commit locally without pushing.
+
+### Scope and rollback
+
+- This repair changes recovery and diagnostics only. It does not create new spend, repeat provider execution, relax ReGauge review authority, alter historical ledger hashes, or promote any requirement or public claim.
+- Rollback is the isolated repair commit. Existing immutable model reservations, routing decisions, MCU cost entries, and ReGauge campaign history remain retained.
+
+### Review
+
+- A retried Fettler lease now imports each exact prior paid attempt from its terminal model-reservation evidence before current execution. Recovery completes only the matching nonterminal routing envelope and records the corresponding historical Mission cost in one transaction; replay is a no-op and the settled reservation remains byte-for-byte unchanged.
+- Restored ReGauge campaigns now normalize only pending pre-change handoffs that have an exact same-attempt durable routing settlement. Missing review authority defaults to `blocked`; missing or conflicting routing authority aborts store startup without mutating the campaign.
+- Gross-margin reconciliation now exposes outcome-ledger integrity to its caller, and the authenticated API reports execution-cost diagnostics unhealthy when either cost rows or their authority outcomes fail integrity.
+- Verification passes 191 focused tests across database, Worker, Transformer, and API packages, including the 90-test live Worker job-loop suite and both restored-volume migration outcomes. All four affected workspace typechecks pass, and diff integrity is clean. No provider call, settlement rewrite, push, deployment, or protected-authority action occurred.
+
+## 2026-08-30 Plan 09-01 authenticated recovery follow-up
+
+- [x] RED and GREEN: recompute the complete versioned reservation and settlement fingerprints before importing a paid attempt; reject stored-field or digest tampering without creating routing or cost evidence.
+- [x] RED and GREEN: validate every pending adaptive handoff against the exact same-attempt routing binding, expose it only after terminal settlement, preserve blocked review authority, and reject populated conflicts.
+- [x] RED and GREEN: serialize legacy handoff normalization under a write lock so constructor migration cannot overwrite a concurrent campaign update.
+- [x] Rebase onto current `origin/main`, resolve only owned overlaps, and rerun focused/full affected suites, four workspace typechecks, and diff integrity.
+- [x] Commit the reviewed repair locally without pushing, then report the exact head for fresh review.
+
+### Safety boundary
+
+- Recovery must derive evidence only from authenticated durable rows and never rerun or resettle provider work. Migration may repair missing compatibility fields but may not invent routing authority, expose unsettled work, or overwrite a concurrent state transition.
+
+### Review
+
+- Paid-attempt recovery now verifies the complete reservation fingerprint and a versioned settlement fingerprint reconstructed from every persisted settlement field. New settlements use the complete v2 digest; compatible v1 rows are recomputed under their original contract plus deterministic charged-field validation. Reservation or settlement tampering fails before any routing outcome or immutable cost row is written.
+- Pending adaptive handoffs are bound to the exact campaign, route, envelope, attempt, lease generation, and lease-token digest at creation and restored-volume startup. They remain invisible and cannot be marked imported until the matching routing outcome is terminal and durably settled; missing authority defaults to blocked only when an exact routing binding exists, and populated conflicts fail startup.
+- Restored-volume normalization now acquires `BEGIN IMMEDIATE` before reading campaign state, holds the write lock through validation and update, and rolls back on any conflict. This removes the prior read-then-lock lost-update window.
+- The branch rebased cleanly onto current `origin/main` `94185f82`; the sole task-ledger conflict retained both main and MCU records. Verification passes the complete 471-test database suite, complete 450-test Transformer suite, 127 affected Worker tests including the 90-test job loop, and 42 affected API tests: 1,090 tests total. Database, Worker, Transformer, and API typechecks pass, and diff integrity is clean. No push, PR, merge, deployment, provider call, or settlement replay occurred.
+
+### Independent-review repair
+
+- A later paid Fettler lease no longer requires an earlier cost row. When an earlier immutable row exists, including a measured zero-cost execution, fallback lineage retains it; when no row exists, the later lease proceeds without fabricating a predecessor.
+- Outcome authority remains append-only while accepting repeated rejection, correction, and rollback observations from distinct, strictly newer durable evidence. The latest row alone carries current authority; superseded accepted evidence cannot remain public.
+- Authenticated execution-cost reads now validate both immutable ledgers before returning outcome state, include the tenant-scoped Mission identifier, and fail closed when current authority is stale or storage provenance is malformed. Stored measurement provenance is parsed as an exact object with known string fields; corrupt JSON, arrays, and invalid values produce one deterministic integrity failure.
+- Hostile verification passes 40 tests across database, Worker, and API suites. The exact retry-lineage follow-up additionally passes all 102 affected Worker tests, including the 90-test job loop, plus 18 database tests. Database, Worker, Transformer, and API typechecks pass, and diff integrity is clean. No push, merge, deployment, provider call, settlement rewrite, requirement promotion, or public-claim promotion occurred.
+
+## 2026-08-31 PR 587 review repair
+
+- [x] Stop a never-observed model call being attested as a measured cost at the reservation ceiling.
+- [x] Cover the new outcome ledger's tenant filters with cross-tenant tests and prove them by mutation.
+- [x] Correct the two claims this branch could not support, rather than leaving them standing.
+
+### Review
+
+- BLOCKER fixed. `reconcilePriorPaidWardenAttempts` rejected only `active` reservations, so a `status = "unknown"` reservation passed every guard. `settleUnknownReservation` writes `charged_* = maximum_*` precisely BECAUSE nothing was observed, leaving `reported_cost_usd` NULL, and that ceiling reached `recordExecutionCostFromRoutingLedger` as a non-null `cost_usd`. The append-only cost row was therefore written with `model_cost_measured = 1` at the ceiling and a provenance string with no `:cost_unmeasured` marker: an affirmative attestation of a routing-ledger measurement for a call nobody ever saw, permanent under the entries table's append-only triggers and visible on `GET /execution-costs`. Both `unknown`-producing paths are production-wired (the fenced-failure sweep and the lease-expiry sweep), and process death between reserve and terminal is the primary case this recovery exists for.
+- The fix carries the lease through recovery instead of excluding it, so the pending routing row is still closed and the paid attempt is still recorded, but with a null cost and null tokens whenever any reservation settled without a reported cost. `modelCostMeasured` then resolves false, money-micros is 0, and the provenance gets its `:cost_unmeasured` suffix. Excluding `unknown` leases was rejected: it would leave the routing row pending forever and would discard the genuinely measured reservations in a mixed lease.
+- The predicate is `reported_cost_usd !== null` rather than `status !== "unknown"`. That is the same defect shape and it also closes `failed` and `over_budget` settlements that reported no usage, which likewise charge the ceiling with nothing observed. It never marks measured anything that was not.
+- Tenant scope on the new outcome ledger was entirely untested. `recordExecutionCostOutcome`'s cost lookup and `listExecutionCostOutcomes`' filter are both correct today, but nothing would have caught a regression on a billing read that feeds `GET /execution-costs` and the `isAcceptedOutcome` decision behind revenue attribution. A cross-tenant test now puts the same execution id in two tenants and kills both mutations.
+- Claim corrected, not code. The test asserting that accounting failures "remain retryable" proved only that the DB primitive joins the caller's transaction. In production `recordJobMissionExecutionCost` only ever runs after `applyRoutingOutcome` set `routingFinalizationStarted`, so `mcu_accounting_persistence_failed` is always wrapped in `WardenAtomicFinalizationError`, rethrown at `apps/worker/src/cli.ts:4423`, and escapes `processJobsOnceUnfenced`. It recovers by lease expiry and prior-paid-attempt reconciliation, not by a `failJob` retry with backoff. That is fail-safe, so the escape is left alone and the claim is narrowed. `mcu_settlement_persistence_failed` from `settleFanoutRunUsage` does reach the classifier, so the regex branch is not wholly dead.
+- Coverage removal declared. `origin/main` had four `recordJobMissionExecutionCost` call sites; this branch has two. `warden.campaign.execute` and both `pipeline.fanout` success paths no longer write a mission cost row. This is a consequence of the redesign, not an oversight: the new signature requires an exact routing run and envelope id, and those job types never go through the Fettler routing runtime, so there is no envelope to cite. Fabricating one would defeat the provenance discipline this branch exists to establish. The omission is fail-closed for margin (a revenue task with no cost row yields `actual_cost_missing` and `complete = false`), and restoring coverage requires giving those two job types real routing identity, which is separate work.
+- Known-null surface, recorded not changed. `recordExecutionCostFromRoutingLedger` hardcodes the five non-model components unmeasured, and `reconcileGrossMargin` marks any execution with an unmeasured component incomplete, so `attributedGrossMarginMoneyMicros` is null for every real execution today. `recordExecutionCostOutcome`'s only production caller is the new POST route, so nothing in the worker marks a cost accepted and attributed revenue is 0. Both are honest and fail-closed; this branch delivers the API boundary, not an end-to-end margin number.
+- Recorded, deliberately not changed: `durableRevenueJobForCost` matches `? LIKE j.id || ':lease-%'`, where an underscore in a job id is a single-character wildcard. An `ESCAPE` clause was written and then reverted. The clause is a no-op today because the query's `EXISTS` on `mission_task.created` pins `correlation_id` to exactly one job, so no decoy can ever join the result set, and the branch has zero test coverage anywhere: replacing `':lease-%'` with a never-matching literal leaves the db, API, and platform gross-margin suites green at 19/19 and 38/38. An unverifiable edit to a billing query was not worth shipping; the missing coverage is the real finding.
+## 2026-08-30 GSD Plan 10-04: recovery qualification collector
+
+Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, backup, restore, migration, rollback, regional failure, and recurring drills across the database, graph, artifacts, change-source state, ReGauge control plane, ReGauge execution state, and configuration. Production backup-provider, cross-region, and real regional-failover observations remain an explicit external leaf.
+
+- [x] RED: specify one bounded production recovery qualification caller that consumes an authenticated object-backup receipt, restores all seven resources to an isolated target, opens the restored stores through their current schema convergence paths, and records exact pre-upgrade and post-upgrade identities without mutating the source or active deployment.
+- [x] GREEN: publish one create-only, authenticated evidence envelope binding the backup, key identifier, object commit, exact deployed and repository revisions, resource digests, schema convergence, semantic canaries, measured RTO and RPO, rollback digest, recovery-region identity, and the external-proof state.
+- [x] RED: prove wrong tenant or backup identity, receipt or object tampering, unsupported prior schema, partial restore, live-target overlap, symlink or path escape, duplicate output, missed objective, canary failure, migration failure, rollback drift, dependency outage, and interrupted replay cannot publish passing evidence.
+- [x] GREEN: make an exact completed proof replay without another download or restore, and leave failed or externally incomplete evidence distinct from a passing synthetic or local drill.
+- [ ] Verify focused recovery tests, prior-schema convergence suites, Ops and scripts typechecks, full tests and typecheck, optimized build, GA gates, dependency audit, and diff integrity.
+- [ ] Obtain independent exact-head review, current-base protected CI, protected merge, exact-revision deployment, and a live collector run. Keep `ME-ENT-007` below GA until the production provider, approved cross-region target, and real regional-failure drill are attributable.
+
+### Files and interfaces
+
+- `scripts/production-recovery-proof.ts`: protected recovery proof caller and create-only evidence publication.
+- `scripts/production-recovery-proof.test.ts`: exact replay, hostile receipt, prior-schema, failure, rollback, and third-state matrix.
+- `package.json`: operator command only. Reuse the existing object-backup, restore, schema, and measured-drill contracts; do not create a second backup format.
+
+### Threats and rollback
+
+- Secret material remains environment-only and is never persisted in inputs, output, logs, digests, or errors. The evidence envelope retains key identifiers and authenticated receipt digests only.
+- The caller accepts only an isolated empty target and a distinct rollback target, rejects active data roots and filesystem redirects, and holds the existing mutation fence through store convergence and canary reads.
+- A local or synthetic drill can prove engineering behavior but cannot set `productionProven`, satisfy the external evidence leaf, or promote a public recovery claim.
+- Rollback removes only the operator caller and command. Existing backup formats, receipts, scheduled jobs, retained objects, source state, and production recovery authority remain unchanged.
+
+### Review
+
+- The bounded engineering collector reuses the authenticated object-backup receipt and manifest, customer object-store download, atomic restore, mutation fence, current store constructors, and measured recovery contracts. It creates one authenticated evidence envelope for all seven resources and never introduces a second backup format.
+- Exact completed replay authenticates the existing envelope and returns before download, restore, convergence, canaries, or rollback. Retained failure, tenant or receipt mismatch, tamper, unsafe paths, partial restore, unsupported schema, missed objectives, canary failure, migration failure, and rollback drift fail closed.
+- Local, synthetic, and production-targeted runs all retain `productionProven: false` with an explicit pending external observation. `ME-ENT-007` remains below GA until a protected exact-revision run supplies attributable provider, approved cross-region, and real regional-failure evidence.
+- Focused verification passes 21 recovery tests. Remaining repository gates and protected shipping evidence are recorded by the release owner after this bounded slice is integrated.
+
+### Review (exact-head follow-up)
+
+- `revisions.deployed` was an operator label compared against another operator label. Both `MENDPOINT_RECOVERY_REPOSITORY_REVISION` and `MENDPOINT_RECOVERY_DEPLOYED_REVISION` came from the same environment, so the production guard proved only that one person typed the same string twice: the field meant to bind the artifact to a specific production deploy was never checked against a deploy. A production-targeted run now reads `revision` from the running target's `/version` and publishes only when the observation matches the expectation. An unreachable or unreadable target fails the run. `revisions.deployed` carries three states rather than two, so "we did not look" cannot be read as "we looked and it matched", and only `non_production_environment` can accompany a passing proof.
+- `manifestSha256` sat beside `restoredSha256` and read as an expected-versus-observed pair. They are incomparable and were never compared: the manifest value digests the backup's encrypted-file metadata, the restored value digests the decrypted tree, and they differ on every successful run. Both are retained under names that say which object each identifies.
+- The restored-tree guard compared this file's tree digest against the one the restore reported. It is unreachable from an end-to-end run, so nothing died when it was deleted. It is now a named exported guard with a test of its own. The tree walker stays deliberately separate from `packages/ops/src/disaster-recovery.ts:556`: this one rejects a symlink anywhere in the ancestor chain and rejects a non-regular entry outright, and collapsing onto the shared implementation would drop both checks on the path that decides whether evidence is published.
+- `safeFailureCode` allowlisted by charset, so sixty-four hex characters passed to stderr and into signed evidence verbatim. No path interpolates key material into a message, which is the only reason that was not already a leak. It now echoes only codes this module or its own transport raises, with a bounded detail suffix; anything else reports as a dependency failure.
+- `main()` had no test and no invocation, and the thirteen names it reads were undeclared, invisible to `config:check` because that gate scans only the workflow directory. Every name `main()` reads through `requiredEnv` is declared `required_when_active` in `config/required-configuration.json` with its activation gate, a test drives `main()` against fake environment values to named failures, and a source scan fails if a name is read but not declared. `MENDPOINT_BACKUP_KEY`, `MENDPOINT_DEPLOYMENT_PROFILE`, and the object-store variables belong to the customer-backup subsystem and stay undeclared here rather than being claimed by this plan.
+- NOT CONTINUOUS, deliberately: no workflow runs `recovery:proof`, so the RPO check does not fire on a schedule and cannot catch backups that silently stop. Wiring it into `customer-backup.yml` was considered and rejected on two grounds. That workflow executes on the customer machine through `flyctl ssh console`, where the proof would contend for the same mutation fence as the backup it is meant to verify; and it would need a full restore plus a rollback copy of production data on the production host. The proof stays operator-run, and continuous RPO monitoring remains owed work under `ME-ENT-007`.
+- Twenty-one heavy tests ran real AES-GCM, SQLite, and whole-tree copies under the 5000ms default; twelve failed on timeout on a Windows host while CI stayed green. The genuinely heavy cases carry per-test budgets in the existing repository idiom rather than a suite-wide override, so a real hang in a fast test still fails fast.
+- Not changed: `tenantId` was reported as bound only into `requestDigest`. It is a top-level field of both the passing and failed envelopes, covered by the HMAC that `signEvidence` computes over the whole unsigned object, and re-checked against the caller on replay, so editing it in a retained file already fails authentication. No cryptographic binding can stop an operator from labelling their own single-tenant run, so nothing was added.
+## 2026-08-30 GSD Plan 10-02: tenant isolation and governed audit runtime
+
+- [x] RED: prove the production launch gate rejects a missing or unscoped tenant boundary across API, database, graph, workspace, artifact, cache, queue, mission, learning, backup, export, and observability.
+- [x] GREEN: mount the complete boundary registry in API startup and bind every registration to an attributable adversarial test contract.
+- [x] RED: specify durable tenant-owned legal-hold transitions, export destinations, redaction, source-chain anchoring, replay verification, and cross-tenant denial.
+- [x] GREEN: add append-only legal-hold and export-manifest persistence and authenticated owner/admin API routes over the existing audit hash chain.
+- [x] Verify fresh and upgrade database convergence, mutation and replay failures, focused DB/API/contract tests, affected typechecks, optimized build, GA checks, dependency audit, and diff integrity.
+- [ ] Obtain independent exact-head review, current-base protected CI, protected merge, exact-revision deployment, and live health proof.
+
+### Threats and rollback
+
+- A governed export must first verify the exact tenant audit source chain, must never accept another tenant's destination or records, and must persist only immutable destination and manifest evidence rather than transport credentials.
+- Legal holds are append-only transitions. Releasing a hold does not rewrite its creation evidence, and retention evaluation never deletes audit history in this slice.
+- Production launch fails closed if a required boundary is missing, optional but enabled without tenant scope, or lacks its named adversarial proof contract.
+- Rollback removes the new routes and startup caller while leaving existing append-only audit events untouched. New governance rows are additive and inert on an older binary.
+
+### Review
+
+- API startup now verifies all twelve required tenant boundary registrations and rejects missing, duplicate, unscoped, or unattributed registrations before serving traffic.
+- Legal holds, export destinations, and export manifests are tenant scoped, append only, hash bound, idempotent, source-chain verified, redacted, and replay verifiable. The legacy raw audit export endpoint now returns 410 and points callers to the governed flow.
+- The worker verifies both the source audit chain and governance chains for every tenant and emits a critical alert for tampering. Hostile tests cover cross-tenant access, revoked destinations, append-only trigger defeat, source and manifest tampering, governance tampering, exact replay, and fresh/reopen database convergence.
+- Verification passed: 13 focused DB/API/worker tests, 176 contract tests, 103 shared tests, the full workspace test matrix including 475 root-script assertions, full workspace typecheck, optimized 50-route production build, GA checks, production dependency audit with zero vulnerabilities, and diff integrity.
+- Independent exact-head review, protected CI, protected merge, exact-revision deployment, and live health proof remain pending. No requirement or public claim was promoted by this slice.
+- After rebasing onto current main `d232a27c`, the combined database initializer preserves both the current secrets lifecycle migrations and the governed audit schema. The exact 31-test API, worker, contract, and database matrix, full workspace typecheck, optimized 64-route production build, every GA gate, zero-vulnerability production audit, and diff integrity pass on the rebased tree.
+## 2026-09-02 Issue authority refresh for #433
+
+- [x] Bind issue-authority record #433 to its exact live GitHub state and `updatedAt` value without changing requirement status, availability, or claims.
+- [x] Recompute the issue-authority integrity digest from the complete proposed matrix; the release-train digest is untouched because no release-train record changed.
+- [x] Prove every other issue-authority record still matches live GitHub (14 of 15 matched before the change; only #433 had drifted).
+- [x] Run the closure, specification, ledger, and GA validators plus the focused authority suites and diff integrity.
+
+### Root cause
+
+- `docs/PRODUCTION_CLOSURE_MATRIX.json` pinned issue #433 at `updatedAt` `2026-08-30T23:49:27Z` (the reopen). A claim comment on the issue at `2026-08-31T18:03:50Z` advanced GitHub's `updated_at`, so `closure:github:check` on every push to `main` since `5501de99` failed with `ISSUE_METADATA_MISMATCH 433`, one failed workflow run per merge. The pull-request observation scope does not verify that record, which is why pull requests stayed green while `main` stayed red.
+
+### Scope and rollback
+
+- Owned files: `docs/PRODUCTION_CLOSURE_MATRIX.json` and this task record. No issue, requirement, public claim, workflow, policy, credential, or production runtime is mutated by this branch.
+- Rollback is a single commit revert. The main authority observer remains fail closed until a refreshed matrix is merged and a new exact-main observation passes.
+
+### Review
+
+- Live GitHub readback at `2026-09-02T00:05:21.467Z` confirmed issue #433 is open, titled `Production closure FC 04: Fettler customer proof`, assigned to `gondalaimafia`, with `updatedAt` `2026-08-31T18:03:50Z`; the record retains its owner, title, URL, and requirement mappings.
+- The complete matrix recomputation produced issue-authority digest `sha256:11036b890a56a523c87ee8de129fa6d95431abec949a92dc86cb356db1269fd9`. The release-train digest remains `sha256:55d1f00bbe1af30a9787d5a5468779b94d1cd7aecb2bc9952c9e833914645a96`.
+- `npm run closure:check`, `npm run spec:check`, `npm run ledger:check`, and `npm run ga:check` exit 0. The focused GitHub authority, closure-matrix, and proposal-authority suites pass all 129 tests; the proposal-authority process exited 1 twice on a vitest worker `Timeout calling "onTaskUpdate"` under host load with 33 of 33 tests passed, not on an assertion. `git diff --check` passes; the edited blob has 0 CR bytes.
+- The same drift will recur whenever anyone comments on any of the 15 authority issues, because the record pins a volatile timestamp; that is a design decision to revisit separately, not something this refresh changes.

@@ -55,6 +55,7 @@ export type ApiVariables = {
   identitySessionId?: string;
   webhookDeliveryId?: string;
   secretBreakGlassAuditHandled?: boolean;
+  auditGovernanceAuditHandled?: boolean;
 };
 export type ApiEnv = { Variables: ApiVariables };
 

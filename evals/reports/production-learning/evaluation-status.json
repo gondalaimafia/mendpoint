@@ -1,0 +1,67 @@
+{
+  "schemaVersion": "mendpoint.production-learning-status.v1",
+  "generatedAt": "2026-09-02T01:29:52.694Z",
+  "programBaseRevision": "96801a319fc3d355cb2b28b4167b83023a192042",
+  "catalog": {
+    "total": 150,
+    "development": 120,
+    "holdout": 30,
+    "byProductAndCohort": {
+      "fettler:common": 50,
+      "fettler:edge": 25,
+      "regauge:common": 50,
+      "regauge:edge": 25
+    },
+    "sourceCount": 62,
+    "repositoryCount": 10
+  },
+  "requirements": {
+    "total": 101,
+    "planned": 15,
+    "unplanned": 86,
+    "verified": 0,
+    "unverified": 101,
+    "productionEvidenceState": "unknown"
+  },
+  "sourceEvidence": {
+    "retainedContentSnapshots": 0,
+    "evidenceState": "unknown"
+  },
+  "holdouts": {
+    "assigned": 30,
+    "sealed": 0,
+    "evidenceState": "unknown"
+  },
+  "repositoryProvenance": {
+    "candidates": 10,
+    "admitted": 0,
+    "rejected": 3,
+    "evidenceState": "unknown",
+    "nativeCaseBindings": 52,
+    "syntheticSubstrateCaseBindings": 98
+  },
+  "fixtures": {
+    "planned": 150,
+    "admitted": 0,
+    "evidenceState": "unknown"
+  },
+  "productionEvaluation": {
+    "requiredRuns": 750,
+    "completedRuns": 0,
+    "evidenceState": "unknown",
+    "arms": [
+      "production_baseline",
+      "deterministic_recipe",
+      "configured_model_router",
+      "advisory_verifier",
+      "oracle"
+    ]
+  },
+  "claims": {
+    "repositoryControlledContractsImplemented": true,
+    "repositoriesProductionAdmitted": false,
+    "fixturesComplete": false,
+    "productionRunsExecuted": false,
+    "customerReady": false
+  }
+}
