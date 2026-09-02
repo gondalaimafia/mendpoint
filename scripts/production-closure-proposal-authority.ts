@@ -979,6 +979,12 @@ export async function verifyProductionClosureProposal(
         trustedProductionEvidenceAuthorities:
           policy.productionEvidenceAuthorities as ProductionEvidenceTrustRoot[],
         requireCurrentPullRequestBootstrap: true,
+        // The CI-attested number keys the validator's bootstrap-slot dependency
+        // exemption when a caller supplies it. In production it is undefined (the
+        // workflow sets MENDPOINT_CLOSURE_PR_NUMBER only on the github-authority step;
+        // see main()), so the validator falls back to the declared bootstrap exactly
+        // as its requirement bindings do.
+        currentPullRequestNumber,
       }),
     );
 
