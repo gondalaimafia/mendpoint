@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-09-02T21:12:47.194Z",
-    "observedMainRevision": "65adf7cbd5fcfd6f382be155d1b69237ff35235a",
-    "observationDigest": "sha256:aa32637cd320e54322075bd8f365e8ccd3c7cf5b1804f149603014d4e1e6d969",
+    "observedAt": "2026-09-02T22:10:33.365Z",
+    "observedMainRevision": "d4a5317ffbe51f33b736a50b0621a7a94cf85a23",
+    "observationDigest": "sha256:6626f1be22a4a582db0e3066e98ae7f9756a5c1a731b84681b10f2f8c4892bda",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 640,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/640",
-      "title": "closure: bootstrap exemption for PR_DEPENDENCY_UNTRACKED (authority rotation)",
+      "number": 461,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/461",
+      "title": "claims: detect stale claims whose audited surface changed (mechanism half of #284)",
       "baseBranch": "main",
-      "headBranch": "claude/dependency-bootstrap-exemption",
+      "headBranch": "claims-staleness-mechanism",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2083,16 +2083,18 @@
         "pullRequests": [],
         "branches": []
       },
-      "requirementIds": [],
+      "requirementIds": [
+        "ME-GTM-003"
+      ],
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260902-023",
+        "rotationId": "rotation-20260902-024",
         "kind": "runtime",
-        "issuedAt": "2026-09-02T21:12:47.194Z",
-        "expiresAt": "2026-09-03T21:12:47.194Z",
-        "basePolicySha256": "sha256:d20d8688f709fe50cfa3c790e7522d76a2d630175c3f8ff7c92ae4a0127aef41",
-        "proposedPolicySha256": "sha256:b4f7912e3f2f7d99164c6c4196d58a45f49de422a4e6004da6b43480d8ddef0e"
+        "issuedAt": "2026-09-02T22:10:33.365Z",
+        "expiresAt": "2026-09-03T22:10:33.365Z",
+        "basePolicySha256": "sha256:b4f7912e3f2f7d99164c6c4196d58a45f49de422a4e6004da6b43480d8ddef0e",
+        "proposedPolicySha256": "sha256:79c66e52bd3eddb3d21153ff514d9c4028f86295e842b8b129d09c41c7f8dd7f"
       }
     },
     "pullRequests": [
@@ -3668,56 +3670,6 @@
           {
             "priority": "P1",
             "summary": "the API crash loops on upgrade while the required artifact backend production binding is absent"
-          }
-        ]
-      },
-      {
-        "number": 461,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/461",
-        "title": "claims: detect stale claims whose audited surface changed (mechanism half of #284)",
-        "headBranch": "claims-staleness-mechanism",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Claude",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "blocked_explicit_dependency",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [
-          "ME-GTM-003"
-        ],
-        "checkState": "behind",
-        "headRevision": "a025063315e570c3ea6b16eec7c9838274bfa84f",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": [
-          {
-            "priority": "P1",
-            "summary": "historical claimed surfaces can be removed or retargeted before stale-claim comparison, bypassing the required re-audit"
-          },
-          {
-            "priority": "P1",
-            "summary": "the branch changes two pinned public-claims authority surfaces without a sanctioned runtime rotation"
-          },
-          {
-            "priority": "P1",
-            "summary": "the provisional Claude owner is not supported by an agent-prefixed branch or a provider-bound owner label"
           }
         ]
       },
