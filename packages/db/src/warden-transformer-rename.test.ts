@@ -428,7 +428,47 @@ function buildLegacyOwnershipVolume(path: string): void {
   legacy.close();
 }
 
+function applyReleasedFallbackBackfill(path: string): void {
+  const legacy = new DatabaseSync(path);
+  for (const table of LEGACY_OWNERSHIP_TABLES) {
+    legacy.exec(
+      `UPDATE ${table}
+       SET tenant_id = 'tenant_default'
+       WHERE tenant_id IS NULL OR tenant_id = ''`,
+    );
+  }
+  legacy.close();
+}
+
 describe("Fettler/Regauge logical database names", () => {
+  it("fails closed when a prior released boot already laundered unknown ownership", () => {
+    const path = join(newDir("tenant-two-step-laundering"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyReleasedFallbackBackfill(path);
+
+    expect(() => boot(path)).toThrow(
+      "legacy_tenant_ownership_reconciliation_required",
+    );
+
+    const preserved = new DatabaseSync(path);
+    try {
+      for (const table of LEGACY_OWNERSHIP_TABLES) {
+        expect(
+          preserved
+            .prepare(`SELECT id, tenant_id FROM ${table} ORDER BY id`)
+            .all(),
+        ).toEqual([
+          { id: `${table}-empty`, tenant_id: "tenant_default" },
+          { id: `${table}-null`, tenant_id: "tenant_default" },
+          { id: `${table}-valid`, tenant_id: "tenant_customer" },
+          { id: `${table}-whitespace`, tenant_id: "   " },
+        ]);
+      }
+    } finally {
+      preserved.close();
+    }
+  });
+
   it("keeps a fresh legacy row unattributable when the tenant column is introduced", () => {
     const path = join(newDir("tenant-fresh-upgrade"), "legacy.sqlite");
     buildLegacyJobVolume(path, "missing", [{ id: "fresh-unknown", tenantId: null }]);
