@@ -524,20 +524,29 @@ class ExternalKeyEncryptionKeyProvider implements KeyEncryptionKeyProvider {
   }
 
   #binding(key: EnvelopeKeyLocator, tenantId: string): ExternalKeyEncryptionKeyBinding {
+    if (!key || typeof key !== "object" || Array.isArray(key)) {
+      throw new Error("external_kek_operation_failed");
+    }
+    const keyRecord = key as unknown as Record<string, unknown>;
+    const provider = keyRecord.provider;
+    const keyId = keyRecord.keyId;
+    const version = keyRecord.version;
     if (
       !ID.test(tenantId)
-      || key.provider !== this.provider
-      || !ID.test(key.keyId)
-      || !ID.test(key.version)
-      || ("customerManaged" in key && key.customerManaged !== true)
+      || provider !== this.provider
+      || typeof keyId !== "string"
+      || !ID.test(keyId)
+      || typeof version !== "string"
+      || !ID.test(version)
+      || ("customerManaged" in keyRecord && keyRecord.customerManaged !== true)
     ) {
       throw new Error("external_kek_operation_failed");
     }
     const binding = this.#bindings.get(externalKeyBindingIdentity(
       tenantId,
       this.provider,
-      key.keyId,
-      key.version,
+      keyId,
+      version,
     ));
     if (!binding) throw new Error("external_kek_operation_failed");
     return binding;
