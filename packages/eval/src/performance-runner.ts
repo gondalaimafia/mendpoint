@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { lookup } from "node:dns/promises";
 import {
   mkdirSync,
   linkSync,
@@ -8,6 +9,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { request as httpsRequest } from "node:https";
+import { BlockList, isIP, type LookupFunction } from "node:net";
+import { Readable } from "node:stream";
 import {
   evaluatePerformanceRun,
   resolvePerformanceTierId,
@@ -34,6 +38,22 @@ const FIXTURE_DIGEST = /^[0-9a-f]{64}$/;
 const DEPLOYMENT_REVISION = /^(?!main$|master$|latest$|head$)[a-zA-Z0-9][a-zA-Z0-9._-]{6,127}$/i;
 export const PERFORMANCE_OBSERVATION_LIMIT = 10_000;
 export const PERFORMANCE_PROBE_RESPONSE_BYTE_LIMIT = 1_048_576;
+
+const PERFORMANCE_DESTINATION_BLOCK_LIST = new BlockList();
+for (const [address, prefix] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
+  ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],
+  ["192.88.99.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15],
+  ["198.51.100.0", 24], ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4],
+] as const) {
+  PERFORMANCE_DESTINATION_BLOCK_LIST.addSubnet(address, prefix, "ipv4");
+}
+for (const [address, prefix] of [
+  ["::", 128], ["::1", 128], ["100::", 64], ["2001:db8::", 32],
+  ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
+] as const) {
+  PERFORMANCE_DESTINATION_BLOCK_LIST.addSubnet(address, prefix, "ipv6");
+}
 
 export type PerformanceMetricMeasurement = Readonly<{
   durationMs: number;
@@ -73,6 +93,12 @@ export type PerformanceProbeContext = Readonly<{
 export type PerformanceProbe = (
   context: PerformanceProbeContext,
 ) => Promise<PerformanceProbeMeasurement>;
+
+export type PerformancePinnedRequest = (
+  endpoint: URL,
+  approvedAddress: string,
+  init: RequestInit,
+) => Promise<Response>;
 
 export type PerformanceProbeReport = Readonly<{
   schemaVersion: 2;
@@ -520,10 +546,88 @@ export async function runPerformanceProbe(
   });
 }
 
+function normalizeDestinationAddress(value: string): string {
+  const address = value.startsWith("[") && value.endsWith("]") ? value.slice(1, -1) : value;
+  if (address.includes("%") || address.toLowerCase().startsWith("::ffff:")) {
+    throw new Error("performance_probe_destination_blocked");
+  }
+  const family = isIP(address);
+  if (family === 0) throw new Error("performance_probe_destination_invalid");
+  if (PERFORMANCE_DESTINATION_BLOCK_LIST.check(address, family === 4 ? "ipv4" : "ipv6")) {
+    throw new Error("performance_probe_destination_blocked");
+  }
+  return address;
+}
+
+async function resolvePerformanceDestination(hostname: string): Promise<readonly string[]> {
+  const literal = isIP(hostname);
+  if (literal !== 0) return [hostname];
+  try {
+    const answers = await lookup(hostname, { all: true, verbatim: true });
+    return answers.map((answer) => answer.address);
+  } catch {
+    throw new Error("performance_probe_destination_unresolved");
+  }
+}
+
+function responseHeaders(source: Readonly<Record<string, string | readonly string[] | undefined>>): Headers {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(source)) {
+    if (typeof value === "string") {
+      headers.set(name, value);
+    } else if (Array.isArray(value)) {
+      for (const item of value) headers.append(name, item);
+    }
+  }
+  return headers;
+}
+
+const pinnedHttpsPerformanceRequest: PerformancePinnedRequest = async (
+  endpoint,
+  approvedAddress,
+  init,
+) => new Promise<Response>((resolveResponse, rejectResponse) => {
+  const family = isIP(approvedAddress);
+  if (family !== 4 && family !== 6) {
+    rejectResponse(new Error("performance_probe_destination_invalid"));
+    return;
+  }
+  const pinnedLookup = ((
+    _hostname: string,
+    _options: unknown,
+    callback: (error: NodeJS.ErrnoException | null, address: string, family: number) => void,
+  ) => callback(null, approvedAddress, family)) as LookupFunction;
+  const request = httpsRequest(endpoint, {
+    agent: false,
+    headers: Object.fromEntries(new Headers(init.headers).entries()),
+    lookup: pinnedLookup,
+    method: init.method,
+    signal: init.signal ?? undefined,
+  }, (incoming) => {
+    const status = incoming.statusCode ?? 502;
+    const body = status === 204 || status === 205 || status === 304
+      ? null
+      : Readable.toWeb(incoming) as ReadableStream<Uint8Array>;
+    resolveResponse(new Response(body, {
+      headers: responseHeaders(incoming.headers),
+      status,
+    }));
+  });
+  request.once("error", rejectResponse);
+  if (typeof init.body === "string" || init.body instanceof Uint8Array) request.write(init.body);
+  else if (init.body !== null && init.body !== undefined) {
+    request.destroy(new Error("performance_probe_request_body_invalid"));
+    return;
+  }
+  request.end();
+});
+
 export function createHttpPerformanceProbe(options: Readonly<{
   endpoint: string;
+  approvedDestination?: string;
   bearerToken?: string;
-  fetch?: typeof fetch;
+  resolveHostname?: (hostname: string) => Promise<readonly string[]>;
+  pinnedRequest?: PerformancePinnedRequest;
 }>): PerformanceProbe {
   let parsedEndpoint: URL;
   try {
@@ -534,6 +638,7 @@ export function createHttpPerformanceProbe(options: Readonly<{
   if (parsedEndpoint.username || parsedEndpoint.password) {
     throw new Error("performance_probe_url_credentials_forbidden");
   }
+  if (parsedEndpoint.hash) throw new Error("performance_probe_url_fragment_forbidden");
   const loopback = new Set(["localhost", "127.0.0.1", "[::1]"]).has(parsedEndpoint.hostname);
   if (parsedEndpoint.protocol !== "https:" && !(
     parsedEndpoint.protocol === "http:" && loopback && !options.bearerToken
@@ -541,11 +646,34 @@ export function createHttpPerformanceProbe(options: Readonly<{
     throw new Error("performance_probe_https_required");
   }
   const endpoint = parsedEndpoint.toString();
-  const request = options.fetch ?? globalThis.fetch;
+  if (options.bearerToken) {
+    if (!options.approvedDestination) {
+      throw new Error("performance_probe_approved_destination_required");
+    }
+    let approvedDestination: URL;
+    try {
+      approvedDestination = new URL(options.approvedDestination);
+    } catch {
+      throw new Error("performance_probe_approved_destination_mismatch");
+    }
+    if (
+      approvedDestination.username || approvedDestination.password || approvedDestination.hash ||
+      approvedDestination.toString() !== endpoint
+    ) {
+      throw new Error("performance_probe_approved_destination_mismatch");
+    }
+  }
+  const resolveHostname = options.resolveHostname ?? resolvePerformanceDestination;
+  const pinnedRequest = options.pinnedRequest ?? pinnedHttpsPerformanceRequest;
+  const endpointHostname = parsedEndpoint.hostname.startsWith("[") && parsedEndpoint.hostname.endsWith("]")
+    ? parsedEndpoint.hostname.slice(1, -1)
+    : parsedEndpoint.hostname;
   return async (context) => {
-    const response = await request(endpoint, {
+    const init: RequestInit = {
       method: "POST",
       headers: {
+        accept: "application/json",
+        "accept-encoding": "identity",
         "content-type": "application/json",
         ...(options.bearerToken ? { authorization: `Bearer ${options.bearerToken}` } : {}),
       },
@@ -565,7 +693,16 @@ export function createHttpPerformanceProbe(options: Readonly<{
       }),
       redirect: "error",
       signal: context.signal,
-    });
+    };
+    let response: Response;
+    if (parsedEndpoint.protocol === "http:" && loopback) {
+      response = await globalThis.fetch(endpoint, init);
+    } else {
+      const resolved = await resolveHostname(endpointHostname);
+      if (resolved.length === 0) throw new Error("performance_probe_destination_unresolved");
+      const approvedAddresses = resolved.map(normalizeDestinationAddress);
+      response = await pinnedRequest(parsedEndpoint, approvedAddresses[0]!, init);
+    }
     if (!response.ok) throw new Error(`performance_probe_http_${response.status}`);
     const responseBytes = await readBoundedPerformanceResponse(response);
     let payload: { observed?: unknown; metrics?: unknown };
@@ -718,6 +855,7 @@ export async function runPerformanceCli(
     dependencyVersions: dependencies.dependencyVersions ?? dependencyVersions(resolve("package-lock.json")),
     probe: dependencies.probe ?? createHttpPerformanceProbe({
       endpoint,
+      approvedDestination: process.env.MENDPOINT_PERFORMANCE_APPROVED_DESTINATION,
       bearerToken: process.env.MENDPOINT_PERFORMANCE_BEARER_TOKEN,
     }),
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),

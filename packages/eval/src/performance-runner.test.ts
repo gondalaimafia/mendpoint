@@ -125,6 +125,14 @@ function probeContext(correlationId = "corr-fettler-performance") {
   };
 }
 
+function testPerformanceTransport(request: typeof fetch) {
+  return {
+    resolveHostname: async () => ["93.184.216.34"],
+    pinnedRequest: async (endpoint: URL, _approvedAddress: string, init: RequestInit) =>
+      request(endpoint, init),
+  };
+}
+
 describe("performance runner", () => {
   it("executes canonical CLI bindings through persisted report bytes", async () => {
     let now = 0;
@@ -597,7 +605,7 @@ describe("performance runner", () => {
     });
     const probe = createHttpPerformanceProbe({
       endpoint: "https://probe.invalid/performance",
-      fetch: request,
+      ...testPerformanceTransport(request),
     });
     const result = await probe({
       invocationId: "test-tier.load.00000000",
@@ -672,6 +680,39 @@ describe("performance runner", () => {
     expect(pinnedRequest).toHaveBeenCalledTimes(1);
   });
 
+  it("blocks a credentialed literal private address before opening a connection", async () => {
+    const pinnedRequest = vi.fn();
+    const probe = createHttpPerformanceProbe({
+      endpoint: "https://127.0.0.1/performance",
+      approvedDestination: "https://127.0.0.1/performance",
+      bearerToken: "secret-value",
+      pinnedRequest,
+    });
+
+    await expect(probe(probeContext())).rejects.toThrow("performance_probe_destination_blocked");
+    expect(pinnedRequest).not.toHaveBeenCalled();
+  });
+
+  it("resolves again before every invocation and blocks DNS rebinding", async () => {
+    const resolveHostname = vi.fn()
+      .mockResolvedValueOnce(["93.184.216.34"])
+      .mockResolvedValueOnce(["127.0.0.1"]);
+    const pinnedRequest = vi.fn(async () =>
+      new Response(JSON.stringify(measurement()), { status: 200 }));
+    const probe = createHttpPerformanceProbe({
+      endpoint: "https://probe.example/performance",
+      approvedDestination: "https://probe.example/performance",
+      bearerToken: "secret-value",
+      resolveHostname,
+      pinnedRequest,
+    });
+
+    await expect(probe(probeContext())).resolves.toEqual(measurement());
+    await expect(probe(probeContext())).rejects.toThrow("performance_probe_destination_blocked");
+    expect(resolveHostname).toHaveBeenCalledTimes(2);
+    expect(pinnedRequest).toHaveBeenCalledTimes(1);
+  });
+
   it("allows plaintext only for explicit loopback development without credentials", () => {
     expect(() => createHttpPerformanceProbe({ endpoint: "http://127.0.0.1:3000/probe" })).not.toThrow();
     expect(() => createHttpPerformanceProbe({ endpoint: "http://localhost:3000/probe" })).not.toThrow();
@@ -697,8 +738,9 @@ describe("performance runner", () => {
     });
     const probe = createHttpPerformanceProbe({
       endpoint: "https://probe.example/performance",
+      approvedDestination: "https://probe.example/performance",
       bearerToken: "secret-value",
-      fetch: request,
+      ...testPerformanceTransport(request),
     });
 
     await expect(probe({
@@ -715,10 +757,10 @@ describe("performance runner", () => {
   it("rejects a probe response that does not observe the exact requested identity", async () => {
     const probe = createHttpPerformanceProbe({
       endpoint: "https://probe.invalid/performance",
-      fetch: async () => new Response(JSON.stringify({
+      ...testPerformanceTransport(async () => new Response(JSON.stringify({
         ...measurement(),
         observed: { ...measurement().observed, repositoryId: "github-wrong" },
-      }), { status: 200 }),
+      }), { status: 200 })),
     });
     await expect(probe({
       invocationId: "test-tier.load.00000000",
@@ -741,12 +783,12 @@ describe("performance runner", () => {
     const read = vi.fn();
     const probe = createHttpPerformanceProbe({
       endpoint: "https://probe.invalid/performance",
-      fetch: async () => ({
+      ...testPerformanceTransport(async () => ({
         ok: true,
         status: 200,
         headers: new Headers({ "content-length": String(EXPECTED_RESPONSE_BYTE_LIMIT + 1) }),
         body: { getReader: () => ({ read }) },
-      }) as unknown as Response,
+      }) as unknown as Response),
     });
 
     await expect(probe({
@@ -775,7 +817,7 @@ describe("performance runner", () => {
     });
     const probe = createHttpPerformanceProbe({
       endpoint: "https://probe.invalid/performance",
-      fetch: async () => new Response(body, { status: 200 }),
+      ...testPerformanceTransport(async () => new Response(body, { status: 200 })),
     });
 
     await expect(probe({
