@@ -901,6 +901,69 @@ function prepareEntry(db: AppDb, input: EntryInput) {
   assertActor(db, input.tenantId, input.actorPrincipalId);
 }
 
+type InvoiceAllocation = Readonly<{
+  entitlement_id: string;
+  price_version: string;
+  allocated: number;
+  first_sequence: number;
+}>;
+
+function invoiceAllocationsFor(
+  db: AppDb,
+  tenantId: string,
+  invoiceReference: string,
+  beforeSequence?: number,
+): InvoiceAllocation[] {
+  const sequenceClause = beforeSequence === undefined ? "" : " AND entry_sequence < ?";
+  const params: SQLInputValue[] = [tenantId, invoiceReference];
+  if (beforeSequence !== undefined) params.push(beforeSequence);
+  return many<InvoiceAllocation>(
+    db,
+    `SELECT entitlement_id, price_version,
+            SUM(consumed_mcu_micros_delta) AS allocated,
+            MIN(entry_sequence) AS first_sequence
+     FROM usage_ledger_entries
+     WHERE tenant_id = ? AND invoice_reference = ?${sequenceClause}
+     GROUP BY entitlement_id, price_version
+     HAVING allocated > 0
+     ORDER BY first_sequence, entitlement_id, price_version`,
+    params,
+  );
+}
+
+function allocateCreditAcrossInvoice(
+  allocations: readonly InvoiceAllocation[],
+  creditMcuMicros: number,
+) {
+  let remaining = creditMcuMicros;
+  const portions: Array<InvoiceAllocation & { credited: number }> = [];
+  for (const allocation of allocations) {
+    if (remaining === 0) break;
+    const credited = Math.min(remaining, allocation.allocated);
+    if (credited > 0) portions.push({ ...allocation, credited });
+    remaining -= credited;
+  }
+  if (remaining !== 0 || portions.length === 0) {
+    throw new Error("usage_credit_exceeds_invoice_allocation");
+  }
+  return portions;
+}
+
+function creditAllocationIdentity(
+  financeAuthorizationId: string,
+  rootIdempotencyKey: string,
+  ordinal: number,
+  role: "offset" | "portion",
+) {
+  return `credit-allocation:${sha256(JSON.stringify({
+    version: "usage-credit-allocation/1",
+    financeAuthorizationId,
+    rootIdempotencyKey,
+    ordinal,
+    role,
+  }))}`;
+}
+
 export function reserveUsage(
   db: AppDb,
   input: Omit<EntryInput, "entryType" | "entitlementId" | "reservationId" | "priceVersion" | "reservedDelta" | "consumedDelta"> & {
@@ -1156,22 +1219,7 @@ function signedUsageChange(
     if (finance.consumedEntryId !== null) {
       throw new Error("usage_finance_authorization_consumed");
     }
-    const invoiceAllocations = many<{
-      entitlement_id: string;
-      price_version: string;
-      allocated: number;
-      first_sequence: number;
-    }>(
-      db,
-      `SELECT entitlement_id, price_version,
-              SUM(consumed_mcu_micros_delta) AS allocated,
-              MIN(entry_sequence) AS first_sequence
-       FROM usage_ledger_entries
-       WHERE tenant_id = ? AND invoice_reference = ?
-       GROUP BY entitlement_id, price_version
-       ORDER BY first_sequence`,
-      [input.tenantId, invoiceReference],
-    );
+    const invoiceAllocations = invoiceAllocationsFor(db, input.tenantId, invoiceReference);
     const invoiceAllocation = invoiceAllocations.reduce(
       (total, allocation) => total + allocation.allocated,
       0,
@@ -1181,9 +1229,10 @@ function signedUsageChange(
       throw new Error("usage_credit_exceeds_invoice_allocation");
     }
     const activeEntitlement = getActiveUsageEntitlement(db, input.tenantId, input.createdAt);
-    const creditAllocation = entryType === "credit"
-      ? invoiceAllocations.find((allocation) => allocation.allocated + delta >= 0)
-      : null;
+    const creditAllocations = entryType === "credit"
+      ? allocateCreditAcrossInvoice(invoiceAllocations, -delta)
+      : [];
+    const creditAllocation = creditAllocations[0] ?? null;
     const entitlement = creditAllocation
       ? one<EntitlementRow>(db, "SELECT * FROM usage_entitlements WHERE id = ? AND tenant_id = ?", [
           creditAllocation.entitlement_id,
@@ -1200,7 +1249,8 @@ function signedUsageChange(
       : "usage_entitlement_required");
     const selectedEntitlement = entitlementFromRow(entitlement);
     const totals = currentTotals(db, input.tenantId, selectedEntitlement.id);
-    const nextConsumed = totals.consumed + delta;
+    const firstCreditDelta = creditAllocation ? -creditAllocation.credited : delta;
+    const nextConsumed = totals.consumed + firstCreditDelta;
     if (nextConsumed < 0) throw new Error("usage_credit_exceeds_consumption");
     if (
       delta > 0 &&
@@ -1220,6 +1270,63 @@ function signedUsageChange(
     };
     prepareEntry(db, entry);
     const result = insertEntry(db, entry);
+    if (entryType === "credit" && creditAllocations.length > 1) {
+      const offset = -delta - creditAllocations[0]!.credited;
+      const offsetIdentity = creditAllocationIdentity(
+        financeAuthorizationId,
+        input.idempotencyKey,
+        0,
+        "offset",
+      );
+      const derivedEntries: EntryInput[] = [{
+        ...input,
+        id: offsetIdentity,
+        idempotencyKey: offsetIdentity,
+        entryType: "credit",
+        entitlementId: selectedEntitlement.id,
+        priceVersion: selectedEntitlement.priceVersionId,
+        reservedDelta: 0,
+        consumedDelta: offset,
+        financeAuthorizationId,
+        financeAuthorizationDigest,
+      }];
+      for (let index = 1; index < creditAllocations.length; index += 1) {
+        const allocation = creditAllocations[index]!;
+        const allocationEntitlement = one<EntitlementRow>(
+          db,
+          "SELECT * FROM usage_entitlements WHERE id = ? AND tenant_id = ?",
+          [allocation.entitlement_id, input.tenantId],
+        );
+        if (!allocationEntitlement) throw new Error("usage_credit_allocation_entitlement_missing");
+        const resolved = entitlementFromRow(allocationEntitlement);
+        const allocationTotals = currentTotals(db, input.tenantId, resolved.id);
+        if (allocationTotals.consumed - allocation.credited < 0) {
+          throw new Error("usage_credit_exceeds_consumption");
+        }
+        const identity = creditAllocationIdentity(
+          financeAuthorizationId,
+          input.idempotencyKey,
+          index,
+          "portion",
+        );
+        derivedEntries.push({
+          ...input,
+          id: identity,
+          idempotencyKey: identity,
+          entryType: "credit",
+          entitlementId: resolved.id,
+          priceVersion: resolved.priceVersionId,
+          reservedDelta: 0,
+          consumedDelta: -allocation.credited,
+          financeAuthorizationId,
+          financeAuthorizationDigest,
+        });
+      }
+      for (const derivedEntry of derivedEntries) {
+        prepareEntry(db, derivedEntry);
+        insertEntry(db, derivedEntry);
+      }
+    }
     if (finance.consumedEntryId === null) {
       const consumed = db.raw.prepare(
         `UPDATE usage_finance_authorizations
@@ -1269,15 +1376,6 @@ function financeAuthorizationMatchesEntry(db: AppDb, entry: UsageLedgerEntry): b
   );
   if (!row) return false;
   const finance = financeAuthorizationFromRow(row);
-  const expectedIntentDigest = sha256(usageFinanceIntent({
-    tenantId: entry.tenantId,
-    actorPrincipalId: entry.actorPrincipalId,
-    entryType: entry.entryType,
-    invoiceReference: entry.invoiceReference,
-    entryIdempotencyKey: entry.idempotencyKey,
-    mcuMicrosDelta: entry.consumedMcuMicrosDelta,
-    reason: entry.reason,
-  }));
   const expectedAuthorizationDigest = usageFinanceAuthorizationDigest({
     id: finance.id,
     tenantId: finance.tenantId,
@@ -1293,12 +1391,115 @@ function financeAuthorizationMatchesEntry(db: AppDb, entry: UsageLedgerEntry): b
     approvedAt: finance.approvedAt,
     expiresAt: finance.expiresAt,
   });
-  return finance.entryType === entry.entryType &&
-    finance.intentDigest === expectedIntentDigest &&
-    finance.authorizationDigest === expectedAuthorizationDigest &&
-    finance.authorizationDigest === entry.financeAuthorizationDigest &&
-    finance.consumedEntryId === entry.id &&
-    finance.consumedAt === entry.createdAt;
+  if (finance.authorizationDigest !== expectedAuthorizationDigest) return false;
+  if (finance.entryType === "adjustment") {
+    const expectedIntentDigest = sha256(usageFinanceIntent({
+      tenantId: entry.tenantId,
+      actorPrincipalId: entry.actorPrincipalId,
+      entryType: entry.entryType,
+      invoiceReference: entry.invoiceReference,
+      entryIdempotencyKey: entry.idempotencyKey,
+      mcuMicrosDelta: entry.consumedMcuMicrosDelta,
+      reason: entry.reason,
+    }));
+    return entry.entryType === "adjustment" &&
+      finance.intentDigest === expectedIntentDigest &&
+      finance.authorizationDigest === entry.financeAuthorizationDigest &&
+      finance.consumedEntryId === entry.id &&
+      finance.consumedAt === entry.createdAt;
+  }
+  if (!finance.consumedEntryId) return false;
+  const rootRow = one<EntryRow>(
+    db,
+    "SELECT * FROM usage_ledger_entries WHERE tenant_id = ? AND id = ?",
+    [finance.tenantId, finance.consumedEntryId],
+  );
+  if (!rootRow) return false;
+  const root = entryFromRow(rootRow);
+  const expectedIntentDigest = sha256(usageFinanceIntent({
+    tenantId: root.tenantId,
+    actorPrincipalId: root.actorPrincipalId!,
+    entryType: root.entryType as "credit",
+    invoiceReference: root.invoiceReference!,
+    entryIdempotencyKey: root.idempotencyKey,
+    mcuMicrosDelta: root.consumedMcuMicrosDelta,
+    reason: root.reason,
+  }));
+  if (
+    root.entryType !== "credit" ||
+    root.idempotencyKey !== finance.entryIdempotencyKey ||
+    root.consumedMcuMicrosDelta !== finance.mcuMicrosDelta ||
+    root.invoiceReference !== finance.invoiceReference ||
+    root.actorPrincipalId !== finance.actorPrincipalId ||
+    root.financeAuthorizationDigest !== finance.authorizationDigest ||
+    root.reason !== finance.reason ||
+    finance.intentDigest !== expectedIntentDigest ||
+    finance.consumedAt !== root.createdAt
+  ) {
+    return false;
+  }
+  let portions: ReturnType<typeof allocateCreditAcrossInvoice>;
+  try {
+    portions = allocateCreditAcrossInvoice(
+      invoiceAllocationsFor(db, finance.tenantId, finance.invoiceReference, root.entrySequence),
+      -finance.mcuMicrosDelta,
+    );
+  } catch {
+    return false;
+  }
+  const expected = [{
+    id: root.id,
+    idempotencyKey: finance.entryIdempotencyKey,
+    entitlementId: portions[0]!.entitlement_id,
+    priceVersion: portions[0]!.price_version,
+    consumedDelta: finance.mcuMicrosDelta,
+  }];
+  if (portions.length > 1) {
+    const offsetIdentity = creditAllocationIdentity(finance.id, finance.entryIdempotencyKey, 0, "offset");
+    expected.push({
+      id: offsetIdentity,
+      idempotencyKey: offsetIdentity,
+      entitlementId: portions[0]!.entitlement_id,
+      priceVersion: portions[0]!.price_version,
+      consumedDelta: -finance.mcuMicrosDelta - portions[0]!.credited,
+    });
+    for (let index = 1; index < portions.length; index += 1) {
+      const portion = portions[index]!;
+      const identity = creditAllocationIdentity(finance.id, finance.entryIdempotencyKey, index, "portion");
+      expected.push({
+        id: identity,
+        idempotencyKey: identity,
+        entitlementId: portion.entitlement_id,
+        priceVersion: portion.price_version,
+        consumedDelta: -portion.credited,
+      });
+    }
+  }
+  const actual = many<EntryRow>(
+    db,
+    `SELECT * FROM usage_ledger_entries
+     WHERE tenant_id = ? AND finance_authorization_id = ? ORDER BY entry_sequence`,
+    [finance.tenantId, finance.id],
+  ).map(entryFromRow);
+  if (actual.length !== expected.length) return false;
+  return actual.every((candidate, index) => {
+    const wanted = expected[index]!;
+    return candidate.id === wanted.id &&
+      candidate.idempotencyKey === wanted.idempotencyKey &&
+      candidate.entryType === "credit" &&
+      candidate.entitlementId === wanted.entitlementId &&
+      candidate.priceVersion === wanted.priceVersion &&
+      candidate.reservedMcuMicrosDelta === 0 &&
+      candidate.consumedMcuMicrosDelta === wanted.consumedDelta &&
+      candidate.taskId === root.taskId &&
+      candidate.campaignId === root.campaignId &&
+      candidate.reservationId === null &&
+      candidate.invoiceReference === finance.invoiceReference &&
+      candidate.reason === finance.reason &&
+      candidate.actorPrincipalId === finance.actorPrincipalId &&
+      candidate.financeAuthorizationDigest === finance.authorizationDigest &&
+      candidate.createdAt === root.createdAt;
+  });
 }
 
 export function reconcileUsageLedger(db: AppDb, tenantId: string) {

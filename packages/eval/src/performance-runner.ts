@@ -534,6 +534,7 @@ export async function runPerformanceProbe(
       const invocationStarted = now();
       const invokedAt = observedAt(now);
       const invocationNonce = randomUUID();
+      let producerResponseReceived = false;
       activeInvocationCount += 1;
       measuredConcurrency = Math.max(measuredConcurrency, activeInvocationCount);
       try {
@@ -555,6 +556,7 @@ export async function runPerformanceProbe(
           metricEventSources,
           signal: controller.signal,
         });
+        producerResponseReceived = true;
         const producerRepository = validateMeasurement(measurement, {
           invocationId,
           invocationNonce,
@@ -588,7 +590,7 @@ export async function runPerformanceProbe(
           "probe_observed",
         );
       } catch {
-        if (controller.signal.aborted || now() >= deadlineMs) {
+        if (!producerResponseReceived && (controller.signal.aborted || now() >= deadlineMs)) {
           cancelledInvocationCount += 1;
           continue;
         }

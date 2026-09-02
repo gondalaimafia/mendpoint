@@ -452,6 +452,7 @@ describe("performance runner", () => {
 
     expect(report.status).toBe("incomplete");
     expect(report.ok).toBe(false);
+    expect(report.aggregation.totalInvocationCount).toBe(1);
     expect(report.observations).toHaveLength(5);
     expect(report.observations.every((item) => item.durationMs === 1 && !item.success)).toBe(true);
     expect(report.observations.every((item) => item.bindingSource === "request_context")).toBe(true);
@@ -523,6 +524,42 @@ describe("performance runner", () => {
     )).toBe(true);
   });
 
+  it("retains malformed producer evidence when abort wins between response and validation", async () => {
+    let responseReturned = false;
+    const external = new AbortController();
+    const singleInvocationContract = contract();
+    singleInvocationContract.tiers[0] = {
+      ...singleInvocationContract.tiers[0]!,
+      concurrency: 1,
+      minimumSamples: 1,
+    };
+    const report = await runPerformanceProbe({
+      contract: singleInvocationContract,
+      tierId: "test-tier",
+      mode: "load",
+      ...metadata(),
+      signal: external.signal,
+      now: () => {
+        if (responseReturned && !external.signal.aborted) external.abort("deadline_race");
+        return responseReturned ? 1_000 : 0;
+      },
+      probe: async (context) => {
+        responseReturned = true;
+        return measurementFor(context, 10, true, { invocationNonce: "forged-nonce" });
+      },
+    });
+
+    expect(report.status).toBe("aborted");
+    expect(report.abortReason).toBe("deadline_race");
+    expect(report.ok).toBe(false);
+    expect(report.cancelledInvocationCount).toBe(0);
+    expect(report.aggregation.totalInvocationCount).toBe(1);
+    expect(report.observations).toHaveLength(5);
+    expect(report.observations.every((item) =>
+      !item.success && item.bindingSource === "request_context"
+    )).toBe(true);
+  });
+
   it("rejects a producer-observed repository shape that differs from the requested fixture", async () => {
     const report = await runPerformanceProbe({
       contract: contract(),
@@ -542,7 +579,8 @@ describe("performance runner", () => {
     expect(report.ok).toBe(false);
     expect(report.evaluation).toBeNull();
     expect(report.measuredRepository).toBeNull();
-    expect(report.observations).toHaveLength(5);
+    expect(report.aggregation.totalInvocationCount).toBe(2);
+    expect(report.observations).toHaveLength(10);
     expect(report.observations.every((item) => !item.success && item.bindingSource === "request_context")).toBe(true);
   });
 

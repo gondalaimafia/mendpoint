@@ -789,7 +789,73 @@ describe("usage ledger", () => {
         .reduce((sum, candidate) => sum + candidate.consumedMcuMicrosDelta, 0)),
     ]));
     expect(allocationByPrice).toEqual({ "price-a": -60, "price-split-b": -20 });
-    expect(creditUsage(db, { ...creditInput, ...authorization })).toEqual(creditLines[0]);
+    expect(creditUsage(db, { ...creditInput, ...authorization })).toEqual(
+      creditLines.find((entry) => entry.id === creditInput.id),
+    );
+
+    const excessInput = {
+      id: "credit-split-excess",
+      tenantId: "tenant_default",
+      idempotencyKey: "credit-split-excess",
+      taskId: "task-split",
+      mcuMicrosDelta: -21,
+      invoiceReference: "invoice-split",
+      reason: "excess split invoice correction",
+      createdAt: "2026-09-02T12:03:00.000Z",
+    } as const;
+    const excessAuthorization = createUsageFinanceAuthorization(db, {
+      id: "finance-credit-split-excess",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "credit",
+      invoiceReference: excessInput.invoiceReference,
+      entryIdempotencyKey: excessInput.idempotencyKey,
+      mcuMicrosDelta: excessInput.mcuMicrosDelta,
+      reason: excessInput.reason,
+      approvedAt: "2026-09-02T12:02:30.000Z",
+      expiresAt: "2026-09-02T12:04:00.000Z",
+    });
+    expect(() => creditUsage(db, {
+      ...excessInput,
+      actorPrincipalId: "finance-owner",
+      financeAuthorizationId: excessAuthorization.id,
+      financeAuthorizationDigest: excessAuthorization.authorizationDigest,
+    })).toThrow("usage_credit_exceeds_invoice_allocation");
+
+    const fullInput = {
+      id: "credit-split-full",
+      tenantId: "tenant_default",
+      idempotencyKey: "credit-split-full",
+      taskId: "task-split",
+      mcuMicrosDelta: -20,
+      invoiceReference: "invoice-split",
+      reason: "full split invoice correction",
+      createdAt: "2026-09-02T12:03:00.000Z",
+    } as const;
+    const fullAuthorization = createUsageFinanceAuthorization(db, {
+      id: "finance-credit-split-full",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "credit",
+      invoiceReference: fullInput.invoiceReference,
+      entryIdempotencyKey: fullInput.idempotencyKey,
+      mcuMicrosDelta: fullInput.mcuMicrosDelta,
+      reason: fullInput.reason,
+      approvedAt: "2026-09-02T12:02:30.000Z",
+      expiresAt: "2026-09-02T12:04:00.000Z",
+    });
+    creditUsage(db, {
+      ...fullInput,
+      actorPrincipalId: "finance-owner",
+      financeAuthorizationId: fullAuthorization.id,
+      financeAuthorizationDigest: fullAuthorization.authorizationDigest,
+    });
+    expect(reconcileUsageLedger(db, "tenant_default")).toMatchObject({
+      ok: true,
+      invoices: { "invoice-split": 0 },
+    });
   });
 
   it("recovers an existing finance authorization from the stable intent", () => {
