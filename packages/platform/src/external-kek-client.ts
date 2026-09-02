@@ -167,6 +167,9 @@ const defaultHttpsRequester: ExternalKeyHttpsRequester = async (input) =>
       method: "POST",
       headers: input.headers,
       signal: input.signal,
+      // Do not share authority-keyed sockets across transports. Two tenants or
+      // policies may authorize disjoint addresses behind the same hostname.
+      agent: false,
       lookup: (_hostname, options, callback) => {
         // Node 20+ may request all address records for family autoselection. The
         // transport still pins exactly one prevalidated address, but must honor
@@ -387,8 +390,8 @@ export class HttpsExternalKeyTransport implements ExternalKeyTransport {
         || response.statusCode < 200
         || response.statusCode >= 300
       ) throw new Error("denied");
-      const contentType = response.contentType.toLowerCase();
-      if (!contentType.includes("application/json")) throw new Error("invalid_content_type");
+      const mediaType = response.contentType.split(";", 1)[0]?.trim().toLowerCase();
+      if (mediaType !== "application/json") throw new Error("invalid_content_type");
       const parsed: unknown = JSON.parse(response.text);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         throw new Error("invalid_response");

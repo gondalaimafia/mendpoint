@@ -10,6 +10,49 @@ vi.mock("node:https", async (importOriginal) => ({
   request: nativeHttps.request,
 }));
 
+type NativeResponse = EventEmitter & {
+  headers: Record<string, string>;
+  statusCode: number;
+  destroy: (error?: Error) => void;
+};
+
+function nativeJsonRequest(expectedAddress: string) {
+  return (
+    _url: unknown,
+    options: {
+      agent?: unknown;
+      lookup: (
+        hostname: string,
+        options: { all: boolean },
+        callback: (error: Error | null, addresses: Array<{ address: string; family: number }>) => void,
+      ) => void;
+    },
+    onResponse: (response: NativeResponse) => void,
+  ) => {
+    expect(options.agent).toBe(false);
+    options.lookup("vault.example.test", { all: true }, (error, addresses) => {
+      expect(error).toBeNull();
+      expect(addresses).toEqual([{ address: expectedAddress, family: 4 }]);
+    });
+
+    const response = new EventEmitter() as NativeResponse;
+    response.headers = { "content-type": "application/json" };
+    response.statusCode = 200;
+    response.destroy = (error) => {
+      if (error) response.emit("error", error);
+    };
+    onResponse(response);
+    queueMicrotask(() => {
+      response.emit("data", Buffer.from('{"accepted":true}'));
+      response.emit("end");
+    });
+
+    const request = new EventEmitter() as EventEmitter & { end: (body: string) => void };
+    request.end = vi.fn();
+    return request;
+  };
+}
+
 const locator = {
   provider: "customer-kms",
   keyId: "tenant-key",
@@ -32,35 +75,7 @@ function jsonRequester(value: unknown = { accepted: true }) {
 
 describe("HTTPS external key transport", () => {
   it("pins the native requester to one validated address for all-address lookup", async () => {
-    nativeHttps.request.mockImplementationOnce((_url, options, onResponse) => {
-      options.lookup("vault.example.test", { all: true }, (
-        error: Error | null,
-        addresses: Array<{ address: string; family: number }>,
-      ) => {
-        expect(error).toBeNull();
-        expect(addresses).toEqual([{ address: "93.184.216.34", family: 4 }]);
-      });
-
-      const response = new EventEmitter() as EventEmitter & {
-        headers: Record<string, string>;
-        statusCode: number;
-        destroy: (error?: Error) => void;
-      };
-      response.headers = { "content-type": "application/json" };
-      response.statusCode = 200;
-      response.destroy = (error) => {
-        if (error) response.emit("error", error);
-      };
-      onResponse(response);
-      queueMicrotask(() => {
-        response.emit("data", Buffer.from('{"accepted":true}'));
-        response.emit("end");
-      });
-
-      const request = new EventEmitter() as EventEmitter & { end: (body: string) => void };
-      request.end = vi.fn();
-      return request;
-    });
+    nativeHttps.request.mockImplementationOnce(nativeJsonRequest("93.184.216.34"));
 
     const transport = createHttpsExternalKeyTransport({
       endpoint: "https://vault.example.test",
@@ -70,6 +85,35 @@ describe("HTTPS external key transport", () => {
 
     await expect(transport.attestKey(locator, "tenant-a")).resolves.toEqual({ accepted: true });
     expect(nativeHttps.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reuse a socket across disjoint policies for the same authority", async () => {
+    nativeHttps.request.mockClear();
+    nativeHttps.request
+      .mockImplementationOnce(nativeJsonRequest("10.42.0.5"))
+      .mockImplementationOnce(nativeJsonRequest("10.42.0.6"));
+    const first = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.internal.test",
+      destination: {
+        authority: "vault.internal.test",
+        mode: "operator-authorized-private",
+        allowedAddresses: ["10.42.0.5"],
+      },
+      resolveAddresses: async () => ["10.42.0.5"],
+    });
+    const second = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.internal.test",
+      destination: {
+        authority: "vault.internal.test",
+        mode: "operator-authorized-private",
+        allowedAddresses: ["10.42.0.6"],
+      },
+      resolveAddresses: async () => ["10.42.0.6"],
+    });
+
+    await expect(first.attestKey(locator, "tenant-a")).resolves.toEqual({ accepted: true });
+    await expect(second.attestKey(locator, "tenant-a")).resolves.toEqual({ accepted: true });
+    expect(nativeHttps.request).toHaveBeenCalledTimes(2);
   });
 
   it("sends only the existing provider contract over HTTPS", async () => {
@@ -177,6 +221,40 @@ describe("HTTPS external key transport", () => {
     await expect(transport.attestKey(locator, "tenant-a"))
       .rejects.toThrow("external_kek_request_failed");
     expect(requestImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["application/jsonp", "application/json-bogus"])(
+    "rejects JSON-like media type %s",
+    async (contentType) => {
+      const transport = createHttpsExternalKeyTransport({
+        endpoint: "https://vault.example.test",
+        destination: publicDestination,
+        resolveAddresses: resolvePublicAddress,
+        requestImpl: async () => ({
+          statusCode: 200,
+          contentType,
+          text: JSON.stringify({ accepted: true }),
+        }),
+      });
+
+      await expect(transport.attestKey(locator, "tenant-a"))
+        .rejects.toThrow("external_kek_request_failed");
+    },
+  );
+
+  it("accepts the exact JSON media type with a charset parameter", async () => {
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses: resolvePublicAddress,
+      requestImpl: async () => ({
+        statusCode: 200,
+        contentType: "application/json; charset=utf-8",
+        text: JSON.stringify({ accepted: true }),
+      }),
+    });
+
+    await expect(transport.attestKey(locator, "tenant-a")).resolves.toEqual({ accepted: true });
   });
 
   it.each([

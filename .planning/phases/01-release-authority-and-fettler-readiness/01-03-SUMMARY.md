@@ -17,16 +17,16 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 
 ## Artifacts
 
-- `packages/platform/src/external-kek-client.ts`: bounded HTTPS transport with mandatory TLS, exact destination authority, public-address validation by default, explicit exact private-address authorization, DNS-rebinding checks, timeout, response-size, redirect, content-type, and redacted-error enforcement.
+- `packages/platform/src/external-kek-client.ts`: bounded HTTPS transport with mandatory TLS, exact destination authority, public-address validation by default, explicit exact private-address authorization, DNS-rebinding and socket-reuse controls, timeout, response-size, redirect, exact JSON media-type, and redacted-error enforcement.
 - `packages/platform/src/vault-envelope.ts`: `createExternalKeyEncryptionKeyProvider` factory and fail-closed external provider implementation using the unchanged `KeyEncryptionKeyProvider` interface.
 - `packages/platform/src/index.ts`: public factory, client, configuration, and transport exports.
-- `packages/platform/src/external-kek-client.test.ts`: denial, malformed-body, oversize-body, timeout, HTTPS, request-shape, native all-address lookup, IPv4 and IPv6 address-class, private-authorization, and DNS-rebinding coverage.
+- `packages/platform/src/external-kek-client.test.ts`: denial, malformed-body, oversize-body, timeout, HTTPS, request-shape, native all-address lookup, socket-reuse mutation, exact media-type, IPv4 and IPv6 address-class, private-authorization, and DNS-rebinding coverage.
 - `packages/platform/src/vault-envelope.test.ts`: authority mutation, stale attestation, invalid data-key length, redaction, and full envelope seal-and-open coverage.
 
 ## Verification
 
-- `npm test -w @mendpoint/platform -- src/vault-envelope.test.ts src/external-kek-client.test.ts`: 60 tests passed.
-- `npm test -w @mendpoint/platform`: 296 tests passed across 20 files.
+- `npm test -w @mendpoint/platform -- src/vault-envelope.test.ts src/external-kek-client.test.ts`: 64 tests passed.
+- `npm test -w @mendpoint/platform`: 300 tests passed across 20 files.
 - `npm run typecheck -w @mendpoint/platform`: passed.
 - `git diff --check`: passed.
 
@@ -37,6 +37,8 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 - Public mode rejects loopback, unspecified, multicast, link-local, metadata, private, shared, documentation, benchmarking, and reserved IPv4 and IPv6 destinations.
 - Private mode requires explicit operator authorization bound to the exact authority and exact private addresses; it cannot authorize loopback, metadata, link-local, multicast, or unspecified destinations.
 - All resolved addresses are checked before every request, and the default HTTPS requester pins the socket lookup to one validated address for both scalar and Node all-address lookup callbacks so connection setup cannot perform a second, rebound DNS lookup.
+- Native requests do not use the authority-keyed global socket pool, preventing a socket authorized by one address policy from being reused under a disjoint policy for the same hostname.
+- Provider responses require the exact `application/json` media type, with parameters such as a valid charset accepted only after the media type is parsed exactly.
 - Provider bodies, credentials, plaintext data keys, and wrapped bytes are never copied into errors.
 - Responses with the wrong provider, tenant, key identifier, key version, attestation, or key-material fingerprint are rejected.
 - Unwrapped data keys must decode canonically to exactly 32 bytes.
