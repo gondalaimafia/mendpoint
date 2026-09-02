@@ -14,7 +14,7 @@ affects: [01-18, model-runtime-binding, github-delivery-binding, production-read
 actuals:
   tokens: 37942
   tasks: 3
-  commits: 9
+  commits: 10
 
 tech-stack:
   added: []
@@ -114,13 +114,13 @@ status: halted
 
 ## Task Commits
 
-1. **Task 1 red tests:** `0fc81ed2` (`test`)
-2. **Task 1 durable outage contract and queue:** `3f21c059` (`feat`)
-3. **Task 2 model recovery seam:** `11bd3c1a` (`feat`)
-4. **Task 3 SCM recovery seam:** `dea6a7c8` (`feat`)
-5. **Typed result correction:** `0eb85da2` (`fix`)
-6. **Authority, hostile tests, identifiers, and barrel exports:** `f78d6a7b` (`fix`)
-7. **Durable circuit and read-only GitHub reconciliation repair:** `d4bebdff` (`fix`)
+1. **Task 1 red tests:** `3284bab7` (`test`)
+2. **Task 1 durable outage contract and queue:** `7645beb3` (`feat`)
+3. **Task 2 model recovery seam:** `748aea91` (`feat`)
+4. **Task 3 SCM recovery seam:** `27123c67` (`feat`)
+5. **Typed result correction:** `fd51cdc6` (`fix`)
+6. **Authority, hostile tests, identifiers, and barrel exports:** `dbc632ac` (`fix`)
+7. **Durable circuit and read-only GitHub reconciliation repair:** `de0f4a34` (`fix`)
 
 Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/605), open, issue body read back with exact `Owner: Codex` claim.
 
@@ -152,7 +152,7 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - **Fix:** Added dependency-inverted structural ports and an architecture test that rejects the cycle.
 - **Files modified:** model provider, GitHub runtime, ops test, and three clean package barrels
 - **Verification:** 47 focused tests and four affected package type checks pass.
-- **Committed in:** `11bd3c1a`, `dea6a7c8`, `f78d6a7b`
+- **Committed in:** `748aea91`, `27123c67`, `dbc632ac`
 
 **2. Active database barrel overlap**
 - **Found during:** open pull request and branch ownership inventory
@@ -167,7 +167,7 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - **Fix:** Persisted and reconstructed the complete circuit snapshot, transitioned a due open circuit to a fenced half-open claim, threaded the snapshot through both model and GitHub decision inputs, and added exact read-only GitHub state inspection before every write.
 - **Files modified:** outage policy, durable queue, model port, GitHub runtime, their tests, and two public type barrels
 - **Verification:** 51 focused tests, four affected package type checks, the full 179-test ops suite, and the full 195-test GitHub suite pass.
-- **Committed in:** `d4bebdff`
+- **Committed in:** `de0f4a34`
 
 ---
 
@@ -185,7 +185,7 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - Full package regressions: ops passed 179 tests; GitHub passed 195 tests.
 - TypeScript: ops, database, agent, and GitHub package checks passed with no errors.
 - Diff integrity: `git diff --check` passed before the repair commit.
-- Current base before the final rebase: `24590c4df96c61da377161b12a5dfdcd7fd08250`.
+- Current base: rebased onto `4bf8e1c0fd729922c2203f0339d3befd5f612ad6` before the final runs.
 
 ## User Setup Required
 
