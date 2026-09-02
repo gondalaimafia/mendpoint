@@ -6,9 +6,12 @@ import {
   adjustUsage,
   createDb,
   createUsageEntitlement,
+  createUsageFinanceAuthorization,
   createUsagePriceVersion,
   creditUsage,
   getUsageSummary,
+  insertPrincipal,
+  putTenantMembership,
   listUsageLedger,
   reconcileUsageLedger,
   releaseUsageReservation,
@@ -55,7 +58,63 @@ function setup() {
     periodEnd: "2026-09-01T00:00:00.000Z",
     createdAt: at,
   });
+  insertPrincipal(db, {
+    id: "finance-owner",
+    tenantId: "tenant_default",
+    kind: "human",
+    subject: "finance-owner@example.test",
+    displayName: "Finance Owner",
+    createdAt: "2026-08-01T00:00:00.000Z",
+  });
+  putTenantMembership(db, {
+    tenantId: "tenant_default",
+    issuer: "https://identity.example.test",
+    subject: "finance-owner",
+    email: "finance-owner@example.test",
+    displayName: "Finance Owner",
+    role: "owner",
+    status: "active",
+    updatedAt: "2026-08-01T00:00:00.000Z",
+  });
+  db.raw.prepare(
+    "UPDATE principals SET subject = ?, audience = ? WHERE id = ?",
+  ).run(
+    "https://identity.example.test|finance-owner",
+    "https://identity.example.test",
+    "finance-owner",
+  );
   return db;
+}
+
+function financeAuthorization(
+  db: ReturnType<typeof setup>,
+  input: {
+    entryType: "adjustment" | "credit";
+    idempotencyKey: string;
+    mcuMicrosDelta: number;
+    invoiceReference: string;
+    reason: string;
+    createdAt: string;
+  },
+) {
+  const authorization = createUsageFinanceAuthorization(db, {
+    id: `finance-${input.idempotencyKey}`,
+    tenantId: "tenant_default",
+    approvedByPrincipalId: "finance-owner",
+    actorPrincipalId: "finance-owner",
+    entryType: input.entryType,
+    invoiceReference: input.invoiceReference,
+    entryIdempotencyKey: input.idempotencyKey,
+    mcuMicrosDelta: input.mcuMicrosDelta,
+    reason: input.reason,
+    approvedAt: "2026-08-01T12:01:30.000Z",
+    expiresAt: "2026-08-02T00:00:00.000Z",
+  });
+  return {
+    actorPrincipalId: "finance-owner",
+    financeAuthorizationId: authorization.id,
+    financeAuthorizationDigest: authorization.authorizationDigest,
+  };
 }
 
 describe("usage ledger", () => {
@@ -117,7 +176,7 @@ describe("usage ledger", () => {
         createdAt: "2026-08-01T12:01:00.000Z",
       }),
     ).toEqual(settlement);
-    creditUsage(db, {
+    const creditInput = {
       id: "credit-a",
       tenantId: "tenant_default",
       idempotencyKey: "credit-task-a",
@@ -127,7 +186,40 @@ describe("usage ledger", () => {
       invoiceReference: "invoice-2026-08",
       reason: "service credit",
       createdAt: "2026-08-01T12:02:00.000Z",
+    } as const;
+    const creditAuthorization = financeAuthorization(db, {
+      entryType: "credit",
+      ...creditInput,
+      invoiceReference: creditInput.invoiceReference,
     });
+    const credit = creditUsage(db, {
+      ...creditInput,
+      ...creditAuthorization,
+    });
+    expect(creditUsage(db, { ...creditInput, ...creditAuthorization })).toEqual(credit);
+    expect(() => creditUsage(db, {
+      ...creditInput,
+      id: "credit-reuse",
+      idempotencyKey: "credit-reuse",
+      ...creditAuthorization,
+    })).toThrow("usage_finance_authorization_binding_invalid");
+    expect(() => db.raw.prepare(
+      "UPDATE usage_finance_authorizations SET reason = 'changed' WHERE id = ?",
+    ).run(creditAuthorization.financeAuthorizationId)).toThrow(
+      "usage_finance_authorizations_immutable",
+    );
+    expect(() => db.raw.prepare(
+      "DELETE FROM usage_finance_authorizations WHERE id = ?",
+    ).run(creditAuthorization.financeAuthorizationId)).toThrow(
+      "usage_finance_authorizations_append_only",
+    );
+    expect(() => creditUsage(db, {
+      ...creditInput,
+      id: "credit-forged-digest",
+      financeAuthorizationId: creditAuthorization.financeAuthorizationId,
+      financeAuthorizationDigest: `sha256:${"0".repeat(64)}`,
+      actorPrincipalId: creditAuthorization.actorPrincipalId,
+    })).toThrow("usage_finance_authorization_binding_invalid");
     expect(getUsageSummary(db, "tenant_default", at)).toMatchObject({
       reservedMcuMicros: 0,
       consumedMcuMicros: 3_500_000,
@@ -233,6 +325,33 @@ describe("usage ledger", () => {
       createdAt: "2026-08-01T12:01:00.000Z",
     });
 
+    const expired = createUsageFinanceAuthorization(db, {
+      id: "finance-expired-credit",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "credit",
+      invoiceReference: "invoice-a",
+      entryIdempotencyKey: "expired-credit",
+      mcuMicrosDelta: -1,
+      reason: "expired approval",
+      approvedAt: "2026-08-01T12:01:01.000Z",
+      expiresAt: "2026-08-01T12:01:30.000Z",
+    });
+    expect(() => creditUsage(db, {
+      id: "expired-credit",
+      tenantId: "tenant_default",
+      idempotencyKey: "expired-credit",
+      taskId: "task-invoice",
+      mcuMicrosDelta: -1,
+      invoiceReference: "invoice-a",
+      reason: "expired approval",
+      actorPrincipalId: "finance-owner",
+      financeAuthorizationId: expired.id,
+      financeAuthorizationDigest: expired.authorizationDigest,
+      createdAt: "2026-08-01T12:02:00.000Z",
+    })).toThrow("usage_finance_authorization_expired");
+
     expect(() => adjustUsage(db, {
       id: "negative-adjustment",
       tenantId: "tenant_default",
@@ -252,7 +371,7 @@ describe("usage ledger", () => {
       reason: "missing invoice",
       createdAt: "2026-08-01T12:02:00.000Z",
     })).toThrow("usage_invoice_reference_required");
-    expect(() => adjustUsage(db, {
+    const unknownAdjustment = {
       id: "unknown-invoice-adjustment",
       tenantId: "tenant_default",
       idempotencyKey: "unknown-invoice-adjustment",
@@ -261,8 +380,16 @@ describe("usage ledger", () => {
       invoiceReference: "invoice-b",
       reason: "unknown invoice",
       createdAt: "2026-08-01T12:02:00.000Z",
+    } as const;
+    expect(() => adjustUsage(db, {
+      ...unknownAdjustment,
+      ...financeAuthorization(db, {
+        entryType: "adjustment",
+        ...unknownAdjustment,
+        invoiceReference: unknownAdjustment.invoiceReference,
+      }),
     })).toThrow("usage_invoice_allocation_not_found");
-    expect(() => creditUsage(db, {
+    const crossInvoiceCredit = {
       id: "cross-invoice-credit",
       tenantId: "tenant_default",
       idempotencyKey: "cross-invoice-credit",
@@ -271,8 +398,16 @@ describe("usage ledger", () => {
       invoiceReference: "invoice-b",
       reason: "wrong invoice",
       createdAt: "2026-08-01T12:02:00.000Z",
-    })).toThrow("usage_invoice_allocation_not_found");
+    } as const;
     expect(() => creditUsage(db, {
+      ...crossInvoiceCredit,
+      ...financeAuthorization(db, {
+        entryType: "credit",
+        ...crossInvoiceCredit,
+        invoiceReference: crossInvoiceCredit.invoiceReference,
+      }),
+    })).toThrow("usage_invoice_allocation_not_found");
+    const overInvoiceCredit = {
       id: "over-invoice-credit",
       tenantId: "tenant_default",
       idempotencyKey: "over-invoice-credit",
@@ -281,11 +416,104 @@ describe("usage ledger", () => {
       invoiceReference: "invoice-a",
       reason: "over invoice",
       createdAt: "2026-08-01T12:02:00.000Z",
+    } as const;
+    expect(() => creditUsage(db, {
+      ...overInvoiceCredit,
+      ...financeAuthorization(db, {
+        entryType: "credit",
+        ...overInvoiceCredit,
+        invoiceReference: overInvoiceCredit.invoiceReference,
+      }),
     })).toThrow("usage_credit_exceeds_invoice_allocation");
 
     expect(reconcileUsageLedger(db, "tenant_default")).toMatchObject({
       ok: true,
       invoices: { "invoice-a": 1_000_000 },
     });
+  });
+
+  it("requires a live tenant owner for approval and consumption", () => {
+    const db = setup();
+    insertPrincipal(db, {
+      id: "finance-viewer",
+      tenantId: "tenant_default",
+      kind: "human",
+      subject: "https://identity.example.test|finance-viewer",
+      displayName: "Finance Viewer",
+      audience: "https://identity.example.test",
+      createdAt: "2026-08-01T00:00:00.000Z",
+    });
+    putTenantMembership(db, {
+      tenantId: "tenant_default",
+      issuer: "https://identity.example.test",
+      subject: "finance-viewer",
+      email: "finance-viewer@example.test",
+      displayName: "Finance Viewer",
+      role: "viewer",
+      status: "active",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    });
+    expect(() => createUsageFinanceAuthorization(db, {
+      id: "viewer-approval",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-viewer",
+      actorPrincipalId: "finance-viewer",
+      entryType: "adjustment",
+      invoiceReference: "invoice-a",
+      entryIdempotencyKey: "viewer-adjustment",
+      mcuMicrosDelta: 1,
+      reason: "viewer cannot approve",
+      approvedAt: "2026-08-01T12:01:30.000Z",
+      expiresAt: "2026-08-01T12:06:30.000Z",
+    })).toThrow("usage_finance_owner_required");
+
+    const reservation = reserveUsage(db, {
+      id: "finance-lifecycle-reservation",
+      tenantId: "tenant_default",
+      idempotencyKey: "finance-lifecycle-reservation",
+      taskId: "finance-lifecycle-task",
+      mcuMicros: 10,
+      reason: "finance lifecycle",
+      createdAt: at,
+    });
+    settleUsageReservation(db, {
+      id: "finance-lifecycle-settlement",
+      tenantId: "tenant_default",
+      idempotencyKey: "finance-lifecycle-settlement",
+      reservationId: reservation.id,
+      actualMcuMicros: 10,
+      invoiceReference: "invoice-a",
+      reason: "finance lifecycle",
+      createdAt: "2026-08-01T12:01:00.000Z",
+    });
+    const authorization = createUsageFinanceAuthorization(db, {
+      id: "revoked-owner-approval",
+      tenantId: "tenant_default",
+      approvedByPrincipalId: "finance-owner",
+      actorPrincipalId: "finance-owner",
+      entryType: "credit",
+      invoiceReference: "invoice-a",
+      entryIdempotencyKey: "revoked-owner-credit",
+      mcuMicrosDelta: -1,
+      reason: "approval before revocation",
+      approvedAt: "2026-08-01T12:01:30.000Z",
+      expiresAt: "2026-08-01T12:06:30.000Z",
+    });
+    db.raw.prepare(
+      "UPDATE principals SET revoked_at = ? WHERE id = ?",
+    ).run("2026-08-01T12:01:45.000Z", "finance-owner");
+    expect(() => creditUsage(db, {
+      id: "revoked-owner-credit",
+      tenantId: "tenant_default",
+      idempotencyKey: "revoked-owner-credit",
+      taskId: "finance-lifecycle-task",
+      mcuMicrosDelta: -1,
+      invoiceReference: "invoice-a",
+      reason: "approval before revocation",
+      actorPrincipalId: "finance-owner",
+      financeAuthorizationId: authorization.id,
+      financeAuthorizationDigest: authorization.authorizationDigest,
+      createdAt: "2026-08-01T12:02:00.000Z",
+    })).toThrow("usage_finance_owner_inactive");
   });
 });

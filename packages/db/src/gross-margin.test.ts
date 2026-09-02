@@ -8,6 +8,7 @@ import {
   appendDomainEvent,
   createMission,
   createUsageEntitlement,
+  createUsageFinanceAuthorization,
   createUsagePriceVersion,
   creditUsage,
   enqueueJob,
@@ -89,6 +90,33 @@ function setupTenant(db: AppDb, tenantId: string, suffix: string) {
     periodEnd: "2026-09-01T00:00:00.000Z",
     createdAt: at,
   });
+}
+
+function financeAuthorization(db: AppDb, input: {
+  tenantId: string;
+  actorPrincipalId: string;
+  idempotencyKey: string;
+  mcuMicrosDelta: number;
+  invoiceReference: string;
+  reason: string;
+}) {
+  const authorization = createUsageFinanceAuthorization(db, {
+    id: `finance-${input.idempotencyKey}`,
+    tenantId: input.tenantId,
+    approvedByPrincipalId: input.actorPrincipalId,
+    actorPrincipalId: input.actorPrincipalId,
+    entryType: "credit",
+    invoiceReference: input.invoiceReference,
+    entryIdempotencyKey: input.idempotencyKey,
+    mcuMicrosDelta: input.mcuMicrosDelta,
+    reason: input.reason,
+    approvedAt: "2026-08-01T12:02:00.000Z",
+    expiresAt: "2026-08-02T00:00:00.000Z",
+  });
+  return {
+    financeAuthorizationId: authorization.id,
+    financeAuthorizationDigest: authorization.authorizationDigest,
+  };
 }
 
 function settle(
@@ -294,7 +322,7 @@ describe("actual execution cost and gross margin", () => {
   it("reduces recognized revenue by credits without changing actual cost", () => {
     const db = setupDb();
     settle(db);
-    creditUsage(db, {
+    const creditInput = {
       id: "credit-a",
       tenantId: "tenant_default",
       idempotencyKey: "credit-a",
@@ -305,7 +333,8 @@ describe("actual execution cost and gross margin", () => {
       reason: "service credit",
       actorPrincipalId: "principal-a",
       createdAt: "2026-08-01T12:03:00.000Z",
-    });
+    } as const;
+    creditUsage(db, { ...creditInput, ...financeAuthorization(db, creditInput) });
     recordActualExecutionCost(db, costInput());
 
     expect(reconcileGrossMargin(db, "tenant_default")).toMatchObject({

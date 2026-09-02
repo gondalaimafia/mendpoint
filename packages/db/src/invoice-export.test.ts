@@ -8,6 +8,7 @@ import {
   createDb,
   createInvoiceExport,
   createUsageEntitlement,
+  createUsageFinanceAuthorization,
   createUsagePriceVersion,
   creditUsage,
   getInvoiceExport,
@@ -113,10 +114,38 @@ function seed(db: AppDb) {
     idempotencyKey: "settle-a",
     reservationId: reservation.id,
     actualMcuMicros: 4_000_000,
+    invoiceReference: "invoice-a",
     reason: "accepted work",
     actorPrincipalId: "actor-a",
     createdAt: "2026-08-10T10:01:00.000Z",
   });
+}
+
+function financeAuthorization(db: AppDb, input: {
+  entryType: "adjustment" | "credit";
+  idempotencyKey: string;
+  mcuMicrosDelta: number;
+  reason: string;
+  createdAt: string;
+}) {
+  const authorization = createUsageFinanceAuthorization(db, {
+    id: `finance-${input.idempotencyKey}`,
+    tenantId: "tenant-a",
+    approvedByPrincipalId: "actor-a",
+    actorPrincipalId: "actor-a",
+    entryType: input.entryType,
+    invoiceReference: "invoice-a",
+    entryIdempotencyKey: input.idempotencyKey,
+    mcuMicrosDelta: input.mcuMicrosDelta,
+    reason: input.reason,
+    approvedAt: "2026-08-10T10:01:30.000Z",
+    expiresAt: "2026-09-01T00:00:00.000Z",
+  });
+  return {
+    invoiceReference: "invoice-a",
+    financeAuthorizationId: authorization.id,
+    financeAuthorizationDigest: authorization.authorizationDigest,
+  };
 }
 
 function createInput(overrides: Record<string, unknown> = {}) {
@@ -144,7 +173,7 @@ describe("signed invoice exports", () => {
   it("derives and signs immutable exact-price lines, replays once, and reconciles", () => {
     const { db } = open();
     seed(db);
-    creditUsage(db, {
+    const creditInput = {
       id: "credit-a",
       tenantId: "tenant-a",
       idempotencyKey: "credit-a",
@@ -154,8 +183,11 @@ describe("signed invoice exports", () => {
       reason: "service credit",
       actorPrincipalId: "actor-a",
       createdAt: "2026-08-15T00:00:00.000Z",
-    });
-    adjustUsage(db, {
+    } as const;
+    creditUsage(db, { ...creditInput, ...financeAuthorization(db, {
+      entryType: "credit", ...creditInput,
+    }) });
+    const refundInput = {
       id: "refund-a",
       tenantId: "tenant-a",
       idempotencyKey: "refund-a",
@@ -165,8 +197,11 @@ describe("signed invoice exports", () => {
       reason: "customer refund",
       actorPrincipalId: "actor-a",
       createdAt: "2026-08-20T00:00:00.000Z",
-    });
-    adjustUsage(db, {
+    } as const;
+    creditUsage(db, { ...refundInput, ...financeAuthorization(db, {
+      entryType: "credit", ...refundInput,
+    }) });
+    const adjustmentInput = {
       id: "adjustment-a",
       tenantId: "tenant-a",
       idempotencyKey: "adjustment-a",
@@ -176,7 +211,10 @@ describe("signed invoice exports", () => {
       reason: "late measured usage correction",
       actorPrincipalId: "actor-a",
       createdAt: "2026-08-21T00:00:00.000Z",
-    });
+    } as const;
+    adjustUsage(db, { ...adjustmentInput, ...financeAuthorization(db, {
+      entryType: "adjustment", ...adjustmentInput,
+    }) });
 
     const invoice = createInvoiceExport(db, createInput());
     expect(invoice).toMatchObject({
@@ -195,7 +233,7 @@ describe("signed invoice exports", () => {
     expect(invoice.lines.map((line) => line.kind)).toEqual([
       "usage",
       "credit",
-      "refund",
+      "credit",
       "adjustment",
     ]);
     expect(invoice.lines.map((line) => line.priceVersionId)).toEqual([
@@ -453,7 +491,7 @@ describe("signed invoice exports", () => {
       authority: hmacSigner(),
     })).toThrow("invoice_export_not_found");
 
-    creditUsage(db, {
+    const lateCreditInput = {
       id: "late-credit",
       tenantId: "tenant-a",
       idempotencyKey: "late-credit",
@@ -462,7 +500,10 @@ describe("signed invoice exports", () => {
       reason: "late refund",
       actorPrincipalId: "actor-a",
       createdAt: "2026-08-31T23:59:00.000Z",
-    });
+    } as const;
+    creditUsage(db, { ...lateCreditInput, ...financeAuthorization(db, {
+      entryType: "credit", ...lateCreditInput,
+    }) });
     expect(() => createInvoiceExport(db, createInput()))
       .toThrow("invoice_export_idempotency_conflict");
 

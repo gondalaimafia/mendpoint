@@ -72,10 +72,12 @@ describe("Fettler production closure operating contracts", () => {
           },
           selfCheck: {
             reconciled: true,
-            entryCount: 2,
+            entryCount: 3,
             storageAuthority: "usage_ledger_entries",
             ledgerHeadHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+            financeAuthorizationDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
             settledEntryIds: ["settlement-fettler-closure"],
+            creditEntryIds: ["credit-fettler-closure"],
           },
         },
       },
