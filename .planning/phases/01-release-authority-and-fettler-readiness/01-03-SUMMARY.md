@@ -58,19 +58,9 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 
 ## Commits and range-diff identity
 
-- `17edf27e`: external customer-managed key adapter.
-- `39131a4c`: initial verification evidence.
-- `c1452139`: exact destination authority and DNS-rebinding repair.
-- `6347b811`: native all-address lookup repair.
-- `53269b80`: validated socket isolation repair.
-- `23d4ed85`: response-stream settlement repair.
-- `1595f7ef` and `49f2fbfa`: fingerprint-drift and pre-network request-ceiling hostile tests and authority-binding repair.
-- `2bbf03cf` and `72b7f38c`: direct public-transport input-boundary hostile tests and pre-network validation repair.
-- `14eac658` and `55a44f89`: destination-denial and invalid runtime key-material hostile tests and safe-code preservation repair.
-- `17f58de5` and `82b9c051`: malformed runtime key-object hostile tests and common binding-boundary repair.
-- `1420e053` and `051ac56e`: non-string configuration and runtime identifier hostile tests and unknown-safe string identifier repair.
+The patch manifest contains 24 implementation and hostile-test patches. By subject and category, they introduce the external customer-managed key adapter and its initial verification; bind exact destinations; repair native all-address lookup, validated socket isolation, and response settlement; expose and close authority-binding and request-ceiling gaps; validate malformed requests before network work; preserve safe destination-denial signals; normalize malformed runtime key objects; and reject coerced non-string identifiers. Documentation-only commits follow those implementation and test patches.
 
-The exact current base for this series is `e036e2787b4d1693ad1cff082d2ad6cbffe916bf`; the commands above verify the exact pre-summary implementation head `051ac56ed7d43cde5e69366f6da888be6d0d3445`. Earlier reviews are superseded by the observability, runtime-boundary, and identifier-boundary commits plus this evidence refresh. A different reviewer must inspect and approve the final exact head before merge.
+The exact current base for this series is `5f9e47aeaa1235a663c7ee9d247b66b63f25d69c`; the commands above verify the exact pre-summary implementation head `bc9ecc33c838a7df9c70e0328ef4cb71aded3bf2`. Earlier reviews are superseded by the observability, runtime-boundary, and identifier-boundary patches plus this evidence refresh. A different reviewer must inspect and approve the final exact head before merge.
 
 ## Remaining Release Work
 
