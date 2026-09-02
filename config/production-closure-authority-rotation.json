@@ -1041,6 +1041,182 @@
           "toMode": "100644"
         }
       ]
+    },
+    {
+      "kind": "runtime",
+      "rotationId": "rotation-20260902-019",
+      "previousRotationId": "rotation-20260902-017",
+      "baseRevision": "8456b36ebe94a48560982d5265aedbfab30710e3",
+      "issuedAt": "2026-09-02T07:12:46.207Z",
+      "expiresAt": "2026-09-03T07:12:46.207Z",
+      "baseLedgerSha256": "sha256:f3c15b199124c9993211425ff9054a4c2440dcea7a5d278ef793d80bac47d018",
+      "basePolicySha256": "sha256:b01e56a307820b2eb020ec85408d735159e4c3993d9a9b5829916d6fa617751e",
+      "proposedPolicySha256": "sha256:2c16e47177f6a7e4273092de152e234f458cf68186f1014fbb9d1cfb14e472a9",
+      "successor": null,
+      "changes": [
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:b01e56a307820b2eb020ec85408d735159e4c3993d9a9b5829916d6fa617751e",
+          "toSha256": "sha256:2c16e47177f6a7e4273092de152e234f458cf68186f1014fbb9d1cfb14e472a9",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "config/production-closure-successors/closure-authority-systemic-escalation.yml",
+          "fromSha256": "sha256:6515535ee7a2c8b1da5be04560fc507a2ab1cb85271f209d393d09e6aecad02e",
+          "toSha256": "sha256:955f0df2589cb71181621b8aa29ca4215d3bf4a29684985d74bf391d2b98e422",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:25344887ff1a1c7506ab8ec81fcf470bf9465c731f1f866d1b6a45e088b5cf4d",
+          "toSha256": "sha256:e7b87c6c8803f556798aac968f750ca9b0bab0e099b70aef0aeab117b0333557",
+          "fromMode": "100644",
+          "toMode": "100644"
+        }
+      ]
+    },
+    {
+      "kind": "stage_successor",
+      "rotationId": "rotation-20260902-020",
+      "previousRotationId": "rotation-20260902-019",
+      "baseRevision": "c246b777bf71d377126bbe33a16cda2160d51ef9",
+      "issuedAt": "2026-09-02T07:38:35.637Z",
+      "expiresAt": "2026-09-03T07:38:35.637Z",
+      "baseLedgerSha256": "sha256:836ce09ad0291a04f66a405e9ddd7972935a42d3a1e2cfefb23079b52c55f6a7",
+      "basePolicySha256": "sha256:2c16e47177f6a7e4273092de152e234f458cf68186f1014fbb9d1cfb14e472a9",
+      "proposedPolicySha256": "sha256:44a488beb1ed74fdfb40d5fb29af9bca9391ca892fada5cad5cd17e1ea413adf",
+      "successor": {
+        "templatePath": "config/production-closure-successors/closure-authority-systemic-escalation.yml",
+        "workflowPath": ".github/workflows/closure-authority-systemic-escalation.yml",
+        "workflowSha256": "sha256:955f0df2589cb71181621b8aa29ca4215d3bf4a29684985d74bf391d2b98e422",
+        "externalCheckName": "mendpoint-production-closure-authority-systemic-escalation",
+        "externalCheckAppId": 4718395,
+        "controllerCheckName": "mendpoint-production-closure-controller-systemic-escalation",
+        "controllerCheckAppId": 15368,
+        "controllerStatusCreatorLogin": "github-actions[bot]",
+        "controllerStatusCreatorUserId": 41898282,
+        "activationDeadline": "2026-09-08T06:34:50.583Z"
+      },
+      "changes": [
+        {
+          "path": ".github/workflows/closure-authority-systemic-escalation.yml",
+          "fromSha256": "sha256:6515535ee7a2c8b1da5be04560fc507a2ab1cb85271f209d393d09e6aecad02e",
+          "toSha256": "sha256:955f0df2589cb71181621b8aa29ca4215d3bf4a29684985d74bf391d2b98e422",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:2c16e47177f6a7e4273092de152e234f458cf68186f1014fbb9d1cfb14e472a9",
+          "toSha256": "sha256:44a488beb1ed74fdfb40d5fb29af9bca9391ca892fada5cad5cd17e1ea413adf",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:e7b87c6c8803f556798aac968f750ca9b0bab0e099b70aef0aeab117b0333557",
+          "toSha256": "sha256:8ed256ebc9e6a038f894db6b385ed87e8034b691919596a472b6de3296af5b43",
+          "fromMode": "100644",
+          "toMode": "100644"
+        }
+      ]
+    },
+    {
+      "kind": "activate_successor",
+      "rotationId": "rotation-20260902-021",
+      "previousRotationId": "rotation-20260902-020",
+      "baseRevision": "1ae5e9a2c331f35ffbd95ae8f2fd34ba6436c40c",
+      "issuedAt": "2026-09-02T08:46:05.976Z",
+      "expiresAt": "2026-09-03T08:46:05.976Z",
+      "baseLedgerSha256": "sha256:224c4fa05932c81fd81e970a4e70ef81d3633e09e0786fb9f5a0f33a1027de95",
+      "basePolicySha256": "sha256:44a488beb1ed74fdfb40d5fb29af9bca9391ca892fada5cad5cd17e1ea413adf",
+      "proposedPolicySha256": "sha256:35a37e88ffd1250d40666198cae9f4c1ee5d53c66b3774a606eb159d167bac72",
+      "successor": {
+        "templatePath": "config/production-closure-successors/closure-authority-systemic-escalation.yml",
+        "workflowPath": ".github/workflows/closure-authority-systemic-escalation.yml",
+        "workflowSha256": "sha256:955f0df2589cb71181621b8aa29ca4215d3bf4a29684985d74bf391d2b98e422",
+        "externalCheckName": "mendpoint-production-closure-authority-systemic-escalation",
+        "externalCheckAppId": 4718395,
+        "controllerCheckName": "mendpoint-production-closure-controller-systemic-escalation",
+        "controllerCheckAppId": 15368,
+        "controllerStatusCreatorLogin": "github-actions[bot]",
+        "controllerStatusCreatorUserId": 41898282,
+        "activationDeadline": "2026-09-08T06:34:50.583Z"
+      },
+      "changes": [
+        {
+          "path": ".github/workflows/closure-authority-quiet-sweep.yml",
+          "fromSha256": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9",
+          "toSha256": null,
+          "fromMode": "100644",
+          "toMode": null
+        },
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:44a488beb1ed74fdfb40d5fb29af9bca9391ca892fada5cad5cd17e1ea413adf",
+          "toSha256": "sha256:35a37e88ffd1250d40666198cae9f4c1ee5d53c66b3774a606eb159d167bac72",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:8ed256ebc9e6a038f894db6b385ed87e8034b691919596a472b6de3296af5b43",
+          "toSha256": "sha256:9de7e4e142005dd0dca2f307d2fc812e31c9b90b1335433cd81e2bc2171d280e",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/production-closure-github-authority.test.ts",
+          "fromSha256": "sha256:29c4e11e8827dcfd4f21745f2a0967ddde50a24f85f1505f70bd5588dc780e04",
+          "toSha256": "sha256:f66b9e8cbd60113e0cd5c95e76c342a2867dae6f6413d254c4bc6b164608087b",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/production-closure-proposal-authority.test.ts",
+          "fromSha256": "sha256:4e61cdd0a319defeb3657a6eb642a6a3770d6c0ab442e1c2d316b12b40fc6afd",
+          "toSha256": "sha256:a842e251cafe913509654f5a97df1275e229ed494dca75c28ff65439b85fcc95",
+          "fromMode": "100644",
+          "toMode": "100644"
+        }
+      ]
+    },
+    {
+      "kind": "runtime",
+      "rotationId": "rotation-20260902-022",
+      "previousRotationId": "rotation-20260902-021",
+      "baseRevision": "4952aefd6a4578345e70eb3062f27db644bbcd8e",
+      "issuedAt": "2026-09-02T19:15:32.625Z",
+      "expiresAt": "2026-09-03T19:15:32.625Z",
+      "baseLedgerSha256": "sha256:7a984c266789fd9303711a9400813c1e982c77f23337ab9b16aed1137346c16b",
+      "basePolicySha256": "sha256:35a37e88ffd1250d40666198cae9f4c1ee5d53c66b3774a606eb159d167bac72",
+      "proposedPolicySha256": "sha256:d20d8688f709fe50cfa3c790e7522d76a2d630175c3f8ff7c92ae4a0127aef41",
+      "successor": null,
+      "changes": [
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:35a37e88ffd1250d40666198cae9f4c1ee5d53c66b3774a606eb159d167bac72",
+          "toSha256": "sha256:d20d8688f709fe50cfa3c790e7522d76a2d630175c3f8ff7c92ae4a0127aef41",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:9de7e4e142005dd0dca2f307d2fc812e31c9b90b1335433cd81e2bc2171d280e",
+          "toSha256": "sha256:ae33d9861a9eb8f96c1dd973300d9a6baea62bbf2294222e09617a41e3d0693c",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "package-lock.json",
+          "fromSha256": "sha256:193181927b3e5813f43471c60c343c0300c6c71540a9b3921968a215cb57cd0d",
+          "toSha256": "sha256:61e37bea40726703826869897433710bc659a5c92fc1654fdf96c9c145acac6d",
+          "fromMode": "100644",
+          "toMode": "100644"
+        }
+      ]
     }
   ]
 }
