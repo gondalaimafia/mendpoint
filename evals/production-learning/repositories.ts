@@ -1,0 +1,380 @@
+import type { RepositoryProvenance } from "./schema.js";
+
+type UnknownContentScreening = {
+  secrets: "unknown";
+  personalData: "unknown";
+  generatedCredentials: "unknown";
+  customerData: "unknown";
+};
+
+export interface RepositoryAdmissionCandidate
+  extends Omit<RepositoryProvenance, "contentScreening"> {
+  contentScreening: UnknownContentScreening;
+  admission: {
+    state: "requires_content_screening" | "conditional";
+    archived: boolean;
+    conditions: string[];
+  };
+}
+
+export interface RejectedRepositoryCandidate {
+  repositoryUrl: string;
+  immutableCommit: string | null;
+  reason: string;
+  reconsiderationRequirements: string[];
+}
+
+// The source-retrieval record retained the UTC calendar date, not the wall-clock
+// time. Midnight is an explicit normalization and must not be read as a precise
+// observation time.
+const RESEARCH_RETRIEVED_AT = "2026-08-28T00:00:00Z";
+
+const UNKNOWN_CONTENT_SCREENING: UnknownContentScreening = {
+  secrets: "unknown",
+  personalData: "unknown",
+  generatedCredentials: "unknown",
+  customerData: "unknown",
+};
+
+export const admissionCandidates = [
+  {
+    schemaVersion: "mendpoint.repository-provenance.v1",
+    id: "repo-openai-openai-node",
+    repositoryUrl: "https://github.com/openai/openai-node",
+    immutableCommit: "eea2292a4a523da9405161dde0a79ac5dc2ecb2a",
+    license: {
+      spdxId: "Apache-2.0",
+      sourceUrl:
+        "https://github.com/openai/openai-node/blob/eea2292a4a523da9405161dde0a79ac5dc2ecb2a/LICENSE",
+      textSha256: "636eb7d79da9bb6d515a4b3fd417aa26679eb3cf16396ddab4bc55fa74e616e4",
+      decision: "approved",
+      decidedAt: RESEARCH_RETRIEVED_AT,
+      intendedUses: ["evaluation", "governed_learning"],
+    },
+    languages: ["TypeScript", "JavaScript", "Python", "Shell", "HTML"],
+    frameworks: ["Node.js", "OpenAI API", "pnpm workspace"],
+    dependencyLockfiles: ["pnpm-lock.yaml"],
+    provenanceRetrievedAt: RESEARCH_RETRIEVED_AT,
+    dataClassification: "public_source_code",
+    contentScreening: UNKNOWN_CONTENT_SCREENING,
+    admission: {
+      state: "requires_content_screening",
+      archived: false,
+      conditions: ["Clone the immutable commit and complete the fail-closed content scan."],
+    },
+  },
+  {
+    schemaVersion: "mendpoint.repository-provenance.v1",
+    id: "repo-stripe-stripe-node",
+    repositoryUrl: "https://github.com/stripe/stripe-node",
+    immutableCommit: "6592470f1c70dbeb71ebb74c4200650ec93b26f8",
+    license: {
+      spdxId: "MIT",
+      sourceUrl:
+        "https://github.com/stripe/stripe-node/blob/6592470f1c70dbeb71ebb74c4200650ec93b26f8/LICENSE",
+      textSha256: "b36d54d51ac6f20b867c24264b9433f54372c3370d4984cf1c9884c5c6de1f7a",
+      decision: "approved",
+      decidedAt: RESEARCH_RETRIEVED_AT,
+      intendedUses: ["evaluation", "governed_learning"],
+    },
+    languages: ["TypeScript", "JavaScript", "Just", "Makefile"],
+    frameworks: ["Node.js", "Stripe API"],
+    dependencyLockfiles: ["yarn.lock"],
+    provenanceRetrievedAt: RESEARCH_RETRIEVED_AT,
+    dataClassification: "public_source_code",
+    contentScreening: UNKNOWN_CONTENT_SCREENING,
+    admission: {
+      state: "requires_content_screening",
+      archived: false,
+      conditions: ["Clone the immutable commit and complete the fail-closed content scan."],
+    },
+  },
+  {
+    schemaVersion: "mendpoint.repository-provenance.v1",
+    id: "repo-octokit-webhooks-js",
+    repositoryUrl: "https://github.com/octokit/webhooks.js",
+    immutableCommit: "b47e4b0049f8353d4ad796a5d0af26c4e568d732",
+    license: {
+      spdxId: "MIT",
+      sourceUrl:
+        "https://github.com/octokit/webhooks.js/blob/b47e4b0049f8353d4ad796a5d0af26c4e568d732/LICENSE.md",
+      textSha256: "e51a6b92d07239908dddbec0da5fa7f16c54843abaafdb7aca1fdf50b818c44c",
+      decision: "approved",
+      decidedAt: RESEARCH_RETRIEVED_AT,
+      intendedUses: ["evaluation", "governed_learning"],
+    },
+    languages: ["TypeScript", "JavaScript"],
+    frameworks: ["Node.js", "GitHub Webhooks"],
+    dependencyLockfiles: ["package-lock.json"],
+    provenanceRetrievedAt: RESEARCH_RETRIEVED_AT,
+    dataClassification: "public_source_code",
+    contentScreening: UNKNOWN_CONTENT_SCREENING,
+    admission: {
+      state: "requires_content_screening",
+      archived: false,
+      conditions: ["Clone the immutable commit and complete the fail-closed content scan."],
+    },
+  },
+  {
+    schemaVersion: "mendpoint.repository-provenance.v1",
+    id: "repo-aws-aws-sdk-js-v3",
+    repositoryUrl: "https://github.com/aws/aws-sdk-js-v3",
+    immutableCommit: "e53a25aafbdd772c90d26471dc271e383f1daf71",
+    license: {
+      spdxId: "Apache-2.0",
+      sourceUrl:
+        "https://github.com/aws/aws-sdk-js-v3/blob/e53a25aafbdd772c90d26471dc271e383f1daf71/LICENSE",
+      textSha256: "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d",
+      decision: "approved",
+      decidedAt: RESEARCH_RETRIEVED_AT,
+      intendedUses: ["evaluation", "governed_learning"],
+    },
+    languages: ["TypeScript", "JavaScript", "Java", "Smithy", "Handlebars", "Shell", "Makefile"],
+    frameworks: ["Node.js", "AWS SDK for JavaScript v3", "Smithy"],
+    dependencyLockfiles: ["yarn.lock"],
+    provenanceRetrievedAt: RESEARCH_RETRIEVED_AT,
+    dataClassification: "public_source_code",
+    contentScreening: UNKNOWN_CONTENT_SCREENING,
+    admission: {
+      state: "requires_content_screening",
+      archived: false,
+      conditions: [
+        "Clone the immutable commit and complete the fail-closed content scan.",
+        "Record generated-code edit boundaries before mutation.",
+      ],
+    },
+  },
+  {
+    schemaVersion: "mendpoint.repository-provenance.v1",
+    id: "repo-kubernetes-client-go",
+    repositoryUrl: "https://github.com/kubernetes/client-go",
+    immutableCommit: "ff4057d4927d4407c0db43974714e33f3b5e0dac",
+    license: {
+      spdxId: "Apache-2.0",
+      sourceUrl:
+        "https://github.com/kubernetes/client-go/blob/ff4057d4927d4407c0db43974714e33f3b5e0dac/LICENSE",
+      textSha256: "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      decision: "approved",
+      decidedAt: RESEARCH_RETRIEVED_AT,
+      intendedUses: ["evaluation", "governed_learning"],
+    },
+    languages: ["Go"],
+    frameworks: ["Go modules", "Kubernetes client-go"],
+    dependencyLockfiles: ["go.sum"],
+    provenanceRetrievedAt: RESEARCH_RETRIEVED_AT,
+    dataClassification: "public_source_code",
+    contentScreening: UNKNOWN_CONTENT_SCREENING,
+    admission: {
+      state: "requires_content_screening",
+      archived: false,
+      conditions: ["Clone the immutable commit and complete the fail-closed content scan."],
+    },
+  },
+  {
+    schemaVersion: "mendpoint.repository-provenance.v1",
+    id: "repo-pallets-flask",
+    repositoryUrl: "https://github.com/pallets/flask",
+    immutableCommit: "d318b683471101618febed18996405ad26462110",
+    license: {
+      spdxId: "BSD-3-Clause",
+      sourceUrl:
+        "https://github.com/pallets/flask/blob/d318b683471101618febed18996405ad26462110/LICENSE.txt",
+      textSha256: "489a8e1108509ed98a37bb983e11e0f7e1d31f0bd8f99a79c8448e7ff37d07ea",
+      decision: "approved",
+      decidedAt: RESEARCH_RETRIEVED_AT,
+      intendedUses: ["evaluation", "governed_learning"],
+    },
+    languages: ["Python", "HTML", "Shell", "CSS"],
+    frameworks: ["Flask", "Jinja", "WSGI"],
+    dependencyLockfiles: ["uv.lock"],
+    provenanceRetrievedAt: RESEARCH_RETRIEVED_AT,
+    dataClassification: "public_source_code",
+    contentScreening: UNKNOWN_CONTENT_SCREENING,
+    admission: {
+      state: "requires_content_screening",
+      archived: false,
+      conditions: ["Clone the immutable commit and complete the fail-closed content scan."],
+    },
+  },
+  {
+    schemaVersion: "mendpoint.repository-provenance.v1",
+    id: "repo-spring-projects-spring-petclinic",
+    repositoryUrl: "https://github.com/spring-projects/spring-petclinic",
+    immutableCommit: "818c4136ea971c21674525f9053de0d9c7ad8cfe",
+    license: {
+      spdxId: "Apache-2.0",
+      sourceUrl:
+        "https://github.com/spring-projects/spring-petclinic/blob/818c4136ea971c21674525f9053de0d9c7ad8cfe/LICENSE.txt",
+      textSha256: "56dfc19e0dc836e30177332f73e8e6fbc297941acf3d906eec6eaaa46c2c452a",
+      decision: "approved",
+      decidedAt: RESEARCH_RETRIEVED_AT,
+      intendedUses: ["evaluation", "governed_learning"],
+    },
+    languages: ["Java", "CSS", "HTML", "SCSS", "Dockerfile"],
+    frameworks: ["Spring Boot", "Spring Data JPA", "Maven", "Gradle"],
+    dependencyLockfiles: [],
+    provenanceRetrievedAt: RESEARCH_RETRIEVED_AT,
+    dataClassification: "public_source_code",
+    contentScreening: UNKNOWN_CONTENT_SCREENING,
+    admission: {
+      state: "requires_content_screening",
+      archived: false,
+      conditions: [
+        "Clone the immutable commit and complete the fail-closed content scan.",
+        "Capture an offline resolved-dependency manifest because no root transitive lockfile was observed.",
+      ],
+    },
+  },
+  {
+    schemaVersion: "mendpoint.repository-provenance.v1",
+    id: "repo-dotnet-architecture-eshoponweb",
+    repositoryUrl: "https://github.com/dotnet-architecture/eShopOnWeb",
+    immutableCommit: "4da8212117e87d808d4bbc7da6286fd2147ce606",
+    license: {
+      spdxId: "MIT",
+      sourceUrl:
+        "https://github.com/dotnet-architecture/eShopOnWeb/blob/4da8212117e87d808d4bbc7da6286fd2147ce606/LICENSE",
+      textSha256: "f2a9204d12e1edec37870bdecb1c0fce6de0a18c16016542c5fcb74079001b45",
+      decision: "approved",
+      decidedAt: RESEARCH_RETRIEVED_AT,
+      intendedUses: ["evaluation", "governed_learning"],
+    },
+    languages: ["C#", "HTML", "CSS", "SCSS", "Bicep", "Dockerfile", "JavaScript"],
+    frameworks: ["ASP.NET Core", "Entity Framework Core", "Docker", "Bicep"],
+    dependencyLockfiles: [],
+    provenanceRetrievedAt: RESEARCH_RETRIEVED_AT,
+    dataClassification: "public_source_code",
+    contentScreening: UNKNOWN_CONTENT_SCREENING,
+    admission: {
+      state: "conditional",
+      archived: true,
+      conditions: [
+        "Use only as a historical modernization substrate, not as evidence of current .NET practice.",
+        "Clone the immutable commit and complete the fail-closed content scan.",
+        "Capture an offline resolved-dependency manifest because no root lockfile was observed.",
+      ],
+    },
+  },
+  {
+    schemaVersion: "mendpoint.repository-provenance.v1",
+    id: "repo-rails-rails",
+    repositoryUrl: "https://github.com/rails/rails",
+    immutableCommit: "0ca2c2c4cfbe7f0a709bca0589d2d74c1853ef27",
+    license: {
+      spdxId: "MIT",
+      sourceUrl:
+        "https://github.com/rails/rails/blob/0ca2c2c4cfbe7f0a709bca0589d2d74c1853ef27/MIT-LICENSE",
+      textSha256: "717ba1949502290f8e47688ae2e323acd06c8ca47aec9f7596b15f678c1af4a2",
+      decision: "approved",
+      decidedAt: RESEARCH_RETRIEVED_AT,
+      intendedUses: ["evaluation", "governed_learning"],
+    },
+    languages: ["Ruby", "JavaScript", "HTML", "SCSS", "CSS", "Dockerfile", "Shell"],
+    frameworks: ["Ruby on Rails", "Active Record", "Bundler"],
+    dependencyLockfiles: ["Gemfile.lock", "yarn.lock"],
+    provenanceRetrievedAt: RESEARCH_RETRIEVED_AT,
+    dataClassification: "public_source_code",
+    contentScreening: UNKNOWN_CONTENT_SCREENING,
+    admission: {
+      state: "requires_content_screening",
+      archived: false,
+      conditions: [
+        "Clone the immutable commit and complete the fail-closed content scan.",
+        "Declare package and file boundaries before mutation of the monorepo.",
+      ],
+    },
+  },
+  {
+    schemaVersion: "mendpoint.repository-provenance.v1",
+    id: "repo-react-react",
+    repositoryUrl: "https://github.com/react/react",
+    immutableCommit: "2dc7da790d6388b95b83198ca9b588b2ad5f5c0b",
+    license: {
+      spdxId: "MIT",
+      sourceUrl:
+        "https://github.com/react/react/blob/2dc7da790d6388b95b83198ca9b588b2ad5f5c0b/LICENSE",
+      textSha256: "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93",
+      decision: "approved",
+      decidedAt: RESEARCH_RETRIEVED_AT,
+      intendedUses: ["evaluation", "governed_learning"],
+    },
+    languages: ["JavaScript", "Rust", "TypeScript", "HTML", "CSS", "CoffeeScript", "Shell"],
+    frameworks: ["React", "Yarn workspaces", "Babel"],
+    dependencyLockfiles: ["yarn.lock"],
+    provenanceRetrievedAt: RESEARCH_RETRIEVED_AT,
+    dataClassification: "public_source_code",
+    contentScreening: UNKNOWN_CONTENT_SCREENING,
+    admission: {
+      state: "requires_content_screening",
+      archived: false,
+      conditions: [
+        "Clone the immutable commit and complete the fail-closed content scan.",
+        "Declare package, generated-code, and vendored-code boundaries before mutation.",
+      ],
+    },
+  },
+] satisfies readonly RepositoryAdmissionCandidate[];
+
+export const rejectedCandidates = [
+  {
+    repositoryUrl: "https://github.com/django/django",
+    immutableCommit: "3b767c5f6ab6a4421ea3892ac6afacd8aa1345d6",
+    reason: "The observed GitHub license classification was SPDX NOASSERTION.",
+    reconsiderationRequirements: [
+      "Complete a manual legal and SPDX classification for the exact commit and intended uses.",
+      "Verify the exact license text hash before admission.",
+      "Complete the fail-closed content scan on the exact clone.",
+    ],
+  },
+  {
+    repositoryUrl: "https://github.com/fastapi/fastapi",
+    immutableCommit: null,
+    reason: "Current immutable commit and license evidence were not completed before API rate limiting.",
+    reconsiderationRequirements: [
+      "Retrieve and verify the current immutable commit, SPDX identifier, and license text hash.",
+      "Complete the fail-closed content scan on the exact clone.",
+    ],
+  },
+  {
+    repositoryUrl: "https://github.com/tokio-rs/tokio",
+    immutableCommit: null,
+    reason: "Current immutable commit and license evidence were not completed before API rate limiting.",
+    reconsiderationRequirements: [
+      "Retrieve and verify the current immutable commit, SPDX identifier, and license text hash.",
+      "Complete the fail-closed content scan on the exact clone.",
+    ],
+  },
+] satisfies readonly RejectedRepositoryCandidate[];
+
+// RepositoryProvenance requires conclusive negative content-screening evidence.
+// Promotion from admissionCandidates is therefore intentionally impossible until
+// the exact pinned clones have been screened and the resulting evidence retained.
+export const repositories: RepositoryProvenance[] = [];
+
+// Whether the repository-provenance section of the status report may claim
+// screening evidence. The previous verdict compared admitted and candidate
+// counts, which is not evidence about screening at all: it reported "verified"
+// whenever the two arrays happened to be the same length, and would have
+// reported "verified" the moment `repositories` was populated even if every
+// screening axis were still "unknown". An empty-versus-empty comparison also
+// reports "verified" for a program that has screened nothing.
+//
+// The verdict now reads the screening result. "verified" requires admitted
+// repositories to exist, every candidate to be admitted, and every admitted
+// repository to carry a conclusive negative outcome on all four screening axes.
+// Any "unknown" or positive finding leaves it "unknown".
+export function repositoryScreeningEvidenceState(
+  admitted: readonly RepositoryProvenance[],
+  candidates: readonly RepositoryAdmissionCandidate[],
+): "verified" | "unknown" {
+  if (admitted.length === 0) return "unknown";
+  if (admitted.length !== candidates.length) return "unknown";
+  const screened = admitted.every(
+    (repository) =>
+      repository.contentScreening.secrets === "not_detected" &&
+      repository.contentScreening.personalData === "not_detected" &&
+      repository.contentScreening.generatedCredentials === "not_detected" &&
+      repository.contentScreening.customerData === "not_present",
+  );
+  return screened ? "verified" : "unknown";
+}
