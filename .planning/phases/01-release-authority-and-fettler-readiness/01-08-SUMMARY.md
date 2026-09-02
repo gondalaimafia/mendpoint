@@ -15,7 +15,7 @@ affects: [01-18, model-runtime-binding, github-delivery-binding, production-read
 actuals:
   tokens: 37942
   tasks: 3
-  commits: 10
+  commits: 11
 
 tech-stack:
   added: []
@@ -129,7 +129,7 @@ status: complete
 5. **Typed result correction:** `fd51cdc6` (`fix`)
 6. **Authority, hostile tests, identifiers, and barrel exports:** `dbc632ac` (`fix`)
 7. **Durable circuit and read-only GitHub reconciliation repair:** `de0f4a34` (`fix`)
-8. **Current rebased evidence series:** `2e82ac20`, `10dc7f67`, `84a91091`, `cac1bf6b`, `5baa6dbe`, `456118de`, `9049b340`, `130e3e44`, `4fe36fff`, `f3170f70`
+8. **Current rebased evidence series:** `e73e1f03`, `64ed119a`, `1275ba67`, `939de04c`, `39c372e7`, `295b6fe4`, `6209a222`, `a472e346`, `02b81eb5`, `7dda371e`, `33bb3808`
 
 Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/605), open, issue body read back with exact `Owner: Codex` claim.
 
@@ -194,7 +194,7 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - Full package regressions: ops passed 179 tests; GitHub passed 195 tests.
 - TypeScript: ops, database, agent, and GitHub package checks passed with no errors.
 - Diff integrity: `git diff --check` passed before the repair commit.
-- Current base: `b21503356259fb0b4e5f7f6599a2f45d0bbd1cfb`.
+- Current base: `e69d997b7eef88ffcc7786a3e51da46eb1e677d4`.
 
 ## User Setup Required
 
