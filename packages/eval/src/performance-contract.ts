@@ -35,8 +35,11 @@ export type PerformanceLanguageMix = Readonly<{
 export type PerformanceTier = {
   id: string;
   repository: {
+    minimumFiles?: number;
     files: number;
+    minimumSourceLines?: number;
     sourceLines?: number;
+    minimumBytes?: number;
     bytes: number;
     maxFileBytes?: number;
     languages: string[];
@@ -89,6 +92,8 @@ export type PerformanceObservation = {
   fixtureDigest?: string;
   correlationId?: string;
   source?: string;
+  eventSource?: string;
+  bindingSource?: "probe_observed" | "request_context";
 };
 
 export type PerformanceEvidenceBinding = Readonly<{
@@ -105,6 +110,7 @@ export type PerformanceEvidenceBinding = Readonly<{
     sourceLines: number;
     bytes: number;
     languages: readonly string[];
+    languageSourceLines?: Readonly<Record<string, number>>;
   }>;
   measuredConcurrency: number;
   startedAt: string;
@@ -158,7 +164,7 @@ const REQUIRED_DIMENSIONS = [
   "repository_revision",
   "fixture_digest",
   "correlation_id",
-  "source",
+  "probe_source",
   "tier_id",
   "mode",
 ] as const;
@@ -184,8 +190,11 @@ export const FETTLER_PERFORMANCE_CONTRACT: PerformanceContract = {
     {
       id: "small",
       repository: {
+        minimumFiles: 1_000,
         files: 2_000,
+        minimumSourceLines: 50_000,
         sourceLines: 100_000,
+        minimumBytes: 25_000_000,
         bytes: 50_000_000,
         maxFileBytes: 1_000_000,
         languages: ["typescript"],
@@ -199,15 +208,18 @@ export const FETTLER_PERFORMANCE_CONTRACT: PerformanceContract = {
     {
       id: "medium",
       repository: {
+        minimumFiles: 10_000,
         files: 20_000,
+        minimumSourceLines: 500_000,
         sourceLines: 1_000_000,
+        minimumBytes: 250_000_000,
         bytes: 500_000_000,
         maxFileBytes: 5_000_000,
         languages: ["javascript", "python", "typescript"],
         languageMix: [
-          { language: "javascript", minimumPercent: 34 },
-          { language: "python", minimumPercent: 33 },
-          { language: "typescript", minimumPercent: 33 },
+          { language: "javascript", minimumPercent: 20 },
+          { language: "python", minimumPercent: 20 },
+          { language: "typescript", minimumPercent: 20 },
         ],
       },
       concurrency: 4,
@@ -218,18 +230,21 @@ export const FETTLER_PERFORMANCE_CONTRACT: PerformanceContract = {
     {
       id: "large",
       repository: {
+        minimumFiles: 50_000,
         files: 100_000,
+        minimumSourceLines: 2_500_000,
         sourceLines: 5_000_000,
+        minimumBytes: 1_250_000_000,
         bytes: 2_500_000_000,
         maxFileBytes: 10_000_000,
         languages: ["go", "java", "javascript", "python", "ruby", "typescript"],
         languageMix: [
-          { language: "go", minimumPercent: 16 },
-          { language: "java", minimumPercent: 16 },
-          { language: "javascript", minimumPercent: 17 },
-          { language: "python", minimumPercent: 17 },
-          { language: "ruby", minimumPercent: 17 },
-          { language: "typescript", minimumPercent: 17 },
+          { language: "go", minimumPercent: 10 },
+          { language: "java", minimumPercent: 10 },
+          { language: "javascript", minimumPercent: 10 },
+          { language: "python", minimumPercent: 10 },
+          { language: "ruby", minimumPercent: 10 },
+          { language: "typescript", minimumPercent: 10 },
         ],
       },
       concurrency: 8,
@@ -370,6 +385,14 @@ export function validatePerformanceContract(input: PerformanceContract): Perform
     uniqueIds(tier.repository.languages, "performance_tier_languages");
     if (input.version === PERFORMANCE_CONTRACT_VERSION) {
       positiveInteger(tier.repository.sourceLines ?? 0, "performance_tier_source_lines");
+      positiveInteger(tier.repository.minimumFiles ?? 0, "performance_tier_minimum_files");
+      positiveInteger(tier.repository.minimumSourceLines ?? 0, "performance_tier_minimum_source_lines");
+      positiveInteger(tier.repository.minimumBytes ?? 0, "performance_tier_minimum_bytes");
+      if (
+        tier.repository.minimumFiles! > tier.repository.files ||
+        tier.repository.minimumSourceLines! > tier.repository.sourceLines! ||
+        tier.repository.minimumBytes! > tier.repository.bytes
+      ) fail("performance_tier_repository_range_invalid");
       positiveInteger(tier.repository.maxFileBytes ?? 0, "performance_tier_max_file_bytes");
       if (tier.repository.maxFileBytes! > tier.repository.bytes) {
         fail("performance_tier_max_file_bytes_invalid");
@@ -383,7 +406,7 @@ export function validatePerformanceContract(input: PerformanceContract): Perform
         new Set(mixLanguages).size !== mixLanguages.length ||
         mixLanguages.some((language) => !tier.repository.languages.includes(language)) ||
         mix.some((entry) => !Number.isInteger(entry.minimumPercent) || entry.minimumPercent < 1) ||
-        mix.reduce((sum, entry) => sum + entry.minimumPercent, 0) !== 100
+        mix.reduce((sum, entry) => sum + entry.minimumPercent, 0) > 100
       ) {
         fail("performance_tier_language_mix_invalid");
       }
@@ -490,6 +513,26 @@ function validateEvidenceBinding(
   positiveInteger(evidence.repository.sourceLines, "performance_repository_source_lines");
   positiveInteger(evidence.repository.bytes, "performance_repository_bytes");
   uniqueIds([...evidence.repository.languages], "performance_repository_languages");
+  const languageSourceLines = evidence.repository.languageSourceLines;
+  if (contract.version === PERFORMANCE_CONTRACT_VERSION) {
+    if (
+      evidence.repository.files < tier.repository.minimumFiles! ||
+      evidence.repository.sourceLines < tier.repository.minimumSourceLines! ||
+      evidence.repository.bytes < tier.repository.minimumBytes!
+    ) fail("performance_repository_shape_below_tier");
+    if (!languageSourceLines || typeof languageSourceLines !== "object") {
+      fail("performance_repository_language_distribution_invalid");
+    }
+    const distributionEntries = Object.entries(languageSourceLines);
+    if (
+      distributionEntries.length !== tier.repository.languages.length ||
+      distributionEntries.some(([language, lines]) =>
+        !tier.repository.languages.includes(language) || !Number.isSafeInteger(lines) || lines < 1) ||
+      distributionEntries.reduce((sum, [, lines]) => sum + lines, 0) !== evidence.repository.sourceLines ||
+      tier.repository.languageMix!.some(({ language, minimumPercent }) =>
+        ((languageSourceLines[language] ?? 0) * 100) / evidence.repository.sourceLines < minimumPercent)
+    ) fail("performance_repository_language_distribution_invalid");
+  }
   if (
     evidence.repository.files > tier.repository.files ||
     evidence.repository.sourceLines > (tier.repository.sourceLines ?? Number.MAX_SAFE_INTEGER) ||
@@ -523,6 +566,7 @@ export function evaluatePerformanceRun(
   const contract = validatePerformanceContract(rawContract);
   if (mode !== "load" && mode !== "soak") fail("performance_mode_invalid");
   const { tier, startedAtMs, endedAtMs } = validateEvidenceBinding(contract, evidence, mode);
+  const dictionary = new Map(dictionaryFor(contract).map((definition) => [definition.metric, definition]));
   const observationIds = new Set<string>();
   const observationTimes: number[] = [];
   for (const observation of observations) {
@@ -548,6 +592,13 @@ export function evaluatePerformanceRun(
       fail("performance_observation_correlation_mismatch");
     }
     if (observation.source !== evidence.source) fail("performance_observation_source_mismatch");
+    const definition = dictionaryFor(contract).find((item) => item.metric === observation.metric)!;
+    if (observation.eventSource !== definition.eventSource) {
+      fail("performance_observation_event_source_mismatch");
+    }
+    if (observation.bindingSource !== "probe_observed") {
+      fail("performance_observation_binding_unobserved");
+    }
     const observedAtMs = isoTime(observation.observedAt, "performance_observation_time");
     if (observedAtMs < startedAtMs || observedAtMs > endedAtMs) {
       fail("performance_observation_outside_run");
@@ -560,7 +611,6 @@ export function evaluatePerformanceRun(
   );
   const evaluatedAtMs = isoTime(evaluatedAtValue, "performance_evaluated_at");
   if (evaluatedAtMs < endedAtMs) fail("performance_evaluated_before_run_end");
-  const dictionary = new Map(dictionaryFor(contract).map((definition) => [definition.metric, definition]));
   for (const metric of METRICS) {
     const latest = Math.max(...observations
       .map((observation, index) => observation.metric === metric ? observationTimes[index]! : -1));
@@ -626,6 +676,9 @@ export function evaluatePerformanceRun(
       repository: Object.freeze({
         ...evidence.repository,
         languages: Object.freeze([...evidence.repository.languages]),
+        languageSourceLines: evidence.repository.languageSourceLines === undefined
+          ? undefined
+          : Object.freeze({ ...evidence.repository.languageSourceLines }),
       }),
     }),
     ok: results.every((result) => result.ok),

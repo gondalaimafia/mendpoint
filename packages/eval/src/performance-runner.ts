@@ -39,6 +39,16 @@ export type PerformanceMetricMeasurement = Readonly<{
 }>;
 
 export type PerformanceProbeMeasurement = Readonly<{
+  observed: Readonly<{
+    tenantId: string;
+    repositoryId: string;
+    repositoryRevision: string;
+    deploymentRevision: string;
+    fixtureDigest: string;
+    correlationId: string;
+    probeSource: string;
+    repository: PerformanceEvidenceBinding["repository"];
+  }>;
   metrics: Readonly<Record<PerformanceMetric, PerformanceMetricMeasurement>>;
 }>;
 
@@ -54,6 +64,7 @@ export type PerformanceProbeContext = Readonly<{
   repositoryId: string;
   correlationId: string;
   source: string;
+  repository: PerformanceEvidenceBinding["repository"];
   signal: AbortSignal;
 }>;
 
@@ -76,7 +87,7 @@ export type PerformanceProbeReport = Readonly<{
   tierId: string;
   mode: PerformanceMode;
   repository: PerformanceTier["repository"];
-  measuredRepository: PerformanceEvidenceBinding["repository"];
+  measuredRepository: PerformanceEvidenceBinding["repository"] | null;
   concurrency: number;
   measuredConcurrency: number;
   minimumSamples: number;
@@ -157,9 +168,33 @@ function validateMetadata(options: RunPerformanceProbeOptions): void {
   }
 }
 
-function validateMeasurement(measurement: PerformanceProbeMeasurement): void {
-  if (!measurement || typeof measurement !== "object" || !measurement.metrics) {
+function normalizeFixtureDigest(value: string): string {
+  return value.startsWith("sha256:") ? value : `sha256:${value}`;
+}
+
+function validateMeasurement(
+  measurement: PerformanceProbeMeasurement,
+  expected: Pick<PerformanceProbeContext,
+    "tenantId" | "repositoryId" | "repositoryRevision" | "deploymentRevision" |
+    "fixtureDigest" | "correlationId" | "source" | "repository">,
+): PerformanceEvidenceBinding["repository"] {
+  if (!measurement || typeof measurement !== "object" || !measurement.metrics || !measurement.observed) {
     invalid("performance_probe_measurement_invalid");
+  }
+  const observed = measurement.observed;
+  for (const [field, actual, wanted] of [
+    ["tenant", observed.tenantId, expected.tenantId],
+    ["repository", observed.repositoryId, expected.repositoryId],
+    ["repository_revision", observed.repositoryRevision, expected.repositoryRevision],
+    ["deployment_revision", observed.deploymentRevision, expected.deploymentRevision],
+    ["fixture", normalizeFixtureDigest(observed.fixtureDigest), normalizeFixtureDigest(expected.fixtureDigest)],
+    ["correlation", observed.correlationId, expected.correlationId],
+    ["source", observed.probeSource, expected.source],
+  ] as const) {
+    if (actual !== wanted) invalid(`performance_probe_${field}_mismatch`);
+  }
+  if (JSON.stringify(observed.repository) !== JSON.stringify(expected.repository)) {
+    invalid("performance_probe_repository_shape_mismatch");
   }
   const keys = Object.keys(measurement.metrics);
   if (keys.length !== METRICS.length || keys.some((key) => !METRICS.includes(key as PerformanceMetric))) {
@@ -170,12 +205,13 @@ function validateMeasurement(measurement: PerformanceProbeMeasurement): void {
     if (
       !value ||
       !Number.isFinite(value.durationMs) ||
-      value.durationMs < 0 ||
+      value.durationMs <= 0 ||
       typeof value.success !== "boolean"
     ) {
       invalid("performance_probe_metric_invalid");
     }
   }
+  return observed.repository;
 }
 
 function observedAt(now: () => number): string {
@@ -187,11 +223,13 @@ function recordInvocation(
   tierId: string,
   mode: PerformanceMode,
   sequence: number,
-  measurement: PerformanceProbeMeasurement,
+  measurement: Pick<PerformanceProbeMeasurement, "metrics">,
   at: string,
   evidence: Pick<PerformanceEvidenceBinding,
     "tenantId" | "repositoryId" | "repositoryRevision" | "deploymentRevision" |
     "fixtureDigest" | "correlationId" | "source">,
+  eventSources: ReadonlyMap<PerformanceMetric, string>,
+  bindingSource: "probe_observed" | "request_context",
 ): void {
   for (const metric of METRICS) {
     const value = measurement.metrics[metric];
@@ -210,11 +248,13 @@ function recordInvocation(
       fixtureDigest: evidence.fixtureDigest,
       correlationId: evidence.correlationId,
       source: evidence.source,
+      eventSource: eventSources.get(metric),
+      bindingSource,
     });
   }
 }
 
-function failedMeasurement(durationMs: number): PerformanceProbeMeasurement {
+function failedMeasurement(durationMs: number): Pick<PerformanceProbeMeasurement, "metrics"> {
   return {
     metrics: Object.fromEntries(METRICS.map((metric) => [
       metric,
@@ -266,9 +306,7 @@ export async function runPerformanceProbe(
     repositoryId: options.repositoryId,
     repositoryRevision: options.repositoryRevision,
     deploymentRevision: options.deploymentRevision,
-    fixtureDigest: options.fixtureDigest.startsWith("sha256:")
-      ? options.fixtureDigest
-      : `sha256:${options.fixtureDigest}`,
+    fixtureDigest: normalizeFixtureDigest(options.fixtureDigest),
     correlationId: options.correlationId,
     source: options.source,
   } as const;
@@ -276,6 +314,13 @@ export async function runPerformanceProbe(
   let cancelledInvocationCount = 0;
   let activeInvocationCount = 0;
   let measuredConcurrency = 0;
+  let observedRepository: PerformanceEvidenceBinding["repository"] | null = null;
+  let unobservedFailure = false;
+  const eventSources = new Map(
+    (contract.metricDictionary ?? WARDEN_PERFORMANCE_CONTRACT.metricDictionary!).map(
+      (definition) => [definition.metric, definition.eventSource],
+    ),
+  );
   const worker = async (): Promise<void> => {
     while (!controller.signal.aborted && now() < deadlineMs) {
       const invocationSequence = sequence++;
@@ -296,9 +341,20 @@ export async function runPerformanceProbe(
           repositoryId: options.repositoryId,
           correlationId: options.correlationId,
           source: options.source,
+          repository: options.repository,
           signal: controller.signal,
         });
-        validateMeasurement(measurement);
+        const producerRepository = validateMeasurement(measurement, {
+          tenantId: options.tenantId,
+          repositoryId: options.repositoryId,
+          repositoryRevision: options.repositoryRevision,
+          deploymentRevision: options.deploymentRevision,
+          fixtureDigest: options.fixtureDigest,
+          correlationId: options.correlationId,
+          source: options.source,
+          repository: options.repository,
+        });
+        observedRepository ??= producerRepository;
         recordInvocation(
           observations,
           tier.id,
@@ -307,21 +363,27 @@ export async function runPerformanceProbe(
           measurement,
           observedAt(now),
           evidenceIdentity,
+          eventSources,
+          "probe_observed",
         );
       } catch {
         if (controller.signal.aborted || now() >= deadlineMs) {
           cancelledInvocationCount += 1;
           continue;
         }
+        unobservedFailure = true;
         recordInvocation(
           observations,
           tier.id,
           options.mode,
           invocationSequence,
-          failedMeasurement(Math.max(0, now() - invocationStarted)),
+          failedMeasurement(Math.max(1, now() - invocationStarted)),
           observedAt(now),
           evidenceIdentity,
+          eventSources,
+          "request_context",
         );
+        controller.abort("probe_failure_unobserved");
       } finally {
         activeInvocationCount -= 1;
       }
@@ -349,17 +411,17 @@ export async function runPerformanceProbe(
   const performanceEvidence: PerformanceEvidenceBinding = {
     tierId: tier.id,
     ...evidenceIdentity,
-    repository: options.repository,
+    repository: observedRepository ?? options.repository,
     measuredConcurrency,
     startedAt: new Date(Math.max(0, startedMs)).toISOString(),
     endedAt: new Date(Math.max(0, endedMs)).toISOString(),
   };
-  const evaluation = !externallyAborted && completeSamples
+  const evaluation = !externallyAborted && !unobservedFailure && observedRepository && completeSamples
     ? evaluatePerformanceRun(selectedTierContract, observations, performanceEvidence, options.mode)
     : null;
   const status = externallyAborted
     ? "aborted"
-    : completeSamples
+    : completeSamples && observedRepository && !unobservedFailure
       ? "completed"
       : "incomplete";
 
@@ -380,7 +442,7 @@ export async function runPerformanceProbe(
     tierId: tier.id,
     mode: options.mode,
     repository: tier.repository,
-    measuredRepository: options.repository,
+    measuredRepository: observedRepository,
     concurrency: tier.concurrency,
     measuredConcurrency,
     minimumSamples: tier.minimumSamples,
@@ -418,6 +480,7 @@ export function createHttpPerformanceProbe(options: Readonly<{
         repositoryId: context.repositoryId,
         correlationId: context.correlationId,
         source: context.source,
+        repository: context.repository,
         mode: context.mode,
         tier: context.tier,
         repositoryRevision: context.repositoryRevision,
@@ -428,14 +491,11 @@ export function createHttpPerformanceProbe(options: Readonly<{
     });
     if (!response.ok) throw new Error(`performance_probe_http_${response.status}`);
     const payload = await response.json() as {
-      deploymentRevision?: unknown;
+      observed?: unknown;
       metrics?: unknown;
     };
-    if (payload.deploymentRevision !== context.deploymentRevision) {
-      invalid("performance_probe_deployment_revision_mismatch");
-    }
-    const measurement = { metrics: payload.metrics } as PerformanceProbeMeasurement;
-    validateMeasurement(measurement);
+    const measurement = { observed: payload.observed, metrics: payload.metrics } as PerformanceProbeMeasurement;
+    validateMeasurement(measurement, context);
     return measurement;
   };
 }

@@ -10,9 +10,9 @@
   "operatingContracts": {
     "performance": {
       "version": "2026-09-02.v3",
-      "digest": "sha256:14ac27ff997a813dd06ab8f87e99da18d44c4f350c12ef846025789184d16096",
+      "digest": "sha256:2ca23834e27accfda8b9be6c6043fc21af9b047a6ca20e0c4a3163553165aa7e",
       "metricDictionaryVersion": "2026-09-02.v1",
-      "metricDictionaryDigest": "sha256:e62018076ede5a066504bdeb46a60a839af2ddc54322dd95150ba6f854d4ebbf",
+      "metricDictionaryDigest": "sha256:a32dda1d8ff6c1e0e050c16136426cf71ece69eefaa04f12dcd0fea2680bd460",
       "evidence": {
         "status": "not_observed",
         "reason": "production_measurement_not_supplied"

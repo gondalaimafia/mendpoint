@@ -21,8 +21,11 @@ function contract(): PerformanceContract {
     tiers: [{
       id: "small",
       repository: {
+        minimumFiles: 1_000,
         files: 2_000,
+        minimumSourceLines: 50_000,
         sourceLines: 100_000,
+        minimumBytes: 25_000_000,
         bytes: 50_000_000,
         maxFileBytes: 1_000_000,
         languages: ["typescript"],
@@ -56,7 +59,7 @@ function contract(): PerformanceContract {
         "repository_revision",
         "fixture_digest",
         "correlation_id",
-        "source",
+        "probe_source",
         "tier_id",
         "mode",
       ],
@@ -82,6 +85,7 @@ function binding(overrides: Partial<PerformanceEvidenceBinding> = {}): Performan
       sourceLines: 90_000,
       bytes: 45_000_000,
       languages: ["typescript"],
+      languageSourceLines: { typescript: 90_000 },
     },
     measuredConcurrency: 2,
     startedAt: "2026-09-02T00:00:00.000Z",
@@ -107,6 +111,8 @@ function observations(metric: PerformanceObservation["metric"], values: number[]
     fixtureDigest: evidence.fixtureDigest,
     correlationId: evidence.correlationId,
     source: evidence.source,
+    eventSource: `fettler.performance.${metric}`,
+    bindingSource: "probe_observed",
   }));
 }
 
@@ -229,6 +235,12 @@ describe("Fettler performance contract", () => {
     expect(() => evaluatePerformanceRun(contract(), zeroDuration, binding(), "load", EVALUATED_AT))
       .toThrow("performance_observation_duration_invalid");
 
+    const wrongEventSource = base.map((observation, index) => index === 0
+      ? { ...observation, eventSource: "fettler.performance.untrusted" }
+      : observation);
+    expect(() => evaluatePerformanceRun(contract(), wrongEventSource, binding(), "load", EVALUATED_AT))
+      .toThrow("performance_observation_event_source_mismatch");
+
     expect(() => evaluatePerformanceRun(
       contract(),
       base,
@@ -248,13 +260,16 @@ describe("Fettler performance contract", () => {
     expect(() => evaluatePerformanceRun(
       FETTLER_PERFORMANCE_CONTRACT,
       base,
-      binding({ repository: {
+      binding({
+        endedAt: "2026-09-02T00:05:00.000Z",
+        repository: {
         files: 999,
         sourceLines: 50_000,
         bytes: 25_000_000,
         languages: ["typescript"],
         languageSourceLines: { typescript: 50_000 },
-      } }),
+        },
+      }),
       "load",
       EVALUATED_AT,
     )).toThrow("performance_repository_shape_below_tier");
@@ -266,6 +281,7 @@ describe("Fettler performance contract", () => {
       binding({
         tierId: "medium",
         measuredConcurrency: 4,
+        endedAt: "2026-09-02T00:10:00.000Z",
         repository: {
           files: 10_000,
           sourceLines: 500_000,

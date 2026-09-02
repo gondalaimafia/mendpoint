@@ -52,7 +52,11 @@ function contract(): PerformanceContract {
   };
 }
 
-function measurement(durationMs = 10, success = true): PerformanceProbeMeasurement {
+function measurement(
+  durationMs = 10,
+  success = true,
+  observedOverrides: Partial<PerformanceProbeMeasurement["observed"]> = {},
+): PerformanceProbeMeasurement {
   return {
     observed: {
       tenantId: "tenant-fettler-production",
@@ -69,6 +73,7 @@ function measurement(durationMs = 10, success = true): PerformanceProbeMeasureme
         languages: ["typescript"],
         languageSourceLines: { typescript: 100 },
       },
+      ...observedOverrides,
     },
     metrics: Object.fromEntries(
       METRICS.map((metric) => [metric, { durationMs, success }]),
@@ -126,11 +131,21 @@ describe("performance runner", () => {
         sourceLines: 50_000,
         bytes: 25_000_000,
         languages: ["typescript"],
+        languageSourceLines: { typescript: 50_000 },
       },
       now: () => now,
       probe: async () => {
         now += 500;
-        return measurement();
+        return measurement(10, true, {
+          correlationId: "corr-legacy-cli",
+          repository: {
+            files: 1_000,
+            sourceLines: 50_000,
+            bytes: 25_000_000,
+            languages: ["typescript"],
+            languageSourceLines: { typescript: 50_000 },
+          },
+        });
       },
     });
 
@@ -233,6 +248,29 @@ describe("performance runner", () => {
     expect(report.observations.every((item) => item.durationMs === 1 && !item.success)).toBe(true);
     expect(report.observations.every((item) => item.bindingSource === "request_context")).toBe(true);
     expect(report.evaluation).toBeNull();
+  });
+
+  it("rejects a producer-observed repository shape that differs from the requested fixture", async () => {
+    const report = await runPerformanceProbe({
+      contract: contract(),
+      tierId: "test-tier",
+      mode: "load",
+      ...metadata(),
+      probe: async () => ({
+        ...measurement(),
+        observed: {
+          ...measurement().observed,
+          repository: { ...metadata().repository, files: metadata().repository.files + 1 },
+        },
+      }),
+    });
+
+    expect(report.status).toBe("incomplete");
+    expect(report.ok).toBe(false);
+    expect(report.evaluation).toBeNull();
+    expect(report.measuredRepository).toBeNull();
+    expect(report.observations).toHaveLength(5);
+    expect(report.observations.every((item) => !item.success && item.bindingSource === "request_context")).toBe(true);
   });
 
   it("propagates aborts and returns an explicitly incomplete report", async () => {
@@ -340,8 +378,7 @@ describe("performance runner", () => {
       });
       return new Response(JSON.stringify({
         deploymentRevision: "b".repeat(40),
-        observed: measurement().observed,
-        ...measurement(),
+        ...measurement(10, true, { correlationId: "corr-http-probe" }),
       }), { status: 200 });
     });
     const probe = createHttpPerformanceProbe({
@@ -360,10 +397,11 @@ describe("performance runner", () => {
       repositoryId: "github-1319732323",
       correlationId: "corr-http-probe",
       source: "fettler-production-probe",
+      repository: metadata().repository,
       signal: new AbortController().signal,
     });
 
-    expect(result).toEqual(measurement());
+    expect(result).toEqual(measurement(10, true, { correlationId: "corr-http-probe" }));
     expect(request).toHaveBeenCalledTimes(1);
   });
 
@@ -387,6 +425,7 @@ describe("performance runner", () => {
       repositoryId: "github-1319732323",
       correlationId: "corr-fettler-performance",
       source: "fettler-production-probe",
+      repository: metadata().repository,
       signal: new AbortController().signal,
     })).rejects.toThrow("performance_probe_repository_mismatch");
   });
