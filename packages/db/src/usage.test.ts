@@ -204,10 +204,88 @@ describe("usage ledger", () => {
         reason: "invalid negative balance",
         createdAt: "2026-08-01T12:02:00.000Z",
       }),
-    ).toThrow("usage_credit_exceeds_consumption");
+    ).toThrow("usage_adjustment_invalid");
     expect(() =>
       db.raw.prepare("UPDATE usage_ledger_entries SET reason = 'changed'").run(),
     ).toThrow("usage_ledger_entries_append_only");
     expect(listUsageLedger(db, "tenant_default")).toHaveLength(2);
+  });
+
+  it("binds positive adjustments and negative credits to an existing invoice allocation", () => {
+    const db = setup();
+    const reservation = reserveUsage(db, {
+      id: "reservation-invoice",
+      tenantId: "tenant_default",
+      idempotencyKey: "reserve-invoice",
+      taskId: "task-invoice",
+      mcuMicros: 1_000_000,
+      reason: "invoice allocation",
+      createdAt: at,
+    });
+    settleUsageReservation(db, {
+      id: "settlement-invoice",
+      tenantId: "tenant_default",
+      idempotencyKey: "settle-invoice",
+      reservationId: reservation.id,
+      actualMcuMicros: 1_000_000,
+      invoiceReference: "invoice-a",
+      reason: "invoice usage",
+      createdAt: "2026-08-01T12:01:00.000Z",
+    });
+
+    expect(() => adjustUsage(db, {
+      id: "negative-adjustment",
+      tenantId: "tenant_default",
+      idempotencyKey: "negative-adjustment",
+      taskId: "task-invoice",
+      mcuMicrosDelta: -1,
+      invoiceReference: "invoice-a",
+      reason: "wrong sign",
+      createdAt: "2026-08-01T12:02:00.000Z",
+    })).toThrow("usage_adjustment_invalid");
+    expect(() => adjustUsage(db, {
+      id: "unbound-adjustment",
+      tenantId: "tenant_default",
+      idempotencyKey: "unbound-adjustment",
+      taskId: "task-invoice",
+      mcuMicrosDelta: 1,
+      reason: "missing invoice",
+      createdAt: "2026-08-01T12:02:00.000Z",
+    })).toThrow("usage_invoice_reference_required");
+    expect(() => adjustUsage(db, {
+      id: "unknown-invoice-adjustment",
+      tenantId: "tenant_default",
+      idempotencyKey: "unknown-invoice-adjustment",
+      taskId: "task-invoice",
+      mcuMicrosDelta: 1,
+      invoiceReference: "invoice-b",
+      reason: "unknown invoice",
+      createdAt: "2026-08-01T12:02:00.000Z",
+    })).toThrow("usage_invoice_allocation_not_found");
+    expect(() => creditUsage(db, {
+      id: "cross-invoice-credit",
+      tenantId: "tenant_default",
+      idempotencyKey: "cross-invoice-credit",
+      taskId: "task-invoice",
+      mcuMicrosDelta: -1,
+      invoiceReference: "invoice-b",
+      reason: "wrong invoice",
+      createdAt: "2026-08-01T12:02:00.000Z",
+    })).toThrow("usage_invoice_allocation_not_found");
+    expect(() => creditUsage(db, {
+      id: "over-invoice-credit",
+      tenantId: "tenant_default",
+      idempotencyKey: "over-invoice-credit",
+      taskId: "task-invoice",
+      mcuMicrosDelta: -1_000_001,
+      invoiceReference: "invoice-a",
+      reason: "over invoice",
+      createdAt: "2026-08-01T12:02:00.000Z",
+    })).toThrow("usage_credit_exceeds_invoice_allocation");
+
+    expect(reconcileUsageLedger(db, "tenant_default")).toMatchObject({
+      ok: true,
+      invoices: { "invoice-a": 1_000_000 },
+    });
   });
 });
