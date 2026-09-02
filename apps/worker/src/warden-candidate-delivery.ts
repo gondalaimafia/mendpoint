@@ -331,8 +331,19 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
     const claimedMissionId = sourceMissionId(input, run.job_id);
     const authorityBindings = [payload.missionId, claimedMissionId, delivery.missionAuthority?.missionId]
       .filter((value): value is string => value !== null && value !== undefined);
+    // THREE states, not two, and for the same reason as the enqueue gate:
+    // a delivery enqueued before the authority contract existed has a Mission
+    // bound source run and NULL authority. Failing it terminally
+    // (upgrade_required is not retryable) would destroy every such row on
+    // upgrade, and no later write can mint the authority it is missing.
+    // Absent -> proceed unbound as main does. Mismatched -> still fail, below.
     if (authorityBindings.length > 0 && !payload.missionAuthority) {
-      throw new Error("warden_candidate_delivery_mission_authority_upgrade_required");
+      console.warn(JSON.stringify({
+        event: "warden_candidate_delivery_mission_authority_absent",
+        tenantId: input.job.tenant_id, jobId: input.job.id,
+        deliveryId: delivery.id, runId: delivery.runId,
+        claimedMissionIds: [...new Set(authorityBindings)],
+      }));
     }
     if (payload.missionAuthority && (!payload.missionId ||
         authorityBindings.some((missionId) => missionId !== payload.missionAuthority!.missionId) ||

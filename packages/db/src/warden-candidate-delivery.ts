@@ -664,10 +664,44 @@ export function enqueueWardenCandidateDelivery(
     if (!sourcePayload || typeof sourcePayload !== "object" || Array.isArray(sourcePayload)) {
       throw new Error("warden_candidate_delivery_source_invalid");
     }
+    // THREE states, not two. "No authority" is not "wrong authority":
+    //   absent    -> proceed unbound, exactly as main does today;
+    //   present + matching -> bound;
+    //   present + mismatched -> reject.
+    // Every run enqueued through POST /agent/runs before the authority contract
+    // existed carries `payload.missionId` and no authority, and nothing can mint
+    // authority for them retroactively (the ADR does not backfill historical
+    // rows). Collapsing absent into mismatched would make every one of those runs
+    // permanently unapprovable on upgrade - a fresh install would never show it.
     const claimedMissionId = (sourcePayload as Record<string, unknown>).missionId;
     if (typeof claimedMissionId === "string") {
-      if (!missionAuthority || missionAuthority.missionId !== claimedMissionId) {
+      if (!missionAuthority) {
+        // Recorded, never silent: "not checked" must stay distinguishable from
+        // "checked and clean" for anyone reading this delivery later.
+        console.warn(JSON.stringify({
+          event: "warden_candidate_delivery_mission_authority_absent",
+          tenantId, runId, deliveryId: deterministic.deliveryId, claimedMissionId,
+        }));
+      } else if (missionAuthority.missionId !== claimedMissionId) {
         throw new Error("warden_candidate_delivery_binding_mismatch");
+      }
+    } else {
+      // OPEN GAP, recorded rather than silent (Codex review 2026-09-01, B2).
+      // A campaign hint resolves to a Mission through the campaign FK, but this
+      // authority reader consults only `payload.missionId`, so a campaign-bound
+      // run enqueues with no authority and its dispatch fence never runs. That is
+      // deliberate for now: making the readers campaign-aware 409s every
+      // pilot-join approve until authority can be minted for those runs. Tracked
+      // as the owner decision (D7) on the PR. Emit it so "not enforced" is never
+      // mistaken for "enforced and clean".
+      const campaignHint = ["campaignId", "fettlerCampaignId", "regaugeCampaignId"]
+        .map((key) => (sourcePayload as Record<string, unknown>)[key])
+        .find((value): value is string => typeof value === "string" && value.trim().length > 0);
+      if (campaignHint) {
+        console.warn(JSON.stringify({
+          event: "warden_candidate_delivery_campaign_binding_not_enforced",
+          tenantId, runId, deliveryId: deterministic.deliveryId, campaignHint,
+        }));
       }
     }
   }

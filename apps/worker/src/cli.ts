@@ -217,6 +217,7 @@ import {
 import {
   bridgeClaimedJobToMissionTask,
   handoffCompletedJobToMissionReview,
+  reconcilePriorPaidWardenAttempts,
   recordBoundMissionExecutionCost,
   resolveBoundMissionForJob,
 } from "./mission-task-job-bridge.js";
@@ -1094,7 +1095,7 @@ export function classifyJobFailure(error: unknown): {
   const retryable =
     !authorizationFailure &&
     (remoteSideEffectUncertain ||
-    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|verifier_advisory_provider_retryable/.test(
+    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|verifier_advisory_provider_retryable|mcu_(?:accounting|settlement)_persistence_failed/.test(
         normalized,
       ));
   const errorCode = explicitCode ?? (retryable
@@ -2089,6 +2090,8 @@ async function persistCompletedAgentJob(
   applyRoutingOutcome?: RoutingOutcomeFinalizer,
   finalizeTerminal?: () => Promise<WardenRuntimeTerminalEvidence>,
   applyCompletionOutcome?: () => void,
+  routingRunId?: string,
+  routingEnvelopeId?: string,
 ): Promise<void> {
   let routingFinalizationStarted = false;
   db.raw.exec("BEGIN IMMEDIATE");
@@ -2116,13 +2119,17 @@ async function persistCompletedAgentJob(
       runId: completedRun.id,
       meteredAt: nowIso(),
     });
+    if (routingRunId && routingEnvelopeId) {
+      recordJobMissionExecutionCost(
+        db, jobId, completedRun.tenantId, routingRunId, routingEnvelopeId,
+      );
+    }
     db.raw.exec("COMMIT");
   } catch (error) {
     db.raw.exec("ROLLBACK");
     if (routingFinalizationStarted) throw new WardenAtomicFinalizationError(error);
     throw error;
   }
-  recordJobMissionExecutionCost(db, jobId, run.tenantId, run.id);
 }
 
 function persistFailedAgentJob(
@@ -2137,6 +2144,8 @@ function persistFailedAgentJob(
   run: AgentRunWrite | null,
   applyRoutingOutcome?: RoutingOutcomeFinalizer,
   applyFailureOutcome?: (status: ReturnType<typeof failJob>["status"]) => void,
+  routingRunId?: string,
+  routingEnvelopeId?: string,
 ) {
   let routingFinalizationStarted = false;
   db.raw.exec("BEGIN IMMEDIATE");
@@ -2172,6 +2181,12 @@ function persistFailedAgentJob(
         // Wave 3b: metering entry for the failed/retrying run (cost null when
         // unmeasured), inside the same transaction as the routing outcome.
         recordAgentRunMeter(db, { tenantId: run.tenantId, runId: run.id, meteredAt: nowIso() });
+        // Every charged attempt is immutable accounting evidence. Pending retries
+        // must retain their paid work just like dead letters and successes; the
+        // next lease writes a distinct execution id from its lease generation.
+        if (routingRunId && routingEnvelopeId) {
+          recordJobMissionExecutionCost(db, jobId, run.tenantId, routingRunId, routingEnvelopeId);
+        }
       }
     }
     db.raw.exec("COMMIT");
@@ -2214,31 +2229,31 @@ function fanoutRunMeterSignalsFromReport(report: PipelineReport): FanoutRunMeter
  * logged for reconciliation and never breaks job processing.
  */
 /**
- * Best-effort MCU rollup onto a bound mission. Usage-ledger hashes stay
- * untouched; this writes `actual_execution_cost_entries.mission_id` only when
- * `resolveBoundMissionForJob` finds a real mission. Failures are logged, never
- * used to un-complete the job (same convention as ReGauge trajectory emit).
+ * Durable MCU rollup onto a bound mission. Usage-ledger hashes stay untouched;
+ * this writes `actual_execution_cost_entries.mission_id` only when
+ * `resolveBoundMissionForJob` finds a real mission. Callers execute it inside
+ * the terminal job transaction. An accounting failure therefore rolls back the
+ * terminal state; the existing lease then retries normally or is recovered on
+ * expiry instead of leaving an unrepairable post-settlement gap.
  */
 function recordJobMissionExecutionCost(
   db: AppDb,
   jobId: string,
   tenantId: string,
-  sourceRunId: string,
+  routingRunId: string,
+  routingEnvelopeId: string,
 ): void {
+  const completed = getJob(db, jobId, tenantId);
+  if (!completed) throw new Error("mission_execution_cost_job_missing");
   try {
-    const completed = getJob(db, jobId, tenantId);
-    if (!completed) return;
     recordBoundMissionExecutionCost(db, {
       job: completed,
-      sourceRunId,
+      routingRunId,
+      routingEnvelopeId,
       createdAt: nowIso(),
     });
   } catch (error) {
-    console.error(
-      `  mission execution-cost skipped job=${jobId}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
+    throw new Error("mcu_accounting_persistence_failed", { cause: error });
   }
 }
 
@@ -2267,11 +2282,7 @@ function settleFanoutRunUsage(
       createdAt: nowIso(),
     });
   } catch (error) {
-    console.error(
-      `  usage settle skipped reservation=${reservationId}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
+    throw new Error("mcu_settlement_persistence_failed", { cause: error });
   }
 }
 
@@ -3385,6 +3396,8 @@ async function processJobsOnceUnfenced(
       createdAt: string;
     }> | null = null;
     let pendingWardenRoutingFinalizer: RoutingOutcomeFinalizer;
+    let pendingWardenRoutingRunId: string | undefined;
+    let pendingWardenRoutingEnvelopeId: string | undefined;
     if (job.type === "agent.run") {
       const queued = getAgentRunByJobId(db, job.id, job.tenant_id);
       if (queued) {
@@ -3427,6 +3440,9 @@ async function processJobsOnceUnfenced(
       // D3: when the job is bound to a real mission, put a MissionTask on the
       // live claim path (unassigned → agent_working). Unbound jobs stay unbound.
       bridgeClaimedJobToMissionTask(db, job, nowIso());
+      if (job.type === "agent.run" && job.lease_generation > 1) {
+        reconcilePriorPaidWardenAttempts(db, { job, observedAt: nowIso() });
+      }
       if (job.type === VERIFIER_ADVISORY_JOB_TYPE) {
         await runVerifierAdvisoryJob({
           db,
@@ -3500,8 +3516,15 @@ if (job.type === "warden.candidate.cleanup") {
           // Settle the execute under the lease FIRST. A lost fence throws here, so
           // the MissionTask is never advanced to review on the strength of an
           // outcome the system then declares unowned.
-          if (!completeJob(db, job.id, outcome, nowIso(), { ...fence })) {
-            throw new Error("warden_campaign_execute_lease_lost");
+          db.raw.exec("BEGIN IMMEDIATE");
+          try {
+            if (!completeJob(db, job.id, outcome, nowIso(), { ...fence })) {
+              throw new Error("warden_campaign_execute_lease_lost");
+            }
+            db.raw.exec("COMMIT");
+          } catch (error) {
+            if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+            throw error;
           }
           try {
             const claimed = parseWardenCampaignExecuteJob(job);
@@ -3521,7 +3544,6 @@ if (job.type === "warden.candidate.cleanup") {
               }`,
             );
           }
-          recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
           result.succeeded++;
           continue;
         }
@@ -3944,11 +3966,12 @@ if (job.type === "warden.candidate.cleanup") {
           modelSourcePolicy,
           payload.mode ?? "repair",
         );
-        const routingRuntime = createWardenRoutingRuntime({
+        pendingWardenRoutingRunId = `${sessionId}:lease-${fence.leaseGeneration}`;
+        const baseRoutingRuntime = createWardenRoutingRuntime({
           db,
           tenantId: job.tenant_id,
           jobId: job.id,
-          runId: sessionId,
+          runId: pendingWardenRoutingRunId,
           registry: buildWardenExecutorRegistry(
             started,
             modelSourcePolicy,
@@ -3956,6 +3979,15 @@ if (job.type === "warden.candidate.cleanup") {
           ),
           deferOutcomePersistence: true,
         });
+        const routingRuntime = {
+          prepare: (request: Parameters<typeof baseRoutingRuntime.prepare>[0]) => {
+            const prepared = baseRoutingRuntime.prepare(request);
+            pendingWardenRoutingEnvelopeId = prepared.envelopeId;
+            return prepared;
+          },
+          recordOutcome: baseRoutingRuntime.recordOutcome,
+          applyPendingOutcome: baseRoutingRuntime.applyPendingOutcome,
+        };
         pendingWardenRoutingFinalizer = () => routingRuntime.applyPendingOutcome();
         let capturedAttempt: WardenAttemptResult | null = null;
         // Context refs supplied to the model this run, persisted onto the
@@ -4326,6 +4358,8 @@ if (job.type === "warden.candidate.cleanup") {
                   reason: attempt.code, observedAt: nowIso() });
               }
             },
+            pendingWardenRoutingRunId,
+            pendingWardenRoutingEnvelopeId,
           );
           result.failed++;
           if (failure.status === "pending") result.retried++;
@@ -4376,6 +4410,8 @@ if (job.type === "warden.candidate.cleanup") {
                   cycleId: payload.ciFailure!.cycleId, repairRunId: sessionId,
                   reason: attempt.code, observedAt: nowIso() })
               : undefined,
+            pendingWardenRoutingRunId,
+            pendingWardenRoutingEnvelopeId,
           );
         } catch (error) {
           discardWardenAttempt(attempt, candidateRoot, evidenceRoot);
@@ -4614,34 +4650,39 @@ if (job.type === "warden.candidate.cleanup") {
           ) {
             throw new Error("lease_lost_before_pipeline_completion");
           }
+          settleFanoutRunUsage(db, job.tenant_id, payload, report);
           db.raw.exec("COMMIT");
         } catch (error) {
           if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
           throw error;
         }
-        settleFanoutRunUsage(db, job.tenant_id, payload, report);
-        recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
         result.succeeded++;
         console.log(`  done change=${report.changeId}`);
         continue;
       }
-      if (
-        !completeJob(
-          db,
-          job.id,
-          {
-            changeId: report.changeId,
-            consumers: report.consumers,
-            fettlerRuns: [],
-          },
-          nowIso(),
-          fence,
-        )
-      ) {
-        throw new Error("lease_lost_before_pipeline_completion");
+      db.raw.exec("BEGIN IMMEDIATE");
+      try {
+        if (
+          !completeJob(
+            db,
+            job.id,
+            {
+              changeId: report.changeId,
+              consumers: report.consumers,
+              fettlerRuns: [],
+            },
+            nowIso(),
+            fence,
+          )
+        ) {
+          throw new Error("lease_lost_before_pipeline_completion");
+        }
+        settleFanoutRunUsage(db, job.tenant_id, payload, report);
+        db.raw.exec("COMMIT");
+      } catch (error) {
+        if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+        throw error;
       }
-      settleFanoutRunUsage(db, job.tenant_id, payload, report);
-      recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
       result.succeeded++;
       console.log(`  done change=${report.changeId}`);
     } catch (error) {
@@ -4699,6 +4740,9 @@ if (job.type === "warden.candidate.cleanup") {
                 }
               : null,
             pendingWardenRoutingFinalizer,
+            undefined,
+            pendingWardenRoutingRunId,
+            pendingWardenRoutingEnvelopeId,
           )
         : failJob(db, job.id, classified.message, nowIso(), {
             ...fence,

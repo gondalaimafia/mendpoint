@@ -661,7 +661,8 @@ export function settleUsageReservation(
   },
 ): UsageLedgerEntry {
   const actual = micros("usage_settlement_mcu_micros", input.actualMcuMicros);
-  db.raw.exec("BEGIN IMMEDIATE");
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
     const existing = one<EntryRow>(
       db,
@@ -687,10 +688,10 @@ export function settleUsageReservation(
     };
     prepareEntry(db, entry);
     const result = insertEntry(db, entry);
-    db.raw.exec("COMMIT");
+    if (owns) db.raw.exec("COMMIT");
     return result;
   } catch (error) {
-    db.raw.exec("ROLLBACK");
+    if (owns) db.raw.exec("ROLLBACK");
     throw error;
   }
 }

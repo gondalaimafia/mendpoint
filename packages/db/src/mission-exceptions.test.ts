@@ -96,14 +96,16 @@ function exceptionEventCount(db: AppDb, tenantId = "t1", missionId = "m1"): numb
 }
 
 describe("mission exception register", () => {
-  // NOT A MUTATION-KILLING TEST, and it must not be presented as one. Removing
-  // the tenant predicate at the id lookup leaves this GREEN, because the row id
-  // IS its content digest and that digest covers tenant_id, so hydrate() rejects
-  // any foreign row with mission_exception_corrupt before it can be returned.
-  // The predicate is defense-in-depth for the day the id scheme changes; what
-  // this test actually pins is the guarantee underneath it — a planted foreign
-  // row is never handed back to this tenant, by either route.
-  it("never hands a caller another tenant's exception row for the same record id", () => {
+  // The tenant predicate at the id lookup IS distinguishable — by the fence
+  // side-effect, not by the return value — but only when the CALLER owns the
+  // transaction, because otherwise this function's own ROLLBACK erases the
+  // difference. Unmutated: the scoped lookup misses, so the blocking path runs
+  // revokePendingMissionMutationDispatches BEFORE the insert fails on the id
+  // collision, leaving the dispatch 'revoked'. Mutated: the unscoped lookup hits
+  // the foreign row and hydrate() throws first, so the fence never runs and the
+  // dispatch is still 'authorized'. Tenant isolation itself is unaffected either
+  // way: no caller ever receives the other tenant's row.
+  it("runs the dispatch fence before failing on a foreign record id collision", () => {
     const db = fixture();
     const input = {
       tenantId: "t1", missionId: "m1", reason: "policy_exception",
@@ -111,7 +113,7 @@ describe("mission exception register", () => {
       ownerPrincipalId: "p1", resolutionPath: "Resolve the policy exception.",
       blocking: true, correlationId: "corr", createdAt: T0,
     } as const;
-    // The record id is a content digest of the input, so the SAME input yields
+    // The record id is a content digest of the input, so the same input yields
     // the same id in any database. Learn it here, then plant a row under the
     // other tenant carrying that id in a fresh database. The table is
     // append-only, so this is the only way to construct the collision at all.
@@ -124,13 +126,30 @@ describe("mission exception register", () => {
       VALUES (?, 't2', 'm2', 'policy_exception', 'Another tenant entirely.', 'p2',
         'Resolve it over there.', 1, 'open', ?, ?)`)
       .run(raised.id, "f".repeat(64), T0);
+    other.raw.prepare(`INSERT INTO mission_mutation_dispatches
+      (id, tenant_id, mission_id, job_id, mutation_kind, aggregate_id, authority_json,
+       intent_digest, state, lease_owner, lease_generation, authorized_at, updated_at)
+      VALUES ('d1', 't1', 'm1', 'job-1', 'fettler_candidate_delivery', 'agg-1', '{}',
+        ?, 'authorized', 'worker-a', 1, ?, ?)`)
+      .run(`sha256:${"c".repeat(64)}`, T0, T0);
 
+    // The caller owns the transaction, so this function will not roll back.
+    other.raw.exec("BEGIN IMMEDIATE");
+    let code = "";
     let returned: ReturnType<typeof raiseMissionException> | undefined;
-    try { returned = raiseMissionException(other, input); } catch { /* failing closed is fine */ }
+    try { returned = raiseMissionException(other, input); }
+    catch (error) { code = error instanceof Error ? error.message : String(error); }
+    const dispatch = other.raw.prepare("SELECT state FROM mission_mutation_dispatches WHERE id = 'd1'")
+      .get() as { state: string };
+    other.raw.exec("ROLLBACK");
 
-    // What must never happen is t1 receiving t2's row.
+    // Isolation, unconditionally: t1 never receives t2's row.
+    expect(returned).toBeUndefined();
     expect(returned?.tenantId).not.toBe("t2");
-    expect(returned === undefined || returned.tenantId === "t1").toBe(true);
+    // The named failure, not merely "something threw".
+    expect(code).toContain("UNIQUE constraint failed");
+    // The fence ran. Drop the tenant predicate and this is "authorized".
+    expect(dispatch).toEqual({ state: "revoked" });
   });
 
   it("blocks the mission while an open blocking exception stands", () => {

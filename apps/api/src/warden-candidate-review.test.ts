@@ -1157,6 +1157,50 @@ describe("Warden candidate human review", () => {
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get()).toEqual({ count: 0 });
   });
 
+  // §12 UPGRADE PATH, at the route. A legacy run: POST /agent/runs wrote
+  // `payload.missionId`, nothing opened a task-bound blocker, so review resolves
+  // nothing and mints no authority. It must approve and enqueue its delivery
+  // exactly as it does on main. Collapse the enqueue gate back to two-state and
+  // this returns 409 warden_candidate_delivery_binding_mismatch.
+  it("approves a legacy Mission-bound run that carries no authority", async () => {
+    const { app, db } = fixture({ sealApproval: async () => ({ path: "C:\sealed-legacy.json",
+      sha256: `sha256:${"b".repeat(64)}`, created: true }) });
+    seedReviewedSnapshot(db);
+    bindMission(db);
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "Approve the exact bounded repair." }),
+    });
+
+    expect(response.status).toBe(202);
+    expect(getAgentRun(db, "warden-run-1", "tenant-a")?.status).toBe("candidate_approved");
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get())
+      .toEqual({ count: 1 });
+    // Unbound, honestly: no authority is invented for a run that never had one.
+    expect(db.raw.prepare("SELECT mission_authority_json AS a FROM fettler_candidate_deliveries").get())
+      .toEqual({ a: null });
+  });
+
+  // §12, regenerate arm. The successor inherits `missionId` through
+  // ...originalPayload and still has no authority; it must be creatable.
+  it("regenerates a legacy Mission-bound run that carries no authority", async () => {
+    const { app, db } = fixture();
+    seedReviewedSnapshot(db);
+    bindMission(db);
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "Repair the internal mapping." }),
+    });
+
+    expect(response.status).toBe(202);
+    const body = await response.json() as { supersedingJobId: string };
+    const successor = JSON.parse(getJob(db, body.supersedingJobId, "tenant-a")!.payload_json);
+    expect(successor.missionId).toBe("m1");
+    expect(successor).not.toHaveProperty("missionAuthority");
+  });
+
   it("does not approve or enqueue delivery while any current Mission blocker remains", async () => {
     const { app, db } = fixture({ sealApproval: async () => ({ path: "C:\\sealed-global-blocker.json",
       sha256: `sha256:${"b".repeat(64)}`, created: true }) });

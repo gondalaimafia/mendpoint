@@ -9,13 +9,21 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  appendDomainEvent,
   createApiKey,
   createDb,
+  createMission,
   createUsageEntitlement,
   createUsagePriceVersion,
+  enqueueJob,
+  ensureMissionTaskForJob,
   getPrincipalBySubject,
   insertTenant,
+  insertArtifactManifest,
+  insertReviewDecision,
   listActualExecutionCosts,
+  missionTaskIdForJob,
+  recordActualExecutionCost,
   reserveUsage,
   settleUsageReservation,
   type AppDb,
@@ -93,7 +101,7 @@ function fixture() {
     id: "billing-key-a",
     name: "Billing tenant A",
     tenantId: "billing-tenant-a",
-    scopes: ["*"],
+    scopes: ["*", "billing:execution-cost:write", "billing:execution-outcome:write"],
     createdAt: NOW,
   });
   const tenantB = createApiKey(db, {
@@ -113,7 +121,7 @@ function appFor(
 ) {
   const app = new Hono<ApiEnv>();
   app.use("*", requestIdMiddleware());
-  app.use("*", createAuthMiddleware(db));
+  app.use("*", createAuthMiddleware(db, { now: () => new Date(NOW) }));
   app.route("/billing", createBillingEconomicsRoutes({ db, now, invoiceSigner }));
   return app;
 }
@@ -221,8 +229,8 @@ function executionCostBody(overrides: Record<string, unknown> = {}) {
     attemptNumber: 1,
     retryNumber: 0,
     fallbackFromExecutionId: null,
-    outcomeStatus: "accepted",
-    acceptedOutcomeId: "pull-request-a",
+    outcomeStatus: "unresolved",
+    acceptedOutcomeId: null,
     inputTokens: 1_000,
     outputTokens: 500,
     cacheReadTokens: 200,
@@ -236,6 +244,20 @@ function executionCostBody(overrides: Record<string, unknown> = {}) {
     graphCostMoneyMicros: 300,
     sandboxCostMoneyMicros: 400,
     verificationCostMoneyMicros: 500,
+    modelCostMeasured: true,
+    cacheCostMeasured: true,
+    gpuCostMeasured: true,
+    graphCostMeasured: true,
+    sandboxCostMeasured: true,
+    verificationCostMeasured: true,
+    measurementProvenance: {
+      model: "provider_invoice:model-a",
+      cache: "provider_invoice:cache",
+      gpu: "runtime_meter:gpu",
+      graph: "runtime_meter:graph",
+      sandbox: "runtime_meter:sandbox",
+      verification: "runtime_meter:verification",
+    },
     currency: "USD",
     createdAt: NOW,
     ...overrides,
@@ -247,6 +269,58 @@ async function postCost(app: Hono<ApiEnv>, token: string, requestId: string, bod
     method: "POST",
     headers: headers(token, requestId),
     body: JSON.stringify(body),
+  });
+}
+
+function settleRevenue(
+  db: AppDb,
+  actorPrincipalId: string,
+  taskId: string,
+  campaignId: string,
+) {
+  createUsagePriceVersion(db, {
+    id: "billing-price-a",
+    tenantId: "billing-tenant-a",
+    formulaVersion: "mcu-v1",
+    currency: "USD",
+    pricePerMcuMoneyMicros: 20_000,
+    effectiveAt: "2026-08-01T00:00:00.000Z",
+    expiresAt: "2026-09-01T00:00:00.000Z",
+    contractReference: "contract-a",
+    createdAt: NOW,
+  });
+  createUsageEntitlement(db, {
+    id: "billing-entitlement-a",
+    tenantId: "billing-tenant-a",
+    priceVersionId: "billing-price-a",
+    quotaMcuMicros: 20_000_000,
+    features: ["warden"],
+    contractReference: "contract-a",
+    periodStart: "2026-08-01T00:00:00.000Z",
+    periodEnd: "2026-09-01T00:00:00.000Z",
+    createdAt: NOW,
+  });
+  const reservation = reserveUsage(db, {
+    id: "billing-reservation-a",
+    tenantId: "billing-tenant-a",
+    idempotencyKey: "billing-reserve-a",
+    taskId,
+    campaignId,
+    mcuMicros: 5_000_000,
+    reason: "task ceiling",
+    actorPrincipalId,
+    createdAt: NOW,
+  });
+  settleUsageReservation(db, {
+    id: "billing-settlement-a",
+    tenantId: "billing-tenant-a",
+    idempotencyKey: "billing-settle-a",
+    reservationId: reservation.id,
+    actualMcuMicros: 4_000_000,
+    invoiceReference: "invoice-a",
+    reason: "verified outcome",
+    actorPrincipalId,
+    createdAt: "2026-08-01T15:01:00.000Z",
   });
 }
 
@@ -460,6 +534,141 @@ describe("billing economics API routes", () => {
     expect(listActualExecutionCosts(db, "billing-tenant-a")).toHaveLength(1);
   });
 
+  it("fails closed with a deterministic error for corrupt stored measurement provenance", async () => {
+    const { db, tenantA } = fixture();
+    const app = appFor(db);
+    expect((await postCost(app, tenantA, "cost-corrupt-provenance", executionCostBody())).status)
+      .toBe(201);
+    db.raw.exec("DROP TRIGGER actual_execution_cost_entries_append_only_update");
+
+    for (const corrupt of ["{", "[]", JSON.stringify({ model: 7 })]) {
+      db.raw.prepare(
+        "UPDATE actual_execution_cost_entries SET measurement_provenance_json = ? WHERE execution_id = ?",
+      ).run(corrupt, "execution-a");
+      const response = await app.request("/billing/execution-costs", {
+        headers: headers(tenantA, `corrupt-provenance-${corrupt.length}`),
+      });
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "execution_cost_ledger_integrity_invalid" },
+      });
+    }
+
+    const margin = await app.request("/billing/gross-margin", {
+      headers: headers(tenantA, "corrupt-provenance-margin"),
+    });
+    expect(margin.status).toBe(200);
+    await expect(margin.json()).resolves.toMatchObject({
+      data: {
+        complete: false,
+        ledgers: { executionCosts: { ok: false, checked: 0 } },
+        exactGrossMarginMoneyMicros: null,
+      },
+    });
+  });
+
+  it("withdraws a public accepted outcome when newer durable authority supersedes it", async () => {
+    const { db, tenantA } = fixture();
+    const app = appFor(db);
+    expect((await postCost(app, tenantA, "cost-stale-outcome", executionCostBody())).status)
+      .toBe(201);
+    const actor = getPrincipalBySubject(db, "billing-tenant-a", "api_key", "billing-key-a")!;
+    const cost = listActualExecutionCosts(db, "billing-tenant-a")[0]!;
+    const approvedContent = JSON.stringify({
+      costEntryId: cost.id,
+      costEntryHash: cost.entryHash,
+      decision: "approve",
+    });
+    insertArtifactManifest(db, {
+      id: "accepted-stale-outcome", tenantId: "billing-tenant-a", kind: "review-evidence",
+      schemaVersion: 1, sha256: createHash("sha256").update(approvedContent).digest("hex"),
+      mediaType: "application/json", sizeBytes: Buffer.byteLength(approvedContent),
+      storageRef: "evidence://accepted-stale-outcome", content: approvedContent,
+      producerPrincipalId: actor.id, createdAt: "2026-09-02T00:00:00.000Z",
+    });
+    insertReviewDecision(db, {
+      id: "review-accepted-stale-outcome", tenantId: "billing-tenant-a",
+      subjectType: "execution_cost", subjectId: cost.executionId,
+      candidateArtifactId: "accepted-stale-outcome", reviewerPrincipalId: actor.id,
+      decision: "approve", rationale: "Initial accepted authority",
+      createdAt: "2026-09-02T00:00:00.000Z",
+    });
+    const accepted = await app.request(`/billing/execution-costs/${cost.executionId}/outcomes`, {
+      method: "POST",
+      headers: headers(tenantA, "accepted-stale-outcome"),
+      body: JSON.stringify({ authorityEvidenceId: "review-accepted-stale-outcome" }),
+    });
+    expect(accepted.status).toBe(201);
+    expect((await app.request("/billing/execution-costs", {
+      headers: headers(tenantA, "list-accepted-current"),
+    })).status).toBe(200);
+
+    const rejectedContent = JSON.stringify({
+      costEntryId: cost.id,
+      costEntryHash: cost.entryHash,
+      decision: "reject",
+    });
+    insertArtifactManifest(db, {
+      id: "rejected-current-outcome", tenantId: "billing-tenant-a", kind: "review-evidence",
+      schemaVersion: 1, sha256: createHash("sha256").update(rejectedContent).digest("hex"),
+      mediaType: "application/json", sizeBytes: Buffer.byteLength(rejectedContent),
+      storageRef: "evidence://rejected-current-outcome", content: rejectedContent,
+      producerPrincipalId: actor.id, createdAt: "2026-09-02T00:01:00.000Z",
+    });
+    insertReviewDecision(db, {
+      id: "review-rejected-current-outcome", tenantId: "billing-tenant-a",
+      subjectType: "execution_cost", subjectId: cost.executionId,
+      candidateArtifactId: "rejected-current-outcome", reviewerPrincipalId: actor.id,
+      decision: "reject", rationale: "Supersede the accepted authority",
+      createdAt: "2026-09-02T00:01:00.000Z",
+    });
+    const stale = await app.request("/billing/execution-costs", {
+      headers: headers(tenantA, "list-accepted-stale"),
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({
+      error: { code: "execution_cost_ledger_integrity_invalid" },
+    });
+  });
+
+  it("requires purpose-bound service authority and explicit measurement evidence", async () => {
+    const { db, tenantA, tenantB } = fixture();
+    const app = appFor(db);
+
+    const wildcardOnly = await postCost(
+      app,
+      tenantB,
+      "wildcard-cannot-write-cost",
+      executionCostBody(),
+    );
+    expect(wildcardOnly.status).toBe(403);
+
+    const forgedAccepted = await postCost(
+      app,
+      tenantA,
+      "accepted-requires-outcome-authority",
+      executionCostBody({ outcomeStatus: "accepted", acceptedOutcomeId: "review-a" }),
+    );
+    expect(forgedAccepted.status).toBe(400);
+
+    const missingObservation = await postCost(
+      app,
+      tenantA,
+      "observation-flags-required",
+      executionCostBody({ cacheCostMeasured: undefined }),
+    );
+    expect(missingObservation.status).toBe(400);
+
+    const missingProvenance = await postCost(
+      app,
+      tenantA,
+      "measurement-provenance-required",
+      executionCostBody({ measurementProvenance: { model: "provider_invoice:model-a" } }),
+    );
+    expect(missingProvenance.status).toBe(400);
+    expect(listActualExecutionCosts(db, "billing-tenant-a")).toEqual([]);
+  });
+
   it("keeps margin fields closed when recognized revenue has no actual cost", async () => {
     const { db, tenantA, tenantB } = fixture();
     const app = appFor(db);
@@ -468,50 +677,7 @@ describe("billing economics API routes", () => {
     });
     const actor = getPrincipalBySubject(db, "billing-tenant-a", "api_key", "billing-key-a");
     expect(actor).not.toBeNull();
-    createUsagePriceVersion(db, {
-      id: "billing-price-a",
-      tenantId: "billing-tenant-a",
-      formulaVersion: "mcu-v1",
-      currency: "USD",
-      pricePerMcuMoneyMicros: 20_000,
-      effectiveAt: "2026-08-01T00:00:00.000Z",
-      expiresAt: "2026-09-01T00:00:00.000Z",
-      contractReference: "contract-a",
-      createdAt: NOW,
-    });
-    createUsageEntitlement(db, {
-      id: "billing-entitlement-a",
-      tenantId: "billing-tenant-a",
-      priceVersionId: "billing-price-a",
-      quotaMcuMicros: 20_000_000,
-      features: ["warden"],
-      contractReference: "contract-a",
-      periodStart: "2026-08-01T00:00:00.000Z",
-      periodEnd: "2026-09-01T00:00:00.000Z",
-      createdAt: NOW,
-    });
-    const reservation = reserveUsage(db, {
-      id: "billing-reservation-a",
-      tenantId: "billing-tenant-a",
-      idempotencyKey: "billing-reserve-a",
-      taskId: "task-without-cost",
-      campaignId: "campaign-a",
-      mcuMicros: 5_000_000,
-      reason: "task ceiling",
-      actorPrincipalId: actor!.id,
-      createdAt: NOW,
-    });
-    settleUsageReservation(db, {
-      id: "billing-settlement-a",
-      tenantId: "billing-tenant-a",
-      idempotencyKey: "billing-settle-a",
-      reservationId: reservation.id,
-      actualMcuMicros: 4_000_000,
-      invoiceReference: "invoice-a",
-      reason: "actual accepted work",
-      actorPrincipalId: actor!.id,
-      createdAt: "2026-08-01T15:01:00.000Z",
-    });
+    settleRevenue(db, actor!.id, "task-without-cost", "campaign-a");
 
     const margin = await app.request("/billing/gross-margin", {
       headers: headers(tenantA, "margin-a"),
@@ -695,6 +861,222 @@ describe("billing economics API routes", () => {
     expect(missingSigner.status).toBe(503);
     await expect(missingSigner.json()).resolves.toMatchObject({
       error: { code: "invoice_export_signer_required" },
+    });
+  });
+
+  it("reconciles a settled job to its mission task through the exact execution ID", async () => {
+    const { db, tenantA } = fixture();
+    const app = appFor(db, () => "2026-09-02T00:00:00.000Z");
+    await app.request("/billing/execution-costs", {
+      headers: headers(tenantA, "initialize-mission-principal"),
+    });
+    const actor = getPrincipalBySubject(db, "billing-tenant-a", "api_key", "billing-key-a");
+    expect(actor).not.toBeNull();
+    settleRevenue(db, actor!.id, "job-production-a", "campaign-a");
+    createMission(db, {
+      id: "mission-production-a",
+      tenantId: "billing-tenant-a",
+      product: "fettler",
+      triggerKind: "provider_change",
+      objective: "Complete production work",
+      ownerPrincipalId: actor!.id,
+      eventId: "event-mission-production-a",
+      idempotencyKey: "mission-production-a",
+      correlationId: "job-production-a",
+      createdAt: NOW,
+    });
+    enqueueJob(db, {
+      id: "job-production-a",
+      tenantId: "billing-tenant-a",
+      type: "agent.run",
+      payload: { missionId: "mission-production-a" },
+      createdAt: NOW,
+    });
+    const missionTask = ensureMissionTaskForJob(db, {
+      tenantId: "billing-tenant-a",
+      jobId: "job-production-a",
+      missionId: "mission-production-a",
+      taskType: "agent.run",
+      acceptanceCriteria: "Produce the verified result.",
+      risk: "medium",
+      actorPrincipalId: actor!.id,
+      assignedPrincipalId: actor!.id,
+      createdAt: NOW,
+      correlationId: "job-production-a",
+    });
+    const body = executionCostBody({
+      executionId: "job-production-a",
+      taskId: missionTask.id,
+      campaignId: "campaign-a",
+    });
+    const recordedCost = recordActualExecutionCost(db, {
+      ...(body as Omit<Parameters<typeof recordActualExecutionCost>[1],
+        "id" | "tenantId" | "idempotencyKey" | "actorPrincipalId" | "missionId">),
+      id: "cost-production-a",
+      tenantId: "billing-tenant-a",
+      idempotencyKey: "cost-production-a",
+      actorPrincipalId: actor!.id,
+      missionId: "mission-production-a",
+    });
+    const evidenceContent = JSON.stringify({
+      decision: "approve",
+      executionId: "job-production-a",
+      costEntryId: recordedCost.id,
+      costEntryHash: recordedCost.entryHash,
+    });
+    insertArtifactManifest(db, {
+      id: "pull-request-a", tenantId: "billing-tenant-a", kind: "review-evidence",
+      schemaVersion: 1, sha256: createHash("sha256").update(evidenceContent).digest("hex"),
+      mediaType: "application/json", sizeBytes: Buffer.byteLength(evidenceContent),
+      storageRef: "evidence://pull-request-a", content: evidenceContent,
+      producerPrincipalId: actor!.id, createdAt: "2026-09-02T00:00:00.000Z",
+    });
+    insertReviewDecision(db, {
+      id: "review-production-a", tenantId: "billing-tenant-a",
+      subjectType: "execution_cost", subjectId: "job-production-a",
+      candidateArtifactId: "pull-request-a", reviewerPrincipalId: actor!.id,
+      decision: "approve", rationale: "Approved durable production outcome",
+      createdAt: "2026-09-02T00:00:00.000Z",
+    });
+    const accepted = await app.request("/billing/execution-costs/job-production-a/outcomes", {
+      method: "POST",
+      headers: headers(tenantA, "mission-outcome-a"),
+      body: JSON.stringify({
+        authorityEvidenceId: "review-production-a",
+      }),
+    });
+    expect(accepted.status).toBe(201);
+    const acceptedBody = await accepted.json();
+    const acceptedReplay = await app.request("/billing/execution-costs/job-production-a/outcomes", {
+      method: "POST",
+      headers: headers(tenantA, "mission-outcome-a"),
+      body: JSON.stringify({
+        authorityEvidenceId: "review-production-a",
+      }),
+    });
+    expect(acceptedReplay.status).toBe(201);
+    await expect(acceptedReplay.json()).resolves.toEqual(acceptedBody);
+
+    const costs = await app.request("/billing/execution-costs", {
+      headers: headers(tenantA, "mission-cost-list"),
+    });
+    expect(costs.status).toBe(200);
+    await expect(costs.json()).resolves.toMatchObject({
+      data: [{
+        executionId: "job-production-a",
+        missionId: "mission-production-a",
+        outcomeStatus: "accepted",
+        acceptedOutcomeId: "pull-request-a",
+        modelCostMeasured: true,
+        cacheCostMeasured: true,
+        gpuCostMeasured: true,
+        graphCostMeasured: true,
+        sandboxCostMeasured: true,
+        verificationCostMeasured: true,
+        measurementProvenance: {
+          model: "provider_invoice:model-a",
+          cache: "provider_invoice:cache",
+          gpu: "runtime_meter:gpu",
+          graph: "runtime_meter:graph",
+          sandbox: "runtime_meter:sandbox",
+          verification: "runtime_meter:verification",
+        },
+      }],
+    });
+
+    const margin = await app.request("/billing/gross-margin", {
+      headers: headers(tenantA, "mission-margin"),
+    });
+    expect(margin.status).toBe(200);
+    await expect(margin.json()).resolves.toMatchObject({
+      data: {
+        complete: true,
+        ledgers: {
+          executionCosts: { ok: true, checked: 1 },
+        },
+        netRevenueMoneyMicros: 80_000,
+        actualCostMoneyMicros: 2_500,
+        exactGrossMarginMoneyMicros: 77_500,
+        attributedGrossMarginMoneyMicros: 77_500,
+        unattributedRevenueMoneyMicros: 0,
+        incompleteAttributions: [],
+        attributions: [
+          {
+            executionId: "job-production-a",
+            taskId: missionTaskIdForJob("job-production-a"),
+            campaignId: "campaign-a",
+            route: "frontier-primary",
+            outcomeStatus: "accepted",
+            acceptedOutcomeId: "pull-request-a",
+            attributedNetRevenueMoneyMicros: 80_000,
+            attributedGrossMarginMoneyMicros: 77_500,
+          },
+        ],
+      },
+    });
+
+    const rollback = appendDomainEvent(db, {
+      id: "rollback-production-a",
+      tenantId: "billing-tenant-a",
+      schemaVersion: 1,
+      eventType: "execution_cost.rolled_back",
+      aggregateType: "execution_cost",
+      aggregateId: "job-production-a",
+      actorPrincipalId: actor!.id,
+      correlationId: "job-production-a",
+      idempotencyKey: "rollback-production-a",
+      payload: {
+        costEntryId: recordedCost.id,
+        costEntryHash: recordedCost.entryHash,
+      },
+      createdAt: "2026-09-02T00:01:00.000Z",
+    });
+    const rolledBack = await app.request("/billing/execution-costs/job-production-a/outcomes", {
+      method: "POST",
+      headers: headers(tenantA, "mission-outcome-rollback"),
+      body: JSON.stringify({ authorityEvidenceId: rollback.row.id }),
+    });
+    expect(rolledBack.status).toBe(201);
+    await expect(rolledBack.json()).resolves.toMatchObject({
+      data: { outcomeStatus: "rolled_back", acceptedOutcomeId: null },
+    });
+    const rolledBackCosts = await app.request("/billing/execution-costs", {
+      headers: headers(tenantA, "mission-cost-list-rolled-back"),
+    });
+    await expect(rolledBackCosts.json()).resolves.toMatchObject({
+      data: [{
+        executionId: "job-production-a",
+        outcomeStatus: "rolled_back",
+        acceptedOutcomeId: null,
+      }],
+    });
+
+    const originalReplayAfterRollback = await app.request(
+      "/billing/execution-costs/job-production-a/outcomes",
+      {
+        method: "POST",
+        headers: headers(tenantA, "mission-outcome-a"),
+        body: JSON.stringify({ authorityEvidenceId: "review-production-a" }),
+      },
+    );
+    expect(originalReplayAfterRollback.status).toBe(201);
+    await expect(originalReplayAfterRollback.json()).resolves.toEqual(acceptedBody);
+
+    db.raw.exec("DROP TRIGGER actual_execution_cost_outcomes_append_only_update");
+    db.raw.prepare(
+      "UPDATE actual_execution_cost_outcomes SET authority_digest = ? WHERE execution_id = ?",
+    ).run("f".repeat(64), "job-production-a");
+    const corruptMargin = await app.request("/billing/gross-margin", {
+      headers: headers(tenantA, "mission-margin-corrupt-outcome"),
+    });
+    expect(corruptMargin.status).toBe(200);
+    await expect(corruptMargin.json()).resolves.toMatchObject({
+      data: {
+        complete: false,
+        ledgers: {
+          executionCosts: { ok: false, checked: 1 },
+        },
+      },
     });
   });
 });

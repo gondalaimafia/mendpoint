@@ -294,26 +294,57 @@ describe("Warden exact candidate draft delivery", () => {
       WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ n: 0 });
   });
 
-  // The binding must come from the SOURCE job, the way production shapes it.
-  // Writing `missionId` straight into the delivery payload — the exact field the
-  // guard reads — is what kept this regression from ever exercising
-  // `sourceMissionId()`, and so hid the campaign-bound gap entirely.
-  it("quarantines a legacy mission-bound delivery without retained authority before GitHub", async () => {
+  // §12 UPGRADE PATH. A delivery enqueued BEFORE the authority contract existed:
+  // the source run carries `payload.missionId` (POST /agent/runs has always
+  // written it), the delivery payload carries no authority, and the delivery row
+  // is NULL. Nothing can mint authority for it retroactively. It must deliver
+  // exactly as it does on main. Collapse the gate back to two-state and this
+  // dies: the job dead-letters on
+  // warden_candidate_delivery_mission_authority_upgrade_required and the draft
+  // is never opened.
+  it("delivers a pre-change Mission-bound row whose authority was never minted", async () => {
     const value = bindMissionAuthority(fixture());
+    // Strip the authority from BOTH sides, leaving the source job's missionId.
     value.db.raw.prepare(`UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?`)
       .run(JSON.stringify({ deliveryId: value.delivery.id, runId: "warden-run-1" }),
         value.job.id, "tenant-a");
+    value.db.raw.prepare("UPDATE fettler_candidate_deliveries SET mission_authority_json = NULL WHERE id = ?")
+      .run(value.delivery.id);
+    const deliverExactDraft = vi.fn(async (input: ExactDraftDeliveryInput) => ({
+      branch: input.branch, title: input.title, baseBranch: input.baseBranch,
+      baseSha: input.expectedBaseSha, commitSha: "b".repeat(40),
+      draft: true as const, number: 17, url: "https://github.com/acme/sdk/pull/17",
+    }));
+
+    const result = await runWardenCandidateDelivery({ db: value.db,
+      job: getJob(value.db, value.job.id, "tenant-a")!,
+      github: { deliverExactDraft } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
+      now: () => "2026-08-06T12:00:01.000Z" });
+
+    expect(result.status).toBe("delivered");
+    expect(deliverExactDraft).toHaveBeenCalledTimes(1);
+    // Unbound means unbound: no dispatch row is armed for a run with no authority.
+    expect(value.db.raw.prepare(`SELECT COUNT(*) AS n FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ n: 0 });
+  });
+
+  // The other two states still behave: a MISMATCHED authority is refused.
+  it("still refuses a delivery whose retained authority names a different Mission", async () => {
+    const value = bindMissionAuthority(fixture());
+    const wrong = { ...value.authority, missionId: "mission-other" };
+    value.db.raw.prepare(`UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?`)
+      .run(JSON.stringify({ deliveryId: value.delivery.id, runId: "warden-run-1",
+        missionId: "mission-other", missionAuthority: wrong }), value.job.id, "tenant-a");
     const deliverExactDraft = vi.fn();
+
     await expect(runWardenCandidateDelivery({ db: value.db,
       job: getJob(value.db, value.job.id, "tenant-a")!,
       github: { deliverExactDraft } as unknown as GitHubDelivery,
       artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
       resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
       now: () => NOW })).resolves.toMatchObject({ status: "delivery_failed" });
-    expect(getJob(value.db, value.job.id, "tenant-a")).toMatchObject({
-      status: "dead_letter",
-      error_code: "warden_candidate_delivery_mission_authority_upgrade_required",
-    });
     expect(deliverExactDraft).not.toHaveBeenCalled();
   });
 

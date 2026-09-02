@@ -94,25 +94,25 @@ describe("Warden run input", () => {
     });
   });
 
-  it("rejects direct Mission binding before a run can be enqueued", () => {
-    expect(parseWardenRunInput(valid({ missionId: "mission-a" }))).toEqual({
-      ok: false,
-      error: "mission-bound runs must be created through a Fettler campaign",
+  it("accepts an optional missionId and rejects an empty or padded one", () => {
+    expect(parseWardenRunInput(valid({ missionId: "mission-a" }))).toMatchObject({
+      ok: true,
+      value: { missionId: "mission-a" },
     });
     const omitted = parseWardenRunInput(valid());
     expect(omitted.ok).toBe(true);
-    if (omitted.ok) expect(omitted.value).not.toHaveProperty("missionId");
+    if (omitted.ok) expect(omitted.value.missionId).toBeUndefined();
     expect(parseWardenRunInput(valid({ missionId: "" }))).toEqual({
       ok: false,
-      error: "mission-bound runs must be created through a Fettler campaign",
+      error: "missionId must be a nonempty mission id",
     });
     expect(parseWardenRunInput(valid({ missionId: " mission-a" }))).toEqual({
       ok: false,
-      error: "mission-bound runs must be created through a Fettler campaign",
+      error: "missionId must be a nonempty mission id",
     });
     expect(parseWardenRunInput(valid({ missionId: 12 }))).toEqual({
       ok: false,
-      error: "mission-bound runs must be created through a Fettler campaign",
+      error: "missionId must be a nonempty mission id",
     });
   });
 

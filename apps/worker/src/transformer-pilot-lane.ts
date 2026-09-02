@@ -226,7 +226,7 @@ function stableId(prefix: string, ...parts: readonly string[]): string {
 }
 
 /**
- * Best-effort ReGauge trajectory emit (spec 6.1 / 8.6). A recorded adaptive
+ * Transactional ReGauge trajectory emit (spec 6.1 / 8.6). A recorded adaptive
  * candidate is the observable output of one ReGauge attempt; persisting a
  * trajectory keyed by the campaign's Mission is what makes a later delivery
  * outcome joinable back to the attempt that produced it — the seam PR #191 could
@@ -235,10 +235,9 @@ function stableId(prefix: string, ...parts: readonly string[]): string {
  * regauge_adaptive_deliveries.candidate_id -> regauge_adaptive_candidates.campaign_id
  * -> mission.regauge_campaign_id -> mission.id -> trajectories.mission_id.
  *
- * Mission bookkeeping is metadata: it MUST NEVER abort candidate recording or the
- * lane. Any failure is logged with enough context to diagnose and swallowed
- * (matching the best-effort convention in packages/pipeline/src/index.ts), never
- * a bare catch. `mission_id` is nullable: a campaign created before the Mission
+ * Candidate, trajectory, and MCU accounting persistence form one unit: failure
+ * aborts and rolls back candidate recording so replay can retry without losing
+ * paid work. `mission_id` is nullable: a campaign created before the Mission
  * primitive was wired resolves to no mission, and the trajectory is written with
  * mission_id NULL rather than fabricating one. `run_id` stays populated with the
  * attempt id so the existing per-attempt key is preserved, not replaced.
@@ -250,6 +249,9 @@ function emitRegaugeAdaptiveTrajectory(
     campaignId: string;
     unitId: string;
     attemptId: string;
+    routingJobId: string;
+    routingRunId: string;
+    routingEnvelopeId: string;
     candidateId: string;
     family: string | null;
     provider: string | null;
@@ -298,7 +300,11 @@ function emitRegaugeAdaptiveTrajectory(
     if (mission) {
       recordExecutionCostFromRoutingLedger(db, {
         tenantId: input.tenantId,
-        sourceRunId: input.attemptId,
+        routingEvidence: {
+          jobId: input.routingJobId,
+          runId: input.routingRunId,
+          envelopeIds: [input.routingEnvelopeId],
+        },
         executionId: input.attemptId,
         taskId: input.unitId,
         taskClass: "regauge.adaptive_candidate",
@@ -310,12 +316,9 @@ function emitRegaugeAdaptiveTrajectory(
       });
     }
   } catch (error) {
-    console.error(
-      `regauge trajectory emit failed tenant=${input.tenantId} campaign=${input.campaignId} ` +
-        `unit=${input.unitId} attempt=${input.attemptId} candidate=${input.candidateId}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-    );
+    // Completion must not acknowledge while trajectory or MCU accounting is
+    // missing. The caller's attempt lease/replay path owns the retry.
+    throw new Error("regauge_accounting_persistence_failed", { cause: error });
   }
 }
 
@@ -582,16 +585,18 @@ export async function runTransformerPilotLaneOnce(
     });
   }
 
-  // A fenced handoff is the durable authority after convergence. Re-import its
-  // exact sealed artifact before claiming new work so a process death between
-  // handoff persistence and the App DB transaction cannot lose the candidate.
-  for (const pending of input.store.listAdaptiveCandidateHandoffs(
-    input.tenantId,
-    maxCampaigns,
-    rawGate,
-  )) {
-    if (input.shouldContinue?.() === false) break;
-    try {
+  // A fenced handoff is the durable authority after convergence. Import only
+  // after the exact routing outcome is settled, and repeat the import after a
+  // terminal attempt so a successful same-pass handoff remains observable.
+  const recoverAdaptiveCandidates = (): boolean => {
+    for (const pending of input.store.listAdaptiveCandidateHandoffs(
+      input.tenantId,
+      maxCampaigns,
+      rawGate,
+    )) {
+      if (input.shouldContinue?.() === false) break;
+      let ownsCandidateTransaction = false;
+      try {
       const artifact = readAdaptiveCandidateArtifact({
         tenantId: pending.tenantId,
         path: pending.handoff.sealedPath,
@@ -617,28 +622,51 @@ export async function runTransformerPilotLaneOnce(
       ) {
         throw new Error("transformer_adaptive_candidate_handoff_seal_mismatch");
       }
-      const recordedCandidate = (input.adaptiveCandidateRecorder ?? recordAdaptiveCandidate)(input.db, {
+      ownsCandidateTransaction = !input.db.raw.isTransaction;
+      if (ownsCandidateTransaction) input.db.raw.exec("BEGIN IMMEDIATE");
+      let recordedCandidate: ReturnType<typeof recordAdaptiveCandidate>;
+      try {
+        recordedCandidate = (input.adaptiveCandidateRecorder ?? recordAdaptiveCandidate)(input.db, {
+          tenantId: pending.tenantId,
+          campaignId: pending.campaignId,
+          unitId: pending.unitId,
+          attemptId: pending.handoff.attemptId,
+          repositoryId: pending.handoff.repositoryId,
+          snapshotId: pending.handoff.snapshotId,
+          baseBranch: pending.handoff.baseBranch,
+          expectedBaseRevision: pending.handoff.expectedBaseRevision,
+          divergedFromDigest: pending.handoff.divergedFromDigest,
+          candidateDigest: pending.handoff.candidateDigest,
+          failingCommandId: pending.handoff.failingCommandId,
+          family: pending.handoff.family ?? null,
+          provider: pending.handoff.provider ?? null,
+          framework: pending.handoff.framework ?? null,
+          sealedPath: pending.handoff.sealedPath,
+          sealedSha256: pending.handoff.sealedSha256,
+          changedPaths: pending.handoff.changedPaths,
+          reviewTier: pending.handoff.reviewTier,
+          expiresAt: pending.handoff.expiresAt,
+          now: pending.handoff.observedAt,
+        });
+      } catch (error) {
+        throw new Error("transformer_adaptive_candidate_persistence_failed", { cause: error });
+      }
+      emitRegaugeAdaptiveTrajectory(input.db, {
         tenantId: pending.tenantId,
         campaignId: pending.campaignId,
         unitId: pending.unitId,
         attemptId: pending.handoff.attemptId,
-        repositoryId: pending.handoff.repositoryId,
-        snapshotId: pending.handoff.snapshotId,
-        baseBranch: pending.handoff.baseBranch,
-        expectedBaseRevision: pending.handoff.expectedBaseRevision,
-        divergedFromDigest: pending.handoff.divergedFromDigest,
-        candidateDigest: pending.handoff.candidateDigest,
-        failingCommandId: pending.handoff.failingCommandId,
+        routingJobId: pending.handoff.routingJobId,
+        routingRunId: pending.handoff.routingRunId,
+        routingEnvelopeId: pending.handoff.routingEnvelopeId,
+        candidateId: recordedCandidate.id,
         family: pending.handoff.family ?? null,
         provider: pending.handoff.provider ?? null,
         framework: pending.handoff.framework ?? null,
-        sealedPath: pending.handoff.sealedPath,
-        sealedSha256: pending.handoff.sealedSha256,
-        changedPaths: pending.handoff.changedPaths,
-        expiresAt: pending.handoff.expiresAt,
-        now: pending.handoff.observedAt,
+        createdAt: pending.handoff.observedAt,
       });
-      input.store.markAdaptiveCandidateHandoffImported({
+      if (ownsCandidateTransaction) input.db.raw.exec("COMMIT");
+      if (ownsCandidateTransaction) input.store.markAdaptiveCandidateHandoffImported({
         tenantId: pending.tenantId,
         campaignId: pending.campaignId,
         unitId: pending.unitId,
@@ -667,26 +695,18 @@ export async function runTransformerPilotLaneOnce(
         ),
         gateConfig: rawGate,
       });
-      emitRegaugeAdaptiveTrajectory(input.db, {
-        tenantId: pending.tenantId,
-        campaignId: pending.campaignId,
-        unitId: pending.unitId,
-        attemptId: pending.handoff.attemptId,
-        candidateId: recordedCandidate.id,
-        family: pending.handoff.family ?? null,
-        provider: pending.handoff.provider ?? null,
-        framework: pending.handoff.framework ?? null,
-        createdAt: pending.handoff.observedAt,
-      });
-      adaptiveRecovered++;
-    } catch (error) {
-      const code = boundedError(error);
-      errors.push(code);
-      infrastructureError ??= code;
-      break;
+        if (ownsCandidateTransaction) adaptiveRecovered++;
+      } catch (error) {
+        if (ownsCandidateTransaction && input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
+        const code = boundedError(error);
+        errors.push(code);
+        infrastructureError ??= code;
+        return false;
+      }
     }
-  }
-  if (infrastructureError) {
+    return true;
+  };
+  if (!recoverAdaptiveCandidates()) {
     return Object.freeze({
       enabled: true,
       expired,
@@ -858,6 +878,7 @@ export async function runTransformerPilotLaneOnce(
       campaign.tenantId,
       campaign.campaignId,
     );
+    let routedEnvelopeId: string | undefined;
     const routed = await runRoutedTransformerAttempt({
       db: input.db,
       registry: routedRegistry,
@@ -903,6 +924,7 @@ export async function runTransformerPilotLaneOnce(
       ),
       deferOutcomePersistence: true,
       onPrepared: (prepared) => {
+        routedEnvelopeId = prepared.envelopeId;
         if (!prepared.dispatch || prepared.action === "human_handoff" || prepared.action === "completed") {
           return;
         }
@@ -1024,6 +1046,12 @@ export async function runTransformerPilotLaneOnce(
                 policy: adaptiveAdapter.policy,
                 calls,
               });
+              const reviewTier = classifyReviewTier({
+                overallRisk: handoff.review.overallRisk,
+                confidence: handoff.review.confidence,
+                changedFileCount: handoff.changedPaths.length,
+                verificationPassed: handoff.review.verification.passed,
+              }, reviewTierPolicy);
               await coordinator.recordAdaptiveCandidateHandoff({
                 tenantId: handoff.tenantId,
                 campaignId: handoff.campaignId,
@@ -1032,6 +1060,12 @@ export async function runTransformerPilotLaneOnce(
                 attemptNumber: handoff.attemptNumber,
                 leaseGeneration: handoff.leaseGeneration,
                 leaseToken: handoff.leaseToken,
+                routingJobId: handoff.campaignId,
+                routingRunId: runId,
+                routingEnvelopeId: routedEnvelopeId ?? (() => {
+                  throw new Error("transformer_adaptive_candidate_routing_evidence_missing");
+                })(),
+                reviewTier,
                 repositoryId: handoff.repositoryId,
                 snapshotId: handoff.snapshotId,
                 baseBranch: boundSnapshot.requested_ref,
@@ -1060,83 +1094,10 @@ export async function runTransformerPilotLaneOnce(
                 gateConfig: rawGate,
               });
               handoffRecorded = true;
-              // Deterministically classify the required human-review tier from the
-              // sealed review evidence. The default policy is disabled, so this is
-              // `standard` unless a tier policy is explicitly configured. The tier
-              // only raises the required sign-off; every candidate still needs
-              // human approval and nothing ever auto-merges.
-              const reviewTier = classifyReviewTier(
-                {
-                  overallRisk: handoff.review.overallRisk,
-                  confidence: handoff.review.confidence,
-                  changedFileCount: handoff.changedPaths.length,
-                  verificationPassed: handoff.review.verification.passed,
-                },
-                reviewTierPolicy,
-              );
-              const recordedCandidate = (input.adaptiveCandidateRecorder ?? recordAdaptiveCandidate)(input.db, {
-                tenantId: handoff.tenantId,
-                campaignId: handoff.campaignId,
-                unitId: handoff.unitId,
-                attemptId: handoff.attemptId,
-                repositoryId: handoff.repositoryId,
-                snapshotId: handoff.snapshotId,
-                baseBranch: boundSnapshot.requested_ref,
-                expectedBaseRevision: handoff.expectedBaseRevision,
-                divergedFromDigest: handoff.divergedFromDigest,
-                candidateDigest: handoff.candidateDigest,
-                failingCommandId: handoff.failingCommandId,
-                family: handoff.family,
-                provider: handoff.provider,
-                framework: handoff.framework,
-                sealedPath: seal.path,
-                sealedSha256: seal.sha256,
-                changedPaths: handoff.changedPaths,
-                reviewTier,
-                expiresAt,
-                now: observedAt,
-              });
-              input.store.markAdaptiveCandidateHandoffImported({
-                tenantId: handoff.tenantId,
-                campaignId: handoff.campaignId,
-                unitId: handoff.unitId,
-                attemptId: handoff.attemptId,
-                candidateId: recordedCandidate.id,
-                sealedSha256: seal.sha256,
-                observedAt,
-                evidenceRefs: Object.freeze([
-                  ...decision.acceptanceEvidenceRefs,
-                  stableId(
-                    "tfadaptiveimport",
-                    handoff.tenantId,
-                    handoff.campaignId,
-                    handoff.unitId,
-                    handoff.attemptId,
-                    seal.sha256,
-                  ),
-                ]),
-                idempotencyKey: stableId(
-                  "tfadaptiveimport",
-                  handoff.tenantId,
-                  handoff.campaignId,
-                  handoff.unitId,
-                  handoff.attemptId,
-                  seal.sha256,
-                ),
-                gateConfig: rawGate,
-              });
+              // Import is deliberately deferred. The terminal routing outcome is
+              // settled after the attempt returns; the next recovery pass imports
+              // this durable handoff only after that exact evidence is queryable.
               adaptiveModelEvidence.push(modelEvidence);
-              emitRegaugeAdaptiveTrajectory(input.db, {
-                tenantId: handoff.tenantId,
-                campaignId: handoff.campaignId,
-                unitId: handoff.unitId,
-                attemptId: handoff.attemptId,
-                candidateId: recordedCandidate.id,
-                family: handoff.family ?? null,
-                provider: handoff.provider ?? null,
-                framework: handoff.framework ?? null,
-                createdAt: observedAt,
-              });
             } catch (error) {
               if (!handoffRecorded && modelEvidence?.created) {
                 discardTransformerAdaptiveModelEvidence(resolve(input.evidenceRoot), modelEvidence);
@@ -1176,7 +1137,7 @@ export async function runTransformerPilotLaneOnce(
     else idle++;
     if (
       (routed.status === "completed" || routed.status === "failed") &&
-      !reconcileRoutingSettlements()
+      (!reconcileRoutingSettlements() || !recoverAdaptiveCandidates())
     ) {
       break;
     }

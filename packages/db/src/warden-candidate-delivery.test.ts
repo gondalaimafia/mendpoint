@@ -170,6 +170,74 @@ describe("Warden candidate delivery outbox", () => {
     expect(db.raw.prepare("SELECT COUNT(*) AS n FROM fettler_candidate_deliveries").get()).toEqual({ n: 0 });
   });
 
+  // PINS THE OPEN GAP (Codex review 2026-09-01, B2), it does not fix it.
+  // A campaign-bound run resolves to a Mission through the campaign FK, but this
+  // reader consults only `payload.missionId`, so the run enqueues UNBOUND and the
+  // dispatch fence never runs for it. Making the readers campaign-aware is the
+  // owner decision (D7): it 409s every pilot-join approve until authority can be
+  // minted. This test asserts the CURRENT behaviour and that the gap is recorded
+  // rather than silent, so it stays visible until that decision is made.
+  it("enqueues a campaign-bound run unbound, and says so (open gap, not a fix)", () => {
+    const db = fixture({ goal: "Repair the SDK", consumerId: "consumer-1", fettlerCampaignId: "campaign-1" });
+    const warnings: string[] = [];
+    const warn = console.warn;
+    console.warn = (line: unknown) => { warnings.push(String(line)); };
+
+    let delivery;
+    try {
+      delivery = enqueueWardenCandidateDelivery(db, {
+        tenantId: "tenant-a",
+        runId: "warden-run-1",
+        repositoryId: "repo-1",
+        snapshotId: "snapshot-1",
+        baseBranch: "main",
+        expectedBaseRevision: "a".repeat(40),
+        sealedPath: SEALED_PATH,
+        sealedSha256: `sha256:${"b".repeat(64)}`,
+        requesterPrincipalId: "human:reviewer@example.com",
+        rationale: "The target and regression checks pass.",
+        now: NOW,
+      });
+    } finally { console.warn = warn; }
+
+    // Current behaviour: accepted, unbound, no authority required.
+    expect(delivery.status).toBe("delivery_pending");
+    expect(delivery.missionAuthority).toBeNull();
+    // ...and the gap is on the record.
+    expect(warnings.some((line) =>
+      line.includes("warden_candidate_delivery_campaign_binding_not_enforced") &&
+      line.includes("campaign-1"))).toBe(true);
+  });
+
+  // §12 UPGRADE PATH. POST /agent/runs has always written `payload.missionId`,
+  // so every run enqueued before the authority contract existed looks like this:
+  // Mission bound, no authority, and no way to mint one retroactively. It must
+  // enqueue exactly as it does on main. Collapse the gate back to two-state
+  // (absent treated as mismatched) and this dies with binding_mismatch.
+  it("enqueues a pre-change Mission-bound run whose authority was never minted", () => {
+    const db = fixture({ goal: "Repair the SDK", consumerId: "consumer-1", missionId: "mission-legacy" });
+
+    const delivery = enqueueWardenCandidateDelivery(db, {
+      tenantId: "tenant-a",
+      runId: "warden-run-1",
+      repositoryId: "repo-1",
+      snapshotId: "snapshot-1",
+      baseBranch: "main",
+      expectedBaseRevision: "a".repeat(40),
+      sealedPath: SEALED_PATH,
+      sealedSha256: `sha256:${"b".repeat(64)}`,
+      requesterPrincipalId: "human:reviewer@example.com",
+      rationale: "The target and regression checks pass.",
+      now: NOW,
+    });
+
+    expect(delivery.status).toBe("delivery_pending");
+    // Unbound, and honestly so: no authority is invented for it.
+    expect(delivery.missionAuthority).toBeNull();
+    expect(JSON.parse(getJob(db, delivery.jobId, "tenant-a")!.payload_json))
+      .not.toHaveProperty("missionAuthority");
+  });
+
   it("atomically enqueues one deterministic tenant-scoped draft delivery", () => {
     const db = fixture();
     const input = {

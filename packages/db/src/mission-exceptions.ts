@@ -225,7 +225,9 @@ function insertException(db: AppDb, input: {
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
-    const existing = one<MissionExceptionRow>(db, `SELECT * FROM mission_exceptions WHERE id = ?`, [digest]);
+    // Tenant-scoped by predicate, like every sibling lookup in this module.
+    const existing = one<MissionExceptionRow>(db,
+      `SELECT * FROM mission_exceptions WHERE id = ? AND tenant_id = ?`, [digest, input.tenantId]);
     if (existing) {
       const value = hydrate(existing);
       if (owns) db.raw.exec("COMMIT");
@@ -259,7 +261,8 @@ function insertException(db: AppDb, input: {
       },
       createdAt: input.createdAt,
     });
-    const value = hydrate(one<MissionExceptionRow>(db, `SELECT * FROM mission_exceptions WHERE id = ?`, [digest])!);
+    const value = hydrate(one<MissionExceptionRow>(db,
+      `SELECT * FROM mission_exceptions WHERE id = ? AND tenant_id = ?`, [digest, input.tenantId])!);
     if (owns) db.raw.exec("COMMIT");
     return value;
   } catch (error) {
