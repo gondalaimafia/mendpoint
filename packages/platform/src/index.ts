@@ -116,10 +116,26 @@ export {
   formatCost,
 } from "./cost.js";
 
-export type { McuWork, McuBreakdown } from "./mcu.js";
+export type {
+  McuWork,
+  McuBreakdown,
+  McuLedgerEntryType,
+  McuLedgerEntry,
+  McuLedgerEntryInput,
+  McuLedgerLifecycle,
+  McuLedgerReconciliation,
+} from "./mcu.js";
 export {
   MCU_VERSION,
   MCU_MICROS,
+  MCU_SCHEDULE_V1,
+  MCU_SCHEDULE_DIGEST,
+  MCU_LEDGER_ENTRY_TYPES,
+  mcuScheduleDigest,
+  mcuLedgerEntryDigest,
+  createMcuLedgerEntry,
+  reconcileMcuLedgerLifecycle,
+  assertMcuScheduleChange,
   calculateMcuV1,
   formatMcu,
 } from "./mcu.js";

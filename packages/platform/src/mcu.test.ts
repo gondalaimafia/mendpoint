@@ -87,6 +87,24 @@ function lifecycle(): McuLedgerLifecycle {
   };
 }
 
+function rechain(entries: readonly McuLedgerEntry[]): McuLedgerEntry[] {
+  const rebuilt: McuLedgerEntry[] = [];
+  for (const entry of entries) {
+    const {
+      id: _id,
+      priceVersion: _priceVersion,
+      formulaVersion: _formulaVersion,
+      formulaDigest: _formulaDigest,
+      entrySequence: _entrySequence,
+      previousEntryHash: _previousEntryHash,
+      entryHash: _entryHash,
+      ...input
+    } = entry;
+    rebuilt.push(createMcuLedgerEntry(input, rebuilt.at(-1) ?? null));
+  }
+  return rebuilt;
+}
+
 describe("migration compute units", () => {
   it("calculates every v1 component without losing fractional compute", () => {
     expect(
@@ -129,11 +147,30 @@ describe("migration compute units", () => {
   });
 
   it("binds the schedule digest to reservation, settlement, adjustment, credit, and invoice mapping", () => {
+    const evidence = lifecycle();
     expect(MCU_SCHEDULE_DIGEST).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(mcuScheduleDigest(MCU_SCHEDULE_V1)).toBe(MCU_SCHEDULE_DIGEST);
-    expect(reconcileMcuLedgerLifecycle(lifecycle())).toEqual({
+    expect(reconcileMcuLedgerLifecycle(evidence)).toEqual({
       scheduleVersion: "mcu-v1",
       scheduleDigest: MCU_SCHEDULE_DIGEST,
+      tenantId: "tenant-fettler",
+      entitlementId: "entitlement-1",
+      taskId: "task-1",
+      campaignId: "campaign-a",
+      priceVersion: MCU_SCHEDULE_V1.settlement.priceVersion,
+      formulaVersion: MCU_SCHEDULE_V1.settlement.formulaVersion,
+      formulaDigest: MCU_SCHEDULE_DIGEST,
+      entryCount: 4,
+      ledgerHeadHash: evidence.entries.at(-1)!.entryHash,
+      firstOccurredAt: "2026-09-02T00:00:00.000Z",
+      lastOccurredAt: "2026-09-02T00:03:00.000Z",
+      actorIds: ["finance-owner", "service-fettler-meter"],
+      reasonCodes: [
+        "service_credit",
+        "task_budget_reserved",
+        "task_usage_settled",
+        "verified_usage_adjustment",
+      ],
       reservationMcuMicros: 4_000_000,
       settledMcuMicros: 3_000_000,
       adjustmentMcuMicros: 500_000,
@@ -142,8 +179,8 @@ describe("migration compute units", () => {
       invoiceMappings: [{
         invoiceReference: "invoice-1",
         mcuMicros: 3_250_000,
-        sourceEntryIds: lifecycle().entries.slice(1).map((entry) => entry.id),
-        settledEntryIds: [lifecycle().entries[1]!.id],
+        sourceEntryIds: evidence.entries.slice(1).map((entry) => entry.id),
+        settledEntryIds: [evidence.entries[1]!.id],
       }],
       reconciled: true,
     });
@@ -155,6 +192,7 @@ describe("migration compute units", () => {
       ...overSettled.entries[1]!,
       consumedMcuMicrosDelta: 10_000_000,
     };
+    overSettled.entries = rechain(overSettled.entries);
     expect(() => reconcileMcuLedgerLifecycle(overSettled))
       .toThrow("mcu_settlement_exceeds_released_reservation");
   });
@@ -162,33 +200,39 @@ describe("migration compute units", () => {
   it("binds campaign, schedule formula, price, contiguous sequence, and hash chain", () => {
     const changedCampaign = lifecycle();
     changedCampaign.entries[1] = { ...changedCampaign.entries[1]!, campaignId: "campaign-b" };
+    changedCampaign.entries = rechain(changedCampaign.entries);
     expect(() => reconcileMcuLedgerLifecycle(changedCampaign))
-      .toThrow("mcu_ledger_entry_hash_invalid");
+      .toThrow("mcu_ledger_binding_mismatch");
 
     const arbitraryPrice = lifecycle();
     arbitraryPrice.entries[1] = { ...arbitraryPrice.entries[1]!, priceVersion: "price-arbitrary" };
     expect(() => reconcileMcuLedgerLifecycle(arbitraryPrice))
-      .toThrow("mcu_ledger_entry_hash_invalid");
+      .toThrow("mcu_ledger_schedule_binding_invalid");
 
     const formulaDrift = lifecycle();
     formulaDrift.entries[1] = { ...formulaDrift.entries[1]!, formulaDigest: `sha256:${"0".repeat(64)}` };
     expect(() => reconcileMcuLedgerLifecycle(formulaDrift))
-      .toThrow("mcu_ledger_entry_hash_invalid");
+      .toThrow("mcu_ledger_schedule_binding_invalid");
 
     const sequenceGap = lifecycle();
     sequenceGap.entries[1] = { ...sequenceGap.entries[1]!, entrySequence: 44 };
     expect(() => reconcileMcuLedgerLifecycle(sequenceGap))
-      .toThrow("mcu_ledger_entry_hash_invalid");
+      .toThrow("mcu_ledger_sequence_invalid");
 
     const tamperedReason = lifecycle();
     tamperedReason.entries[2] = { ...tamperedReason.entries[2]!, reasonCode: "unattributed" };
     expect(() => reconcileMcuLedgerLifecycle(tamperedReason))
       .toThrow("mcu_ledger_entry_hash_invalid");
 
+    const missingActor = lifecycle();
+    missingActor.entries[2] = { ...missingActor.entries[2]!, actorId: "" };
+    expect(() => reconcileMcuLedgerLifecycle(missingActor))
+      .toThrow("mcu_ledger_actor_id_invalid");
+
     const brokenLink = lifecycle();
     brokenLink.entries[2] = { ...brokenLink.entries[2]!, previousEntryHash: `sha256:${"f".repeat(64)}` };
     expect(() => reconcileMcuLedgerLifecycle(brokenLink))
-      .toThrow("mcu_ledger_entry_hash_invalid");
+      .toThrow("mcu_ledger_previous_hash_invalid");
   });
 
   it("creates reproducible settled entry identities", () => {
@@ -228,10 +272,12 @@ describe("migration compute units", () => {
       ...overflow.entries[2]!,
       consumedMcuMicrosDelta: Number.MAX_SAFE_INTEGER,
     };
+    overflow.entries = rechain(overflow.entries);
     expect(() => reconcileMcuLedgerLifecycle(overflow)).toThrow("mcu_ledger_overflow");
 
     const incomplete = lifecycle();
     incomplete.entries = incomplete.entries.filter((entry) => entry.entryType !== "settlement");
+    incomplete.entries = rechain(incomplete.entries);
     expect(() => reconcileMcuLedgerLifecycle(incomplete))
       .toThrow("mcu_reservation_not_closed");
   });
@@ -242,8 +288,7 @@ describe("migration compute units", () => {
       outOfOrder.entries[1]!,
       outOfOrder.entries[0]!,
     ];
-    outOfOrder.entries[0]!.entrySequence = 1;
-    outOfOrder.entries[1]!.entrySequence = 2;
+    outOfOrder.entries = rechain(outOfOrder.entries);
 
     expect(() => reconcileMcuLedgerLifecycle(outOfOrder))
       .toThrow("mcu_reservation_must_be_first");

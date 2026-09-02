@@ -11,6 +11,10 @@ export const MCU_SCHEDULE_V1 = Object.freeze({
     immutableAfterUse: true,
     replacementRequiresNewVersion: true,
   }),
+  settlement: Object.freeze({
+    formulaVersion: "mcu-formula-v1",
+    priceVersion: "reference-cost-2026-08-02.v1",
+  }),
   weights: Object.freeze({
     graphObjectsPerMcu: 10_000,
     retrievalBytesPerMcu: 10_000_000,
@@ -69,11 +73,22 @@ export type McuLedgerEntry = {
   campaignId: string | null;
   reservationId: string | null;
   priceVersion: string;
+  formulaVersion: string;
+  formulaDigest: string;
   reservedMcuMicrosDelta: number;
   consumedMcuMicrosDelta: number;
   invoiceReference: string | null;
   entrySequence: number;
+  actorId: string;
+  reasonCode: string;
+  occurredAt: string;
+  previousEntryHash: string | null;
+  entryHash: string;
 };
+
+export type McuLedgerEntryInput = Omit<McuLedgerEntry,
+  "id" | "priceVersion" | "formulaVersion" | "formulaDigest" |
+  "entrySequence" | "previousEntryHash" | "entryHash">;
 
 export type McuLedgerLifecycle = {
   scheduleVersion: typeof MCU_VERSION;
@@ -84,6 +99,19 @@ export type McuLedgerLifecycle = {
 export type McuLedgerReconciliation = Readonly<{
   scheduleVersion: typeof MCU_VERSION;
   scheduleDigest: string;
+  tenantId: string;
+  entitlementId: string;
+  taskId: string;
+  campaignId: string | null;
+  priceVersion: string;
+  formulaVersion: string;
+  formulaDigest: string;
+  entryCount: number;
+  ledgerHeadHash: string;
+  firstOccurredAt: string;
+  lastOccurredAt: string;
+  actorIds: readonly string[];
+  reasonCodes: readonly string[];
   reservationMcuMicros: number;
   settledMcuMicros: number;
   adjustmentMcuMicros: number;
@@ -92,14 +120,51 @@ export type McuLedgerReconciliation = Readonly<{
   invoiceMappings: ReadonlyArray<Readonly<{
     invoiceReference: string;
     mcuMicros: number;
+    sourceEntryIds: readonly string[];
+    settledEntryIds: readonly string[];
   }>>;
   reconciled: true;
 }>;
 
 function requiredLedgerId(value: string, field: string): void {
-  if (typeof value !== "string" || value.length === 0 || value.length > 256) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 256 ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(value)
+  ) {
     throw new Error(`${field}_invalid`);
   }
+}
+
+function mcuEntryId(input: Omit<McuLedgerEntry, "id" | "entryHash">): string {
+  return `mcu-entry-${createHash("sha256")
+    .update(canonicalJson(input), "utf8")
+    .digest("hex")}`;
+}
+
+export function mcuLedgerEntryDigest(entry: Omit<McuLedgerEntry, "entryHash">): string {
+  return `sha256:${createHash("sha256").update(canonicalJson(entry), "utf8").digest("hex")}`;
+}
+
+export function createMcuLedgerEntry(
+  input: McuLedgerEntryInput,
+  previous: McuLedgerEntry | null,
+): McuLedgerEntry {
+  const content: Omit<McuLedgerEntry, "id" | "entryHash"> = {
+    ...input,
+    priceVersion: MCU_SCHEDULE_V1.settlement.priceVersion,
+    formulaVersion: MCU_SCHEDULE_V1.settlement.formulaVersion,
+    formulaDigest: MCU_SCHEDULE_DIGEST,
+    entrySequence: previous === null ? 1 : previous.entrySequence + 1,
+    previousEntryHash: previous?.entryHash ?? null,
+  };
+  const id = mcuEntryId(content);
+  const withoutHash = { id, ...content };
+  return Object.freeze({
+    ...withoutHash,
+    entryHash: mcuLedgerEntryDigest(withoutHash),
+  });
 }
 
 function ledgerMicros(value: number, field: string): number {
@@ -126,9 +191,15 @@ export function reconcileMcuLedgerLifecycle(
   if (!Array.isArray(lifecycle.entries) || lifecycle.entries.length === 0) {
     throw new Error("mcu_ledger_entries_required");
   }
+  const reservations = lifecycle.entries.filter((entry) => entry.entryType === "reservation");
+  if (reservations.length !== 1) throw new Error("mcu_reservation_required");
+  const reservation = reservations[0]!;
+  if (lifecycle.entries[0] !== reservation) throw new Error("mcu_reservation_must_be_first");
   const ids = new Set<string>();
   const idempotencyKeys = new Set<string>();
   let previousSequence = 0;
+  let previousEntry: McuLedgerEntry | null = null;
+  let previousOccurredAt = 0;
   for (const entry of lifecycle.entries) {
     requiredLedgerId(entry.id, "mcu_ledger_id");
     requiredLedgerId(entry.idempotencyKey, "mcu_ledger_idempotency_key");
@@ -141,22 +212,50 @@ export function reconcileMcuLedgerLifecycle(
     if (!MCU_LEDGER_ENTRY_TYPES.includes(entry.entryType)) {
       throw new Error("mcu_ledger_entry_type_invalid");
     }
-    if (!Number.isSafeInteger(entry.entrySequence) || entry.entrySequence <= previousSequence) {
+    if (!Number.isSafeInteger(entry.entrySequence) || entry.entrySequence !== previousSequence + 1) {
       throw new Error("mcu_ledger_sequence_invalid");
     }
     previousSequence = entry.entrySequence;
     requiredLedgerId(entry.tenantId, "mcu_ledger_tenant_id");
     requiredLedgerId(entry.entitlementId, "mcu_ledger_entitlement_id");
     requiredLedgerId(entry.taskId, "mcu_ledger_task_id");
+    if (entry.campaignId !== null) requiredLedgerId(entry.campaignId, "mcu_ledger_campaign_id");
+    if (entry.reservationId !== null) {
+      requiredLedgerId(entry.reservationId, "mcu_ledger_reservation_id");
+    }
     requiredLedgerId(entry.priceVersion, "mcu_ledger_price_version");
+    requiredLedgerId(entry.formulaVersion, "mcu_ledger_formula_version");
+    requiredLedgerId(entry.actorId, "mcu_ledger_actor_id");
+    requiredLedgerId(entry.reasonCode, "mcu_ledger_reason_code");
+    if (
+      entry.priceVersion !== MCU_SCHEDULE_V1.settlement.priceVersion ||
+      entry.formulaVersion !== MCU_SCHEDULE_V1.settlement.formulaVersion ||
+      entry.formulaDigest !== MCU_SCHEDULE_DIGEST
+    ) {
+      throw new Error("mcu_ledger_schedule_binding_invalid");
+    }
+    const occurredAt = Date.parse(entry.occurredAt);
+    if (!Number.isFinite(occurredAt) || new Date(occurredAt).toISOString() !== entry.occurredAt) {
+      throw new Error("mcu_ledger_occurred_at_invalid");
+    }
+    if (previousEntry && occurredAt < previousOccurredAt) {
+      throw new Error("mcu_ledger_time_order_invalid");
+    }
+    if (entry.previousEntryHash !== (previousEntry?.entryHash ?? null)) {
+      throw new Error("mcu_ledger_previous_hash_invalid");
+    }
+    const { entryHash, ...withoutHash } = entry;
+    if (entryHash !== mcuLedgerEntryDigest(withoutHash)) {
+      throw new Error("mcu_ledger_entry_hash_invalid");
+    }
+    const { id: _id, ...content } = withoutHash;
+    if (entry.id !== mcuEntryId(content)) throw new Error("mcu_ledger_entry_id_invalid");
     ledgerMicros(entry.reservedMcuMicrosDelta, "mcu_ledger_reserved_micros");
     ledgerMicros(entry.consumedMcuMicrosDelta, "mcu_ledger_consumed_micros");
+    previousEntry = entry;
+    previousOccurredAt = occurredAt;
   }
 
-  const reservations = lifecycle.entries.filter((entry) => entry.entryType === "reservation");
-  if (reservations.length !== 1) throw new Error("mcu_reservation_required");
-  const reservation = reservations[0]!;
-  if (lifecycle.entries[0] !== reservation) throw new Error("mcu_reservation_must_be_first");
   if (
     reservation.reservationId !== null ||
     reservation.reservedMcuMicrosDelta <= 0 ||
@@ -170,20 +269,30 @@ export function reconcileMcuLedgerLifecycle(
     reservation.entitlementId,
     reservation.taskId,
     reservation.priceVersion,
+    reservation.campaignId,
+    reservation.formulaVersion,
+    reservation.formulaDigest,
   ] as const;
   let reserved = reservation.reservedMcuMicrosDelta;
   let consumed = 0;
   let settled = 0;
   let adjusted = 0;
   let credited = 0;
-  const invoices = new Map<string, number>();
+  const invoices = new Map<string, {
+    mcuMicros: number;
+    sourceEntryIds: string[];
+    settledEntryIds: string[];
+  }>();
 
   for (const entry of lifecycle.entries.slice(1)) {
     if (
       entry.tenantId !== identity[0] ||
       entry.entitlementId !== identity[1] ||
       entry.taskId !== identity[2] ||
-      entry.priceVersion !== identity[3]
+      entry.priceVersion !== identity[3] ||
+      entry.campaignId !== identity[4] ||
+      entry.formulaVersion !== identity[5] ||
+      entry.formulaDigest !== identity[6]
     ) {
       throw new Error("mcu_ledger_binding_mismatch");
     }
@@ -203,6 +312,9 @@ export function reconcileMcuLedgerLifecycle(
         continue;
       }
       if (entry.consumedMcuMicrosDelta < 0) throw new Error("mcu_settlement_invalid");
+      if (entry.consumedMcuMicrosDelta > -entry.reservedMcuMicrosDelta) {
+        throw new Error("mcu_settlement_exceeds_released_reservation");
+      }
       settled = safeLedgerSum([settled, entry.consumedMcuMicrosDelta]);
     } else {
       if (entry.reservationId !== null || entry.reservedMcuMicrosDelta !== 0) {
@@ -220,10 +332,15 @@ export function reconcileMcuLedgerLifecycle(
     }
     if (!entry.invoiceReference) throw new Error("mcu_invoice_mapping_required");
     requiredLedgerId(entry.invoiceReference, "mcu_invoice_reference");
-    invoices.set(
-      entry.invoiceReference,
-      safeLedgerSum([invoices.get(entry.invoiceReference) ?? 0, entry.consumedMcuMicrosDelta]),
-    );
+    const invoice = invoices.get(entry.invoiceReference) ?? {
+      mcuMicros: 0,
+      sourceEntryIds: [],
+      settledEntryIds: [],
+    };
+    invoice.mcuMicros = safeLedgerSum([invoice.mcuMicros, entry.consumedMcuMicrosDelta]);
+    invoice.sourceEntryIds.push(entry.id);
+    if (entry.entryType === "settlement") invoice.settledEntryIds.push(entry.id);
+    invoices.set(entry.invoiceReference, invoice);
     consumed = safeLedgerSum([consumed, entry.consumedMcuMicrosDelta]);
     if (consumed < 0) throw new Error("mcu_credit_exceeds_consumption");
   }
@@ -232,6 +349,19 @@ export function reconcileMcuLedgerLifecycle(
   return Object.freeze({
     scheduleVersion: MCU_VERSION,
     scheduleDigest: MCU_SCHEDULE_DIGEST,
+    tenantId: reservation.tenantId,
+    entitlementId: reservation.entitlementId,
+    taskId: reservation.taskId,
+    campaignId: reservation.campaignId,
+    priceVersion: reservation.priceVersion,
+    formulaVersion: reservation.formulaVersion,
+    formulaDigest: reservation.formulaDigest,
+    entryCount: lifecycle.entries.length,
+    ledgerHeadHash: lifecycle.entries.at(-1)!.entryHash,
+    firstOccurredAt: reservation.occurredAt,
+    lastOccurredAt: lifecycle.entries.at(-1)!.occurredAt,
+    actorIds: Object.freeze([...new Set(lifecycle.entries.map((entry) => entry.actorId))].sort(compareText)),
+    reasonCodes: Object.freeze([...new Set(lifecycle.entries.map((entry) => entry.reasonCode))].sort(compareText)),
     reservationMcuMicros: reservation.reservedMcuMicrosDelta,
     settledMcuMicros: settled,
     adjustmentMcuMicros: adjusted,
@@ -239,7 +369,12 @@ export function reconcileMcuLedgerLifecycle(
     outstandingReservationMcuMicros: reserved,
     invoiceMappings: Object.freeze([...invoices.entries()]
       .sort(([left], [right]) => compareText(left, right))
-      .map(([invoiceReference, mcuMicros]) => Object.freeze({ invoiceReference, mcuMicros }))),
+      .map(([invoiceReference, invoice]) => Object.freeze({
+        invoiceReference,
+        mcuMicros: invoice.mcuMicros,
+        sourceEntryIds: Object.freeze([...invoice.sourceEntryIds]),
+        settledEntryIds: Object.freeze([...invoice.settledEntryIds]),
+      }))),
     reconciled: true,
   });
 }
