@@ -36,7 +36,7 @@
         "reconciled": true,
         "entryCount": 3,
         "storageAuthority": "usage_ledger_entries",
-        "ledgerHeadHash": "4b089771c83af6a92024f3b68b49a425c9e1e74cc54312e56b8b362773eb73ad",
+        "ledgerHeadHash": "5a094465deaf48fec8a52dcc01fc3b9a2122d2d0ee8f28f28e4ca5fe5317943d",
         "financeAuthorizationDigest": "sha256:7bc9c9a7740f3e538d08d3f4c3eef6ce485a67328b751964b4064a8eab875ca9",
         "settledEntryIds": [
           "settlement-fettler-closure"

@@ -81,6 +81,7 @@
 - [x] Remove caller-asserted MCU schedule authority from the public Platform surface.
 - [x] Bind adjustments and credits to positive invoice allocation, correct signs, and exact invoice-local limits.
 - [x] Require a live tenant owner to issue one short-lived, digest-bound finance authorization and consume it atomically once.
+- [x] Persist finance authority in the usage-entry hash and reject missing, tampered, reused, or mismatched authority during reconciliation.
 - [x] Exercise reserve, settle, authorized credit, and reconciliation through the protected Fettler closure self-check.
 - [x] Pass focused database, evaluator, closure, and affected typecheck gates.
 - [x] Pass complete workspace tests, full typecheck, optimized production build, and protected GA checks.
