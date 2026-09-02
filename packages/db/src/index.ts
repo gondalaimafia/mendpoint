@@ -3534,9 +3534,10 @@ function migrateProvidersFeedColumns(db: AppDb) {
     "audit_events",
     "suppressed_patterns",
   ]) {
-    // Existing NULL or empty tenant ids are unattributable historical data.
-    // Leave them quarantined from tenant-scoped equality queries. The triggers
-    // reject new unattributed writes without fabricating ownership for old rows.
+    // Existing NULL, empty, or whitespace-only tenant ids are unattributable
+    // historical data. Leave them byte-identical and quarantined. The versioned
+    // nonblank triggers supplement any earlier exact-empty trigger definition
+    // without rewriting historical ownership.
     run(
       db,
       `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_required_insert
@@ -3551,6 +3552,24 @@ function migrateProvidersFeedColumns(db: AppDb) {
       `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_required_update
        BEFORE UPDATE OF tenant_id ON ${table}
        WHEN NEW.tenant_id IS NULL OR NEW.tenant_id = ''
+       BEGIN
+         SELECT RAISE(ABORT, 'tenant_id_required');
+       END`,
+    );
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_nonblank_insert
+       BEFORE INSERT ON ${table}
+       WHEN NEW.tenant_id IS NULL OR trim(NEW.tenant_id) = ''
+       BEGIN
+         SELECT RAISE(ABORT, 'tenant_id_required');
+       END`,
+    );
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_nonblank_update
+       BEFORE UPDATE OF tenant_id ON ${table}
+       WHEN NEW.tenant_id IS NULL OR trim(NEW.tenant_id) = ''
        BEGIN
          SELECT RAISE(ABORT, 'tenant_id_required');
        END`,
@@ -6300,6 +6319,9 @@ export function enqueueJob(
     availableAt?: string;
   },
 ) {
+  if (typeof row.tenantId !== "string" || row.tenantId.trim() === "") {
+    throw new Error("tenant_id_required");
+  }
   run(
     db,
     `INSERT INTO jobs
@@ -6392,6 +6414,8 @@ export function claimNextJob(
     ? `AND type IN (${types.map(() => "?").join(",")})`
     : "";
   const tenantFilter = opts?.tenantId ? "AND tenant_id = ?" : "";
+  const attributableTenantFilter =
+    "AND tenant_id IS NOT NULL AND trim(tenant_id) <> ''";
   const tenantCapacityFilter = opts?.maxRunningPerTenant
     ? `AND (
          SELECT COUNT(*) FROM jobs running
@@ -6417,7 +6441,7 @@ export function claimNextJob(
     const job = get<JobRow>(
       db,
       `SELECT * FROM jobs
-       WHERE status = 'pending' ${typeFilter} ${tenantFilter}
+       WHERE status = 'pending' ${typeFilter} ${tenantFilter} ${attributableTenantFilter}
          AND cancelled_at IS NULL
          AND (available_at IS NULL OR available_at <= ?)
          ${tenantCapacityFilter}
