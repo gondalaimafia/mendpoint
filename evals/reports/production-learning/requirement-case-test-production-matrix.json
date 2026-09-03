@@ -1668,7 +1668,9 @@
         "packages/contract/src/public-claims.test.ts",
         "external:observed external customer proof"
       ],
-      "closureIssueRefs": [],
+      "closureIssueRefs": [
+        "https://github.com/gondalaimafia/mendpoint/issues/642"
+      ],
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/284",
         "https://github.com/gondalaimafia/mendpoint/pull/333",

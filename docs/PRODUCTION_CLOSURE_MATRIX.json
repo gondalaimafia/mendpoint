@@ -1480,7 +1480,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        642
+      ],
       "pullRequests": [
         284,
         333,
@@ -1824,8 +1826,8 @@
   "issueAuthority": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-09-02T00:05:21.467Z",
-    "observationDigest": "sha256:11036b890a56a523c87ee8de129fa6d95431abec949a92dc86cb356db1269fd9",
+    "observedAt": "2026-09-03T22:34:09.490Z",
+    "observationDigest": "sha256:9c60c588c105a68f4882468415a978095a09cf3f3e64b95d8606b2784cb66388",
     "issues": [
       {
         "number": 350,
@@ -2056,6 +2058,17 @@
         "url": "https://github.com/gondalaimafia/mendpoint/issues/483",
         "updatedAt": "2026-08-26T04:04:40.000Z",
         "requirementIds": []
+      },
+      {
+        "number": 642,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "ME-GTM-003: remaining closure after the staleness mechanism (#461)",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/642",
+        "updatedAt": "2026-09-03T22:32:11.000Z",
+        "requirementIds": [
+          "ME-GTM-003"
+        ]
       }
     ]
   },
