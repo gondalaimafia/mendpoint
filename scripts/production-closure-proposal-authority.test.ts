@@ -10,10 +10,15 @@ import {
 } from "./production-closure-matrix.js";
 import {
   GitHubProposalAuthorityClient,
+  successorStagingProvenance,
   verifyProductionClosureProposal,
   writeProposalAuthorityFailureObservation,
   type ProposalAuthorityClient,
 } from "./production-closure-proposal-authority.js";
+import type {
+  AuthorityRotationLedger,
+  ClosureAuthorityPolicy,
+} from "./production-closure-authority-rotation.js";
 import type {
   PublicClaimLiveEvidence,
   PublicClaimRegistry,
@@ -840,6 +845,486 @@ describe("production closure proposal authority", () => {
     expect(removalSubjects, JSON.stringify(result.issues, null, 2)).toContain(
       String(alsoRemoved.number),
     );
+  });
+
+  it("resolves successor staging provenance from the ledger and fails closed when it is missing", async () => {
+    // The github-authority success-path window opens at the staging rotation's issue time.
+    // The parser resolves it from the base staged successor state (stagedByRotationId) and the
+    // base ledger the parser already reads - not from the activation receipt, which for a
+    // re-stage would point at the wrong, later instant.
+    const stagedSuccessor = {
+      phase: "staged" as const,
+      stagedByRotationId: "rotation-20260825-restage",
+      activatedByRotationId: null,
+      templatePath: "config/production-closure-successors/closure-authority-v2.yml",
+      workflowPath: ".github/workflows/closure-authority-v2.yml",
+      workflowSha256: sha256(Buffer.from("staged successor bytes")),
+      externalCheckName: "mendpoint-production-closure-authority-v2",
+      externalCheckAppId: 123,
+      controllerCheckName: "mendpoint-production-closure-controller-v2",
+      controllerCheckAppId: 15368,
+      controllerStatusCreatorLogin: "github-actions[bot]",
+      controllerStatusCreatorUserId: 41898282,
+      activationDeadline: "2026-08-31T07:38:35.000Z",
+    };
+    const basePolicy = { ...policy(), successor: stagedSuccessor } as ClosureAuthorityPolicy;
+    const stagingRotation = {
+      kind: "stage_successor" as const,
+      rotationId: "rotation-20260825-restage",
+      previousRotationId: "rotation-20260824-stage",
+      baseRevision: BASE,
+      issuedAt: "2026-08-25T07:38:35.000Z",
+      expiresAt: "2026-08-26T07:38:35.000Z",
+      baseLedgerSha256: sha256(Buffer.from("ledger")),
+      basePolicySha256: sha256(Buffer.from("base")),
+      proposedPolicySha256: sha256(Buffer.from("proposed")),
+      successor: null,
+      changes: [],
+    };
+    const baseLedger = {
+      schemaVersion: 1,
+      rotations: [stagingRotation],
+    } as AuthorityRotationLedger;
+
+    // Resolved from the ledger: the re-stage rotation's exact issue time.
+    expect(successorStagingProvenance(basePolicy, baseLedger)).toEqual({
+      stagedByRotationId: "rotation-20260825-restage",
+      stagedAt: "2026-08-25T07:38:35.000Z",
+    });
+
+    // Referenced staging rotation absent from the ledger -> null (fail closed downstream via
+    // AUTHORITY_SUCCESSOR_STAGING_PROVENANCE_REQUIRED); a forged window start cannot be smuggled.
+    expect(
+      successorStagingProvenance(basePolicy, {
+        schemaVersion: 1,
+        rotations: [],
+      } as AuthorityRotationLedger),
+    ).toBeNull();
+
+    // No staged successor state at all -> null.
+    expect(
+      successorStagingProvenance(
+        { ...policy(), successor: null } as ClosureAuthorityPolicy,
+        baseLedger,
+      ),
+    ).toBeNull();
+
+    // stagedByRotationId is not a string -> null (P1: fail closed on a malformed state).
+    expect(
+      successorStagingProvenance(
+        { ...policy(), successor: { ...stagedSuccessor, stagedByRotationId: 123 as never } } as ClosureAuthorityPolicy,
+        baseLedger,
+      ),
+    ).toBeNull();
+  });
+
+  it("attaches ledger staging provenance to a valid activate_successor observation", async () => {
+    // F5: end-to-end proof that the activation success path resolves the staging
+    // provenance from the base ledger and augments the observed successor tuple
+    // with stagedByRotationId/stagedAt. Reverting the attachment to
+    // `successor: receipt.successor` fails this test.
+    const client = new FixtureClient();
+    const policyPath = "config/production-closure-authority.json";
+    const ledgerPath = "config/production-closure-authority-rotation.json";
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const predecessorPath = ".github/workflows/closure-authority-systemic-escalation.yml";
+    const successorWorkflowPath = ".github/workflows/closure-authority-v2.yml";
+    const successorTemplatePath = "config/production-closure-successors/closure-authority-v2.yml";
+    const successorBytes = Buffer.from("name: successor-v2\n");
+
+    // Base policy: re-pin the two authority source files whose config pins are
+    // intentionally stale on this branch pending a rotation-agent re-pin, so this
+    // test judges the activation transition rather than that pending re-pin. Every
+    // other pin is the exact live config value.
+    const basePolicy = policy();
+    for (const stalePath of [
+      "scripts/production-closure-proposal-authority.ts",
+      "scripts/production-closure-github-authority.ts",
+    ]) {
+      basePolicy.protectedFiles[stalePath] = sha256(
+        client.blobs.get(client.pathToSha.get(stalePath)!)!,
+      );
+    }
+    // The staged successor tuple: activation retains the App identities already
+    // bound to the predecessor and protected credentials.
+    const successor = {
+      templatePath: successorTemplatePath,
+      workflowPath: successorWorkflowPath,
+      workflowSha256: sha256(successorBytes),
+      externalCheckName: "mendpoint-production-closure-authority-v2",
+      externalCheckAppId: basePolicy.externalCheckAppId,
+      controllerCheckName: "mendpoint-production-closure-controller-v2",
+      controllerCheckAppId: basePolicy.controllerCheckAppId,
+      controllerStatusCreatorLogin: "github-actions[bot]",
+      controllerStatusCreatorUserId: 41898282,
+      activationDeadline: "2026-08-26T11:00:00.000Z",
+    };
+    basePolicy.successor = {
+      phase: "staged",
+      stagedByRotationId: "rotation-20260824-stage",
+      activatedByRotationId: null,
+      ...successor,
+    };
+    basePolicy.protectedFiles[successorWorkflowPath] = successor.workflowSha256;
+    basePolicy.protectedFiles[successorTemplatePath] = successor.workflowSha256;
+    const basePolicyBytes = Buffer.from(JSON.stringify(basePolicy));
+    client.blobs.set(sha(basePolicyBytes), basePolicyBytes);
+    client.basePathToSha.set(policyPath, sha(basePolicyBytes));
+
+    // The staged successor workflow and its inert template are base-pinned blobs
+    // that activation carries unchanged on both sides, so they never appear in the
+    // activation changeset.
+    client.add(successorWorkflowPath, successorBytes);
+    client.add(successorTemplatePath, successorBytes);
+
+    // Proposed policy: switch the active identity to the successor, clear the
+    // staged slot, and drop the predecessor workflow pin.
+    const proposedPolicy = structuredClone(basePolicy);
+    proposedPolicy.workflowPath = successorWorkflowPath;
+    proposedPolicy.externalCheckName = successor.externalCheckName;
+    proposedPolicy.externalCheckAppId = successor.externalCheckAppId;
+    proposedPolicy.controllerCheckName = successor.controllerCheckName;
+    proposedPolicy.controllerCheckAppId = successor.controllerCheckAppId;
+    proposedPolicy.successor = null;
+    delete proposedPolicy.protectedFiles[predecessorPath];
+    const proposedPolicyBytes = Buffer.from(JSON.stringify(proposedPolicy));
+    client.replace(policyPath, proposedPolicyBytes);
+    // The predecessor workflow leaves the proposed tree but stays in the base tree
+    // so the activation reads as an atomic removal of the exact predecessor.
+    const predecessorBytes = client.blobs.get(client.basePathToSha.get(predecessorPath)!)!;
+    client.pathToSha.delete(predecessorPath);
+
+    // Base ledger ends in the stage_successor receipt that staged this successor;
+    // its issue time is the staging provenance the activation observation carries.
+    const stageReceipt = {
+      kind: "stage_successor" as const,
+      rotationId: "rotation-20260824-stage",
+      previousRotationId: null,
+      baseRevision: BASE,
+      issuedAt: "2026-08-25T11:00:00.000Z",
+      expiresAt: "2026-08-25T13:00:00.000Z",
+      baseLedgerSha256: sha256(Buffer.from("prior-ledger")),
+      basePolicySha256: sha256(Buffer.from("prior-policy")),
+      proposedPolicySha256: sha256(Buffer.from("staged-policy")),
+      successor,
+      changes: [],
+    };
+    const baseLedger = { schemaVersion: 1, rotations: [stageReceipt] };
+    const baseLedgerBytes = Buffer.from(JSON.stringify(baseLedger));
+    client.blobs.set(sha(baseLedgerBytes), baseLedgerBytes);
+    client.basePathToSha.set(ledgerPath, sha(baseLedgerBytes));
+
+    // Proposed matrix: bind the activation receipt (with its successor tuple) to
+    // the bootstrap and stamp the observation time to the receipt issue time.
+    const baseMatrixBytes = client.blobs.get(client.basePathToSha.get(matrixPath)!)!;
+    const proposedMatrix = JSON.parse(baseMatrixBytes.toString("utf8")) as ProductionClosureMatrix;
+    const bootstrapNumber = proposedMatrix.releaseTrain.currentPullRequestBootstrap!.number;
+    const mappedRequirement = proposedMatrix.requirements[0];
+    proposedMatrix.releaseTrain.currentPullRequestBootstrap!.requirementIds = [
+      ...new Set([
+        ...proposedMatrix.releaseTrain.currentPullRequestBootstrap!.requirementIds,
+        mappedRequirement.requirementId,
+      ]),
+    ].sort();
+    mappedRequirement.pullRequests = [
+      ...new Set([...mappedRequirement.pullRequests, bootstrapNumber]),
+    ].sort((left, right) => left - right);
+    const activationIssuedAt = OBSERVED_AT;
+    const rotation = {
+      rotationId: "rotation-20260825-activate",
+      kind: "activate_successor" as const,
+      issuedAt: activationIssuedAt,
+      expiresAt: "2026-08-25T14:00:00.000Z",
+      basePolicySha256: sha256(basePolicyBytes),
+      proposedPolicySha256: sha256(proposedPolicyBytes),
+      successor,
+    };
+    proposedMatrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = rotation;
+    proposedMatrix.releaseTrain.observedAt = activationIssuedAt;
+    proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
+    const proposedMatrixBytes = Buffer.from(JSON.stringify(proposedMatrix));
+    client.replace(matrixPath, proposedMatrixBytes);
+
+    // The exact activation changeset: policy rewrite, atomic predecessor removal,
+    // and the provider-observation matrix update.
+    const changes = [
+      {
+        path: policyPath,
+        fromSha256: sha256(basePolicyBytes),
+        toSha256: sha256(proposedPolicyBytes),
+        fromMode: "100644",
+        toMode: "100644",
+      },
+      {
+        path: predecessorPath,
+        fromSha256: sha256(predecessorBytes),
+        toSha256: null,
+        fromMode: "100644",
+        toMode: null,
+      },
+      {
+        path: matrixPath,
+        fromSha256: sha256(baseMatrixBytes),
+        toSha256: sha256(proposedMatrixBytes),
+        fromMode: "100644",
+        toMode: "100644",
+      },
+    ];
+    const proposedLedger = {
+      schemaVersion: 1,
+      rotations: [
+        stageReceipt,
+        {
+          ...rotation,
+          previousRotationId: stageReceipt.rotationId,
+          baseRevision: BASE,
+          baseLedgerSha256: sha256(baseLedgerBytes),
+          successor,
+          changes,
+        },
+      ],
+    };
+    client.replace(ledgerPath, Buffer.from(JSON.stringify(proposedLedger)));
+
+    const authority = {
+      revision: BASE,
+      policyBytes: basePolicyBytes,
+      rotationLedgerBytes: baseLedgerBytes,
+    };
+
+    const result = await verifyProductionClosureProposal(
+      basePolicy,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      activationIssuedAt,
+      authority,
+    );
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(result.authorityRotation?.rotationId).toBe(rotation.rotationId);
+    expect(result.authorityRotation?.kind).toBe("activate_successor");
+    // F5: the observed successor tuple is augmented with the staging provenance
+    // resolved from the base ledger stage_successor receipt.
+    expect(result.authorityRotation?.successor?.stagedByRotationId).toBe(stageReceipt.rotationId);
+    expect(result.authorityRotation?.successor?.stagedAt).toBe(stageReceipt.issuedAt);
+  });
+
+  it("does not attach staging provenance to a stage_successor re-stage observation", async () => {
+    // F7-P3: the `receipt.kind === "activate_successor"` gate. This re-stage carries
+    // a non-null receipt.successor and its base policy already holds a staged
+    // successor, so successorStagingProvenance() would resolve; the kind gate is the
+    // only thing that keeps the observed tuple plain. Dropping the gate (always
+    // computing the provenance) attaches stagedByRotationId/stagedAt and fails this
+    // test.
+    const client = new FixtureClient();
+    const policyPath = "config/production-closure-authority.json";
+    const ledgerPath = "config/production-closure-authority-rotation.json";
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const templatePath = "config/production-closure-successors/closure-authority-v2.yml";
+    const successorWorkflowPath = ".github/workflows/closure-authority-v2.yml";
+    // A small inert controller-shaped workflow carried as both the base-protected
+    // template and the executable successor (byte-identical). Kept minimal so the
+    // successor-workflow safety YAML parse stays cheap.
+    const workflowBytes = Buffer.from(
+      [
+        "name: closure-authority-v2",
+        "on:",
+        "  pull_request_target:",
+        "    branches: [main]",
+        "permissions:",
+        "  contents: read",
+        "  statuses: write",
+        "  checks: read",
+        "jobs:",
+        "  discover:",
+        "    runs-on: ubuntu-latest",
+        "    outputs:",
+        "      main_sha: ${{ steps.s.outputs.main_sha }}",
+        "    steps:",
+        "      - id: s",
+        "        run: echo \"main_sha=deadbeef\" >> \"$GITHUB_OUTPUT\"",
+        "  authority:",
+        "    needs: discover",
+        "    runs-on: ubuntu-latest",
+        "    environment: production-closure-authority",
+        "    steps:",
+        "      - name: checkout",
+        "        uses: actions/checkout@1111111111111111111111111111111111111111",
+        "        with:",
+        "          ref: ${{ needs.discover.outputs.main_sha }}",
+        "      - name: declared-checks",
+        "        run: echo mendpoint-production-closure-authority-v2 mendpoint-production-closure-controller-v2",
+        "",
+      ].join("\n"),
+    );
+    const workflowSha256 = sha256(workflowBytes);
+
+    const basePolicy = policy();
+    for (const stalePath of [
+      "scripts/production-closure-proposal-authority.ts",
+      "scripts/production-closure-github-authority.ts",
+    ]) {
+      basePolicy.protectedFiles[stalePath] = sha256(
+        client.blobs.get(client.pathToSha.get(stalePath)!)!,
+      );
+    }
+    // Immutable successor identity. Re-staging may change only the workflow digest
+    // and deadline; App identities are retained from the active authority.
+    const identity = {
+      templatePath,
+      workflowPath: successorWorkflowPath,
+      workflowSha256,
+      externalCheckName: "mendpoint-production-closure-authority-v2",
+      externalCheckAppId: basePolicy.externalCheckAppId,
+      controllerCheckName: "mendpoint-production-closure-controller-v2",
+      controllerCheckAppId: basePolicy.controllerCheckAppId,
+      controllerStatusCreatorLogin: "github-actions[bot]",
+      controllerStatusCreatorUserId: 41898282,
+    };
+    const stagedTuple = { ...identity, activationDeadline: "2026-08-28T11:00:00.000Z" };
+    const restagedTuple = { ...identity, activationDeadline: "2026-08-29T11:00:00.000Z" };
+    // Base policy already carries the staged successor from the original stage.
+    basePolicy.successor = {
+      phase: "staged",
+      stagedByRotationId: "rotation-20260825-origstage",
+      activatedByRotationId: null,
+      ...stagedTuple,
+    };
+    basePolicy.protectedFiles[successorWorkflowPath] = workflowSha256;
+    basePolicy.protectedFiles[templatePath] = workflowSha256;
+    const basePolicyBytes = Buffer.from(JSON.stringify(basePolicy));
+    client.blobs.set(sha(basePolicyBytes), basePolicyBytes);
+    client.basePathToSha.set(policyPath, sha(basePolicyBytes));
+
+    // The inert template and the executable successor workflow are byte-identical
+    // base-pinned blobs this re-stage carries unchanged on both sides.
+    client.add(templatePath, workflowBytes);
+    client.add(successorWorkflowPath, workflowBytes);
+
+    // Proposed policy: re-stage rebinds the staged state to this rotation and moves
+    // the deadline; the active identity is unchanged (staging never touches it).
+    const proposedPolicy = structuredClone(basePolicy);
+    proposedPolicy.successor = {
+      phase: "staged",
+      stagedByRotationId: "rotation-20260825-restage",
+      activatedByRotationId: null,
+      ...restagedTuple,
+    };
+    const proposedPolicyBytes = Buffer.from(JSON.stringify(proposedPolicy));
+    client.replace(policyPath, proposedPolicyBytes);
+
+    // Base ledger ends in the original stage_successor receipt for the staged tuple.
+    const originalStage = {
+      kind: "stage_successor" as const,
+      rotationId: "rotation-20260825-origstage",
+      previousRotationId: null,
+      baseRevision: BASE,
+      issuedAt: "2026-08-25T11:00:00.000Z",
+      expiresAt: "2026-08-25T13:00:00.000Z",
+      baseLedgerSha256: sha256(Buffer.from("prior-ledger")),
+      basePolicySha256: sha256(Buffer.from("prior-policy")),
+      proposedPolicySha256: sha256(Buffer.from("orig-staged-policy")),
+      successor: stagedTuple,
+      changes: [],
+    };
+    const baseLedger = { schemaVersion: 1, rotations: [originalStage] } as AuthorityRotationLedger;
+    const baseLedgerBytes = Buffer.from(JSON.stringify(baseLedger));
+    client.blobs.set(sha(baseLedgerBytes), baseLedgerBytes);
+    client.basePathToSha.set(ledgerPath, sha(baseLedgerBytes));
+
+    const reStageIssuedAt = OBSERVED_AT;
+    const baseMatrixBytes = client.blobs.get(client.basePathToSha.get(matrixPath)!)!;
+    const proposedMatrix = JSON.parse(baseMatrixBytes.toString("utf8")) as ProductionClosureMatrix;
+    const bootstrapNumber = proposedMatrix.releaseTrain.currentPullRequestBootstrap!.number;
+    const mappedRequirement = proposedMatrix.requirements[0];
+    proposedMatrix.releaseTrain.currentPullRequestBootstrap!.requirementIds = [
+      ...new Set([
+        ...proposedMatrix.releaseTrain.currentPullRequestBootstrap!.requirementIds,
+        mappedRequirement.requirementId,
+      ]),
+    ].sort();
+    mappedRequirement.pullRequests = [
+      ...new Set([...mappedRequirement.pullRequests, bootstrapNumber]),
+    ].sort((left, right) => left - right);
+    const rotation = {
+      rotationId: "rotation-20260825-restage",
+      kind: "stage_successor" as const,
+      issuedAt: reStageIssuedAt,
+      expiresAt: "2026-08-25T14:00:00.000Z",
+      basePolicySha256: sha256(basePolicyBytes),
+      proposedPolicySha256: sha256(proposedPolicyBytes),
+      successor: restagedTuple,
+    };
+    proposedMatrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = rotation;
+    proposedMatrix.releaseTrain.observedAt = reStageIssuedAt;
+    proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
+    const proposedMatrixBytes = Buffer.from(JSON.stringify(proposedMatrix));
+    client.replace(matrixPath, proposedMatrixBytes);
+
+    // A re-stage that moves only the deadline changes the policy and the provider
+    // observation matrix; the successor bytes are unchanged on both sides.
+    const changes = [
+      {
+        path: policyPath,
+        fromSha256: sha256(basePolicyBytes),
+        toSha256: sha256(proposedPolicyBytes),
+        fromMode: "100644",
+        toMode: "100644",
+      },
+      {
+        path: matrixPath,
+        fromSha256: sha256(baseMatrixBytes),
+        toSha256: sha256(proposedMatrixBytes),
+        fromMode: "100644",
+        toMode: "100644",
+      },
+    ];
+    const proposedLedger = {
+      schemaVersion: 1,
+      rotations: [
+        originalStage,
+        {
+          ...rotation,
+          previousRotationId: originalStage.rotationId,
+          baseRevision: BASE,
+          baseLedgerSha256: sha256(baseLedgerBytes),
+          successor: restagedTuple,
+          changes,
+        },
+      ],
+    };
+    client.replace(ledgerPath, Buffer.from(JSON.stringify(proposedLedger)));
+
+    const authority = {
+      revision: BASE,
+      policyBytes: basePolicyBytes,
+      rotationLedgerBytes: baseLedgerBytes,
+    };
+
+    // Precondition: the provenance WOULD resolve for this base, so only the kind
+    // gate keeps it off the observation.
+    expect(successorStagingProvenance(basePolicy, baseLedger)).toEqual({
+      stagedByRotationId: "rotation-20260825-origstage",
+      stagedAt: "2026-08-25T11:00:00.000Z",
+    });
+
+    const result = await verifyProductionClosureProposal(
+      basePolicy,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      reStageIssuedAt,
+      authority,
+    );
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(result.authorityRotation?.kind).toBe("stage_successor");
+    // F7-P3: a non-activate rotation's observed successor is the plain tuple - no
+    // stagedByRotationId/stagedAt attached even though the base ledger holds it.
+    expect(result.authorityRotation?.successor?.stagedByRotationId).toBeUndefined();
+    expect(result.authorityRotation?.successor?.stagedAt).toBeUndefined();
+    expect(result.authorityRotation?.successor).toEqual(restagedTuple);
   });
 
   it("accepts an exhaustive authority-only rotation interpreted by the base revision", async () => {
