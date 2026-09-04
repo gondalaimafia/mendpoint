@@ -1,0 +1,559 @@
+import { EventEmitter } from "node:events";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createHttpsExternalKeyTransport } from "./external-kek-client.js";
+import type { ExternalKeyHttpsRequester } from "./external-kek-client.js";
+
+const nativeHttps = vi.hoisted(() => ({ request: vi.fn() }));
+
+vi.mock("node:https", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:https")>(),
+  request: nativeHttps.request,
+}));
+
+type NativeResponse = EventEmitter & {
+  headers: Record<string, string>;
+  statusCode: number;
+  destroy: (error?: Error) => void;
+};
+
+function nativeJsonRequest(
+  expectedAddress: string,
+  headers: Record<string, string> = { "content-type": "application/json" },
+  onDestroy?: (hadErrorListener: boolean) => void,
+) {
+  return (
+    _url: unknown,
+    options: {
+      agent?: unknown;
+      lookup: (
+        hostname: string,
+        options: { all: boolean },
+        callback: (error: Error | null, addresses: Array<{ address: string; family: number }>) => void,
+      ) => void;
+    },
+    onResponse: (response: NativeResponse) => void,
+  ) => {
+    expect(options.agent).toBe(false);
+    options.lookup("vault.example.test", { all: true }, (error, addresses) => {
+      expect(error).toBeNull();
+      expect(addresses).toEqual([{ address: expectedAddress, family: 4 }]);
+    });
+
+    const response = new EventEmitter() as NativeResponse;
+    response.headers = headers;
+    response.statusCode = 200;
+    response.destroy = (error) => {
+      onDestroy?.(response.listenerCount("error") > 0);
+      if (error) response.emit("error", error);
+    };
+    onResponse(response);
+    queueMicrotask(() => {
+      response.emit("data", Buffer.from('{"accepted":true}'));
+      response.emit("end");
+    });
+
+    const request = new EventEmitter() as EventEmitter & { end: (body: string) => void };
+    request.end = vi.fn();
+    return request;
+  };
+}
+
+const locator = {
+  provider: "customer-kms",
+  keyId: "tenant-key",
+  version: "1",
+} as const;
+
+const publicDestination = {
+  authority: "vault.example.test",
+  mode: "public" as const,
+};
+const resolvePublicAddress = async () => ["93.184.216.34"];
+
+function jsonRequester(value: unknown = { accepted: true }) {
+  return vi.fn<ExternalKeyHttpsRequester>(async () => ({
+    statusCode: 200,
+    contentType: "application/json",
+    text: JSON.stringify(value),
+  }));
+}
+
+describe("HTTPS external key transport", () => {
+  beforeEach(() => nativeHttps.request.mockReset());
+
+  it("rejects an oversized declared native response without an uncaught response error", async () => {
+    let destroyHadErrorListener = false;
+    nativeHttps.request.mockImplementationOnce(nativeJsonRequest("93.184.216.34", {
+      "content-type": "application/json",
+      "content-length": "2048",
+    }, (value) => { destroyHadErrorListener = value; }));
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses: resolvePublicAddress,
+      maxResponseBytes: 128,
+    });
+
+    await expect(transport.attestKey(locator, "tenant-a"))
+      .rejects.toThrow("external_kek_request_failed");
+    expect(destroyHadErrorListener).toBe(true);
+    expect(nativeHttps.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("destroys an undeclared native response as soon as streaming crosses the byte ceiling", async () => {
+    let destroyCalls = 0;
+    let destroyHadErrorListener = false;
+    nativeHttps.request.mockImplementationOnce((
+      _url: unknown,
+      options: {
+        lookup: (
+          hostname: string,
+          options: { all: boolean },
+          callback: (error: Error | null, addresses: Array<{ address: string; family: number }>) => void,
+        ) => void;
+      },
+      onResponse: (response: NativeResponse) => void,
+    ) => {
+      options.lookup("vault.example.test", { all: true }, (error, addresses) => {
+        expect(error).toBeNull();
+        expect(addresses).toEqual([{ address: "93.184.216.34", family: 4 }]);
+      });
+      const response = new EventEmitter() as NativeResponse;
+      response.headers = { "content-type": "application/json" };
+      response.statusCode = 200;
+      response.destroy = (error) => {
+        destroyCalls += 1;
+        destroyHadErrorListener = response.listenerCount("error") > 0;
+        if (error) response.emit("error", error);
+      };
+      onResponse(response);
+      queueMicrotask(() => {
+        response.emit("data", Buffer.alloc(80, 1));
+        response.emit("data", Buffer.alloc(80, 2));
+        response.emit("end");
+      });
+      const request = new EventEmitter() as EventEmitter & { end: (body: string) => void };
+      request.end = vi.fn();
+      return request;
+    });
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses: resolvePublicAddress,
+      maxResponseBytes: 128,
+    });
+
+    await expect(transport.attestKey(locator, "tenant-a"))
+      .rejects.toThrow("external_kek_request_failed");
+    expect(destroyCalls).toBe(1);
+    expect(destroyHadErrorListener).toBe(true);
+  });
+
+  it("settles once when a native response aborts before error or end", async () => {
+    let response: NativeResponse | undefined;
+    nativeHttps.request.mockImplementationOnce((
+      _url: unknown,
+      _options: unknown,
+      onResponse: (value: NativeResponse) => void,
+    ) => {
+      response = new EventEmitter() as NativeResponse;
+      response.headers = { "content-type": "application/json" };
+      response.statusCode = 200;
+      response.destroy = vi.fn();
+      onResponse(response);
+      queueMicrotask(() => response?.emit("aborted"));
+      const request = new EventEmitter() as EventEmitter & { end: (body: string) => void };
+      request.end = vi.fn();
+      return request;
+    });
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses: resolvePublicAddress,
+      timeoutMs: 500,
+    });
+    const operation = transport.attestKey(locator, "tenant-a").catch((error: unknown) => error);
+
+    const early = await Promise.race([
+      operation,
+      new Promise<string>((resolve) => setTimeout(() => resolve("still_pending"), 25)),
+    ]);
+    expect(early).toEqual(new Error("external_kek_request_failed"));
+    response?.emit("error", new Error("private provider body"));
+    response?.emit("end");
+    await expect(operation).resolves.toEqual(new Error("external_kek_request_failed"));
+  });
+  it("pins the native requester to one validated address for all-address lookup", async () => {
+    nativeHttps.request.mockImplementationOnce(nativeJsonRequest("93.184.216.34"));
+
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses: resolvePublicAddress,
+    });
+
+    await expect(transport.attestKey(locator, "tenant-a")).resolves.toEqual({ accepted: true });
+    expect(nativeHttps.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reuse a socket across disjoint policies for the same authority", async () => {
+    nativeHttps.request.mockClear();
+    nativeHttps.request
+      .mockImplementationOnce(nativeJsonRequest("10.42.0.5"))
+      .mockImplementationOnce(nativeJsonRequest("10.42.0.6"));
+    const first = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.internal.test",
+      destination: {
+        authority: "vault.internal.test",
+        mode: "operator-authorized-private",
+        allowedAddresses: ["10.42.0.5"],
+      },
+      resolveAddresses: async () => ["10.42.0.5"],
+    });
+    const second = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.internal.test",
+      destination: {
+        authority: "vault.internal.test",
+        mode: "operator-authorized-private",
+        allowedAddresses: ["10.42.0.6"],
+      },
+      resolveAddresses: async () => ["10.42.0.6"],
+    });
+
+    await expect(first.attestKey(locator, "tenant-a")).resolves.toEqual({ accepted: true });
+    await expect(second.attestKey(locator, "tenant-a")).resolves.toEqual({ accepted: true });
+    expect(nativeHttps.request).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends only the existing provider contract over HTTPS", async () => {
+    const requestImpl = jsonRequester();
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test/tenant-keys/",
+      destination: publicDestination,
+      resolveAddresses: resolvePublicAddress,
+      authorization: "Bearer credential-value",
+      timeoutMs: 100,
+      maxResponseBytes: 1_024,
+      requestImpl,
+    });
+
+    await expect(transport.attestKey(locator, "tenant-a")).resolves.toEqual({ accepted: true });
+    await expect(transport.wrapDataKey(
+      { ...locator, customerManaged: true },
+      "tenant-a",
+      Buffer.alloc(32, 7),
+    )).resolves.toEqual({ accepted: true });
+    await expect(transport.unwrapDataKey(
+      { ...locator, customerManaged: true },
+      "tenant-a",
+      "d3JhcHBlZA==",
+    )).resolves.toEqual({ accepted: true });
+
+    expect(requestImpl).toHaveBeenCalledTimes(3);
+    expect(requestImpl.mock.calls.map(([request]) => ({
+      url: String(request.url),
+      authorization: request.headers.authorization,
+      resolvedAddresses: request.resolvedAddresses,
+      body: JSON.parse(request.body),
+    }))).toEqual([
+      {
+        url: "https://vault.example.test/tenant-keys/v1/keys/attest",
+        authorization: "Bearer credential-value",
+        resolvedAddresses: ["93.184.216.34"],
+        body: { provider: "customer-kms", keyId: "tenant-key", version: "1", tenantId: "tenant-a" },
+      },
+      {
+        url: "https://vault.example.test/tenant-keys/v1/keys/wrap",
+        authorization: "Bearer credential-value",
+        resolvedAddresses: ["93.184.216.34"],
+        body: {
+          provider: "customer-kms",
+          keyId: "tenant-key",
+          version: "1",
+          customerManaged: true,
+          tenantId: "tenant-a",
+          dataKeyBase64: Buffer.alloc(32, 7).toString("base64"),
+        },
+      },
+      {
+        url: "https://vault.example.test/tenant-keys/v1/keys/unwrap",
+        authorization: "Bearer credential-value",
+        resolvedAddresses: ["93.184.216.34"],
+        body: {
+          provider: "customer-kms",
+          keyId: "tenant-key",
+          version: "1",
+          customerManaged: true,
+          tenantId: "tenant-a",
+          wrappedDataKey: "d3JhcHBlZA==",
+        },
+      },
+    ]);
+  });
+
+  it("rejects an oversized direct request before resolution or network access", async () => {
+    const resolveAddresses = vi.fn(resolvePublicAddress);
+    const requestImpl = jsonRequester();
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses,
+      requestImpl,
+    });
+
+    await expect(transport.unwrapDataKey(
+      { ...locator, customerManaged: true },
+      "tenant-a",
+      "x".repeat(256 * 1_024),
+    )).rejects.toThrow("external_kek_request_failed");
+    expect(resolveAddresses).not.toHaveBeenCalled();
+    expect(requestImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing tenant", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.attestKey(locator, "   ")],
+    ["missing provider", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.attestKey({ ...locator, provider: "" }, "tenant-a")],
+    ["oversized provider", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.attestKey({ ...locator, provider: "x".repeat(257) }, "tenant-a")],
+    ["missing key identifier", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.attestKey({ ...locator, keyId: "" }, "tenant-a")],
+    ["missing key version", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.attestKey({ ...locator, version: "" }, "tenant-a")],
+    ["non-customer-managed wrap", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.wrapDataKey({ ...locator, customerManaged: false }, "tenant-a", Buffer.alloc(32))],
+    ["wrong-size data key", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.wrapDataKey({ ...locator, customerManaged: true }, "tenant-a", Buffer.alloc(31))],
+    ["non-customer-managed unwrap", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.unwrapDataKey({ ...locator, customerManaged: false }, "tenant-a", "d3JhcHBlZA==")],
+    ["non-canonical wrapped key", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.unwrapDataKey({ ...locator, customerManaged: true }, "tenant-a", "d3JhcHBlZA")],
+    ["oversized wrapped key", (transport: ReturnType<typeof createHttpsExternalKeyTransport>) =>
+      transport.unwrapDataKey({ ...locator, customerManaged: true }, "tenant-a", "A".repeat(100_000))],
+  ])("rejects %s before resolution, timeout, or network work", async (_name, invoke) => {
+    const resolveAddresses = vi.fn(resolvePublicAddress);
+    const requestImpl = jsonRequester();
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses,
+      requestImpl,
+    });
+
+    await expect(invoke(transport)).rejects.toThrow("external_kek_request_failed");
+    expect(resolveAddresses).not.toHaveBeenCalled();
+    expect(requestImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["http://vault.example.test", "external_kek_transport_configuration_invalid"],
+    ["https://user:password@vault.example.test", "external_kek_transport_configuration_invalid"],
+    ["https://vault.example.test?tenant=a", "external_kek_transport_configuration_invalid"],
+  ])("rejects an unsafe endpoint %s", (endpoint, code) => {
+    expect(() => createHttpsExternalKeyTransport({
+      endpoint,
+      destination: publicDestination,
+      resolveAddresses: resolvePublicAddress,
+    })).toThrow(code);
+  });
+
+  it("requires an exact destination authority instead of trusting the scheme", () => {
+    expect(() => createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+    } as never)).toThrow("external_kek_transport_configuration_invalid");
+    expect(() => createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: { authority: "other.example.test", mode: "public" },
+      resolveAddresses: resolvePublicAddress,
+    })).toThrow("external_kek_transport_configuration_invalid");
+  });
+
+  it("never follows redirects", async () => {
+    const requestImpl = vi.fn<ExternalKeyHttpsRequester>(async () => ({
+      statusCode: 302,
+      contentType: "application/json",
+      text: JSON.stringify({ location: "https://metadata.invalid" }),
+    }));
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses: resolvePublicAddress,
+      requestImpl,
+    });
+
+    await expect(transport.attestKey(locator, "tenant-a"))
+      .rejects.toThrow("external_kek_request_failed");
+    expect(requestImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["application/jsonp", "application/json-bogus"])(
+    "rejects JSON-like media type %s",
+    async (contentType) => {
+      const transport = createHttpsExternalKeyTransport({
+        endpoint: "https://vault.example.test",
+        destination: publicDestination,
+        resolveAddresses: resolvePublicAddress,
+        requestImpl: async () => ({
+          statusCode: 200,
+          contentType,
+          text: JSON.stringify({ accepted: true }),
+        }),
+      });
+
+      await expect(transport.attestKey(locator, "tenant-a"))
+        .rejects.toThrow("external_kek_request_failed");
+    },
+  );
+
+  it("accepts the exact JSON media type with a charset parameter", async () => {
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses: resolvePublicAddress,
+      requestImpl: async () => ({
+        statusCode: 200,
+        contentType: "application/json; charset=utf-8",
+        text: JSON.stringify({ accepted: true }),
+      }),
+    });
+
+    await expect(transport.attestKey(locator, "tenant-a")).resolves.toEqual({ accepted: true });
+  });
+
+  it.each([
+    ["IPv4 unspecified", "0.0.0.0"],
+    ["IPv4 loopback", "127.0.0.1"],
+    ["IPv4 private 10", "10.0.0.1"],
+    ["IPv4 private 172", "172.16.0.1"],
+    ["IPv4 private 192", "192.168.0.1"],
+    ["IPv4 metadata and link local", "169.254.169.254"],
+    ["IPv4 multicast", "224.0.0.1"],
+    ["IPv6 unspecified", "::"],
+    ["IPv6 loopback", "::1"],
+    ["IPv6 private", "fc00::1"],
+    ["IPv6 link local", "fe80::a9fe:a9fe"],
+    ["IPv6 multicast", "ff02::1"],
+    ["IPv4 mapped IPv6", "::ffff:127.0.0.1"],
+  ])("rejects %s destinations before network access", async (_name, address) => {
+    const requestImpl = jsonRequester();
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses: async () => [address],
+      requestImpl,
+    });
+
+    await expect(transport.attestKey(locator, "tenant-a"))
+      .rejects.toThrow("external_kek_destination_invalid");
+    expect(requestImpl).not.toHaveBeenCalled();
+  });
+
+  it("validates every DNS answer on every request to reject rebinding", async () => {
+    const requestImpl = jsonRequester();
+    const resolveAddresses = vi.fn()
+      .mockResolvedValueOnce(["93.184.216.34"])
+      .mockResolvedValueOnce(["93.184.216.34", "10.0.0.7"]);
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses,
+      requestImpl,
+    });
+
+    await expect(transport.attestKey(locator, "tenant-a")).resolves.toEqual({ accepted: true });
+    await expect(transport.attestKey(locator, "tenant-a"))
+      .rejects.toThrow("external_kek_destination_invalid");
+    expect(resolveAddresses).toHaveBeenCalledTimes(2);
+    expect(requestImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("permits an exact private destination only with explicit operator authorization", async () => {
+    const requestImpl = jsonRequester();
+    const authorized = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.internal.test:8443",
+      destination: {
+        authority: "vault.internal.test:8443",
+        mode: "operator-authorized-private",
+        allowedAddresses: ["10.42.0.5"],
+      },
+      resolveAddresses: async () => ["10.42.0.5"],
+      requestImpl,
+    });
+    await expect(authorized.attestKey(locator, "tenant-a")).resolves.toEqual({ accepted: true });
+
+    const rebound = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.internal.test:8443",
+      destination: {
+        authority: "vault.internal.test:8443",
+        mode: "operator-authorized-private",
+        allowedAddresses: ["10.42.0.5"],
+      },
+      resolveAddresses: async () => ["10.42.0.6"],
+      requestImpl,
+    });
+    await expect(rebound.attestKey(locator, "tenant-a"))
+      .rejects.toThrow("external_kek_destination_invalid");
+    expect(requestImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["unspecified", "0.0.0.0"],
+    ["loopback", "127.0.0.1"],
+    ["metadata", "169.254.169.254"],
+    ["multicast", "224.0.0.1"],
+    ["IPv6 unspecified", "::"],
+    ["IPv6 loopback", "::1"],
+    ["IPv6 link local", "fe80::1"],
+    ["IPv6 multicast", "ff02::1"],
+  ])("does not let private authorization override %s destination denial", (_name, address) => {
+    expect(() => createHttpsExternalKeyTransport({
+      endpoint: "https://vault.internal.test",
+      destination: {
+        authority: "vault.internal.test",
+        mode: "operator-authorized-private",
+        allowedAddresses: [address],
+      },
+      resolveAddresses: async () => [address],
+    })).toThrow("external_kek_transport_configuration_invalid");
+  });
+
+  it.each([
+    ["provider denial", async () => ({ statusCode: 403, contentType: "text/plain", text: "private provider body" })],
+    ["malformed response", async () => ({ statusCode: 200, contentType: "application/json", text: "private malformed body" })],
+    ["oversized response", async () => ({ statusCode: 200, contentType: "application/json", text: JSON.stringify({ secret: "x".repeat(2_000) }) })],
+  ])("redacts credentials and provider bodies on %s", async (_name, requestImpl) => {
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses: resolvePublicAddress,
+      authorization: "Bearer credential-value",
+      maxResponseBytes: 128,
+      requestImpl,
+    });
+
+    const error = await transport.attestKey(locator, "tenant-a").catch((caught: unknown) => caught);
+    expect(error).toEqual(new Error("external_kek_request_failed"));
+    expect(String(error)).not.toContain("credential-value");
+    expect(String(error)).not.toContain("private");
+  });
+
+  it("fails closed on timeout without exposing the provider failure", async () => {
+    const requestImpl = vi.fn<ExternalKeyHttpsRequester>(async (request) =>
+      new Promise<never>((_resolve, reject) => {
+        request.signal.addEventListener("abort", () => reject(new Error("credential-value provider timeout")));
+      }));
+    const transport = createHttpsExternalKeyTransport({
+      endpoint: "https://vault.example.test",
+      destination: publicDestination,
+      resolveAddresses: resolvePublicAddress,
+      authorization: "Bearer credential-value",
+      timeoutMs: 5,
+      requestImpl,
+    });
+
+    const error = await transport.attestKey(locator, "tenant-a").catch((caught: unknown) => caught);
+    expect(error).toEqual(new Error("external_kek_request_failed"));
+    expect(String(error)).not.toContain("credential-value");
+  });
+});

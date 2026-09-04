@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { SecretProvider, SecretReference } from "./credentials.js";
+import type { ExternalKeyTransport } from "./external-kek-client.js";
 
 export const ENVELOPE_SECRET_SCHEMA_VERSION = 1 as const;
 
@@ -14,6 +15,7 @@ export type EnvelopeKeyLocator = Readonly<Omit<EnvelopeKeyReference, "customerMa
 
 export type EnvelopeKeyAttestation = Readonly<EnvelopeKeyReference & {
   attestation: string;
+  keyMaterialFingerprint?: string;
   attestationSha256: string;
 }>;
 
@@ -84,6 +86,19 @@ export interface KeyEncryptionKeyProvider {
   ): Promise<Uint8Array>;
 }
 
+export type ExternalKeyEncryptionKeyBinding = Readonly<{
+  tenantId: string;
+  keyId: string;
+  version: string;
+  attestation: string;
+  keyMaterialFingerprint: string;
+}>;
+
+export type ExternalKeyEncryptionKeyProviderConfig = Readonly<{
+  provider: string;
+  keys: readonly ExternalKeyEncryptionKeyBinding[];
+}>;
+
 export type DurableEnvelopeSecretVersion = Readonly<{
   credentialId: string;
   generation: number;
@@ -118,6 +133,11 @@ export type DurableEnvelopeSecretProviderOptions = Readonly<{
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 const KEY_MATERIAL_FINGERPRINT_DOMAIN = "mendpoint:cryptographic-key-material-fingerprint:v1\0";
+const CUSTOMER_MANAGED_ATTESTATION_BINDING_VERSION = 2 as const;
+
+function isIdentifier(value: unknown): value is string {
+  return typeof value === "string" && ID.test(value);
+}
 
 export function cryptographicKeyMaterialFingerprint(material: Uint8Array): string {
   return createHash("sha256")
@@ -135,13 +155,29 @@ function locatorIdentity(tenantId: string, key: EnvelopeKeyLocator): string {
 }
 
 function attestationDigest(input: Omit<EnvelopeKeyAttestation, "attestationSha256">): string {
-  return createHash("sha256").update(JSON.stringify({
-    provider: input.provider,
-    keyId: input.keyId,
-    version: input.version,
-    customerManaged: input.customerManaged,
-    attestation: input.attestation,
-  })).digest("hex");
+  const authority = input.customerManaged
+    ? (() => {
+      if (!input.keyMaterialFingerprint || !/^[a-f0-9]{64}$/.test(input.keyMaterialFingerprint)) {
+        throw new Error("vault_key_attestation_mismatch");
+      }
+      return {
+        provider: input.provider,
+        keyId: input.keyId,
+        version: input.version,
+        customerManaged: input.customerManaged,
+        attestation: input.attestation,
+        authorityVersion: CUSTOMER_MANAGED_ATTESTATION_BINDING_VERSION,
+        keyMaterialFingerprint: input.keyMaterialFingerprint,
+      };
+    })()
+    : {
+      provider: input.provider,
+      keyId: input.keyId,
+      version: input.version,
+      customerManaged: input.customerManaged,
+      attestation: input.attestation,
+    };
+  return createHash("sha256").update(JSON.stringify(authority)).digest("hex");
 }
 
 async function assertProviderAttestation(
@@ -411,6 +447,224 @@ export class EnvelopeKeyLifecycleRegistry {
     this.#keys.set(keyIdentity(tenantId, key), revoked);
     return revoked;
   }
+}
+
+const EXTERNAL_WRAPPED_DATA_KEY_MAX_BYTES = 64 * 1_024;
+
+function externalKeyBindingIdentity(
+  tenantId: string,
+  provider: string,
+  keyId: string,
+  version: string,
+): string {
+  return `${tenantId}\0${provider}\0${keyId}\0${version}`;
+}
+
+function strictBase64(value: unknown, maximumBytes: number): Buffer {
+  if (
+    typeof value !== "string"
+    || value.length === 0
+    || value.length > Math.ceil(maximumBytes / 3) * 4 + 4
+    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+  ) {
+    throw new Error("external_kek_response_invalid");
+  }
+  const decoded = Buffer.from(value, "base64");
+  if (decoded.byteLength === 0 || decoded.byteLength > maximumBytes || decoded.toString("base64") !== value) {
+    throw new Error("external_kek_response_invalid");
+  }
+  return decoded;
+}
+
+class ExternalKeyEncryptionKeyProvider implements KeyEncryptionKeyProvider {
+  readonly enabled = true;
+  readonly provider: string;
+  readonly #transport: ExternalKeyTransport;
+  readonly #bindings = new Map<string, ExternalKeyEncryptionKeyBinding>();
+  readonly #fingerprints: readonly string[];
+
+  constructor(config: ExternalKeyEncryptionKeyProviderConfig, transport: ExternalKeyTransport) {
+    if (
+      !config
+      || typeof config !== "object"
+      || !isIdentifier(config.provider)
+      || !Array.isArray(config.keys)
+      || config.keys.length === 0
+      || !transport
+      || typeof transport.attestKey !== "function"
+      || typeof transport.wrapDataKey !== "function"
+      || typeof transport.unwrapDataKey !== "function"
+    ) {
+      throw new Error("external_kek_configuration_invalid");
+    }
+    this.provider = config.provider;
+    this.#transport = transport;
+    for (const binding of config.keys) {
+      if (
+        !binding
+        || typeof binding !== "object"
+        || !isIdentifier(binding.tenantId)
+        || !isIdentifier(binding.keyId)
+        || !isIdentifier(binding.version)
+        || typeof binding.attestation !== "string"
+        || binding.attestation.trim().length === 0
+        || binding.attestation.length > 4_096
+        || !/^[a-f0-9]{64}$/.test(binding.keyMaterialFingerprint)
+      ) {
+        throw new Error("external_kek_configuration_invalid");
+      }
+      const identity = externalKeyBindingIdentity(
+        binding.tenantId,
+        this.provider,
+        binding.keyId,
+        binding.version,
+      );
+      if (this.#bindings.has(identity)) throw new Error("external_kek_configuration_invalid");
+      this.#bindings.set(identity, Object.freeze({ ...binding }));
+    }
+    this.#fingerprints = Object.freeze([...new Set(
+      [...this.#bindings.values()].map((binding) => binding.keyMaterialFingerprint),
+    )].sort());
+  }
+
+  #binding(key: EnvelopeKeyLocator, tenantId: string): ExternalKeyEncryptionKeyBinding {
+    if (!key || typeof key !== "object" || Array.isArray(key)) {
+      throw new Error("external_kek_operation_failed");
+    }
+    const keyRecord = key as unknown as Record<string, unknown>;
+    const provider = keyRecord.provider;
+    const keyId = keyRecord.keyId;
+    const version = keyRecord.version;
+    if (
+      !isIdentifier(tenantId)
+      || !isIdentifier(provider)
+      || provider !== this.provider
+      || !isIdentifier(keyId)
+      || !isIdentifier(version)
+      || ("customerManaged" in keyRecord && keyRecord.customerManaged !== true)
+    ) {
+      throw new Error("external_kek_operation_failed");
+    }
+    const binding = this.#bindings.get(externalKeyBindingIdentity(
+      tenantId,
+      this.provider,
+      keyId,
+      version,
+    ));
+    if (!binding) throw new Error("external_kek_operation_failed");
+    return binding;
+  }
+
+  #attestation(
+    response: unknown,
+    key: EnvelopeKeyLocator,
+    tenantId: string,
+    binding: ExternalKeyEncryptionKeyBinding,
+  ): EnvelopeKeyAttestation {
+    if (!response || typeof response !== "object" || Array.isArray(response)) {
+      throw new Error("external_kek_response_invalid");
+    }
+    const record = response as Record<string, unknown>;
+    if (
+      record.provider !== this.provider
+      || record.tenantId !== tenantId
+      || record.keyId !== key.keyId
+      || record.version !== key.version
+      || record.customerManaged !== true
+      || record.attestation !== binding.attestation
+      || record.keyMaterialFingerprint !== binding.keyMaterialFingerprint
+    ) {
+      throw new Error("external_kek_response_invalid");
+    }
+    const base = {
+      provider: this.provider,
+      keyId: binding.keyId,
+      version: binding.version,
+      customerManaged: true,
+      attestation: binding.attestation,
+      keyMaterialFingerprint: binding.keyMaterialFingerprint,
+    } as const;
+    return Object.freeze({ ...base, attestationSha256: attestationDigest(base) });
+  }
+
+  async #remote<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (error instanceof Error && error.message === "external_kek_destination_invalid") {
+        throw new Error("external_kek_destination_invalid");
+      }
+      throw new Error("external_kek_operation_failed");
+    }
+  }
+
+  keyMaterialFingerprints(): readonly string[] {
+    return this.#fingerprints;
+  }
+
+  async keyMaterialFingerprint(key: EnvelopeKeyLocator, tenantId: string): Promise<string> {
+    const binding = this.#binding(key, tenantId);
+    await this.#remote(async () => {
+      const response = await this.#transport.attestKey(key, tenantId);
+      this.#attestation(response, key, tenantId, binding);
+    });
+    return binding.keyMaterialFingerprint;
+  }
+
+  async attestKey(key: EnvelopeKeyLocator, tenantId: string): Promise<EnvelopeKeyAttestation> {
+    const binding = this.#binding(key, tenantId);
+    return this.#remote(async () => this.#attestation(
+      await this.#transport.attestKey(key, tenantId),
+      key,
+      tenantId,
+      binding,
+    ));
+  }
+
+  async wrapDataKey(
+    key: EnvelopeKeyReference,
+    tenantId: string,
+    dataKey: Uint8Array,
+  ): Promise<string> {
+    const binding = this.#binding(key, tenantId);
+    if (!(dataKey instanceof Uint8Array) || dataKey.byteLength !== 32) {
+      throw new Error("external_kek_operation_failed");
+    }
+    return this.#remote(async () => {
+      const response = await this.#transport.wrapDataKey(key, tenantId, dataKey);
+      this.#attestation(response, key, tenantId, binding);
+      const wrappedDataKey = (response as Record<string, unknown>).wrappedDataKey;
+      strictBase64(wrappedDataKey, EXTERNAL_WRAPPED_DATA_KEY_MAX_BYTES);
+      return wrappedDataKey as string;
+    });
+  }
+
+  async unwrapDataKey(
+    key: EnvelopeKeyReference,
+    tenantId: string,
+    wrappedDataKey: string,
+  ): Promise<Uint8Array> {
+    const binding = this.#binding(key, tenantId);
+    try {
+      strictBase64(wrappedDataKey, EXTERNAL_WRAPPED_DATA_KEY_MAX_BYTES);
+    } catch {
+      throw new Error("external_kek_operation_failed");
+    }
+    return this.#remote(async () => {
+      const response = await this.#transport.unwrapDataKey(key, tenantId, wrappedDataKey);
+      this.#attestation(response, key, tenantId, binding);
+      const dataKey = strictBase64((response as Record<string, unknown>).dataKeyBase64, 32);
+      if (dataKey.byteLength !== 32) throw new Error("external_kek_response_invalid");
+      return dataKey;
+    });
+  }
+}
+
+export function createExternalKeyEncryptionKeyProvider(
+  config: ExternalKeyEncryptionKeyProviderConfig,
+  transport: ExternalKeyTransport,
+): KeyEncryptionKeyProvider {
+  return new ExternalKeyEncryptionKeyProvider(config, transport);
 }
 
 /** Explicitly disabled until a real vault implementation and authority are configured. */
