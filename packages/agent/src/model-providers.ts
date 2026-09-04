@@ -319,3 +319,217 @@ export function resolveModelBackend(
     priceTable: provider.pricePerMillion,
   });
 }
+
+export type ModelProviderFailureKind =
+  | "timeout"
+  | "throttled"
+  | "transient"
+  | "invalid_response"
+  | "authentication"
+  | "permission"
+  | "permanent"
+  | "completed";
+
+export type ModelProviderFailureEvidence = Readonly<{
+  failureKind: ModelProviderFailureKind;
+  retryAfterMs?: number;
+}>;
+
+export type ModelDependencyOutageDecision = Readonly<{
+  schemaVersion: 1;
+  action: "retry" | "wait" | "await_authority" | "fail" | "reconcile";
+  failureKind: string;
+  retryable: boolean;
+  reason: string;
+  nextAttemptAt: string | null;
+  attemptsRemaining: number;
+  circuitState: "closed" | "open" | "half_open";
+  circuit: ModelDependencyCircuitSnapshot;
+  standing: "healthy" | "degraded_retrying" | "degraded_blocked" | "degraded_failed" | "recovering";
+}>;
+
+export type ModelDependencyCircuitSnapshot = Readonly<{
+  state: "closed" | "open" | "half_open";
+  openedAt?: string;
+  cooldownMs: number;
+  consecutiveFailures: number;
+}>;
+
+export type ModelDependencyOutageOperation<T> = Readonly<{
+  schemaVersion: 1;
+  tenantId: string;
+  dependencyKind: "model";
+  providerId: string;
+  operationId: string;
+  operationDigest: string;
+  workerId: string;
+  retryBudget: number;
+  expiresAt: string;
+  leaseMs: number;
+  authorityVersion: string;
+  reconcile: () => Promise<
+    | Readonly<{ status: "missing" }>
+    | Readonly<{ status: "resume" }>
+    | Readonly<{ status: "completed"; value: T; completionDigest: string }>
+  >;
+  execute: () => Promise<Readonly<{ value: T; completionDigest: string }>>;
+  classify: (
+    error: unknown,
+    context: Readonly<{
+      attempt: number;
+      retryBudget: number;
+      expiresAt: string;
+      now: string;
+      circuit: ModelDependencyCircuitSnapshot;
+    }>,
+  ) => ModelDependencyOutageDecision;
+}>;
+
+export type ModelDependencyOutageResult<T> =
+  | Readonly<{ status: "completed" | "recovered"; value: T }>
+  | Readonly<{
+    status: "deferred" | "blocked" | "failed";
+    decision?: ModelDependencyOutageDecision;
+  }>;
+
+/** Structurally implemented by the durable db recovery queue without importing db here. */
+export interface ModelDependencyOutagePort {
+  run<T>(operation: ModelDependencyOutageOperation<T>): Promise<ModelDependencyOutageResult<T>>;
+}
+
+export type ModelDependencyOutagePolicy = (
+  input: Readonly<{
+    tenantId: string;
+    dependencyKind: "model";
+    providerId: string;
+    operationDigest: string;
+    failureKind: ModelProviderFailureKind;
+    attempt: number;
+    retryBudget: number;
+    now: string;
+    expiresAt: string;
+    retryAfterMs?: number;
+    circuit: ModelDependencyCircuitSnapshot;
+  }>,
+) => ModelDependencyOutageDecision;
+
+function retryAfterMs(raw: unknown, now: string): number | undefined {
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(24 * 60 * 60 * 1_000, Math.round(seconds * 1_000));
+  }
+  const date = Date.parse(raw);
+  const base = Date.parse(now);
+  if (!Number.isFinite(date) || !Number.isFinite(base)) return undefined;
+  return Math.min(24 * 60 * 60 * 1_000, Math.max(0, date - base));
+}
+
+/** Map bounded provider evidence into the product-neutral outage vocabulary. */
+export function classifyModelProviderFailure(input: Readonly<{
+  error?: unknown;
+  status?: number;
+  retryAfter?: string | null;
+  responseInvalid?: boolean;
+  now?: string;
+}>): ModelProviderFailureEvidence {
+  const error = input.error;
+  const record = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  if (record.remoteSideEffectUncertain === true || record.completed === true) {
+    return Object.freeze({ failureKind: "completed" });
+  }
+  if (input.responseInvalid === true || error instanceof SyntaxError) {
+    return Object.freeze({ failureKind: "invalid_response" });
+  }
+  const response = record.response && typeof record.response === "object"
+    ? record.response as Record<string, unknown> : {};
+  const status = input.status ?? (typeof record.status === "number" ? record.status :
+    typeof response.status === "number" ? response.status : undefined);
+  if (status === 401) return Object.freeze({ failureKind: "authentication" });
+  if (status === 403) return Object.freeze({ failureKind: "permission" });
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const code = typeof record.code === "string" ? record.code : message;
+  if (/bounded_http_(?:timeout|aborted)|ETIMEDOUT|ABORT_ERR|request_timeout/i.test(code)) {
+    return Object.freeze({ failureKind: "timeout" });
+  }
+  if (status === 429) {
+    const headers = response.headers && typeof response.headers === "object"
+      ? response.headers as Record<string, unknown> : {};
+    const delay = retryAfterMs(
+      input.retryAfter ?? (typeof headers["retry-after"] === "string" ? headers["retry-after"] : null),
+      input.now ?? new Date().toISOString(),
+    );
+    return Object.freeze({
+      failureKind: "throttled",
+      ...(delay === undefined ? {} : { retryAfterMs: delay }),
+    });
+  }
+  if (status === 408 || status === 425 || (status !== undefined && status >= 500 && status <= 599)) {
+    return Object.freeze({ failureKind: "transient" });
+  }
+  if (/ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT/i.test(code)) {
+    return Object.freeze({ failureKind: "transient" });
+  }
+  return Object.freeze({ failureKind: "permanent" });
+}
+
+/**
+ * Execute or reconcile one content-addressed model request through an injected
+ * durable outage port. The shared policy is also injected, keeping this package
+ * independent of ops and db while making every retry decision explicit.
+ */
+export function runModelProviderOperation<T>(input: Readonly<{
+  tenantId: string;
+  providerId: string;
+  operationId: string;
+  operationDigest: string;
+  retryBudget: number;
+  expiresAt: string;
+  workerId: string;
+  leaseMs: number;
+  authorityVersion: string;
+  outage: ModelDependencyOutagePort;
+  decide: ModelDependencyOutagePolicy;
+  reconcile: ModelDependencyOutageOperation<T>["reconcile"];
+  invoke: () => Promise<T>;
+  completionDigest: (value: T) => string;
+}>): Promise<ModelDependencyOutageResult<T>> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(input.authorityVersion)) {
+    throw new Error("model_dependency_outage_authority_invalid");
+  }
+  const operation: ModelDependencyOutageOperation<T> = Object.freeze({
+    schemaVersion: 1,
+    tenantId: input.tenantId,
+    dependencyKind: "model",
+    providerId: input.providerId,
+    operationId: input.operationId,
+    operationDigest: input.operationDigest,
+    retryBudget: input.retryBudget,
+    expiresAt: input.expiresAt,
+    workerId: input.workerId,
+    leaseMs: input.leaseMs,
+    authorityVersion: input.authorityVersion,
+    reconcile: input.reconcile,
+    execute: async () => {
+      const value = await input.invoke();
+      return Object.freeze({ value, completionDigest: input.completionDigest(value) });
+    },
+    classify: (error, context) => {
+      const evidence = classifyModelProviderFailure({ error, now: context.now });
+      return input.decide({
+        tenantId: input.tenantId,
+        dependencyKind: "model",
+        providerId: input.providerId,
+        operationDigest: input.operationDigest,
+        failureKind: evidence.failureKind,
+        attempt: context.attempt,
+        retryBudget: context.retryBudget,
+        now: context.now,
+        expiresAt: context.expiresAt,
+        circuit: context.circuit,
+        ...(evidence.retryAfterMs === undefined ? {} : { retryAfterMs: evidence.retryAfterMs }),
+      });
+    },
+  });
+  return input.outage.run(operation);
+}

@@ -13,6 +13,8 @@ import {
 import { GitHubAppDelivery, OctokitGitHubDelivery } from "@mendpoint/github";
 import { createPipelineDeliveryResolver } from "./index.js";
 
+const dependencyOutagePolicy = () => { throw new Error("decision_not_expected"); };
+
 const directories: string[] = [];
 const previous = {
   mode: process.env.GITHUB_MODE,
@@ -115,7 +117,7 @@ describe("pipeline GitHub delivery resolver", () => {
     });
     const repository = bindRepository(db);
     const resolver = createPipelineDeliveryResolver(
-      { tenantId: "tenant_default", providerSlug: "provider" },
+      { tenantId: "tenant_default", providerSlug: "provider", dependencyOutagePolicy },
       db,
     );
     const consumer = {
@@ -134,7 +136,7 @@ describe("pipeline GitHub delivery resolver", () => {
       )
       .run();
     const allRepositoriesResolver = createPipelineDeliveryResolver(
-      { tenantId: "tenant_default", providerSlug: "provider" },
+      { tenantId: "tenant_default", providerSlug: "provider", dependencyOutagePolicy },
       db,
     );
     expect(allRepositoriesResolver(consumer, repository).delivery).toBeInstanceOf(
@@ -145,7 +147,7 @@ describe("pipeline GitHub delivery resolver", () => {
     ).run();
     expect(() =>
       createPipelineDeliveryResolver(
-        { tenantId: "tenant_default", providerSlug: "provider" },
+        { tenantId: "tenant_default", providerSlug: "provider", dependencyOutagePolicy },
         db,
       )(consumer, repository),
     ).toThrow("github_app_repository_identity_mismatch");
@@ -159,7 +161,7 @@ describe("pipeline GitHub delivery resolver", () => {
       )
       .run();
     const suspendedResolver = createPipelineDeliveryResolver(
-      { tenantId: "tenant_default", providerSlug: "provider" },
+      { tenantId: "tenant_default", providerSlug: "provider", dependencyOutagePolicy },
       db,
     );
     expect(() => suspendedResolver(consumer, repository)).toThrow(
@@ -173,7 +175,7 @@ describe("pipeline GitHub delivery resolver", () => {
       )
       .run();
     const deletedResolver = createPipelineDeliveryResolver(
-      { tenantId: "tenant_default", providerSlug: "provider" },
+      { tenantId: "tenant_default", providerSlug: "provider", dependencyOutagePolicy },
       db,
     );
     expect(() => deletedResolver(consumer, repository)).toThrow(

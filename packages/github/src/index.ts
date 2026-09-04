@@ -703,6 +703,8 @@ export {
   defaultFetchInstallationMetadata,
   listInstallationRepositories,
   mockInstallationRepositories,
+  classifyGitHubDependencyFailure,
+  GitHubDependencyOutageError,
   type AppCredentials,
   type InstallationToken,
   type TokenFetcher,
@@ -711,6 +713,15 @@ export {
   type InstallationRepository,
   type InstallationRepositoryLister,
   type MockInstallationRepositoryInput,
+  type GitHubDependencyFailureKind,
+  type GitHubDependencyFailureEvidence,
+  type GitHubDependencyCircuitSnapshot,
+  type GitHubDependencyOutageDecision,
+  type GitHubDependencyOutageOperation,
+  type GitHubDependencyOutageResult,
+  type GitHubDependencyOutagePort,
+  type GitHubDependencyOutagePolicy,
+  type GitHubDependencyOutageOptions,
 } from "./app-runtime.js";
 
 export {

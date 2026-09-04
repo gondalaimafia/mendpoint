@@ -39,6 +39,7 @@ import {
   createWardenRuntimeModelAuthorityDigest,
   runWarden,
   runWardenWithRuntime,
+  type WardenModelOutageRuntime,
 } from "./agent.js";
 import { EXCLUDED_DIRECTORIES, verificationControlPath } from "./policies.js";
 import type {
@@ -78,6 +79,7 @@ export type WardenAttemptRuntime = Readonly<{
   operationTimeoutMs?: number;
   signal?: AbortSignal;
   now?: () => string;
+  modelOutage?: Omit<WardenModelOutageRuntime, "authorityVersion">;
 }>;
 
 export type WardenAttemptInput = Readonly<{
@@ -1266,6 +1268,12 @@ export async function runWardenAttempt(input: WardenAttemptInput): Promise<Warde
         repoRoot: workspace,
         verifyCommand: input.verification.targetCommand,
         durableEffects: true,
+        ...(input.runtime.modelOutage ? {
+          modelOutage: {
+            ...input.runtime.modelOutage,
+            authorityVersion: binding.modelPolicyDigest,
+          },
+        } : {}),
       });
     } else {
       agent = await runWarden(agentTask);

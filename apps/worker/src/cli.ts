@@ -32,6 +32,7 @@ import {
   claimNextJob,
   completeJob,
   createDb,
+  createDependencyOutageQueue,
   enqueueJob,
   failJob,
   failWardenCiOperation,
@@ -110,6 +111,7 @@ import {
   flushTelemetry,
   isTelemetryEnabled,
   recordCounter,
+  classifyDependencyOutage,
 } from "@mendpoint/ops";
 import { checkAuditIntegrityForAllTenants } from "./audit-integrity.js";
 import { createWardenCheckpointJobJournal } from "./warden-checkpoint-journal.js";
@@ -2777,6 +2779,7 @@ async function demo() {
   try {
     const report = await runChangePipeline({
       tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
+      dependencyOutagePolicy: classifyDependencyOutage,
       providerSlug: "acme-payments",
     });
     console.log(JSON.stringify(report, null, 2));
@@ -2818,6 +2821,7 @@ async function watch(intervalMs = 30_000) {
         const report = await runUnseenVersion(seen, key, () =>
           runChangePipeline({
             tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
+            dependencyOutagePolicy: classifyDependencyOutage,
             providerSlug: provider.slug,
             db,
           }),
@@ -2867,6 +2871,7 @@ async function runFeedPollUnfenced(opts: {
       : async (slug, database) => {
           const report = await runChangePipeline({
             tenantId,
+            dependencyOutagePolicy: classifyDependencyOutage,
             providerSlug: slug,
             db: database,
           });
@@ -3961,6 +3966,7 @@ if (job.type === "warden.candidate.cleanup") {
           Date.parse(storage.expiresAt),
           Date.parse(binding.expiresAt),
         )).toISOString();
+        const modelOutageQueue = createDependencyOutageQueue(db.raw);
         // Durable, policy-routed production execution. The shared router is the
         // dispatcher: it decides (execute vs mandatory human handoff), the
         // Fettler attempt is the registered executor, and every decision +
@@ -4081,6 +4087,18 @@ if (job.type === "warden.candidate.cleanup") {
                       Math.max(1_000, Math.floor(leaseMs * 2 / 3)),
                     ),
                     signal: leaseAbort.signal,
+                    ...(modelSourcePolicy ? {
+                      modelOutage: {
+                        outage: modelOutageQueue,
+                        inspect: (scope: Parameters<typeof modelOutageQueue.get>[0]) =>
+                          modelOutageQueue.get(scope),
+                        decide: classifyDependencyOutage,
+                        workerId: fence.workerId,
+                        retryBudget: jobModelCalls,
+                        expiresAt: candidateExpiresAt,
+                        leaseMs: Math.min(60_000, Math.max(1_000, leaseMs)),
+                      },
+                    } : {}),
                   }
                 : undefined;
               // Resume with the compiled envelope via resolveResumeContext so

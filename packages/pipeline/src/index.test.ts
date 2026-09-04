@@ -1,4 +1,5 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +33,7 @@ import {
   issueVerificationWaiver,
   type SecurityScanAttestation,
 } from "@mendpoint/contract";
-import { applyPrFeedback, runChangePipeline } from "./index.js";
+import { applyPrFeedback, createPipelineDeliveryResolver, runChangePipeline } from "./index.js";
 import {
   getSoftwareGraphHead,
   openGraphLearnMemory,
@@ -166,6 +167,35 @@ afterEach(() => {
 
 
 describe("pipeline", () => {
+  it("composes the durable outage queue over the primary production database", () => {
+    const db = seedProviderVersions();
+    const prior = {
+      mode: process.env.GITHUB_MODE,
+      appId: process.env.GITHUB_APP_ID,
+      key: process.env.GITHUB_APP_PRIVATE_KEY,
+    };
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    process.env.GITHUB_MODE = "real";
+    process.env.GITHUB_APP_ID = "4718395";
+    process.env.GITHUB_APP_PRIVATE_KEY = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    try {
+      expect(createPipelineDeliveryResolver({
+        tenantId: "tenant_default",
+        providerSlug: "acme-payments",
+        dependencyOutagePolicy: () => { throw new Error("decision_not_expected"); },
+      }, db)).toBeTypeOf("function");
+      expect(db.raw.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dependency_outage_operations'",
+      ).get()).toEqual({ name: "dependency_outage_operations" });
+    } finally {
+      if (prior.mode === undefined) delete process.env.GITHUB_MODE;
+      else process.env.GITHUB_MODE = prior.mode;
+      if (prior.appId === undefined) delete process.env.GITHUB_APP_ID;
+      else process.env.GITHUB_APP_ID = prior.appId;
+      if (prior.key === undefined) delete process.env.GITHUB_APP_PRIVATE_KEY;
+      else process.env.GITHUB_APP_PRIVATE_KEY = prior.key;
+    }
+  });
   it("rejects an explicitly requested version that does not exist", async () => {
     const db = seedProviderVersions();
     await expect(
@@ -271,14 +301,23 @@ describe("pipeline", () => {
     class RecordingDelivery extends MockGitHubDelivery {
       readonly sourceBranches: Array<string | undefined> = [];
 
-      override async createBranch(
-        owner: string,
-        repo: string,
-        branch: string,
-        fromBranch?: string,
-      ): Promise<void> {
-        this.sourceBranches.push(fromBranch);
-        await super.createBranch(owner, repo, branch);
+      override async deliverExactDraft(
+        input: Parameters<MockGitHubDelivery["deliverExactDraft"]>[0],
+      ): ReturnType<MockGitHubDelivery["deliverExactDraft"]> {
+        this.sourceBranches.push(input.baseBranch);
+        return super.deliverExactDraft(input);
+      }
+
+      override async createBranch(): Promise<void> {
+        throw new Error("legacy_create_branch_bypassed_outage_queue");
+      }
+
+      override async commitFiles(): Promise<void> {
+        throw new Error("legacy_commit_files_bypassed_outage_queue");
+      }
+
+      override async openPullRequest(): Promise<never> {
+        throw new Error("legacy_open_pull_request_bypassed_outage_queue");
       }
     }
 
@@ -306,7 +345,7 @@ describe("pipeline", () => {
       securityScanAttested: true,
     });
 
-    expect(report.consumers[0]?.prStatus).toBe("draft");
+    expect(report.consumers[0]?.prStatus, JSON.stringify(report.consumers[0])).toBe("draft");
     expect(github.sourceBranches).toEqual(["trunk"]);
   });
 
@@ -1557,17 +1596,12 @@ describe("pipeline", () => {
     class SelectiveFailureDelivery extends MockGitHubDelivery {
       readonly opened: string[] = [];
 
-      override async openPullRequest(
-        owner: string,
-        repo: string,
-        branch: string,
-        title: string,
-        body: string,
-        base?: string,
-      ) {
-        this.opened.push(repo);
-        if (repo === "b-shop") throw new Error("SCM unavailable");
-        return super.openPullRequest(owner, repo, branch, title, body, base);
+      override async deliverExactDraft(
+        input: Parameters<MockGitHubDelivery["deliverExactDraft"]>[0],
+      ): ReturnType<MockGitHubDelivery["deliverExactDraft"]> {
+        this.opened.push(input.repo);
+        if (input.repo === "b-shop") throw new Error("SCM unavailable");
+        return super.deliverExactDraft(input);
       }
     }
 

@@ -7,6 +7,20 @@ export {
   type ReleaseInfo,
 } from "./release.js";
 export {
+  DEPENDENCY_OUTAGE_SCHEMA_VERSION,
+  assertDependencyOutageScope,
+  classifyDependencyOutage,
+  type DependencyKind,
+  type DependencyFailureKind,
+  type DependencyCircuitState,
+  type DependencyOutageStanding,
+  type DependencyOutageAction,
+  type DependencyOutageScope,
+  type DependencyCircuitSnapshot,
+  type DependencyOutageFailureInput,
+  type DependencyOutageDecision,
+} from "./dependency-outage.js";
+export {
   nodeEnv,
   isProduction,
   deploymentProfile,

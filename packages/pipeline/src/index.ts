@@ -29,6 +29,7 @@ import {
   insertPrincipal,
   registrySummaryMarkdown,
   recordCapabilityAdoptionOpportunity,
+  createDependencyOutageQueue,
   type AppDb,
 } from "@mendpoint/db";
 import { createHash } from "node:crypto";
@@ -54,6 +55,7 @@ import {
   OctokitGitHubDelivery,
   resolveGitHubTenantAccountBinding,
   type GitHubDelivery,
+  type GitHubDependencyOutagePolicy,
 } from "@mendpoint/github";
 import { evaluatePolicy, type PolicyConfig } from "@mendpoint/policy";
 import { filterRepairEdits } from "./repair-policy.js";
@@ -390,6 +392,8 @@ export type PipelineInput = {
   /** Optional fail-closed narrowing of the production raw-retrieval ceilings. */
   rawRetrievalBounds?: Partial<RawRetrievalBounds>;
   github?: GitHubDelivery;
+  /** Required decision authority when real GitHub App delivery is active. */
+  dependencyOutagePolicy?: GitHubDependencyOutagePolicy;
   persistIndex?: boolean;
   /** Override the Mendpoint-owned persisted-index root (primarily for tests). */
   indexStorageRoot?: string;
@@ -525,6 +529,7 @@ export function createPipelineDeliveryResolver(input: PipelineInput, db: AppDb) 
   const legacyToken = process.env.GITHUB_TOKEN?.trim();
   const legacy = legacyToken ? new OctokitGitHubDelivery(legacyToken) : null;
   const appDeliveries = new Map<string, GitHubDelivery>();
+  const outage = createDependencyOutageQueue(db.raw);
   return (
     consumer: {
       installation_id: string | null;
@@ -677,13 +682,33 @@ export function createPipelineDeliveryResolver(input: PipelineInput, db: AppDb) 
     if (repository.connection.external_account_id !== installationId) {
       throw new Error("github_app_connection_mismatch");
     }
-    const key = `${appCredentials.appId}:${installationId}:${authorizedRepository.id}`;
+    const authorityVersion = `github-installation:${createHash("sha256").update(JSON.stringify({
+      appId: appCredentials.appId,
+      credentialDigest: createHash("sha256").update(appCredentials.privateKeyPem).digest("hex"),
+      accountId: verified.account_id,
+      installationId,
+      permissionsJson: verified.permissions_json,
+      repositoriesJson: verified.repositories_json,
+    })).digest("hex")}`;
+    const key = `${appCredentials.appId}:${installationId}:${authorizedRepository.id}:${authorityVersion}`;
     let delivery = appDeliveries.get(key);
     if (!delivery) {
+      if (!input.dependencyOutagePolicy) {
+        throw new Error("github_dependency_outage_policy_required");
+      }
       delivery = createAppDelivery(
         numericInstallationId,
         appCredentials,
         [authorizedRepository.id],
+        {
+          tenantId: input.tenantId,
+          outage,
+          decide: input.dependencyOutagePolicy,
+          retryBudget: 5,
+          expiresInMs: 60 * 60 * 1_000,
+          workerId: `pipeline-${process.pid}`,
+          authorityVersion,
+        },
       );
       appDeliveries.set(key, delivery);
     }
@@ -2158,6 +2183,8 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       createdAt: nowIso(),
     });
     let structuredPackageArtifactId: string | null = null;
+    let deliveryExpectedBaseSha: string | null = null;
+    let deliveryCommitDate: string | null = null;
     if (shouldDeliver) {
       try {
         const packageCreatedAt = retryablePr?.created_at ?? nowIso();
@@ -2171,6 +2198,8 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         });
         const repositoryRevision = resolveRepositoryRevision(repo.local_path, snapshotIdentity);
         const { resolvedSha, revisionKind } = repositoryRevision;
+        deliveryExpectedBaseSha = resolvedSha;
+        deliveryCommitDate = packageCreatedAt;
         const snapshotManifest = {
           schemaVersion: 1,
           repositoryId: `${consumer.github_owner}/${consumer.github_repo}`,
@@ -2469,6 +2498,9 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     if (shouldDeliver) {
       assertActive();
       try {
+        if (!deliveryExpectedBaseSha || !deliveryCommitDate) {
+          throw new Error("github_exact_draft_evidence_missing");
+        }
         const resolution = deliveryFor(consumer, repo);
         await resolution.assertRepositoryIdentity?.();
         updateMigrationPrDelivery(db, prId, {
@@ -2484,30 +2516,22 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
             ? { githubAccountId: resolution.githubAccountId }
             : {}),
         });
-        const github = resolution.delivery;
-        await github.createBranch(
-          consumer.github_owner,
-          consumer.github_repo,
-          draft.branchName,
-          repo.default_branch,
-        );
-        assertActive();
-        await github.commitFiles(
-          consumer.github_owner,
-          consumer.github_repo,
-          draft.branchName,
-          draft.title,
-          decision.allowedEdits.map((e) => ({ path: e.path, content: e.updated })),
-        );
-        assertActive();
-        const pr = await github.openPullRequest(
-          consumer.github_owner,
-          consumer.github_repo,
-          draft.branchName,
-          draft.title,
-          prBodyFinal,
-          repo.default_branch,
-        );
+        const pr = await resolution.delivery.deliverExactDraft({
+          owner: consumer.github_owner,
+          repo: consumer.github_repo,
+          baseBranch: repo.default_branch,
+          expectedBaseSha: deliveryExpectedBaseSha,
+          branch: draft.branchName,
+          commitMessage: draft.title,
+          commitDate: deliveryCommitDate,
+          title: draft.title,
+          body: prBodyFinal,
+          files: decision.allowedEdits.map((edit) => ({
+            path: edit.path,
+            content: edit.updated,
+            mode: "100644" as const,
+          })),
+        });
         assertActive();
         prUrl = pr.url;
         prNumber = pr.number;

@@ -9181,3 +9181,23 @@ export function listRoutingLedgerForRun(
     [tenantId, runId],
   );
 }
+
+export {
+  createDependencyOutageQueue,
+  DependencyOutageQueue,
+  type DependencyOutageCircuitSnapshot,
+  type DependencyOutageCircuitState,
+  type DependencyOutageClaim,
+  type DependencyOutageFailureDecision,
+  type DependencyOutageHistoryEvent,
+  type DependencyOutageHealthOperation,
+  type DependencyOutageKind,
+  type DependencyOutageRecord,
+  type DependencyOutageReconciliation,
+  type DependencyOutageRunOperation,
+  type DependencyOutageRunResult,
+  type DependencyOutageScope,
+  type DependencyOutageStanding,
+  type DependencyOutageStatus,
+  type DependencyOutageTenantHealth,
+} from "./dependency-outage-queue.js";

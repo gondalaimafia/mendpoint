@@ -54,7 +54,12 @@ export {
   wardenPlaybook,
 } from "./knowledge.js";
 export { proposeWardenFix, hasAutomaticWardenRepair } from "./fixes.js";
-export { runWarden, runWelder, runApiBugAgent } from "./agent.js";
+export {
+  runWarden,
+  runWelder,
+  runApiBugAgent,
+  type WardenModelOutageRuntime,
+} from "./agent.js";
 export {
   renderInheritedContextSystemBlock,
   inheritedContextEnabled,
@@ -75,6 +80,8 @@ export {
 export {
   resolveModelBackend,
   resolveProviderEndpoint,
+  classifyModelProviderFailure,
+  runModelProviderOperation,
   modelProvider,
   registeredModelProviderIds,
   MODEL_PROVIDER_ENV_VAR,
@@ -83,6 +90,14 @@ export {
   type ModelTransport,
   type ModelProviderDescriptor,
   type ResolvedModelBackend,
+  type ModelProviderFailureKind,
+  type ModelProviderFailureEvidence,
+  type ModelDependencyCircuitSnapshot,
+  type ModelDependencyOutageDecision,
+  type ModelDependencyOutageOperation,
+  type ModelDependencyOutageResult,
+  type ModelDependencyOutagePort,
+  type ModelDependencyOutagePolicy,
 } from "./model-providers.js";
 export {
   resolveTenantModelBackend,
