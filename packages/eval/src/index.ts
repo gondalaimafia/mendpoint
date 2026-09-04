@@ -118,11 +118,21 @@ export {
 } from "./coverage-metrics.js";
 export {
   PERFORMANCE_CONTRACT_VERSION,
+  PERFORMANCE_METRIC_DICTIONARY_VERSION,
   PERFORMANCE_PERCENTILE_METHOD,
+  FETTLER_PERFORMANCE_CONTRACT,
+  FETTLER_PERFORMANCE_TIER_IDS,
   WARDEN_PERFORMANCE_CONTRACT,
   evaluatePerformanceRun,
+  metricDictionaryDigest,
+  performanceContractDigest,
+  resolvePerformanceTierId,
   validatePerformanceContract,
   type PerformanceContract,
+  type PerformanceEvidenceBinding,
+  type FettlerPerformanceTierId,
+  type PerformanceLanguageMix,
+  type PerformanceMetricDefinition,
   type PerformanceMetric,
   type PerformanceMode,
   type PerformanceObjective,
@@ -131,6 +141,8 @@ export {
   type PerformanceTier,
 } from "./performance-contract.js";
 export {
+  PERFORMANCE_OBSERVATION_LIMIT,
+  PERFORMANCE_PROBE_RESPONSE_BYTE_LIMIT,
   createHttpPerformanceProbe,
   persistPerformanceProbeReport,
   runPerformanceProbe,

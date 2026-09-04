@@ -58,10 +58,8 @@ import {
   getFeedScheduleHealth,
   updateProviderFeedUrls,
   BILLING_PLANS,
-  adjustUsage,
   createUsageEntitlement,
   createUsagePriceVersion,
-  creditUsage,
   getUsageSummary,
   listUsageLedger,
   reconcileUsageLedger,
@@ -106,6 +104,7 @@ import {
   registrySummaryMarkdown,
 } from "@mendpoint/db";
 import { parseAuditExportLimit } from "./audit-export.js";
+import { createBillingUsageFinanceRoutes } from "./billing-usage-routes.js";
 import { changeDetailBody } from "./change-detail.js";
 import {
   detectVendors,
@@ -498,10 +497,29 @@ const USAGE_ERRORS = [
     "usage_reservation_mcu_micros_invalid",
     "usage_settlement_mcu_micros_invalid",
     "usage_adjustment_mcu_micros_invalid",
+    "usage_adjustment_invalid",
+    "usage_credit_invalid",
+    "usage_invoice_reference_required",
+    "usage_finance_authorization_id_invalid",
+    "usage_finance_authorization_digest_invalid",
+    "usage_finance_approved_by_principal_id_invalid",
+    "usage_finance_actor_principal_id_invalid",
+    "usage_finance_approved_at_invalid",
+    "usage_finance_expires_at_invalid",
+    "usage_finance_authorization_window_invalid",
+    "usage_finance_entry_type_invalid",
+    "usage_adjustment_allocation_entitlement_id_invalid",
+    "usage_adjustment_allocation_price_version_invalid",
     "usage_reservation_empty",
     "usage_plan_unknown",
     "usage_plan_seats_invalid",
     "usage_plan_quota_overflow",
+  ),
+  ...publicErrorRules(
+    403,
+    "usage_finance_owner_required",
+    "usage_finance_owner_inactive",
+    "usage_finance_actor_inactive",
   ),
   ...publicErrorRules(
     409,
@@ -513,6 +531,16 @@ const USAGE_ERRORS = [
     "usage_reservation_closed",
     "usage_settlement_exceeds_reservation",
     "usage_credit_exceeds_consumption",
+    "usage_credit_exceeds_invoice_allocation",
+    "usage_invoice_allocation_not_found",
+    "usage_adjustment_allocation_target_required",
+    "usage_adjustment_allocation_target_invalid",
+    "usage_credit_allocation_target_invalid",
+    "usage_finance_authorization_conflict",
+    "usage_finance_authorization_required",
+    "usage_finance_authorization_binding_invalid",
+    "usage_finance_authorization_expired",
+    "usage_finance_authorization_consumed",
   ),
   { internalCode: "usage_reservation_not_found", status: 404 },
 ] satisfies readonly PublicErrorRule[];
@@ -3627,52 +3655,11 @@ app.post("/billing/usage/reservations/:id/release", async (c) => {
   }
 });
 
-app.post("/billing/usage/:kind", async (c) => {
-  const kind = c.req.param("kind");
-  if (kind !== "adjustments" && kind !== "credits") {
-    return c.json({ error: "usage_entry_kind_invalid" }, 404);
-  }
-  const body = await c.req.json<{
-    idempotencyKey?: string;
-    taskId?: string;
-    campaignId?: string | null;
-    mcuMicrosDelta?: number;
-    invoiceReference?: string | null;
-    reason?: string;
-  }>().catch(() => ({} as {
-    idempotencyKey?: string;
-    taskId?: string;
-    campaignId?: string | null;
-    mcuMicrosDelta?: number;
-    invoiceReference?: string | null;
-    reason?: string;
-  }));
-  try {
-    const operation = kind === "credits" ? creditUsage : adjustUsage;
-    const entry = operation(db, {
-      id: newId(),
-      tenantId: requestTenantId(c),
-      idempotencyKey: body.idempotencyKey ?? "",
-      taskId: body.taskId ?? "",
-      campaignId: body.campaignId,
-      mcuMicrosDelta: body.mcuMicrosDelta ?? 0,
-      invoiceReference: body.invoiceReference,
-      reason: body.reason ?? "",
-      actorPrincipalId: c.get("trustPrincipalId"),
-      createdAt: nowIso(),
-    });
-    requestAudit(c, {
-      actor: c.get("principal")!.id,
-      action: `billing.usage_${entry.entryType}`,
-      resourceType: "usage_ledger_entry",
-      resourceId: entry.id,
-      metadata: { taskId: entry.taskId, mcuMicros: entry.consumedMcuMicrosDelta },
-    });
-    return c.json(entry, 201);
-  } catch (error) {
-    return mappedErrorResponse(c, error, USAGE_ERRORS);
-  }
-});
+app.route("/billing/usage", createBillingUsageFinanceRoutes({
+  db,
+  errors: USAGE_ERRORS,
+  audit: requestAudit,
+}));
 
 app.get("/tenants", (c) => {
   const principal = c.get("principal");

@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "fettler-production-requirement-closure/1",
+  "product": "fettler",
+  "release": "production",
+  "requirements": [
+    "ME-FND-006",
+    "ME-FND-007",
+    "ME-FND-008"
+  ],
+  "operatingContracts": {
+    "performance": {
+      "version": "2026-09-02.v3",
+      "digest": "sha256:2ca23834e27accfda8b9be6c6043fc21af9b047a6ca20e0c4a3163553165aa7e",
+      "metricDictionaryVersion": "2026-09-02.v1",
+      "metricDictionaryDigest": "sha256:a32dda1d8ff6c1e0e050c16136426cf71ece69eefaa04f12dcd0fea2680bd460",
+      "evidence": {
+        "status": "not_observed",
+        "reason": "production_measurement_not_supplied"
+      }
+    },
+    "migrationCompute": {
+      "version": "mcu-v1",
+      "digest": "sha256:0a1d4b2110ebcbff1092995f411cd1680f4520386150dce08f867c19b89fa3d3",
+      "ledgerEntryTypes": [
+        "reservation",
+        "settlement",
+        "release",
+        "adjustment",
+        "credit"
+      ],
+      "evidence": {
+        "status": "not_observed",
+        "reason": "production_ledger_not_supplied"
+      },
+      "selfCheck": {
+        "reconciled": true,
+        "entryCount": 3,
+        "storageAuthority": "usage_ledger_entries",
+        "ledgerHeadHash": "5a094465deaf48fec8a52dcc01fc3b9a2122d2d0ee8f28f28e4ca5fe5317943d",
+        "financeAuthorizationDigest": "sha256:7bc9c9a7740f3e538d08d3f4c3eef6ce485a67328b751964b4064a8eab875ca9",
+        "settledEntryIds": [
+          "settlement-fettler-closure"
+        ],
+        "creditEntryIds": [
+          "credit-fettler-closure"
+        ]
+      }
+    }
+  }
+}

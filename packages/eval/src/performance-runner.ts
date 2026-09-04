@@ -1,18 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { lookup } from "node:dns/promises";
 import {
   mkdirSync,
+  linkSync,
   readFileSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { request as httpsRequest } from "node:https";
+import { BlockList, isIP, type LookupFunction } from "node:net";
+import { Readable } from "node:stream";
 import {
   evaluatePerformanceRun,
+  resolvePerformanceTierId,
   validatePerformanceContract,
   WARDEN_PERFORMANCE_CONTRACT,
   type PerformanceContract,
+  type PerformanceEvidenceBinding,
   type PerformanceMetric,
   type PerformanceMode,
   type PerformanceObservation,
@@ -30,24 +36,71 @@ const METRICS: readonly PerformanceMetric[] = [
 const REPOSITORY_REVISION = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const FIXTURE_DIGEST = /^[0-9a-f]{64}$/;
 const DEPLOYMENT_REVISION = /^(?!main$|master$|latest$|head$)[a-zA-Z0-9][a-zA-Z0-9._-]{6,127}$/i;
+export const PERFORMANCE_OBSERVATION_LIMIT = 10_000;
+export const PERFORMANCE_PROBE_RESPONSE_BYTE_LIMIT = 1_048_576;
+const PERFORMANCE_HISTOGRAM_BOUNDS_MS = Object.freeze([
+  1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096,
+  8_192, 16_384, 32_768, 65_536, 131_072, 262_144, 524_288,
+  1_048_576, 2_097_152, 4_194_304, 8_388_608, 16_777_216,
+] as const);
+
+const PERFORMANCE_DESTINATION_BLOCK_LIST = new BlockList();
+for (const [address, prefix] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
+  ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],
+  ["192.88.99.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15],
+  ["198.51.100.0", 24], ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4],
+] as const) {
+  PERFORMANCE_DESTINATION_BLOCK_LIST.addSubnet(address, prefix, "ipv4");
+}
+for (const [address, prefix] of [
+  ["::", 96], ["64:ff9b::", 96], ["64:ff9b:1::", 48], ["100::", 64],
+  ["2001:db8::", 32], ["2002::", 16],
+  ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
+] as const) {
+  PERFORMANCE_DESTINATION_BLOCK_LIST.addSubnet(address, prefix, "ipv6");
+}
 
 export type PerformanceMetricMeasurement = Readonly<{
   durationMs: number;
   success: boolean;
+  eventSource: string;
 }>;
 
 export type PerformanceProbeMeasurement = Readonly<{
+  observed: Readonly<{
+    tenantId: string;
+    repositoryId: string;
+    repositoryRevision: string;
+    deploymentRevision: string;
+    fixtureDigest: string;
+    correlationId: string;
+    probeSource: string;
+    invocationId: string;
+    invocationNonce: string;
+    sequence: number;
+    observedAt: string;
+    repository: PerformanceEvidenceBinding["repository"];
+  }>;
   metrics: Readonly<Record<PerformanceMetric, PerformanceMetricMeasurement>>;
 }>;
 
 export type PerformanceProbeContext = Readonly<{
   invocationId: string;
+  invocationNonce: string;
+  invokedAt: string;
   sequence: number;
   mode: PerformanceMode;
   tier: PerformanceTier;
   repositoryRevision: string;
   deploymentRevision: string;
   fixtureDigest: string;
+  tenantId: string;
+  repositoryId: string;
+  correlationId: string;
+  source: string;
+  repository: PerformanceEvidenceBinding["repository"];
+  metricEventSources: Readonly<Record<PerformanceMetric, string>>;
   signal: AbortSignal;
 }>;
 
@@ -55,18 +108,30 @@ export type PerformanceProbe = (
   context: PerformanceProbeContext,
 ) => Promise<PerformanceProbeMeasurement>;
 
+export type PerformancePinnedRequest = (
+  endpoint: URL,
+  approvedAddress: string,
+  init: RequestInit,
+) => Promise<Response>;
+
 export type PerformanceProbeReport = Readonly<{
-  schemaVersion: 1;
+  schemaVersion: 3;
   contractVersion: string;
   percentileMethod: string;
   repositoryRevision: string;
   deploymentRevision: string;
   fixtureDigest: string;
+  tenantId: string;
+  repositoryId: string;
+  correlationId: string;
+  source: string;
   dependencyVersions: Readonly<Record<string, string>>;
   tierId: string;
   mode: PerformanceMode;
   repository: PerformanceTier["repository"];
+  measuredRepository: PerformanceEvidenceBinding["repository"] | null;
   concurrency: number;
+  measuredConcurrency: number;
   minimumSamples: number;
   plannedDurationMs: number;
   startedAt: string;
@@ -77,6 +142,29 @@ export type PerformanceProbeReport = Readonly<{
   cancelledInvocationCount: number;
   ok: boolean;
   observations: readonly PerformanceObservation[];
+  aggregation: Readonly<{
+    samplingPolicy: "deterministic_stride_v1";
+    samplingStride: number;
+    totalInvocationCount: number;
+    retainedObservationCount: number;
+    droppedObservationCount: number;
+    aggregateDigest: string;
+    metrics: readonly Readonly<{
+      metric: PerformanceMetric;
+      sampleCount: number;
+      failureCount: number;
+      minimumDurationMs: number;
+      maximumDurationMs: number;
+      totalDurationMs: number;
+      objectiveP50Ms: number;
+      objectiveP95Ms: number;
+      objectiveP99Ms: number;
+      withinObjectiveP50Count: number;
+      withinObjectiveP95Count: number;
+      withinObjectiveP99Count: number;
+      histogram: readonly Readonly<{ upperBoundMs: number | null; count: number }>[];
+    }>[];
+  }>;
   evaluation: PerformanceReport | null;
 }>;
 
@@ -87,6 +175,11 @@ export type RunPerformanceProbeOptions = Readonly<{
   repositoryRevision: string;
   deploymentRevision: string;
   fixtureDigest: string;
+  tenantId: string;
+  repositoryId: string;
+  correlationId: string;
+  source: string;
+  repository: PerformanceEvidenceBinding["repository"];
   dependencyVersions: Readonly<Record<string, string>>;
   probe: PerformanceProbe;
   signal?: AbortSignal;
@@ -95,6 +188,15 @@ export type RunPerformanceProbeOptions = Readonly<{
 
 function invalid(code: string): never {
   throw new Error(code);
+}
+
+class PerformanceProbeProducerResponseError extends Error {
+  readonly producerResponseReceived = true;
+
+  constructor(error: unknown) {
+    super(error instanceof Error ? error.message : "performance_probe_response_invalid");
+    this.name = "PerformanceProbeProducerResponseError";
+  }
 }
 
 function abortReason(reason: unknown): string {
@@ -110,8 +212,28 @@ function validateMetadata(options: RunPerformanceProbeOptions): void {
   if (!DEPLOYMENT_REVISION.test(options.deploymentRevision)) {
     invalid("performance_deployment_revision_invalid");
   }
-  if (!FIXTURE_DIGEST.test(options.fixtureDigest)) {
+  if (!/^(?:sha256:)?[a-f0-9]{64}$/.test(options.fixtureDigest)) {
     invalid("performance_fixture_digest_invalid");
+  }
+  for (const [field, value] of [
+    ["tenant_id", options.tenantId],
+    ["repository_id", options.repositoryId],
+    ["correlation_id", options.correlationId],
+    ["source", options.source],
+  ] as const) {
+    if (!value || value.length > 256 || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(value)) {
+      invalid(`performance_${field}_invalid`);
+    }
+  }
+  if (
+    !Number.isSafeInteger(options.repository.files) || options.repository.files < 1 ||
+    !Number.isSafeInteger(options.repository.sourceLines) || options.repository.sourceLines < 1 ||
+    !Number.isSafeInteger(options.repository.bytes) || options.repository.bytes < 1 ||
+    !Number.isSafeInteger(options.repository.maxFileBytes) || options.repository.maxFileBytes < 1 ||
+    options.repository.maxFileBytes > options.repository.bytes ||
+    options.repository.languages.length === 0
+  ) {
+    invalid("performance_repository_shape_invalid");
   }
   const dependencies = Object.entries(options.dependencyVersions);
   if (
@@ -122,9 +244,81 @@ function validateMetadata(options: RunPerformanceProbeOptions): void {
   }
 }
 
-function validateMeasurement(measurement: PerformanceProbeMeasurement): void {
-  if (!measurement || typeof measurement !== "object" || !measurement.metrics) {
+function normalizeFixtureDigest(value: string): string {
+  return value.startsWith("sha256:") ? value : `sha256:${value}`;
+}
+
+function canonicalRepositoryShape(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const repository = value as Record<string, unknown>;
+  if (
+    !Number.isSafeInteger(repository.files) ||
+    !Number.isSafeInteger(repository.sourceLines) ||
+    !Number.isSafeInteger(repository.bytes) ||
+    !Number.isSafeInteger(repository.maxFileBytes) ||
+    !Array.isArray(repository.languages) ||
+    repository.languages.some((language) => typeof language !== "string") ||
+    !repository.languageSourceLines ||
+    typeof repository.languageSourceLines !== "object" ||
+    Array.isArray(repository.languageSourceLines)
+  ) {
+    return null;
+  }
+  const languageSourceLines = repository.languageSourceLines as Record<string, unknown>;
+  if (Object.values(languageSourceLines).some((lines) => !Number.isSafeInteger(lines))) return null;
+  return JSON.stringify({
+    files: repository.files,
+    sourceLines: repository.sourceLines,
+    bytes: repository.bytes,
+    maxFileBytes: repository.maxFileBytes,
+    languages: [...repository.languages].sort(),
+    languageSourceLines: Object.fromEntries(
+      Object.entries(languageSourceLines).sort(([left], [right]) => left.localeCompare(right)),
+    ),
+  });
+}
+
+function validateMeasurement(
+  measurement: PerformanceProbeMeasurement,
+  expected: Pick<PerformanceProbeContext,
+    "invocationId" | "invocationNonce" | "invokedAt" | "sequence" |
+    "tenantId" | "repositoryId" | "repositoryRevision" | "deploymentRevision" |
+    "fixtureDigest" | "correlationId" | "source" | "repository" | "metricEventSources">,
+  receivedAtMs: number,
+): PerformanceEvidenceBinding["repository"] {
+  if (!measurement || typeof measurement !== "object" || !measurement.metrics || !measurement.observed) {
     invalid("performance_probe_measurement_invalid");
+  }
+  const observed = measurement.observed;
+  for (const [field, actual, wanted] of [
+    ["tenant", observed.tenantId, expected.tenantId],
+    ["repository", observed.repositoryId, expected.repositoryId],
+    ["repository_revision", observed.repositoryRevision, expected.repositoryRevision],
+    ["deployment_revision", observed.deploymentRevision, expected.deploymentRevision],
+    ["fixture", normalizeFixtureDigest(observed.fixtureDigest), normalizeFixtureDigest(expected.fixtureDigest)],
+    ["correlation", observed.correlationId, expected.correlationId],
+    ["source", observed.probeSource, expected.source],
+    ["invocation", observed.invocationId, expected.invocationId],
+    ["invocation_nonce", observed.invocationNonce, expected.invocationNonce],
+    ["sequence", observed.sequence, expected.sequence],
+  ] as const) {
+    if (actual !== wanted) invalid(`performance_probe_${field}_mismatch`);
+  }
+  const producerObservedAtMs = Date.parse(observed.observedAt);
+  const invokedAtMs = Date.parse(expected.invokedAt);
+  if (
+    !Number.isFinite(producerObservedAtMs) ||
+    !Number.isFinite(invokedAtMs) ||
+    producerObservedAtMs < invokedAtMs - 30_000 ||
+    producerObservedAtMs > receivedAtMs + 30_000
+  ) {
+    invalid("performance_probe_observed_at_invalid");
+  }
+  if (
+    canonicalRepositoryShape(observed.repository) === null ||
+    canonicalRepositoryShape(observed.repository) !== canonicalRepositoryShape(expected.repository)
+  ) {
+    invalid("performance_probe_repository_shape_mismatch");
   }
   const keys = Object.keys(measurement.metrics);
   if (keys.length !== METRICS.length || keys.some((key) => !METRICS.includes(key as PerformanceMetric))) {
@@ -135,12 +329,16 @@ function validateMeasurement(measurement: PerformanceProbeMeasurement): void {
     if (
       !value ||
       !Number.isFinite(value.durationMs) ||
-      value.durationMs < 0 ||
+      value.durationMs <= 0 ||
       typeof value.success !== "boolean"
     ) {
       invalid("performance_probe_metric_invalid");
     }
+    if (value.eventSource !== expected.metricEventSources[metric]) {
+      invalid("performance_probe_metric_event_source_mismatch");
+    }
   }
+  return observed.repository;
 }
 
 function observedAt(now: () => number): string {
@@ -149,12 +347,70 @@ function observedAt(now: () => number): string {
 
 function recordInvocation(
   observations: PerformanceObservation[],
+  aggregate: {
+    samplingStride: number;
+    totalInvocationCount: number;
+    digest: ReturnType<typeof createHash>;
+    metrics: Map<PerformanceMetric, {
+      sampleCount: number;
+      failureCount: number;
+      minimumDurationMs: number;
+      maximumDurationMs: number;
+      totalDurationMs: number;
+      objectiveP50Ms: number;
+      objectiveP95Ms: number;
+      objectiveP99Ms: number;
+      withinObjectiveP50Count: number;
+      withinObjectiveP95Count: number;
+      withinObjectiveP99Count: number;
+      histogram: number[];
+    }>;
+  },
   tierId: string,
   mode: PerformanceMode,
   sequence: number,
-  measurement: PerformanceProbeMeasurement,
+  measurement: Pick<PerformanceProbeMeasurement, "metrics">,
   at: string,
+  invocation: Readonly<{
+    invocationId: string;
+    invocationNonce: string;
+    producerSequence: number;
+  }>,
+  evidence: Pick<PerformanceEvidenceBinding,
+    "tenantId" | "repositoryId" | "repositoryRevision" | "deploymentRevision" |
+    "fixtureDigest" | "correlationId" | "source">,
+  bindingSource: "probe_observed" | "request_context",
 ): void {
+  aggregate.totalInvocationCount += 1;
+  aggregate.digest.update(JSON.stringify({
+    ...invocation,
+    observedAt: at,
+    metrics: measurement.metrics,
+  }));
+  for (const metric of METRICS) {
+    const value = measurement.metrics[metric];
+    const summary = aggregate.metrics.get(metric)!;
+    summary.sampleCount += 1;
+    if (!value.success) summary.failureCount += 1;
+    summary.minimumDurationMs = Math.min(summary.minimumDurationMs, value.durationMs);
+    summary.maximumDurationMs = Math.max(summary.maximumDurationMs, value.durationMs);
+    summary.totalDurationMs += value.durationMs;
+    if (value.durationMs <= summary.objectiveP50Ms) summary.withinObjectiveP50Count += 1;
+    if (value.durationMs <= summary.objectiveP95Ms) summary.withinObjectiveP95Count += 1;
+    if (value.durationMs <= summary.objectiveP99Ms) summary.withinObjectiveP99Count += 1;
+    const bucket = PERFORMANCE_HISTOGRAM_BOUNDS_MS.findIndex(
+      (upperBound) => value.durationMs <= upperBound,
+    );
+    summary.histogram[bucket === -1 ? PERFORMANCE_HISTOGRAM_BOUNDS_MS.length : bucket] += 1;
+  }
+  while (observations.length + METRICS.length > PERFORMANCE_OBSERVATION_LIMIT) {
+    aggregate.samplingStride *= 2;
+    const retained = observations.filter(
+      (observation) => (observation.producerSequence ?? -1) % aggregate.samplingStride === 0,
+    );
+    observations.splice(0, observations.length, ...retained);
+  }
+  if (sequence % aggregate.samplingStride !== 0) return;
   for (const metric of METRICS) {
     const value = measurement.metrics[metric];
     observations.push({
@@ -165,15 +421,30 @@ function recordInvocation(
       durationMs: value.durationMs,
       success: value.success,
       observedAt: at,
+      tenantId: evidence.tenantId,
+      repositoryId: evidence.repositoryId,
+      repositoryRevision: evidence.repositoryRevision,
+      deploymentRevision: evidence.deploymentRevision,
+      fixtureDigest: evidence.fixtureDigest,
+      correlationId: evidence.correlationId,
+      source: evidence.source,
+      eventSource: value.eventSource,
+      bindingSource,
+      invocationId: invocation.invocationId,
+      invocationNonce: invocation.invocationNonce,
+      producerSequence: invocation.producerSequence,
     });
   }
 }
 
-function failedMeasurement(durationMs: number): PerformanceProbeMeasurement {
+function failedMeasurement(
+  durationMs: number,
+  metricEventSources: Readonly<Record<PerformanceMetric, string>>,
+): Pick<PerformanceProbeMeasurement, "metrics"> {
   return {
     metrics: Object.fromEntries(METRICS.map((metric) => [
       metric,
-      { durationMs, success: false },
+      { durationMs, success: false, eventSource: metricEventSources[metric] },
     ])) as PerformanceProbeMeasurement["metrics"],
   };
 }
@@ -192,7 +463,10 @@ export async function runPerformanceProbe(
 ): Promise<PerformanceProbeReport> {
   validateMetadata(options);
   const contract = validatePerformanceContract(options.contract ?? WARDEN_PERFORMANCE_CONTRACT);
-  const tier = contract.tiers.find((candidate) => candidate.id === options.tierId);
+  const requestedTier = options.tierId.startsWith("pilot-")
+    ? resolvePerformanceTierId(options.tierId)
+    : options.tierId;
+  const tier = contract.tiers.find((candidate) => candidate.id === requestedTier);
   if (!tier) invalid("performance_tier_not_found");
   if (options.mode !== "load" && options.mode !== "soak") invalid("performance_mode_invalid");
 
@@ -213,46 +487,142 @@ export async function runPerformanceProbe(
   deadlineTimer.unref?.();
 
   const observations: PerformanceObservation[] = [];
+  const objectiveByMetric = new Map(contract.objectives
+    .filter((objective) => objective.tierId === undefined || objective.tierId === tier.id)
+    .map((objective) => [objective.metric, objective]));
+  const aggregate = {
+    samplingStride: 1,
+    totalInvocationCount: 0,
+    digest: createHash("sha256"),
+    metrics: new Map(METRICS.map((metric) => {
+      const objective = objectiveByMetric.get(metric)!;
+      return [metric, {
+        sampleCount: 0,
+        failureCount: 0,
+        minimumDurationMs: Number.POSITIVE_INFINITY,
+        maximumDurationMs: 0,
+        totalDurationMs: 0,
+        objectiveP50Ms: objective.p50Ms,
+        objectiveP95Ms: objective.p95Ms,
+        objectiveP99Ms: objective.p99Ms,
+        withinObjectiveP50Count: 0,
+        withinObjectiveP95Count: 0,
+        withinObjectiveP99Count: 0,
+        histogram: Array.from({ length: PERFORMANCE_HISTOGRAM_BOUNDS_MS.length + 1 }, () => 0),
+      }] as const;
+    })),
+  };
+  const evidenceIdentity = {
+    tenantId: options.tenantId,
+    repositoryId: options.repositoryId,
+    repositoryRevision: options.repositoryRevision,
+    deploymentRevision: options.deploymentRevision,
+    fixtureDigest: normalizeFixtureDigest(options.fixtureDigest),
+    correlationId: options.correlationId,
+    source: options.source,
+  } as const;
   let sequence = 0;
   let cancelledInvocationCount = 0;
+  let activeInvocationCount = 0;
+  let measuredConcurrency = 0;
+  let observedRepository: PerformanceEvidenceBinding["repository"] | null = null;
+  let unobservedFailure = false;
+  let internalAbortReason: "probe_failure_unobserved" | "duration_elapsed" | null = null;
+  const eventSources = new Map(
+    (contract.metricDictionary ?? WARDEN_PERFORMANCE_CONTRACT.metricDictionary!).map(
+      (definition) => [definition.metric, definition.eventSource],
+    ),
+  );
+  const metricEventSources = Object.fromEntries(
+    METRICS.map((metric) => [metric, eventSources.get(metric)]),
+  ) as Readonly<Record<PerformanceMetric, string>>;
   const worker = async (): Promise<void> => {
     while (!controller.signal.aborted && now() < deadlineMs) {
       const invocationSequence = sequence++;
       const invocationId = `${tier.id}.${options.mode}.${String(invocationSequence).padStart(8, "0")}`;
       const invocationStarted = now();
+      const invokedAt = observedAt(now);
+      const invocationNonce = randomUUID();
+      let producerResponseReceived = false;
+      activeInvocationCount += 1;
+      measuredConcurrency = Math.max(measuredConcurrency, activeInvocationCount);
       try {
         const measurement = await options.probe({
           invocationId,
+          invocationNonce,
+          invokedAt,
           sequence: invocationSequence,
           mode: options.mode,
           tier,
           repositoryRevision: options.repositoryRevision,
           deploymentRevision: options.deploymentRevision,
           fixtureDigest: options.fixtureDigest,
+          tenantId: options.tenantId,
+          repositoryId: options.repositoryId,
+          correlationId: options.correlationId,
+          source: options.source,
+          repository: options.repository,
+          metricEventSources,
           signal: controller.signal,
         });
-        validateMeasurement(measurement);
+        producerResponseReceived = true;
+        const producerRepository = validateMeasurement(measurement, {
+          invocationId,
+          invocationNonce,
+          invokedAt,
+          sequence: invocationSequence,
+          tenantId: options.tenantId,
+          repositoryId: options.repositoryId,
+          repositoryRevision: options.repositoryRevision,
+          deploymentRevision: options.deploymentRevision,
+          fixtureDigest: options.fixtureDigest,
+          correlationId: options.correlationId,
+          source: options.source,
+          repository: options.repository,
+          metricEventSources,
+        }, now());
+        observedRepository ??= producerRepository;
         recordInvocation(
           observations,
+          aggregate,
           tier.id,
           options.mode,
           invocationSequence,
           measurement,
-          observedAt(now),
+          measurement.observed.observedAt,
+          {
+            invocationId: measurement.observed.invocationId,
+            invocationNonce: measurement.observed.invocationNonce,
+            producerSequence: measurement.observed.sequence,
+          },
+          evidenceIdentity,
+          "probe_observed",
         );
-      } catch {
-        if (controller.signal.aborted || now() >= deadlineMs) {
+      } catch (error) {
+        if (error instanceof PerformanceProbeProducerResponseError) {
+          producerResponseReceived = error.producerResponseReceived;
+        }
+        if (!producerResponseReceived && (controller.signal.aborted || now() >= deadlineMs)) {
           cancelledInvocationCount += 1;
           continue;
         }
+        unobservedFailure = true;
         recordInvocation(
           observations,
+          aggregate,
           tier.id,
           options.mode,
           invocationSequence,
-          failedMeasurement(Math.max(0, now() - invocationStarted)),
+          failedMeasurement(Math.max(1, now() - invocationStarted), metricEventSources),
           observedAt(now),
+          { invocationId, invocationNonce, producerSequence: invocationSequence },
+          evidenceIdentity,
+          "request_context",
         );
+        internalAbortReason = "probe_failure_unobserved";
+        controller.abort("probe_failure_unobserved");
+      } finally {
+        activeInvocationCount -= 1;
       }
     }
   };
@@ -271,81 +641,330 @@ export async function runPerformanceProbe(
   const selectedTierContract: PerformanceContract = {
     ...contract,
     tiers: [tier],
+    objectives: contract.objectives.filter((objective) =>
+      objective.tierId === undefined || objective.tierId === tier.id,
+    ),
   };
-  const evaluation = !externallyAborted && completeSamples
-    ? evaluatePerformanceRun(selectedTierContract, observations, options.mode)
+  const performanceEvidence: PerformanceEvidenceBinding = {
+    tierId: tier.id,
+    ...evidenceIdentity,
+    repository: observedRepository ?? options.repository,
+    measuredConcurrency,
+    startedAt: new Date(Math.max(0, startedMs)).toISOString(),
+    endedAt: new Date(Math.max(0, endedMs)).toISOString(),
+  };
+  const evaluation = !externallyAborted && !unobservedFailure && observedRepository && completeSamples
+    ? evaluatePerformanceRun(selectedTierContract, observations, performanceEvidence, options.mode)
     : null;
   const status = externallyAborted
     ? "aborted"
-    : completeSamples
+    : completeSamples && observedRepository && !unobservedFailure
       ? "completed"
       : "incomplete";
+  if (
+    status === "incomplete" &&
+    internalAbortReason === null &&
+    controller.signal.aborted &&
+    controller.signal.reason === "duration_elapsed"
+  ) {
+    internalAbortReason = "duration_elapsed";
+  }
 
+  const aggregationMetrics = METRICS.map((metric) => {
+    const summary = aggregate.metrics.get(metric)!;
+    return Object.freeze({
+      metric,
+      sampleCount: summary.sampleCount,
+      failureCount: summary.failureCount,
+      minimumDurationMs: Number.isFinite(summary.minimumDurationMs) ? summary.minimumDurationMs : 0,
+      maximumDurationMs: summary.maximumDurationMs,
+      totalDurationMs: summary.totalDurationMs,
+      objectiveP50Ms: summary.objectiveP50Ms,
+      objectiveP95Ms: summary.objectiveP95Ms,
+      objectiveP99Ms: summary.objectiveP99Ms,
+      withinObjectiveP50Count: summary.withinObjectiveP50Count,
+      withinObjectiveP95Count: summary.withinObjectiveP95Count,
+      withinObjectiveP99Count: summary.withinObjectiveP99Count,
+      histogram: Object.freeze(summary.histogram.map((count, index) => Object.freeze({
+        upperBoundMs: PERFORMANCE_HISTOGRAM_BOUNDS_MS[index] ?? null,
+        count,
+      }))),
+    });
+  });
+  const aggregateDigest = `sha256:${aggregate.digest.digest("hex")}`;
+  const aggregateObjectivesOk = aggregationMetrics.every((metric) =>
+    metric.failureCount === 0 &&
+    metric.withinObjectiveP50Count >= Math.ceil(metric.sampleCount * 0.5) &&
+    metric.withinObjectiveP95Count >= Math.ceil(metric.sampleCount * 0.95) &&
+    metric.withinObjectiveP99Count >= Math.ceil(metric.sampleCount * 0.99),
+  );
   return Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: 3,
     contractVersion: contract.version,
     percentileMethod: contract.percentileMethod,
     repositoryRevision: options.repositoryRevision,
     deploymentRevision: options.deploymentRevision,
-    fixtureDigest: options.fixtureDigest,
+    fixtureDigest: evidenceIdentity.fixtureDigest,
+    tenantId: options.tenantId,
+    repositoryId: options.repositoryId,
+    correlationId: options.correlationId,
+    source: options.source,
     dependencyVersions: Object.freeze(
       Object.fromEntries(Object.entries(options.dependencyVersions).sort(([left], [right]) => left.localeCompare(right))),
     ),
     tierId: tier.id,
     mode: options.mode,
     repository: tier.repository,
+    measuredRepository: observedRepository,
     concurrency: tier.concurrency,
+    measuredConcurrency,
     minimumSamples: tier.minimumSamples,
     plannedDurationMs,
     startedAt: new Date(Math.max(0, startedMs)).toISOString(),
     endedAt: new Date(Math.max(0, endedMs)).toISOString(),
     elapsedMs: Math.max(0, endedMs - startedMs),
     status,
-    abortReason: externallyAborted ? abortReason(options.signal?.reason) : null,
+    abortReason: externallyAborted ? abortReason(options.signal?.reason) : internalAbortReason,
     cancelledInvocationCount,
-    ok: status === "completed" && evaluation?.ok === true,
+    ok: status === "completed" && aggregateObjectivesOk && evaluation?.ok === true,
     observations: Object.freeze(observations),
+    aggregation: Object.freeze({
+      samplingPolicy: "deterministic_stride_v1" as const,
+      samplingStride: aggregate.samplingStride,
+      totalInvocationCount: aggregate.totalInvocationCount,
+      retainedObservationCount: observations.length,
+      droppedObservationCount: aggregate.totalInvocationCount * METRICS.length - observations.length,
+      aggregateDigest,
+      metrics: Object.freeze(aggregationMetrics),
+    }),
     evaluation,
   });
 }
 
+function normalizeDestinationAddress(value: string): string {
+  const address = value.startsWith("[") && value.endsWith("]") ? value.slice(1, -1) : value;
+  if (address.includes("%") || address.toLowerCase().startsWith("::ffff:")) {
+    throw new Error("performance_probe_destination_blocked");
+  }
+  const family = isIP(address);
+  if (family === 0) throw new Error("performance_probe_destination_invalid");
+  if (PERFORMANCE_DESTINATION_BLOCK_LIST.check(address, family === 4 ? "ipv4" : "ipv6")) {
+    throw new Error("performance_probe_destination_blocked");
+  }
+  return address;
+}
+
+async function resolvePerformanceDestination(hostname: string): Promise<readonly string[]> {
+  const literal = isIP(hostname);
+  if (literal !== 0) return [hostname];
+  try {
+    const answers = await lookup(hostname, { all: true, verbatim: true });
+    return answers.map((answer) => answer.address);
+  } catch {
+    throw new Error("performance_probe_destination_unresolved");
+  }
+}
+
+function responseHeaders(source: Readonly<Record<string, string | readonly string[] | undefined>>): Headers {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(source)) {
+    if (typeof value === "string") {
+      headers.set(name, value);
+    } else if (Array.isArray(value)) {
+      for (const item of value) headers.append(name, item);
+    }
+  }
+  return headers;
+}
+
+const pinnedHttpsPerformanceRequest: PerformancePinnedRequest = async (
+  endpoint,
+  approvedAddress,
+  init,
+) => new Promise<Response>((resolveResponse, rejectResponse) => {
+  const family = isIP(approvedAddress);
+  if (family !== 4 && family !== 6) {
+    rejectResponse(new Error("performance_probe_destination_invalid"));
+    return;
+  }
+  const pinnedLookup = ((
+    _hostname: string,
+    _options: unknown,
+    callback: (error: NodeJS.ErrnoException | null, address: string, family: number) => void,
+  ) => callback(null, approvedAddress, family)) as LookupFunction;
+  const request = httpsRequest(endpoint, {
+    agent: false,
+    headers: Object.fromEntries(new Headers(init.headers).entries()),
+    lookup: pinnedLookup,
+    method: init.method,
+    signal: init.signal ?? undefined,
+  }, (incoming) => {
+    const status = incoming.statusCode ?? 502;
+    const body = status === 204 || status === 205 || status === 304
+      ? null
+      : Readable.toWeb(incoming) as ReadableStream<Uint8Array>;
+    resolveResponse(new Response(body, {
+      headers: responseHeaders(incoming.headers),
+      status,
+    }));
+  });
+  request.once("error", rejectResponse);
+  if (typeof init.body === "string" || init.body instanceof Uint8Array) request.write(init.body);
+  else if (init.body !== null && init.body !== undefined) {
+    request.destroy(new Error("performance_probe_request_body_invalid"));
+    return;
+  }
+  request.end();
+});
+
 export function createHttpPerformanceProbe(options: Readonly<{
   endpoint: string;
+  approvedDestination?: string;
   bearerToken?: string;
-  fetch?: typeof fetch;
+  resolveHostname?: (hostname: string) => Promise<readonly string[]>;
+  pinnedRequest?: PerformancePinnedRequest;
 }>): PerformanceProbe {
-  const endpoint = new URL(options.endpoint).toString();
-  const request = options.fetch ?? globalThis.fetch;
+  let parsedEndpoint: URL;
+  try {
+    parsedEndpoint = new URL(options.endpoint);
+  } catch {
+    throw new Error("performance_probe_url_invalid");
+  }
+  if (parsedEndpoint.username || parsedEndpoint.password) {
+    throw new Error("performance_probe_url_credentials_forbidden");
+  }
+  if (parsedEndpoint.hash) throw new Error("performance_probe_url_fragment_forbidden");
+  const loopback = new Set(["localhost", "127.0.0.1", "[::1]"]).has(parsedEndpoint.hostname);
+  if (parsedEndpoint.protocol !== "https:" && !(
+    parsedEndpoint.protocol === "http:" && loopback && !options.bearerToken
+  )) {
+    throw new Error("performance_probe_https_required");
+  }
+  const endpoint = parsedEndpoint.toString();
+  if (options.bearerToken) {
+    if (!options.approvedDestination) {
+      throw new Error("performance_probe_approved_destination_required");
+    }
+    let approvedDestination: URL;
+    try {
+      approvedDestination = new URL(options.approvedDestination);
+    } catch {
+      throw new Error("performance_probe_approved_destination_mismatch");
+    }
+    if (
+      approvedDestination.username || approvedDestination.password || approvedDestination.hash ||
+      approvedDestination.toString() !== endpoint
+    ) {
+      throw new Error("performance_probe_approved_destination_mismatch");
+    }
+  }
+  const resolveHostname = options.resolveHostname ?? resolvePerformanceDestination;
+  const pinnedRequest = options.pinnedRequest ?? pinnedHttpsPerformanceRequest;
+  const endpointHostname = parsedEndpoint.hostname.startsWith("[") && parsedEndpoint.hostname.endsWith("]")
+    ? parsedEndpoint.hostname.slice(1, -1)
+    : parsedEndpoint.hostname;
   return async (context) => {
-    const response = await request(endpoint, {
+    const init: RequestInit = {
       method: "POST",
       headers: {
+        accept: "application/json",
+        "accept-encoding": "identity",
         "content-type": "application/json",
         ...(options.bearerToken ? { authorization: `Bearer ${options.bearerToken}` } : {}),
       },
       body: JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         invocationId: context.invocationId,
+        invocationNonce: context.invocationNonce,
+        invokedAt: context.invokedAt,
+        sequence: context.sequence,
+        tenantId: context.tenantId,
+        repositoryId: context.repositoryId,
+        correlationId: context.correlationId,
+        source: context.source,
+        repository: context.repository,
         mode: context.mode,
         tier: context.tier,
         repositoryRevision: context.repositoryRevision,
         deploymentRevision: context.deploymentRevision,
         fixtureDigest: context.fixtureDigest,
+        metricEventSources: context.metricEventSources,
       }),
+      redirect: "error",
       signal: context.signal,
-    });
-    if (!response.ok) throw new Error(`performance_probe_http_${response.status}`);
-    const payload = await response.json() as {
-      deploymentRevision?: unknown;
-      metrics?: unknown;
     };
-    if (payload.deploymentRevision !== context.deploymentRevision) {
-      invalid("performance_probe_deployment_revision_mismatch");
+    let response: Response;
+    if (parsedEndpoint.protocol === "http:" && loopback) {
+      response = await globalThis.fetch(endpoint, init);
+    } else {
+      const resolved = await resolveHostname(endpointHostname);
+      if (resolved.length === 0) throw new Error("performance_probe_destination_unresolved");
+      const approvedAddresses = resolved.map(normalizeDestinationAddress);
+      response = await pinnedRequest(parsedEndpoint, approvedAddresses[0]!, init);
     }
-    const measurement = { metrics: payload.metrics } as PerformanceProbeMeasurement;
-    validateMeasurement(measurement);
-    return measurement;
+    try {
+      if (!response.ok) throw new Error(`performance_probe_http_${response.status}`);
+      const responseBytes = await readBoundedPerformanceResponse(response);
+      let payload: { observed?: unknown; metrics?: unknown };
+      try {
+        payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(responseBytes)) as {
+          observed?: unknown;
+          metrics?: unknown;
+        };
+      } catch {
+        throw new Error("performance_probe_response_invalid");
+      }
+      const measurement = { observed: payload.observed, metrics: payload.metrics } as PerformanceProbeMeasurement;
+      validateMeasurement(measurement, context, Date.now());
+      return measurement;
+    } catch (error) {
+      throw new PerformanceProbeProducerResponseError(error);
+    }
   };
+}
+
+async function readBoundedPerformanceResponse(response: Response): Promise<Uint8Array> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null) {
+    if (!/^(?:0|[1-9][0-9]*)$/.test(declaredLength)) {
+      throw new Error("performance_probe_response_length_invalid");
+    }
+    const declaredBytes = Number(declaredLength);
+    if (!Number.isSafeInteger(declaredBytes)) {
+      throw new Error("performance_probe_response_length_invalid");
+    }
+    if (declaredBytes > PERFORMANCE_PROBE_RESPONSE_BYTE_LIMIT) {
+      throw new Error("performance_probe_response_too_large");
+    }
+  }
+  if (!response.body) throw new Error("performance_probe_response_invalid");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      totalBytes += next.value.byteLength;
+      if (totalBytes > PERFORMANCE_PROBE_RESPONSE_BYTE_LIMIT) {
+        await reader.cancel("performance_probe_response_too_large").catch(() => undefined);
+        throw new Error("performance_probe_response_too_large");
+      }
+      chunks.push(next.value);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === "performance_probe_response_too_large") throw error;
+    throw new Error("performance_probe_response_invalid");
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 export function persistPerformanceProbeReport(
@@ -355,22 +974,30 @@ export function persistPerformanceProbeReport(
   const target = resolve(path);
   mkdirSync(dirname(target), { recursive: true });
   const temporary = `${target}.${randomUUID()}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(report, null, 2)}\n`, {
+  const bytes = `${JSON.stringify(report, null, 2)}\n`;
+  writeFileSync(temporary, bytes, {
     encoding: "utf8",
     flag: "wx",
   });
   try {
-    renameSync(temporary, target);
+    linkSync(temporary, target);
   } catch (error) {
-    rmSync(temporary, { force: true });
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") {
+      const existing = readFileSync(target, "utf8");
+      if (existing === bytes) return target;
+      throw new Error("performance_report_conflict");
+    }
     throw error;
+  } finally {
+    rmSync(temporary, { force: true });
   }
   return target;
 }
 
-function option(name: string): string | undefined {
+function option(args: readonly string[], name: string): string | undefined {
   const prefix = `--${name}=`;
-  return process.argv.find((value) => value.startsWith(prefix))?.slice(prefix.length);
+  return args.find((value) => value.startsWith(prefix))?.slice(prefix.length);
 }
 
 function repositoryRevision(): string {
@@ -393,43 +1020,126 @@ function dependencyVersions(lockPath: string): Record<string, string> {
 }
 
 async function main(): Promise<void> {
-  const mode = option("mode") as PerformanceMode | undefined;
-  const tierId = option("tier");
-  const endpoint = option("endpoint");
-  const deploymentRevision = option("deployment-revision");
-  const fixtureDigest = option("fixture-digest");
-  const output = option("output");
-  if (!mode || !tierId || !endpoint || !deploymentRevision || !fixtureDigest || !output) {
-    throw new Error(
-      "usage: --mode=load|soak --tier=<tier> --endpoint=<url> " +
-      "--deployment-revision=<immutable-id> --fixture-digest=<sha256> --output=<path>",
-    );
-  }
   const controller = new AbortController();
   const stop = () => controller.abort("operator_signal");
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   try {
-    const report = await runPerformanceProbe({
-      tierId,
-      mode,
-      repositoryRevision: repositoryRevision(),
-      deploymentRevision,
-      fixtureDigest,
-      dependencyVersions: dependencyVersions(resolve("package-lock.json")),
-      probe: createHttpPerformanceProbe({
-        endpoint,
-        bearerToken: process.env.MENDPOINT_PERFORMANCE_BEARER_TOKEN,
-      }),
-      signal: controller.signal,
-    });
-    console.log(`Performance report ${persistPerformanceProbeReport(output, report)}`);
+    const report = await runPerformanceCli(process.argv.slice(2), { signal: controller.signal });
+    console.log(`Performance report ${resolve(option(process.argv.slice(2), "output")!)}`);
     console.log(`${report.tierId} ${report.mode}: ${report.status}, ${report.observations.length} observations`);
     if (!report.ok) process.exitCode = 1;
   } finally {
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);
   }
+}
+
+export async function runPerformanceCli(
+  args: readonly string[],
+  dependencies: Readonly<{
+    contract?: PerformanceContract;
+    defaultRepositoryRevision?: string;
+    dependencyVersions?: Readonly<Record<string, string>>;
+    probe?: PerformanceProbe;
+    signal?: AbortSignal;
+    now?: () => number;
+  }> = {},
+): Promise<PerformanceProbeReport> {
+  const explicitRevision = option(args, "repository-revision");
+  const parsed = parsePerformanceCliArguments(
+    args,
+    dependencies.defaultRepositoryRevision ?? (explicitRevision ? undefined : repositoryRevision()),
+  );
+  const { endpoint, output, ...probeOptions } = parsed;
+  const report = await runPerformanceProbe({
+    ...probeOptions,
+    ...(dependencies.contract === undefined ? {} : { contract: dependencies.contract }),
+    dependencyVersions: dependencies.dependencyVersions ?? dependencyVersions(resolve("package-lock.json")),
+    probe: dependencies.probe ?? createHttpPerformanceProbe({
+      endpoint,
+      approvedDestination: process.env.MENDPOINT_PERFORMANCE_APPROVED_DESTINATION,
+      bearerToken: process.env.MENDPOINT_PERFORMANCE_BEARER_TOKEN,
+    }),
+    ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+    ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
+  });
+  persistPerformanceProbeReport(output, report);
+  return report;
+}
+
+export function parsePerformanceCliArguments(
+  args: readonly string[],
+  defaultRepositoryRevision?: string,
+): Omit<RunPerformanceProbeOptions, "dependencyVersions" | "probe" | "signal" | "now" | "contract"> & Readonly<{
+  endpoint: string;
+  output: string;
+}> {
+  const mode = option(args, "mode") as PerformanceMode | undefined;
+  const tierId = option(args, "tier");
+  const endpoint = option(args, "endpoint");
+  const deploymentRevision = option(args, "deployment-revision");
+  const fixtureDigest = option(args, "fixture-digest");
+  const output = option(args, "output");
+  const tenantId = option(args, "tenant-id");
+  const repositoryId = option(args, "repository-id");
+  const correlationId = option(args, "correlation-id");
+  const source = option(args, "probe-source") ?? option(args, "source");
+  const explicitRepositoryRevision = option(args, "repository-revision");
+  const repositoryFiles = Number(option(args, "repository-files"));
+  const repositorySourceLines = Number(option(args, "repository-source-lines"));
+  const repositoryBytes = Number(option(args, "repository-bytes"));
+  const repositoryMaxFileBytes = Number(option(args, "repository-max-file-bytes"));
+  const repositoryLanguages = option(args, "repository-languages")?.split(",").map((value) => value.trim()).filter(Boolean);
+  const distribution = option(args, "repository-language-source-lines");
+  if (
+    (mode !== "load" && mode !== "soak") || !tierId || !endpoint || !deploymentRevision || !fixtureDigest || !output ||
+    !tenantId || !repositoryId || !correlationId || !source || !repositoryLanguages?.length || !distribution ||
+    !(explicitRepositoryRevision ?? defaultRepositoryRevision)
+  ) {
+    throw new Error(
+      "usage: --mode=load|soak --tier=<tier> --endpoint=<url> " +
+      "--tenant-id=<tenant> --repository-id=<repository> --correlation-id=<correlation> " +
+      "--probe-source=<source> --repository-revision=<immutable-id> " +
+      "--repository-files=<count> --repository-source-lines=<count> " +
+      "--repository-bytes=<count> --repository-max-file-bytes=<count> " +
+      "--repository-languages=<comma-list> " +
+      "--repository-language-source-lines=<language:count,...> " +
+      "--deployment-revision=<immutable-id> --fixture-digest=<sha256> --output=<path>",
+    );
+  }
+  const languageSourceLines: Record<string, number> = {};
+  for (const entry of distribution.split(",")) {
+    const [language, rawLines, ...rest] = entry.split(":");
+    const lines = Number(rawLines);
+    if (!language || rest.length || language in languageSourceLines || !Number.isSafeInteger(lines) || lines < 1) {
+      invalid("performance_repository_language_distribution_invalid");
+    }
+    languageSourceLines[language] = lines;
+  }
+  if (
+    !Number.isSafeInteger(repositoryFiles) || repositoryFiles < 1 ||
+    !Number.isSafeInteger(repositorySourceLines) || repositorySourceLines < 1 ||
+    !Number.isSafeInteger(repositoryBytes) || repositoryBytes < 1 ||
+    !Number.isSafeInteger(repositoryMaxFileBytes) || repositoryMaxFileBytes < 1 ||
+    repositoryMaxFileBytes > repositoryBytes ||
+    Object.keys(languageSourceLines).length !== repositoryLanguages.length ||
+    repositoryLanguages.some((language) => !(language in languageSourceLines)) ||
+    Object.values(languageSourceLines).reduce((sum, lines) => sum + lines, 0) !== repositorySourceLines
+  ) invalid("performance_repository_language_distribution_invalid");
+  return {
+    mode, tierId, endpoint, deploymentRevision, fixtureDigest, output, tenantId,
+    repositoryId, correlationId, source,
+    repositoryRevision: explicitRepositoryRevision ?? defaultRepositoryRevision!,
+    repository: {
+      files: repositoryFiles,
+      sourceLines: repositorySourceLines,
+      bytes: repositoryBytes,
+      maxFileBytes: repositoryMaxFileBytes,
+      languages: repositoryLanguages,
+      languageSourceLines,
+    },
+  };
 }
 
 const isMain = process.argv[1]?.replace(/\\/g, "/").endsWith("performance-runner.ts") ||

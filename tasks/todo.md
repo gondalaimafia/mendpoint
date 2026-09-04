@@ -75,6 +75,27 @@
 
 ## Plan 01-01: Durable secret lifecycle SCM tracer
 
+### Pull request 610 exact-head repair
+
+- [x] Reject replayed or provenance-free performance producer observations by binding them to the current invocation.
+- [x] Remove caller-asserted MCU schedule authority from the public Platform surface.
+- [x] Bind adjustments and credits to positive invoice allocation, correct signs, and exact invoice-local limits.
+- [x] Require a live tenant owner to issue one short-lived, digest-bound finance authorization and consume it atomically once.
+- [x] Persist finance authority in the usage-entry hash and reject missing, tampered, reused, or mismatched authority during reconciliation.
+- [x] Exercise reserve, settle, authorized credit, and reconciliation through the protected Fettler closure self-check.
+- [x] Persist and revalidate producer invocation proof, and replace the raw evidence ceiling with bounded representative detail plus complete sealed aggregate objective accounting.
+- [x] Return exact committed finance replays after authorization expiry, recover exact authorization retries, and bind prior-period credits to their immutable invoice entitlement.
+- [x] Reject the unshipped performance contract version and hostile finance entry types before database access.
+- [x] Fail closed when malformed producer evidence arrives at or after the duration boundary, including an abort between response receipt and validation.
+- [x] Allocate historical credits atomically across cumulative immutable invoice allocations while retaining exact entitlement and price-version attribution.
+- [x] Pass focused database, evaluator, closure, and affected typecheck gates.
+- [x] Pass complete affected workspace tests, full workspace typecheck, optimized production build, and protected GA checks.
+- [ ] Obtain exact-head independent review, current-base CI, protected merge, deployment, and production readback.
+
+Second exact-head review repair: a producer response is now classified as producer evidence before validation, so deadline or abort state can cancel only a still-unresolved probe and can never hide malformed returned evidence. Historical credits use a versioned deterministic allocation group: the root ledger entry retains the approved request, bounded offset and portion entries distribute the debit across the invoice's immutable entitlement and price-version lines, all rows share one finance authorization, and reconciliation reconstructs and verifies the complete group. Hostile coverage includes wrong invocation identity, nonce, timestamp, missing provenance, the response-to-validation abort race, partial and full cumulative credits, excess rejection, exact replay, allocation attribution, and reconciliation.
+
+Repair verification at exact local head: the focused performance and usage matrix passes 50 of 50 tests; the complete database and evaluation matrix passes 81 files and 721 tests; full workspace typecheck passes; the optimized 64-route production build passes; every GA preflight gate passes; and diff integrity is clean. Publication, protected continuous integration, merge, deployment, and production readback remain intentionally pending fresh independent exact-head review.
+
 - [x] RED: add database lifecycle tests for encrypted envelopes, tenant scope, rotation, expiry, retirement, and immutable incident revocation.
 - [x] GREEN: implement the additive secret lifecycle schema and atomic persistence module.
 - [x] RED: add provider and SCM materialization tests for durable lifecycle resolution, fail-closed audit, rotation, revocation, and pre-transport denial.
