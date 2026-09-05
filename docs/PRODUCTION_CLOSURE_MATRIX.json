@@ -2075,17 +2075,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-09-02T23:33:59.535Z",
-    "observedMainRevision": "091045ca134c099a49c7e463727b27ce9807216b",
-    "observationDigest": "sha256:b60f7299fa7c8164e630fcd079912b5a6715d1da070049b14c887bcaf181cefd",
+    "observedAt": "2026-09-05T00:32:40.545Z",
+    "observedMainRevision": "843966fc80b6f0024f504014bd3878fe00a394b1",
+    "observationDigest": "sha256:b48968f4b9b1770462a4a9b57ddc7e26b92b7fb43f70880933859c984ba5e6fd",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 461,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/461",
-      "title": "claims: detect stale claims whose audited surface changed (mechanism half of #284)",
+      "number": 650,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/650",
+      "title": "closure: make the successor live proof satisfiable (authority rotation)",
       "baseBranch": "main",
-      "headBranch": "claims-staleness-mechanism",
+      "headBranch": "claude/successor-live-proof-satisfiable",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2096,18 +2096,16 @@
         "pullRequests": [],
         "branches": []
       },
-      "requirementIds": [
-        "ME-GTM-003"
-      ],
+      "requirementIds": [],
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260902-024",
+        "rotationId": "rotation-20260905-025",
         "kind": "runtime",
-        "issuedAt": "2026-09-02T23:33:59.535Z",
-        "expiresAt": "2026-09-03T23:33:59.535Z",
-        "basePolicySha256": "sha256:b4f7912e3f2f7d99164c6c4196d58a45f49de422a4e6004da6b43480d8ddef0e",
-        "proposedPolicySha256": "sha256:79c66e52bd3eddb3d21153ff514d9c4028f86295e842b8b129d09c41c7f8dd7f"
+        "issuedAt": "2026-09-05T00:32:40.545Z",
+        "expiresAt": "2026-09-06T00:32:40.545Z",
+        "basePolicySha256": "sha256:79c66e52bd3eddb3d21153ff514d9c4028f86295e842b8b129d09c41c7f8dd7f",
+        "proposedPolicySha256": "sha256:86adc5d071c030de13c300219edbe3db78fa0a28bde10c5737099eee3066efab"
       }
     },
     "pullRequests": [
@@ -3685,6 +3683,43 @@
             "summary": "the API crash loops on upgrade while the required artifact backend production binding is absent"
           }
         ]
+      },
+      {
+        "number": 461,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/461",
+        "title": "claims: detect stale claims whose audited surface changed (mechanism half of #284)",
+        "headBranch": "claims-staleness-mechanism",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-GTM-003"
+        ],
+        "checkState": "stale_checks",
+        "headRevision": "5ba86b6c8a287a5376efd528d794d7f545b6dde7",
+        "mergeRevision": "b8893c3185c8743c7643e212a64967f163faa864",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
       },
       {
         "number": 463,
