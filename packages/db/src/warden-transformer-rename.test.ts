@@ -1,9 +1,18 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDb } from "./index.js";
+import {
+  claimNextJob,
+  computeLegacyTenantOwnershipAttestationDigest,
+  createDb,
+  enqueueJob,
+  getRepairSession,
+  getJob,
+  insertRepairSession,
+} from "./index.js";
 
 // Release A makes the destructive old-to-new rename tolerant of a future
 // compatibility release without changing today's new-only physical schema.
@@ -269,7 +278,1136 @@ function rowCount(db: Db, table: string): number {
   return (db.raw.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
 }
 
+type LegacyJobTenantShape = "missing" | "nullable";
+
+function buildLegacyJobVolume(
+  path: string,
+  tenantShape: LegacyJobTenantShape,
+  rows: ReadonlyArray<{ id: string; tenantId: string | null }>,
+): void {
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`
+    CREATE TABLE jobs (
+      id TEXT PRIMARY KEY,
+      ${tenantShape === "nullable" ? "tenant_id TEXT," : ""}
+      type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 3,
+      error TEXT,
+      result_json TEXT,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT
+    );
+  `);
+  for (const row of rows) {
+    if (tenantShape === "nullable") {
+      legacy.prepare(
+        `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+         VALUES (?, ?, 'repair', '{}', ?)`,
+      ).run(row.id, row.tenantId, TS);
+    } else {
+      legacy.prepare(
+        `INSERT INTO jobs (id, type, payload_json, created_at)
+         VALUES (?, 'repair', '{}', ?)`,
+      ).run(row.id, TS);
+    }
+  }
+  legacy.close();
+}
+
+function jobTenants(db: Db): Array<{ id: string; tenant_id: string | null }> {
+  return db.raw
+    .prepare("SELECT id, tenant_id FROM jobs ORDER BY id")
+    .all() as Array<{ id: string; tenant_id: string | null }>;
+}
+
+function closeTracked(db: Db): void {
+  db.raw.close();
+  const index = openDbs.indexOf(db);
+  if (index >= 0) openDbs.splice(index, 1);
+}
+
+function expectUnattestedDefaultTenantInsertsRejected(
+  database: Pick<DatabaseSync, "exec">,
+  suffix: string,
+): void {
+  const statements = [
+    `INSERT INTO jobs (id, type, payload_json, created_at)
+     VALUES ('jobs-omitted-${suffix}', 'repair', '{}', '${TS}')`,
+    `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+     VALUES ('jobs-explicit-${suffix}', 'tenant_default', 'repair', '{}', '${TS}')`,
+    `INSERT INTO repair_sessions (id, repo_path, status, created_at)
+     VALUES ('repair_sessions-omitted-${suffix}', '/repo', 'pending', '${TS}')`,
+    `INSERT INTO repair_sessions (id, tenant_id, repo_path, status, created_at)
+     VALUES ('repair_sessions-explicit-${suffix}', 'tenant_default', '/repo', 'pending', '${TS}')`,
+    `INSERT INTO agent_runs (id, goal, repo_path, status, created_at)
+     VALUES ('agent_runs-omitted-${suffix}', 'repair', '/repo', 'pending', '${TS}')`,
+    `INSERT INTO agent_runs (id, tenant_id, goal, repo_path, status, created_at)
+     VALUES ('agent_runs-explicit-${suffix}', 'tenant_default', 'repair', '/repo', 'pending', '${TS}')`,
+    `INSERT INTO audit_events
+       (id, actor, action, resource_type, metadata_json, created_at)
+     VALUES ('audit_events-omitted-${suffix}', 'legacy', 'legacy.observed', 'legacy', '{}', '${TS}')`,
+    `INSERT INTO audit_events
+       (id, tenant_id, actor, action, resource_type, metadata_json, created_at)
+     VALUES ('audit_events-explicit-${suffix}', 'tenant_default', 'legacy',
+       'legacy.observed', 'legacy', '{}', '${TS}')`,
+    `INSERT INTO suppressed_patterns (id, pattern, created_at)
+     VALUES ('suppressed_patterns-omitted-${suffix}', 'legacy-pattern', '${TS}')`,
+    `INSERT INTO suppressed_patterns (id, tenant_id, pattern, created_at)
+     VALUES ('suppressed_patterns-explicit-${suffix}', 'tenant_default',
+       'legacy-pattern', '${TS}')`,
+  ];
+  for (const statement of statements) {
+    expect.soft(() => database.exec(statement)).toThrow(
+      "legacy_tenant_ownership_attestation_required",
+    );
+  }
+}
+
+const LEGACY_OWNERSHIP_TABLES = [
+  "jobs",
+  "repair_sessions",
+  "agent_runs",
+  "audit_events",
+  "suppressed_patterns",
+] as const;
+
+function buildLegacyOwnershipVolume(path: string): void {
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`
+    CREATE TABLE jobs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT,
+      type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 3,
+      error TEXT,
+      result_json TEXT,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT
+    );
+    CREATE TABLE repair_sessions (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT,
+      consumer_id TEXT,
+      repo_path TEXT NOT NULL,
+      status TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      edits_count INTEGER NOT NULL DEFAULT 0,
+      ok INTEGER NOT NULL DEFAULT 0,
+      report_md TEXT,
+      result_json TEXT,
+      created_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+    CREATE TABLE agent_runs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT,
+      job_id TEXT,
+      goal TEXT NOT NULL,
+      repo_path TEXT NOT NULL,
+      status TEXT NOT NULL,
+      ok INTEGER NOT NULL DEFAULT 0,
+      steps INTEGER NOT NULL DEFAULT 0,
+      files_changed_json TEXT,
+      report_md TEXT,
+      result_json TEXT,
+      created_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+    CREATE TABLE audit_events (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT,
+      actor TEXT NOT NULL,
+      action TEXT NOT NULL,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE suppressed_patterns (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT,
+      consumer_id TEXT,
+      provider_slug TEXT,
+      pattern TEXT NOT NULL,
+      reason TEXT,
+      source_pr_id TEXT,
+      created_at TEXT NOT NULL
+    );
+  `);
+  const tenants = [
+    ["empty", ""],
+    ["null", null],
+    ["valid", "tenant_customer"],
+    ["whitespace", "   "],
+  ] as const;
+  for (const [suffix, tenantId] of tenants) {
+    legacy.prepare(
+      `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+       VALUES (?, ?, 'repair', '{}', ?)`,
+    ).run(`jobs-${suffix}`, tenantId, TS);
+    legacy.prepare(
+      `INSERT INTO repair_sessions (id, tenant_id, repo_path, status, created_at)
+       VALUES (?, ?, '/repo', 'pending', ?)`,
+    ).run(`repair_sessions-${suffix}`, tenantId, TS);
+    legacy.prepare(
+      `INSERT INTO agent_runs (id, tenant_id, goal, repo_path, status, created_at)
+       VALUES (?, ?, 'repair', '/repo', 'pending', ?)`,
+    ).run(`agent_runs-${suffix}`, tenantId, TS);
+    legacy.prepare(
+      `INSERT INTO audit_events
+         (id, tenant_id, actor, action, resource_type, metadata_json, created_at)
+       VALUES (?, ?, 'legacy', 'legacy.observed', 'legacy', '{}', ?)`,
+    ).run(`audit_events-${suffix}`, tenantId, TS);
+    legacy.prepare(
+      `INSERT INTO suppressed_patterns (id, tenant_id, pattern, created_at)
+       VALUES (?, ?, 'legacy-pattern', ?)`,
+    ).run(`suppressed_patterns-${suffix}`, tenantId, TS);
+  }
+  legacy.close();
+}
+
+function applyReleasedFallbackBackfill(path: string): void {
+  const legacy = new DatabaseSync(path);
+  for (const table of LEGACY_OWNERSHIP_TABLES) {
+    legacy.exec(
+      `UPDATE ${table}
+       SET tenant_id = 'tenant_default'
+       WHERE tenant_id IS NULL OR tenant_id = ''`,
+    );
+  }
+  legacy.close();
+}
+
+function applyExactReleasedPredecessorTenantMigration(path: string): void {
+  const predecessor = new DatabaseSync(path);
+  for (const table of LEGACY_OWNERSHIP_TABLES) {
+    predecessor.exec(`ALTER TABLE ${table} DROP COLUMN tenant_id`);
+    predecessor.exec(
+      `ALTER TABLE ${table}
+       ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+    );
+  }
+  predecessor.close();
+}
+
+function sealReleasedSuccessorEmptyReconciliationState(path: string): void {
+  const predecessor = new DatabaseSync(path);
+  predecessor.exec(`
+    CREATE TABLE legacy_tenant_ownership_reconciliation_scope (
+      table_name TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      discovered_at TEXT NOT NULL,
+      PRIMARY KEY (table_name, row_id, tenant_id)
+    );
+    CREATE TABLE legacy_tenant_ownership_reconciliation_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      sealed_at TEXT NOT NULL
+    );
+    INSERT INTO legacy_tenant_ownership_reconciliation_state
+      (id, schema_version, sealed_at)
+    VALUES (1, 1, '2026-09-02T00:00:00.000Z');
+    CREATE TRIGGER legacy_tenant_ownership_reconciliation_scope_append_only_update
+      BEFORE UPDATE ON legacy_tenant_ownership_reconciliation_scope
+      BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_reconciliation_scope_append_only'); END;
+    CREATE TRIGGER legacy_tenant_ownership_reconciliation_scope_append_only_delete
+      BEFORE DELETE ON legacy_tenant_ownership_reconciliation_scope
+      BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_reconciliation_scope_append_only'); END;
+    CREATE TRIGGER legacy_tenant_ownership_reconciliation_state_append_only_update
+      BEFORE UPDATE ON legacy_tenant_ownership_reconciliation_state
+      BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_reconciliation_state_append_only'); END;
+    CREATE TRIGGER legacy_tenant_ownership_reconciliation_state_append_only_delete
+      BEFORE DELETE ON legacy_tenant_ownership_reconciliation_state
+      BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_reconciliation_state_append_only'); END;
+  `);
+  predecessor.close();
+}
+
+function persistLegacyOwnershipAttestations(
+  path: string,
+  mutate?: (input: {
+    tableName: string;
+    rowId: string;
+    tenantId: string;
+    evidenceDigest: string;
+    attestedBy: string;
+    attestedAt: string;
+    attestationDigest: string;
+  }) => { attestationDigest: string },
+): void {
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`
+    CREATE TABLE legacy_tenant_ownership_attestations (
+      table_name TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      evidence_digest TEXT NOT NULL,
+      attested_by TEXT NOT NULL,
+      attested_at TEXT NOT NULL,
+      attestation_digest TEXT NOT NULL,
+      PRIMARY KEY (table_name, row_id, tenant_id)
+    );
+  `);
+  const evidenceDigest = "a".repeat(64);
+  const attestedBy = "operator:test";
+  const attestedAt = "2026-09-02T00:00:00.000Z";
+  for (const tableName of LEGACY_OWNERSHIP_TABLES) {
+    for (const suffix of ["empty", "null"] as const) {
+      const rowId = `${tableName}-${suffix}`;
+      const tenantId = "tenant_default";
+      const canonical = JSON.stringify({
+        schemaVersion: 1,
+        tableName,
+        rowId,
+        tenantId,
+        evidenceDigest,
+        attestedBy,
+        attestedAt,
+      });
+      const attestationDigest = createHash("sha256")
+        .update(canonical)
+        .digest("hex");
+      const stored = mutate?.({
+        tableName,
+        rowId,
+        tenantId,
+        evidenceDigest,
+        attestedBy,
+        attestedAt,
+        attestationDigest,
+      }) ?? { attestationDigest };
+      legacy.prepare(
+        `INSERT INTO legacy_tenant_ownership_attestations
+           (table_name, row_id, tenant_id, evidence_digest, attested_by,
+            attested_at, attestation_digest)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        tableName,
+        rowId,
+        tenantId,
+        evidenceDigest,
+        attestedBy,
+        attestedAt,
+        stored.attestationDigest,
+      );
+    }
+  }
+  legacy.close();
+}
+
+function attestExactReconciliationScope(path: string): void {
+  const database = new DatabaseSync(path);
+  const rows = database.prepare(
+    `SELECT table_name, row_id, tenant_id
+     FROM legacy_tenant_ownership_reconciliation_scope
+     ORDER BY table_name, row_id`,
+  ).all() as Array<{ table_name: string; row_id: string; tenant_id: string }>;
+  const evidenceDigest = "b".repeat(64);
+  const attestedBy = "operator:exact-predecessor-review";
+  const attestedAt = "2026-09-02T00:05:00.000Z";
+  for (const row of rows) {
+    const attestationDigest = computeLegacyTenantOwnershipAttestationDigest({
+      tableName: row.table_name as (typeof LEGACY_OWNERSHIP_TABLES)[number],
+      rowId: row.row_id,
+      tenantId: row.tenant_id,
+      evidenceDigest,
+      attestedBy,
+      attestedAt,
+    });
+    database.prepare(
+      `INSERT INTO legacy_tenant_ownership_attestations
+         (table_name, row_id, tenant_id, evidence_digest, attested_by,
+          attested_at, attestation_digest)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      row.table_name,
+      row.row_id,
+      row.tenant_id,
+      evidenceDigest,
+      attestedBy,
+      attestedAt,
+      attestationDigest,
+    );
+  }
+  database.close();
+}
+
 describe("Fettler/Regauge logical database names", () => {
+  it.each([false, true])(
+    "quarantines the exact released-predecessor default across restart (sealed empty state: %s)",
+    (sealEmptyState) => {
+      const path = join(newDir(`tenant-exact-predecessor-${sealEmptyState}`), "legacy.sqlite");
+      buildLegacyOwnershipVolume(path);
+      applyExactReleasedPredecessorTenantMigration(path);
+      if (sealEmptyState) sealReleasedSuccessorEmptyReconciliationState(path);
+
+      const predecessor = new DatabaseSync(path);
+      try {
+        expect(
+          predecessor.prepare("PRAGMA table_info(jobs)").all()
+            .find((column: any) => column.name === "tenant_id"),
+        ).toMatchObject({
+          type: "TEXT",
+          notnull: 1,
+          dflt_value: "'tenant_default'",
+        });
+      } finally {
+        predecessor.close();
+      }
+
+      expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+      expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+
+      const preserved = new DatabaseSync(path);
+      try {
+        expect(
+          preserved.prepare(
+            `SELECT table_name, row_id, tenant_id
+             FROM legacy_tenant_ownership_reconciliation_scope
+             ORDER BY table_name, row_id`,
+          ).all(),
+        ).toHaveLength(LEGACY_OWNERSHIP_TABLES.length * 4);
+        expect(
+          preserved.prepare(
+            `SELECT id, status FROM jobs
+             WHERE id = 'jobs-empty' AND tenant_id = 'tenant_default'`,
+          ).get(),
+        ).toEqual({ id: "jobs-empty", status: "pending" });
+      } finally {
+        preserved.close();
+      }
+
+      attestExactReconciliationScope(path);
+      const authorized = boot(path);
+      expect(getJob(authorized, "jobs-empty", "tenant_default")).toMatchObject({
+        id: "jobs-empty",
+        tenant_id: "tenant_default",
+        status: "pending",
+      });
+      expect(claimNextJob(authorized, ["repair"], {
+        tenantId: "tenant_default",
+        workerId: "authorized-review-worker",
+        now: "2026-09-02T00:10:00.000Z",
+      })).toMatchObject({
+        id: "jobs-empty",
+        tenant_id: "tenant_default",
+        status: "running",
+      });
+    },
+  );
+
+  it("rejects omitted and explicit default ownership across repair, rollback, and restart", () => {
+    const path = join(newDir("tenant-omitted-repair-rollback-restart"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    attestExactReconciliationScope(path);
+
+    const repaired = boot(path);
+    expectUnattestedDefaultTenantInsertsRejected(repaired.raw, "repair");
+    closeTracked(repaired);
+
+    const rollback = new DatabaseSync(path);
+    try {
+      applyReleasedFallbackBackfill(path);
+      expectUnattestedDefaultTenantInsertsRejected(rollback, "rollback");
+    } finally {
+      rollback.close();
+    }
+
+    const restarted = boot(path);
+    expectUnattestedDefaultTenantInsertsRejected(restarted.raw, "restart");
+  });
+
+  it("preserves explicit default tenant inserts on fresh schemas", () => {
+    const fresh = boot(join(newDir("tenant-explicit-default-fresh"), "fresh.sqlite"));
+    fresh.raw.exec(`
+      INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+      VALUES ('jobs-explicit-fresh', 'tenant_default', 'repair', '{}', '${TS}');
+      INSERT INTO repair_sessions (id, tenant_id, repo_path, status, created_at)
+      VALUES ('repair_sessions-explicit-fresh', 'tenant_default', '/repo', 'pending', '${TS}');
+      INSERT INTO agent_runs (id, tenant_id, goal, repo_path, status, created_at)
+      VALUES ('agent_runs-explicit-fresh', 'tenant_default', 'repair', '/repo', 'pending', '${TS}');
+      INSERT INTO audit_events
+        (id, tenant_id, actor, action, resource_type, metadata_json, created_at)
+      VALUES ('audit_events-explicit-fresh', 'tenant_default', 'legacy',
+        'legacy.observed', 'legacy', '{}', '${TS}');
+      INSERT INTO suppressed_patterns (id, tenant_id, pattern, created_at)
+      VALUES ('suppressed_patterns-explicit-fresh', 'tenant_default',
+        'legacy-pattern', '${TS}');
+    `);
+    for (const table of LEGACY_OWNERSHIP_TABLES) {
+      expect(fresh.raw.prepare(
+        `SELECT tenant_id FROM ${table} WHERE id = ?`,
+      ).get(`${table}-explicit-fresh`)).toEqual({ tenant_id: "tenant_default" });
+    }
+  });
+
+  it("seals the discovered row set against later scope insertion", () => {
+    const path = join(newDir("tenant-scope-sealed"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    const database = new DatabaseSync(path);
+    expect(() => database.prepare(
+      `INSERT INTO legacy_tenant_ownership_reconciliation_scope
+         (table_name, row_id, tenant_id, discovered_at)
+       VALUES ('jobs', 'late-row', 'tenant_default', ?)`,
+    ).run(TS)).toThrow("legacy_tenant_ownership_reconciliation_scope_sealed");
+    database.close();
+  });
+
+  it("rejects scope drift even if the insertion trigger is bypassed", () => {
+    const path = join(newDir("tenant-scope-digest"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+
+    const database = new DatabaseSync(path);
+    database.exec(
+      "DROP TRIGGER legacy_tenant_ownership_reconciliation_scope_append_only_insert",
+    );
+    database.prepare(
+      `INSERT INTO legacy_tenant_ownership_reconciliation_scope
+         (table_name, row_id, tenant_id, discovered_at)
+       VALUES ('jobs', 'late-row', 'tenant_default', ?)`,
+    ).run(TS);
+    database.close();
+
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+  });
+
+  it("makes an attested source row tenant immutable", () => {
+    const path = join(newDir("tenant-attested-source-immutable"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    attestExactReconciliationScope(path);
+
+    const authorized = boot(path);
+    expect(() => authorized.raw.prepare(
+      "UPDATE jobs SET tenant_id = 'tenant_other' WHERE id = 'jobs-empty'",
+    ).run()).toThrow("legacy_tenant_ownership_source_immutable");
+  });
+
+  it("seals scoped source identity before attestation permits boot", () => {
+    const path = join(newDir("tenant-unattested-source-identity-immutable"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    const sealed = new DatabaseSync(path);
+    try {
+      expect(() => sealed.prepare(
+        "UPDATE jobs SET id = 'jobs-renamed' WHERE id = 'jobs-empty'",
+      ).run()).toThrow("legacy_tenant_ownership_source_immutable");
+      expect(sealed.prepare(
+        "SELECT id, tenant_id FROM jobs WHERE id = 'jobs-empty'",
+      ).get()).toEqual({ id: "jobs-empty", tenant_id: "tenant_default" });
+    } finally {
+      sealed.close();
+    }
+  });
+
+  it("rejects every late unattributable write after an unattested first boot", () => {
+    const path = join(newDir("tenant-unattested-late-write-guards"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyReleasedFallbackBackfill(path);
+
+    const setup = new DatabaseSync(path);
+    setup.exec("UPDATE jobs SET status = 'done'");
+    setup.close();
+
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+
+    const sealed = new DatabaseSync(path);
+    const insertSql: Record<(typeof LEGACY_OWNERSHIP_TABLES)[number], string> = {
+      jobs: `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+             VALUES (?, ?, 'repair', '{}', ?)`,
+      repair_sessions:
+        `INSERT INTO repair_sessions (id, tenant_id, repo_path, status, created_at)
+         VALUES (?, ?, '/repo', 'pending', ?)`,
+      agent_runs:
+        `INSERT INTO agent_runs (id, tenant_id, goal, repo_path, status, created_at)
+         VALUES (?, ?, 'repair', '/repo', 'pending', ?)`,
+      audit_events:
+        `INSERT INTO audit_events
+           (id, tenant_id, actor, action, resource_type, metadata_json, created_at)
+         VALUES (?, ?, 'legacy', 'legacy.observed', 'legacy', '{}', ?)`,
+      suppressed_patterns:
+        `INSERT INTO suppressed_patterns (id, tenant_id, pattern, created_at)
+         VALUES (?, ?, 'legacy-pattern', ?)`,
+    };
+    try {
+      for (const table of LEGACY_OWNERSHIP_TABLES) {
+        for (const [label, tenantId] of [
+          ["null", null],
+          ["empty", ""],
+          ["blank", "   "],
+        ] as const) {
+          expect.soft(() => sealed.prepare(insertSql[table]).run(
+            `${table}-late-${label}`,
+            tenantId,
+            TS,
+          )).toThrow("tenant_id_required");
+          expect.soft(() => sealed.prepare(
+            `UPDATE ${table} SET tenant_id = ? WHERE id = ?`,
+          ).run(tenantId, `${table}-valid`)).toThrow("tenant_id_required");
+        }
+      }
+    } finally {
+      sealed.close();
+    }
+
+    attestExactReconciliationScope(path);
+    const restarted = boot(path);
+    for (const table of LEGACY_OWNERSHIP_TABLES) {
+      expect(restarted.raw.prepare(
+        `SELECT id FROM ${table} WHERE id LIKE ? ORDER BY id`,
+      ).all(`${table}-late-%`)).toEqual([]);
+      expect(restarted.raw.prepare(
+        `SELECT tenant_id FROM ${table} WHERE id = ?`,
+      ).get(`${table}-valid`)).toEqual({ tenant_id: "tenant_customer" });
+    }
+    for (const tenantId of [undefined, "tenant_default", "tenant_customer", "tenant_other"]) {
+      expect(claimNextJob(restarted, ["repair"], {
+        tenantId,
+        workerId: `late-write-worker:${tenantId ?? "global"}`,
+        now: "2026-09-02T00:10:00.000Z",
+      })).toBeUndefined();
+    }
+  });
+
+  it("never publishes a partial recovery-guard state to another connection", () => {
+    const path = join(newDir("tenant-recovery-guard-atomicity"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    attestExactReconciliationScope(path);
+
+    const ledgerTables = [
+      "legacy_tenant_ownership_reconciliation_scope",
+      "legacy_tenant_ownership_reconciliation_state",
+      "legacy_tenant_ownership_reconciliation_discovery_state",
+      "legacy_tenant_ownership_quarantine_scope",
+      "legacy_tenant_ownership_quarantine_state",
+    ] as const;
+    const requiredGuards = [
+      ...LEGACY_OWNERSHIP_TABLES.flatMap((table) => [
+        `${table}_tenant_required_insert`,
+        `${table}_tenant_required_update`,
+        `${table}_tenant_nonblank_insert`,
+        `${table}_tenant_nonblank_update`,
+        `${table}_legacy_tenant_ownership_default_insert`,
+        `${table}_legacy_tenant_ownership_update`,
+        `${table}_legacy_tenant_ownership_delete`,
+      ]),
+      ...ledgerTables.flatMap((table) => [
+        `${table}_append_only_update`,
+        `${table}_append_only_delete`,
+      ]),
+      "legacy_tenant_ownership_reconciliation_scope_append_only_insert",
+      "legacy_tenant_ownership_quarantine_scope_append_only_insert",
+    ];
+    const predecessor = new DatabaseSync(path);
+    for (const trigger of requiredGuards) {
+      predecessor.exec(`DROP TRIGGER IF EXISTS "${trigger}"`);
+    }
+    predecessor.close();
+
+    const originalExec = Object.getOwnPropertyDescriptor(DatabaseSync.prototype, "exec");
+    if (!originalExec || typeof originalExec.value !== "function") {
+      throw new Error("database_sync_exec_unavailable");
+    }
+    const partialSnapshots: string[][] = [];
+    let racedWriteSucceeded = false;
+    Object.defineProperty(DatabaseSync.prototype, "exec", {
+      ...originalExec,
+      value: function (this: DatabaseSync, sql: string): void {
+        originalExec.value.call(this, sql);
+        if (sql.trim() !== "COMMIT" || racedWriteSucceeded) return;
+
+        const observer = new DatabaseSync(path);
+        try {
+          const published = new Set(
+            (observer.prepare(
+              "SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
+            ).all() as Array<{ name: string }>).map(({ name }) => name),
+          );
+          const nonblankPublished = LEGACY_OWNERSHIP_TABLES.every((table) =>
+            published.has(`${table}_tenant_nonblank_insert`) &&
+            published.has(`${table}_tenant_nonblank_update`),
+          );
+          const missing = requiredGuards.filter((trigger) => !published.has(trigger));
+          if (nonblankPublished && missing.length > 0) {
+            partialSnapshots.push(missing);
+            observer.prepare(
+              "UPDATE jobs SET tenant_id = 'tenant_other' WHERE id = 'jobs-empty'",
+            ).run();
+            racedWriteSucceeded = true;
+          }
+        } finally {
+          observer.close();
+        }
+      },
+    });
+
+    let recoveryError: unknown;
+    try {
+      boot(path);
+    } catch (error) {
+      recoveryError = error;
+    } finally {
+      Object.defineProperty(DatabaseSync.prototype, "exec", originalExec);
+    }
+
+    expect.soft(recoveryError).toBeUndefined();
+    expect.soft(partialSnapshots).toEqual([]);
+    expect.soft(racedWriteSucceeded).toBe(false);
+    const observed = new DatabaseSync(path);
+    try {
+      expect(observed.prepare(
+        "SELECT tenant_id FROM jobs WHERE id = 'jobs-empty'",
+      ).get()).toEqual({ tenant_id: "tenant_default" });
+      const published = new Set(
+        (observed.prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
+        ).all() as Array<{ name: string }>).map(({ name }) => name),
+      );
+      expect(requiredGuards.every((trigger) => published.has(trigger))).toBe(true);
+    } finally {
+      observed.close();
+    }
+  });
+
+  it("prevents a scoped primary-key rename from escaping attestation through identifier reuse", () => {
+    const path = join(newDir("tenant-attested-source-identity-immutable"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    attestExactReconciliationScope(path);
+
+    const authorized = boot(path);
+    expect(() => {
+      authorized.raw.prepare(
+        "UPDATE jobs SET id = 'jobs-renamed' WHERE id = 'jobs-empty'",
+      ).run();
+      authorized.raw.prepare(
+        "UPDATE jobs SET tenant_id = 'tenant_other' WHERE id = 'jobs-renamed'",
+      ).run();
+      authorized.raw.prepare(
+        `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+         VALUES ('jobs-empty', 'tenant_default', 'repair', '{}', ?)`,
+      ).run(TS);
+      closeTracked(authorized);
+
+      const restarted = boot(path);
+      const escaped = claimNextJob(restarted, ["repair"], {
+        tenantId: "tenant_other",
+        workerId: "cross-tenant-worker",
+        now: "2026-09-02T00:10:00.000Z",
+      });
+      if (escaped) throw new Error(`cross_tenant_identifier_reuse:${escaped.id}`);
+    }).toThrow("legacy_tenant_ownership_source_immutable");
+
+    closeTracked(authorized);
+    const restarted = boot(path);
+    expect(claimNextJob(restarted, ["repair"], {
+      tenantId: "tenant_other",
+      workerId: "cross-tenant-worker",
+      now: "2026-09-02T00:10:00.000Z",
+    })).toBeUndefined();
+    expect(getJob(restarted, "jobs-empty", "tenant_default")).toMatchObject({
+      id: "jobs-empty",
+      tenant_id: "tenant_default",
+    });
+  });
+
+  it.each(LEGACY_OWNERSHIP_TABLES)(
+    "makes scoped %s source identifiers immutable",
+    (table) => {
+      const path = join(newDir(`tenant-scoped-${table}-identity-immutable`), "legacy.sqlite");
+      buildLegacyOwnershipVolume(path);
+      applyExactReleasedPredecessorTenantMigration(path);
+      expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+      attestExactReconciliationScope(path);
+
+      const authorized = boot(path);
+      expect(() => authorized.raw.prepare(
+        `UPDATE ${table} SET id = ? WHERE id = ?`,
+      ).run(`${table}-renamed`, `${table}-empty`)).toThrow();
+      expect(() => authorized.raw.prepare(
+        `UPDATE ${table} SET tenant_id = ? WHERE id = ?`,
+      ).run("tenant_other", `${table}-empty`)).toThrow();
+      expect(() => authorized.raw.prepare(
+        `DELETE FROM ${table} WHERE id = ?`,
+      ).run(`${table}-empty`)).toThrow();
+      expect(authorized.raw.prepare(
+        `SELECT id, tenant_id FROM ${table} WHERE id = ?`,
+      ).get(`${table}-empty`)).toEqual({
+        id: `${table}-empty`,
+        tenant_id: "tenant_default",
+      });
+    },
+  );
+
+  it("permits same-tenant repair-session progress without weakening source guards", () => {
+    const path = join(newDir("tenant-attested-repair-session-progress"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    attestExactReconciliationScope(path);
+
+    const authorized = boot(path);
+    insertRepairSession(authorized, {
+      id: "repair_sessions-empty",
+      tenantId: "tenant_default",
+      consumerId: "consumer-reviewed",
+      repoPath: "/repo",
+      status: "verified",
+      attempts: 1,
+      editsCount: 2,
+      ok: true,
+      reportMd: "reviewed",
+      createdAt: TS,
+      finishedAt: "2026-09-02T00:10:00.000Z",
+    });
+
+    expect(getRepairSession(
+      authorized,
+      "repair_sessions-empty",
+      "tenant_default",
+    )).toMatchObject({
+      id: "repair_sessions-empty",
+      tenant_id: "tenant_default",
+      status: "verified",
+      attempts: 1,
+      edits_count: 2,
+      ok: 1,
+    });
+    expect(() => authorized.raw.prepare(
+      `UPDATE repair_sessions
+       SET tenant_id = 'tenant_other'
+       WHERE id = 'repair_sessions-empty'`,
+    ).run()).toThrow("legacy_tenant_ownership_source_immutable");
+    expect(() => authorized.raw.prepare(
+      `UPDATE repair_sessions
+       SET id = 'repair_sessions-renamed'
+       WHERE id = 'repair_sessions-empty'`,
+    ).run()).toThrow("legacy_tenant_ownership_source_immutable");
+    expect(() => authorized.raw.prepare(
+      "DELETE FROM repair_sessions WHERE id = 'repair_sessions-empty'",
+    ).run()).toThrow("legacy_tenant_ownership_source_immutable");
+  });
+
+  it("rejects a source-row tenant mismatch at every restart", () => {
+    const path = join(newDir("tenant-attested-source-revalidated"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyExactReleasedPredecessorTenantMigration(path);
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+    attestExactReconciliationScope(path);
+
+    const authorized = boot(path);
+    authorized.raw.exec("DROP TRIGGER IF EXISTS jobs_legacy_tenant_ownership_update");
+    authorized.raw.exec("DROP TRIGGER IF EXISTS jobs_legacy_tenant_ownership_delete");
+    authorized.raw.prepare(
+      "UPDATE jobs SET tenant_id = 'tenant_other' WHERE id = 'jobs-empty'",
+    ).run();
+    closeTracked(authorized);
+
+    expect(() => boot(path)).toThrow("legacy_tenant_ownership_reconciliation_required");
+  });
+
+  it("fails closed when a prior released boot already laundered unknown ownership", () => {
+    const path = join(newDir("tenant-two-step-laundering"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyReleasedFallbackBackfill(path);
+
+    expect(() => boot(path)).toThrow(
+      "legacy_tenant_ownership_reconciliation_required",
+    );
+
+    const preserved = new DatabaseSync(path);
+    try {
+      expect(
+        preserved
+          .prepare(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'trigger'
+               AND name IN (
+                 'legacy_tenant_ownership_reconciliation_scope_append_only_update',
+                 'legacy_tenant_ownership_reconciliation_scope_append_only_delete',
+                 'legacy_tenant_ownership_reconciliation_state_append_only_update',
+                 'legacy_tenant_ownership_reconciliation_state_append_only_delete'
+               )
+             ORDER BY name`,
+          )
+          .all(),
+      ).toHaveLength(4);
+      for (const table of LEGACY_OWNERSHIP_TABLES) {
+        expect(
+          preserved
+            .prepare(`SELECT id, tenant_id FROM ${table} ORDER BY id`)
+            .all(),
+        ).toEqual([
+          { id: `${table}-empty`, tenant_id: "tenant_default" },
+          { id: `${table}-null`, tenant_id: "tenant_default" },
+          { id: `${table}-valid`, tenant_id: "tenant_customer" },
+          { id: `${table}-whitespace`, tenant_id: "   " },
+        ]);
+      }
+    } finally {
+      preserved.close();
+    }
+  });
+
+  it("rejects a mutated persisted operator attestation", () => {
+    const path = join(newDir("tenant-mutated-attestation"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyReleasedFallbackBackfill(path);
+    persistLegacyOwnershipAttestations(path, ({ attestationDigest }) => ({
+      attestationDigest: `0${attestationDigest.slice(1)}`,
+    }));
+
+    expect(() => boot(path)).toThrow(
+      "legacy_tenant_ownership_reconciliation_required",
+    );
+  });
+
+  it("accepts exact persisted operator attestations for preexisting fallback rows", () => {
+    const path = join(newDir("tenant-exact-attestation"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    applyReleasedFallbackBackfill(path);
+    persistLegacyOwnershipAttestations(path);
+
+    const migrated = boot(path);
+    for (const table of LEGACY_OWNERSHIP_TABLES) {
+      expect(
+        migrated.raw
+          .prepare(
+            `SELECT id FROM ${table}
+             WHERE tenant_id = 'tenant_default'
+             ORDER BY id`,
+          )
+          .all(),
+      ).toEqual([
+        { id: `${table}-empty` },
+        { id: `${table}-null` },
+      ]);
+    }
+  });
+
+  it("keeps a fresh legacy row unattributable when the tenant column is introduced", () => {
+    const path = join(newDir("tenant-fresh-upgrade"), "legacy.sqlite");
+    buildLegacyJobVolume(path, "missing", [{ id: "fresh-unknown", tenantId: null }]);
+
+    const migrated = boot(path);
+
+    expect(jobTenants(migrated)).toEqual([{ id: "fresh-unknown", tenant_id: null }]);
+    expect(
+      migrated.raw
+        .prepare("SELECT id FROM jobs WHERE tenant_id = 'tenant_default'")
+        .all(),
+    ).toEqual([]);
+    expect(claimNextJob(migrated, ["repair"], {
+      workerId: "review-worker",
+      now: "2026-01-02T00:00:00.000Z",
+    })).toBeUndefined();
+  });
+
+  it("preserves aged null, empty, and valid tenant ownership without laundering", () => {
+    const path = join(newDir("tenant-aged-upgrade"), "aged.sqlite");
+    buildLegacyJobVolume(path, "nullable", [
+      { id: "aged-empty", tenantId: "" },
+      { id: "aged-null", tenantId: null },
+      { id: "aged-valid", tenantId: "tenant_customer" },
+      { id: "aged-whitespace", tenantId: "   " },
+    ]);
+
+    const migrated = boot(path);
+
+    expect(jobTenants(migrated)).toEqual([
+      { id: "aged-empty", tenant_id: "" },
+      { id: "aged-null", tenant_id: null },
+      { id: "aged-valid", tenant_id: "tenant_customer" },
+      { id: "aged-whitespace", tenant_id: "   " },
+    ]);
+    expect(
+      migrated.raw
+        .prepare("SELECT id FROM jobs WHERE tenant_id = 'tenant_default'")
+        .all(),
+    ).toEqual([]);
+    expect(claimNextJob(migrated, ["repair"], {
+      workerId: "review-worker",
+      now: "2026-01-02T00:00:00.000Z",
+    })).toMatchObject({ id: "aged-valid", tenant_id: "tenant_customer" });
+    expect(claimNextJob(migrated, ["repair"], {
+      workerId: "review-worker",
+      now: "2026-01-02T00:00:00.000Z",
+    })).toBeUndefined();
+  });
+
+  it("quarantines unattributable ownership across every migration-touched table", () => {
+    const path = join(newDir("tenant-all-table-upgrade"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+
+    const migrated = boot(path);
+
+    for (const table of LEGACY_OWNERSHIP_TABLES) {
+      expect(
+        migrated.raw.prepare(`SELECT id, tenant_id FROM ${table} ORDER BY id`).all(),
+      ).toEqual([
+        { id: `${table}-empty`, tenant_id: "" },
+        { id: `${table}-null`, tenant_id: null },
+        { id: `${table}-valid`, tenant_id: "tenant_customer" },
+        { id: `${table}-whitespace`, tenant_id: "   " },
+      ]);
+      expect(
+        migrated.raw
+          .prepare(`SELECT id FROM ${table} WHERE tenant_id = 'tenant_default'`)
+          .all(),
+      ).toEqual([]);
+    }
+  });
+
+  it("rejects whitespace-only ownership on every relevant future insert and update", () => {
+    const path = join(newDir("tenant-write-guards"), "legacy.sqlite");
+    buildLegacyOwnershipVolume(path);
+    const migrated = boot(path);
+
+    const inserts = [
+      `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+       VALUES ('jobs-new-whitespace', '   ', 'repair', '{}', '${TS}')`,
+      `INSERT INTO repair_sessions (id, tenant_id, repo_path, status, created_at)
+       VALUES ('repair_sessions-new-whitespace', '   ', '/repo', 'pending', '${TS}')`,
+      `INSERT INTO agent_runs (id, tenant_id, goal, repo_path, status, created_at)
+       VALUES ('agent_runs-new-whitespace', '   ', 'repair', '/repo', 'pending', '${TS}')`,
+      `INSERT INTO audit_events
+         (id, tenant_id, actor, action, resource_type, metadata_json, created_at)
+       VALUES ('audit_events-new-whitespace', '   ', 'legacy', 'legacy.observed', 'legacy', '{}', '${TS}')`,
+      `INSERT INTO suppressed_patterns (id, tenant_id, pattern, created_at)
+       VALUES ('suppressed_patterns-new-whitespace', '   ', 'legacy-pattern', '${TS}')`,
+    ];
+    for (const statement of inserts) {
+      expect(() => migrated.raw.exec(statement)).toThrow("tenant_id_required");
+    }
+
+    for (const table of ["jobs", "repair_sessions", "agent_runs", "suppressed_patterns"]) {
+      expect(() => migrated.raw.exec(
+        `UPDATE ${table} SET tenant_id = '   ' WHERE id = '${table}-valid'`,
+      )).toThrow("tenant_id_required");
+    }
+    expect(() => migrated.raw.exec(
+      "UPDATE audit_events SET tenant_id = '   ' WHERE id = 'audit_events-valid'",
+    )).toThrow();
+
+    expect(() => enqueueJob(migrated, {
+      id: "enqueue-whitespace",
+      tenantId: "   ",
+      type: "repair",
+      payload: {},
+      createdAt: TS,
+    })).toThrow("tenant_id_required");
+  });
+
+  it("resumes an interrupted tenant-column upgrade without claiming unknown rows", () => {
+    const path = join(newDir("tenant-interrupted-upgrade"), "interrupted.sqlite");
+    buildLegacyJobVolume(path, "missing", [{ id: "interrupted-null", tenantId: null }]);
+    const interrupted = new DatabaseSync(path);
+    interrupted.exec("ALTER TABLE jobs ADD COLUMN tenant_id TEXT");
+    interrupted.prepare(
+      `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+       VALUES ('interrupted-valid', 'tenant_customer', 'repair', '{}', ?)`,
+    ).run(TS);
+    interrupted.close();
+
+    const migrated = boot(path);
+
+    expect(jobTenants(migrated)).toEqual([
+      { id: "interrupted-null", tenant_id: null },
+      { id: "interrupted-valid", tenant_id: "tenant_customer" },
+    ]);
+  });
+
+  it("keeps the quarantine stable on rerun and rejects new unattributed writes", () => {
+    const path = join(newDir("tenant-rerun-upgrade"), "rerun.sqlite");
+    buildLegacyJobVolume(path, "nullable", [
+      { id: "rerun-empty", tenantId: "" },
+      { id: "rerun-null", tenantId: null },
+    ]);
+
+    const first = boot(path);
+    closeTracked(first);
+    const second = boot(path);
+
+    expect(jobTenants(second)).toEqual([
+      { id: "rerun-empty", tenant_id: "" },
+      { id: "rerun-null", tenant_id: null },
+    ]);
+    expect(() =>
+      second.raw.prepare(
+        `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+         VALUES ('new-null', NULL, 'repair', '{}', ?)`,
+      ).run(TS),
+    ).toThrow("tenant_id_required");
+    expect(() =>
+      second.raw.prepare(
+        `INSERT INTO jobs (id, tenant_id, type, payload_json, created_at)
+         VALUES ('new-empty', '', 'repair', '{}', ?)`,
+      ).run(TS),
+    ).toThrow("tenant_id_required");
+  });
+
+  it("survives the literal base rollback backfill and repair reapplication", () => {
+    const path = join(newDir("tenant-literal-base-rollback"), "legacy.sqlite");
+    buildLegacyJobVolume(path, "missing", [{ id: "rollback-unknown", tenantId: null }]);
+
+    const repaired = boot(path);
+    expect(jobTenants(repaired)).toEqual([{ id: "rollback-unknown", tenant_id: null }]);
+    closeTracked(repaired);
+
+    const rollback = new DatabaseSync(path);
+    let rollbackError: unknown;
+    try {
+      rollback.prepare(
+        `UPDATE jobs
+         SET tenant_id = 'tenant_default'
+         WHERE tenant_id IS NULL OR tenant_id = ''`,
+      ).run();
+    } catch (error) {
+      rollbackError = error;
+    } finally {
+      rollback.close();
+    }
+
+    const reapplied = boot(path);
+    expect(rollbackError).toBeInstanceOf(Error);
+    expect((rollbackError as Error).message).toContain(
+      "legacy_tenant_ownership_source_immutable",
+    );
+    expect(jobTenants(reapplied)).toEqual([{ id: "rollback-unknown", tenant_id: null }]);
+    expect(claimNextJob(reapplied, ["repair"], {
+      tenantId: "tenant_default",
+      workerId: "rollback-worker",
+      now: "2026-09-02T00:10:00.000Z",
+    })).toBeUndefined();
+    expect(claimNextJob(reapplied, ["repair"], {
+      workerId: "rollback-worker",
+      now: "2026-09-02T00:10:00.000Z",
+    })).toBeUndefined();
+  });
+
   it("boots a legacy volume, converges byte-for-byte with fresh, and preserves every row", () => {
     const legacyPath = join(newDir("rename-legacy"), "legacy.sqlite");
     buildVolume(legacyPath, new Set(NEW_TABLES));

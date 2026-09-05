@@ -47,6 +47,28 @@ function policy() {
   );
 }
 
+/** Promote a base-tracked record into the bootstrap slot in a proposed matrix: drop its
+ *  static record and rewrite the bootstrap for that number with its requirement bindings.
+ *  Same shape as the matrix suite's helper. */
+function promoteMatrixBootstrap(matrix: ProductionClosureMatrix, number: number) {
+  const index = matrix.releaseTrain.pullRequests.findIndex((pr) => pr.number === number);
+  expect(index).toBeGreaterThanOrEqual(0);
+  const [promoted] = matrix.releaseTrain.pullRequests.splice(index, 1);
+  const bootstrap = matrix.releaseTrain.currentPullRequestBootstrap!;
+  bootstrap.number = promoted.number;
+  bootstrap.url = `https://github.com/gondalaimafia/mendpoint/pull/${promoted.number}`;
+  bootstrap.requirementIds = [...promoted.requirementIds];
+  return promoted;
+}
+
+/** Remove a static record WITHOUT promoting it, asserting it existed so a fixture that
+ *  lost the record fails here instead of splicing the last entry and passing vacuously. */
+function removeMatrixRecord(matrix: ProductionClosureMatrix, number: number) {
+  const index = matrix.releaseTrain.pullRequests.findIndex((pr) => pr.number === number);
+  expect(index).toBeGreaterThanOrEqual(0);
+  return matrix.releaseTrain.pullRequests.splice(index, 1)[0];
+}
+
 /**
  * The claims registry these tests judge, decoupled from the live one.
  *
@@ -1325,6 +1347,111 @@ describe("production closure proposal authority", () => {
     expect(result.authorityRotation?.successor?.stagedByRotationId).toBeUndefined();
     expect(result.authorityRotation?.successor?.stagedAt).toBeUndefined();
     expect(result.authorityRotation?.successor).toEqual(restagedTuple);
+  });
+
+  it("does not flag a dependency edge to a base-tracked pull request that promotes itself into the bootstrap slot", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    // #381's pre-existing edge points at #379, which promotes itself into the bootstrap
+    // slot. Promotion is not removal, and the edge resolves against the slot.
+    const p381 = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 381)!;
+    expect(p381.dependencies.pullRequests).toContain(379);
+    const promoted = promoteMatrixBootstrap(matrix, 379);
+    matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
+    client.replace(matrixPath, matrix);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    const untracked381 = result.issues.filter(
+      (issue) => issue.code === "PR_DEPENDENCY_UNTRACKED" && issue.subject === "381",
+    );
+    expect(untracked381, JSON.stringify(result.issues, null, 2)).toEqual([]);
+    // Promotion, not removal: the self-removal exemption still covers #379's own record.
+    const removal379 = result.issues.filter(
+      (issue) =>
+        issue.code === "PROPOSAL_PROVIDER_RECORD_REMOVAL_UNVERIFIED" &&
+        issue.subject === String(promoted.number),
+    );
+    expect(removal379, JSON.stringify(result.issues, null, 2)).toEqual([]);
+  });
+
+  it("still flags a dependency edge to a second tracked pull request removed alongside a self-bootstrap promotion", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    const p330 = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 330)!;
+    expect(p330.dependencies.pullRequests).toContain(387);
+    // #379 self-promotes; #387 is removed WITHOUT promotion. Exactly one number is
+    // exempt, so #330 -> #387 still flags and #381 -> #379 does not.
+    promoteMatrixBootstrap(matrix, 379);
+    removeMatrixRecord(matrix, 387);
+    matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
+    client.replace(matrixPath, matrix);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    const untrackedSubjects = result.issues
+      .filter((issue) => issue.code === "PR_DEPENDENCY_UNTRACKED")
+      .map((issue) => issue.subject);
+    expect(untrackedSubjects, JSON.stringify(result.issues, null, 2)).toContain("330");
+    expect(untrackedSubjects, JSON.stringify(result.issues, null, 2)).not.toContain("381");
+  });
+
+  it("keys the dependency exemption on the CI-supplied number, not a forged bootstrap number", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    const p331 = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 331)!;
+    const p381 = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 381)!;
+    expect(p381.dependencies.pullRequests).toContain(379);
+    // #379 leaves the tracked list; the bootstrap slot is forged to a different number.
+    // The exemption follows the CI-supplied number (379), not the forged declaration.
+    removeMatrixRecord(matrix, 379);
+    matrix.releaseTrain.currentPullRequestBootstrap!.number = 999999;
+    matrix.releaseTrain.currentPullRequestBootstrap!.url =
+      "https://github.com/gondalaimafia/mendpoint/pull/999999";
+    p331.dependencies.pullRequests = [999999];
+    matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
+    client.replace(matrixPath, matrix);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+      379, // CI-attested current pull request number
+    );
+
+    const untrackedSubjects = result.issues
+      .filter((issue) => issue.code === "PR_DEPENDENCY_UNTRACKED")
+      .map((issue) => issue.subject);
+    // The CI-supplied number resolves #381's edge even though the slot names another.
+    expect(untrackedSubjects, JSON.stringify(result.issues, null, 2)).not.toContain("381");
+    // The forged slot number grants nothing: #331 -> #999999 still flags.
+    expect(untrackedSubjects, JSON.stringify(result.issues, null, 2)).toContain("331");
   });
 
   it("accepts an exhaustive authority-only rotation interpreted by the base revision", async () => {

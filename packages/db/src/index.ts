@@ -333,6 +333,56 @@ CREATE TABLE IF NOT EXISTS suppressed_patterns (
 CREATE INDEX IF NOT EXISTS suppressed_patterns_consumer_idx ON suppressed_patterns(consumer_id);
 CREATE INDEX IF NOT EXISTS suppressed_patterns_pattern_idx ON suppressed_patterns(pattern);
 
+-- Persist the exact row boundary discovered when nullable legacy tenant columns
+-- first reach the repaired schema. Records inside this boundary require an
+-- operator attestation before the application may boot; later writes are not
+-- retrospectively classified as legacy.
+CREATE TABLE IF NOT EXISTS legacy_tenant_ownership_reconciliation_scope (
+  table_name TEXT NOT NULL,
+  row_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  discovered_at TEXT NOT NULL,
+  PRIMARY KEY (table_name, row_id, tenant_id)
+);
+CREATE TABLE IF NOT EXISTS legacy_tenant_ownership_reconciliation_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  sealed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS legacy_tenant_ownership_reconciliation_discovery_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  schema_version INTEGER NOT NULL CHECK (schema_version = 2),
+  source_schema_digest TEXT NOT NULL,
+  scope_digest TEXT NOT NULL,
+  sealed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS legacy_tenant_ownership_attestations (
+  table_name TEXT NOT NULL,
+  row_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  evidence_digest TEXT NOT NULL,
+  attested_by TEXT NOT NULL,
+  attested_at TEXT NOT NULL,
+  attestation_digest TEXT NOT NULL,
+  PRIMARY KEY (table_name, row_id, tenant_id)
+);
+-- Rows that reached this migration without attributable ownership must remain
+-- unknown across an older-binary rollback. The source triggers installed by the
+-- migration reference this durable ledger, so a predecessor backfill cannot
+-- turn quarantine into tenant authority.
+CREATE TABLE IF NOT EXISTS legacy_tenant_ownership_quarantine_scope (
+  table_name TEXT NOT NULL,
+  row_id TEXT NOT NULL,
+  discovered_at TEXT NOT NULL,
+  PRIMARY KEY (table_name, row_id)
+);
+CREATE TABLE IF NOT EXISTS legacy_tenant_ownership_quarantine_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  scope_digest TEXT NOT NULL,
+  sealed_at TEXT NOT NULL
+);
+
 -- Warden capability-adoption opportunities: NEW provider capabilities that linked
 -- consumers are not yet using (measured from static code presence). Idempotent per
 -- (tenant, change, capability); re-measurement upserts the counts.
@@ -3086,6 +3136,27 @@ function migrateRepositorySnapshotIdentity(db: AppDb): void {
 
 /** Additive columns for Phase D feed URLs + Phase E tenant on consumers. */
 function migrateProvidersFeedColumns(db: AppDb) {
+  const nullableLegacyTenantTables = new Set<string>();
+  const releasedFallbackTenantTables = new Set<string>();
+  for (const table of LEGACY_TENANT_OWNERSHIP_TABLES) {
+    const tenantColumn = all<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>(
+      db,
+      `PRAGMA table_info(${table})`,
+    ).find((column) => column.name === "tenant_id");
+    if (!tenantColumn || tenantColumn.notnull !== 1) {
+      nullableLegacyTenantTables.add(table);
+    } else if (
+      tenantColumn.type.trim().toUpperCase() === "TEXT" &&
+      tenantColumn.dflt_value?.trim() === "'tenant_default'"
+    ) {
+      releasedFallbackTenantTables.add(table);
+    }
+  }
   const pcols = all<{ name: string }>(db, `PRAGMA table_info(providers)`).map((c) => c.name);
   if (!pcols.includes("openapi_url")) {
     run(db, `ALTER TABLE providers ADD COLUMN openapi_url TEXT`);
@@ -3171,7 +3242,12 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "providers", name: "tenant_id", sql: "TEXT" },
     { table: "api_keys", name: "authority_principal_id", sql: "TEXT" },
     { table: "api_keys", name: "authority_role", sql: "TEXT" },
-    { table: "jobs", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    // Historical rows that predate tenant attribution must remain unknown. A
+    // default here would silently claim them for the default customer tenant.
+    // Fresh databases keep the NOT NULL column from the static DDL, while the
+    // triggers installed below require attribution for every future write on an
+    // upgraded volume.
+    { table: "jobs", name: "tenant_id", sql: "TEXT" },
     { table: "api_keys", name: "principal_id", sql: "TEXT" },
     { table: "jobs", name: "lease_owner", sql: "TEXT" },
     { table: "jobs", name: "lease_expires_at", sql: "TEXT" },
@@ -3181,14 +3257,14 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "jobs", name: "last_error_at", sql: "TEXT" },
     { table: "jobs", name: "dead_at", sql: "TEXT" },
     { table: "jobs", name: "cancelled_at", sql: "TEXT" },
-    { table: "repair_sessions", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
-    { table: "agent_runs", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "repair_sessions", name: "tenant_id", sql: "TEXT" },
+    { table: "agent_runs", name: "tenant_id", sql: "TEXT" },
     { table: "agent_runs", name: "job_id", sql: "TEXT" },
-    { table: "audit_events", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "audit_events", name: "tenant_id", sql: "TEXT" },
     { table: "audit_events", name: "principal_id", sql: "TEXT" },
     { table: "audit_events", name: "api_key_id", sql: "TEXT" },
     { table: "audit_events", name: "request_id", sql: "TEXT" },
-    { table: "suppressed_patterns", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "suppressed_patterns", name: "tenant_id", sql: "TEXT" },
     { table: "feed_polls", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
     { table: "feed_schedules", name: "release_last_success_at", sql: "TEXT" },
     { table: "feed_schedule_windows", name: "lease_expires_at", sql: "TEXT" },
@@ -3403,6 +3479,11 @@ function migrateProvidersFeedColumns(db: AppDb) {
       addedColumns.add(`${column.table}.${column.name}`);
     }
   }
+  reconcileLegacyTenantOwnership(
+    db,
+    nullableLegacyTenantTables,
+    releasedFallbackTenantTables,
+  );
   run(
     db,
     `UPDATE feed_schedule_windows
@@ -3520,7 +3601,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
      SET available_at = created_at
      WHERE available_at IS NULL`,
   );
-  for (const table of [
+  installTenantNonblankGuards(db, [
     "consumers",
     "jobs",
     "repair_sessions",
@@ -3528,32 +3609,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
     "agent_run_meters",
     "audit_events",
     "suppressed_patterns",
-  ]) {
-    run(
-      db,
-      `UPDATE ${table}
-       SET tenant_id = 'tenant_default'
-       WHERE tenant_id IS NULL OR tenant_id = ''`,
-    );
-    run(
-      db,
-      `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_required_insert
-       BEFORE INSERT ON ${table}
-       WHEN NEW.tenant_id IS NULL OR NEW.tenant_id = ''
-       BEGIN
-         SELECT RAISE(ABORT, 'tenant_id_required');
-       END`,
-    );
-    run(
-      db,
-      `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_required_update
-       BEFORE UPDATE OF tenant_id ON ${table}
-       WHEN NEW.tenant_id IS NULL OR NEW.tenant_id = ''
-       BEGIN
-         SELECT RAISE(ABORT, 'tenant_id_required');
-       END`,
-    );
-  }
+  ]);
   run(db, `CREATE INDEX IF NOT EXISTS jobs_tenant_status_idx ON jobs(tenant_id, status)`);
   run(
     db,
@@ -3746,6 +3802,496 @@ function get<T>(db: AppDb, sql: string, params: SQLInputValue[] = []): T | undef
 
 function run(db: AppDb, sql: string, params: SQLInputValue[] = []): void {
   db.raw.prepare(sql).run(...params);
+}
+
+const LEGACY_TENANT_OWNERSHIP_TABLES = [
+  "jobs",
+  "repair_sessions",
+  "agent_runs",
+  "audit_events",
+  "suppressed_patterns",
+] as const;
+
+const LEGACY_TENANT_OWNERSHIP_LEDGER_TABLES = [
+  "legacy_tenant_ownership_reconciliation_scope",
+  "legacy_tenant_ownership_reconciliation_state",
+  "legacy_tenant_ownership_reconciliation_discovery_state",
+  "legacy_tenant_ownership_quarantine_scope",
+  "legacy_tenant_ownership_quarantine_state",
+] as const;
+
+export type LegacyTenantOwnershipAttestation = {
+  tableName: (typeof LEGACY_TENANT_OWNERSHIP_TABLES)[number];
+  rowId: string;
+  tenantId: string;
+  evidenceDigest: string;
+  attestedBy: string;
+  attestedAt: string;
+};
+
+export function computeLegacyTenantOwnershipAttestationDigest(
+  input: LegacyTenantOwnershipAttestation,
+): string {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      schemaVersion: 1,
+      tableName: input.tableName,
+      rowId: input.rowId,
+      tenantId: input.tenantId,
+      evidenceDigest: input.evidenceDigest,
+      attestedBy: input.attestedBy,
+      attestedAt: input.attestedAt,
+    }))
+    .digest("hex");
+}
+
+function reconcileLegacyTenantOwnership(
+  db: AppDb,
+  nullableLegacyTenantTables: ReadonlySet<string>,
+  releasedFallbackTenantTables: ReadonlySet<string>,
+): void {
+  const state = get<{ schema_version: number }>(
+    db,
+    "SELECT schema_version FROM legacy_tenant_ownership_reconciliation_state WHERE id = 1",
+  );
+  const discoveryDigest = createHash("sha256")
+    .update(JSON.stringify({
+      schemaVersion: 2,
+      releasedFallbackTenantTables: [...releasedFallbackTenantTables].sort(),
+    }))
+    .digest("hex");
+  const discoveryColumns = all<{ name: string }>(
+    db,
+    "PRAGMA table_info(legacy_tenant_ownership_reconciliation_discovery_state)",
+  ).map((column) => column.name);
+  if (!discoveryColumns.includes("scope_digest")) {
+    throw new Error("legacy_tenant_ownership_reconciliation_schema_unsupported");
+  }
+  const discoveryState = get<{
+    schema_version: number;
+    source_schema_digest: string;
+    scope_digest: string;
+  }>(
+    db,
+    `SELECT schema_version, source_schema_digest, scope_digest
+     FROM legacy_tenant_ownership_reconciliation_discovery_state
+     WHERE id = 1`,
+  );
+  const quarantineState = get<{
+    schema_version: number;
+    scope_digest: string;
+  }>(
+    db,
+    `SELECT schema_version, scope_digest
+     FROM legacy_tenant_ownership_quarantine_state
+     WHERE id = 1`,
+  );
+  if (state && state.schema_version !== 1) {
+    throw new Error("legacy_tenant_ownership_reconciliation_schema_unsupported");
+  }
+  if (discoveryState && (
+    discoveryState.schema_version !== 2 ||
+    discoveryState.source_schema_digest !== discoveryDigest
+  )) throw new Error("legacy_tenant_ownership_reconciliation_schema_unsupported");
+  if (!state && discoveryState) {
+    throw new Error("legacy_tenant_ownership_reconciliation_schema_unsupported");
+  }
+  if (quarantineState && quarantineState.schema_version !== 1) {
+    throw new Error("legacy_tenant_ownership_reconciliation_schema_unsupported");
+  }
+  if (!state || !discoveryState || !quarantineState) {
+    db.raw.exec("BEGIN IMMEDIATE");
+    try {
+      const discoveredAt = new Date().toISOString();
+      const tablesToDiscover = new Set<string>([
+        ...(!state ? nullableLegacyTenantTables : []),
+        ...(!discoveryState ? releasedFallbackTenantTables : []),
+      ]);
+      for (const table of LEGACY_TENANT_OWNERSHIP_TABLES) {
+        if (!tablesToDiscover.has(table)) continue;
+        run(
+          db,
+          `INSERT OR IGNORE INTO legacy_tenant_ownership_reconciliation_scope
+             (table_name, row_id, tenant_id, discovered_at)
+           SELECT ?, id, tenant_id, ?
+           FROM ${table}
+           WHERE tenant_id = 'tenant_default'`,
+          [table, discoveredAt],
+        );
+      }
+      if (!quarantineState) {
+        for (const table of LEGACY_TENANT_OWNERSHIP_TABLES) {
+          run(
+            db,
+            `INSERT OR IGNORE INTO legacy_tenant_ownership_quarantine_scope
+               (table_name, row_id, discovered_at)
+             SELECT ?, id, ?
+             FROM ${table}
+             WHERE tenant_id IS NULL OR trim(tenant_id) = ''`,
+            [table, discoveredAt],
+          );
+        }
+      }
+      if (!state) {
+        run(
+          db,
+          `INSERT INTO legacy_tenant_ownership_reconciliation_state
+             (id, schema_version, sealed_at) VALUES (1, 1, ?)`,
+          [discoveredAt],
+        );
+      }
+      if (!discoveryState) {
+        const scopeDigest = legacyTenantOwnershipScopeDigest(db);
+        run(
+          db,
+          `INSERT INTO legacy_tenant_ownership_reconciliation_discovery_state
+             (id, schema_version, source_schema_digest, scope_digest, sealed_at)
+           VALUES (1, 2, ?, ?, ?)`,
+          [discoveryDigest, scopeDigest, discoveredAt],
+        );
+      }
+      if (!quarantineState) {
+        run(
+          db,
+          `INSERT INTO legacy_tenant_ownership_quarantine_state
+             (id, schema_version, scope_digest, sealed_at)
+           VALUES (1, 1, ?, ?)`,
+          [legacyTenantOwnershipQuarantineScopeDigest(db), discoveredAt],
+        );
+      }
+      installLegacyTenantOwnershipRecoveryGuards(db, releasedFallbackTenantTables);
+      db.raw.exec("COMMIT");
+    } catch (error) {
+      if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  // Recovery guard installation, ledger/source validation, and final
+  // attestation sealing are one write-locked transition. No other connection
+  // can observe or exploit a subset of the required guard families.
+  const ownsRecoveryTransaction = !db.raw.isTransaction;
+  if (ownsRecoveryTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    installLegacyTenantOwnershipRecoveryGuards(db, releasedFallbackTenantTables);
+
+  const sealedDiscoveryState = get<{ scope_digest: string }>(
+    db,
+    `SELECT scope_digest FROM legacy_tenant_ownership_reconciliation_discovery_state WHERE id = 1`,
+  );
+  if (!sealedDiscoveryState || sealedDiscoveryState.scope_digest !== legacyTenantOwnershipScopeDigest(db)) {
+    throw new Error("legacy_tenant_ownership_reconciliation_required");
+  }
+  const sealedQuarantineState = get<{ scope_digest: string }>(
+    db,
+    `SELECT scope_digest FROM legacy_tenant_ownership_quarantine_state WHERE id = 1`,
+  );
+  if (
+    !sealedQuarantineState ||
+    sealedQuarantineState.scope_digest !== legacyTenantOwnershipQuarantineScopeDigest(db)
+  ) {
+    throw new Error("legacy_tenant_ownership_reconciliation_required");
+  }
+
+  const quarantinedRows = all<{
+    table_name: string;
+    row_id: string;
+  }>(
+    db,
+    `SELECT table_name, row_id
+     FROM legacy_tenant_ownership_quarantine_scope
+     ORDER BY table_name, row_id`,
+  );
+  for (const quarantined of quarantinedRows) {
+    if (!(LEGACY_TENANT_OWNERSHIP_TABLES as readonly string[]).includes(quarantined.table_name)) {
+      throw new Error("legacy_tenant_ownership_reconciliation_required");
+    }
+    const source = get<{ tenant_id: string | null }>(
+      db,
+      `SELECT tenant_id FROM ${quarantined.table_name} WHERE id = ?`,
+      [quarantined.row_id],
+    );
+    if (!source || (source.tenant_id !== null && source.tenant_id.trim() !== "")) {
+      throw new Error("legacy_tenant_ownership_reconciliation_required");
+    }
+  }
+
+  const scopedRows = all<{
+    table_name: string;
+    row_id: string;
+    tenant_id: string;
+  }>(
+    db,
+    `SELECT table_name, row_id, tenant_id
+     FROM legacy_tenant_ownership_reconciliation_scope
+     ORDER BY table_name, row_id`,
+  );
+  for (const scoped of scopedRows) {
+    if (!(LEGACY_TENANT_OWNERSHIP_TABLES as readonly string[]).includes(scoped.table_name)) {
+      throw new Error("legacy_tenant_ownership_reconciliation_required");
+    }
+    const attestation = get<{
+      table_name: string;
+      row_id: string;
+      tenant_id: string;
+      evidence_digest: string;
+      attested_by: string;
+      attested_at: string;
+      attestation_digest: string;
+    }>(
+      db,
+      `SELECT table_name, row_id, tenant_id, evidence_digest, attested_by,
+              attested_at, attestation_digest
+       FROM legacy_tenant_ownership_attestations
+       WHERE table_name = ? AND row_id = ? AND tenant_id = ?`,
+      [scoped.table_name, scoped.row_id, scoped.tenant_id],
+    );
+    const evidenceDigest = attestation?.evidence_digest ?? "";
+    const attestedBy = attestation?.attested_by ?? "";
+    const attestedAt = attestation?.attested_at ?? "";
+    const validTimestamp = Number.isFinite(Date.parse(attestedAt)) &&
+      new Date(attestedAt).toISOString() === attestedAt;
+    if (
+      !attestation ||
+      !/^[a-f0-9]{64}$/.test(evidenceDigest) ||
+      attestedBy.trim() === "" ||
+      !validTimestamp ||
+      attestation.attestation_digest !==
+        computeLegacyTenantOwnershipAttestationDigest({
+          tableName: scoped.table_name as LegacyTenantOwnershipAttestation["tableName"],
+          rowId: scoped.row_id,
+          tenantId: scoped.tenant_id,
+          evidenceDigest,
+          attestedBy,
+          attestedAt,
+        })
+    ) {
+      throw new Error("legacy_tenant_ownership_reconciliation_required");
+    }
+    const source = get<{ tenant_id: string | null }>(
+      db,
+      `SELECT tenant_id FROM ${scoped.table_name} WHERE id = ?`,
+      [scoped.row_id],
+    );
+    if (!source || source.tenant_id !== scoped.tenant_id) {
+      throw new Error("legacy_tenant_ownership_reconciliation_required");
+    }
+  }
+
+  installLegacyTenantOwnershipAppendOnlyTriggers(db, [
+    "legacy_tenant_ownership_attestations",
+  ]);
+    if (ownsRecoveryTransaction) db.raw.exec("COMMIT");
+  } catch (error) {
+    if (ownsRecoveryTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function legacyTenantOwnershipScopeDigest(db: AppDb): string {
+  const rows = all<{
+    table_name: string;
+    row_id: string;
+    tenant_id: string;
+    discovered_at: string;
+  }>(
+    db,
+    `SELECT table_name, row_id, tenant_id, discovered_at
+     FROM legacy_tenant_ownership_reconciliation_scope
+     ORDER BY table_name, row_id, tenant_id`,
+  );
+  return createHash("sha256").update(JSON.stringify({ schemaVersion: 1, rows })).digest("hex");
+}
+
+function legacyTenantOwnershipQuarantineScopeDigest(db: AppDb): string {
+  const rows = all<{
+    table_name: string;
+    row_id: string;
+    discovered_at: string;
+  }>(
+    db,
+    `SELECT table_name, row_id, discovered_at
+     FROM legacy_tenant_ownership_quarantine_scope
+     ORDER BY table_name, row_id`,
+  );
+  return createHash("sha256").update(JSON.stringify({ schemaVersion: 1, rows })).digest("hex");
+}
+
+function installTenantNonblankGuards(db: AppDb, tables: readonly string[]): void {
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    for (const table of tables) {
+      // Existing NULL, empty, or whitespace-only tenant ids are historical
+      // evidence. Leave them byte-identical; reject only future writes.
+      run(
+        db,
+        `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_required_insert
+         BEFORE INSERT ON ${table}
+         WHEN NEW.tenant_id IS NULL OR NEW.tenant_id = ''
+         BEGIN
+           SELECT RAISE(ABORT, 'tenant_id_required');
+         END`,
+      );
+      run(
+        db,
+        `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_required_update
+         BEFORE UPDATE OF tenant_id ON ${table}
+         WHEN NEW.tenant_id IS NULL OR NEW.tenant_id = ''
+         BEGIN
+           SELECT RAISE(ABORT, 'tenant_id_required');
+         END`,
+      );
+      run(
+        db,
+        `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_nonblank_insert
+         BEFORE INSERT ON ${table}
+         WHEN NEW.tenant_id IS NULL OR trim(NEW.tenant_id) = ''
+         BEGIN
+           SELECT RAISE(ABORT, 'tenant_id_required');
+         END`,
+      );
+      run(
+        db,
+        `CREATE TRIGGER IF NOT EXISTS ${table}_tenant_nonblank_update
+         BEFORE UPDATE OF tenant_id ON ${table}
+         WHEN NEW.tenant_id IS NULL OR trim(NEW.tenant_id) = ''
+         BEGIN
+           SELECT RAISE(ABORT, 'tenant_id_required');
+         END`,
+      );
+    }
+    if (ownsTransaction) db.raw.exec("COMMIT");
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function installLegacyTenantOwnershipRecoveryGuards(
+  db: AppDb,
+  releasedFallbackTenantTables: ReadonlySet<string>,
+): void {
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    installTenantNonblankGuards(db, LEGACY_TENANT_OWNERSHIP_TABLES);
+    installLegacyTenantOwnershipAppendOnlyTriggers(
+      db,
+      LEGACY_TENANT_OWNERSHIP_LEDGER_TABLES,
+    );
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS legacy_tenant_ownership_reconciliation_scope_append_only_insert
+       BEFORE INSERT ON legacy_tenant_ownership_reconciliation_scope
+       BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_reconciliation_scope_sealed'); END`,
+    );
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS legacy_tenant_ownership_quarantine_scope_append_only_insert
+       BEFORE INSERT ON legacy_tenant_ownership_quarantine_scope
+       BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_quarantine_scope_sealed'); END`,
+    );
+    installLegacyTenantOwnershipDefaultAttributionGuards(
+      db,
+      releasedFallbackTenantTables,
+    );
+    installLegacyTenantOwnershipSourceGuards(db);
+    if (ownsTransaction) db.raw.exec("COMMIT");
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function installLegacyTenantOwnershipDefaultAttributionGuards(
+  db: AppDb,
+  releasedFallbackTenantTables: ReadonlySet<string>,
+): void {
+  for (const table of LEGACY_TENANT_OWNERSHIP_TABLES) {
+    const trigger = `${table}_legacy_tenant_ownership_default_insert`;
+    db.raw.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+    if (!releasedFallbackTenantTables.has(table)) continue;
+    db.raw.exec(`
+      CREATE TRIGGER ${trigger}
+      BEFORE INSERT ON ${table}
+      WHEN NEW.tenant_id = 'tenant_default'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM legacy_tenant_ownership_reconciliation_scope scope
+          INNER JOIN legacy_tenant_ownership_attestations attestation
+            ON attestation.table_name = scope.table_name
+           AND attestation.row_id = scope.row_id
+           AND attestation.tenant_id = scope.tenant_id
+          WHERE scope.table_name = '${table}'
+            AND scope.row_id = NEW.id
+            AND scope.tenant_id = NEW.tenant_id
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'legacy_tenant_ownership_attestation_required');
+      END;
+    `);
+  }
+}
+
+function installLegacyTenantOwnershipSourceGuards(db: AppDb): void {
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    for (const table of LEGACY_TENANT_OWNERSHIP_TABLES) {
+      db.raw.exec(`
+        DROP TRIGGER IF EXISTS ${table}_legacy_tenant_ownership_update;
+        CREATE TRIGGER ${table}_legacy_tenant_ownership_update
+        BEFORE UPDATE OF id, tenant_id ON ${table}
+        WHEN (OLD.id IS NOT NEW.id OR OLD.tenant_id IS NOT NEW.tenant_id)
+        AND (
+          EXISTS (
+            SELECT 1 FROM legacy_tenant_ownership_reconciliation_scope scope
+            WHERE scope.table_name = '${table}' AND scope.row_id = OLD.id
+          ) OR EXISTS (
+            SELECT 1 FROM legacy_tenant_ownership_quarantine_scope quarantine
+            WHERE quarantine.table_name = '${table}' AND quarantine.row_id = OLD.id
+          )
+        )
+        BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_source_immutable'); END;
+        DROP TRIGGER IF EXISTS ${table}_legacy_tenant_ownership_delete;
+        CREATE TRIGGER ${table}_legacy_tenant_ownership_delete
+        BEFORE DELETE ON ${table}
+        WHEN EXISTS (
+          SELECT 1 FROM legacy_tenant_ownership_reconciliation_scope scope
+          WHERE scope.table_name = '${table}' AND scope.row_id = OLD.id
+        ) OR EXISTS (
+          SELECT 1 FROM legacy_tenant_ownership_quarantine_scope quarantine
+          WHERE quarantine.table_name = '${table}' AND quarantine.row_id = OLD.id
+        )
+        BEGIN SELECT RAISE(ABORT, 'legacy_tenant_ownership_source_immutable'); END;
+      `);
+    }
+    if (ownsTransaction) db.raw.exec("COMMIT");
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function installLegacyTenantOwnershipAppendOnlyTriggers(
+  db: AppDb,
+  tables: readonly string[],
+): void {
+  for (const table of tables) {
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS ${table}_append_only_update
+       BEFORE UPDATE ON ${table}
+       BEGIN SELECT RAISE(ABORT, '${table}_append_only'); END`,
+    );
+    run(
+      db,
+      `CREATE TRIGGER IF NOT EXISTS ${table}_append_only_delete
+       BEFORE DELETE ON ${table}
+       BEGIN SELECT RAISE(ABORT, '${table}_append_only'); END`,
+    );
+  }
 }
 
 export function recordAudit(
@@ -6298,6 +6844,9 @@ export function enqueueJob(
     availableAt?: string;
   },
 ) {
+  if (typeof row.tenantId !== "string" || row.tenantId.trim() === "") {
+    throw new Error("tenant_id_required");
+  }
   run(
     db,
     `INSERT INTO jobs
@@ -6390,6 +6939,8 @@ export function claimNextJob(
     ? `AND type IN (${types.map(() => "?").join(",")})`
     : "";
   const tenantFilter = opts?.tenantId ? "AND tenant_id = ?" : "";
+  const attributableTenantFilter =
+    "AND tenant_id IS NOT NULL AND trim(tenant_id) <> ''";
   const tenantCapacityFilter = opts?.maxRunningPerTenant
     ? `AND (
          SELECT COUNT(*) FROM jobs running
@@ -6415,7 +6966,7 @@ export function claimNextJob(
     const job = get<JobRow>(
       db,
       `SELECT * FROM jobs
-       WHERE status = 'pending' ${typeFilter} ${tenantFilter}
+       WHERE status = 'pending' ${typeFilter} ${tenantFilter} ${attributableTenantFilter}
          AND cancelled_at IS NULL
          AND (available_at IS NULL OR available_at <= ?)
          ${tenantCapacityFilter}
