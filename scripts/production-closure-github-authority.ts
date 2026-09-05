@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -6,6 +7,10 @@ import type {
   ProductImplementationStatus,
   ProductRequirementManifest,
 } from "../packages/contract/src/product-requirements.js";
+import type {
+  AuthorityRotationLedger,
+  ClosureAuthorityPolicy,
+} from "./production-closure-authority-rotation.js";
 
 export type GitHubSleep = (milliseconds: number) => Promise<void>;
 
@@ -132,6 +137,7 @@ export interface GitHubWorkflowRun {
   conclusion: string | null;
   head_sha: string;
   html_url: string;
+  created_at: string;
 }
 
 export interface GitHubCommitStatus {
@@ -200,6 +206,12 @@ export interface ProviderResolvedPullRequest {
       controllerStatusCreatorLogin: string;
       controllerStatusCreatorUserId: number;
       activationDeadline: string;
+      // Staging provenance resolved by the proposal authority from the rotation ledger
+      // for an activate_successor rotation; bounds the success-path window below. Optional
+      // on the type (a stage_successor tuple omits it); required at activation time, where
+      // its absence fails closed with AUTHORITY_SUCCESSOR_STAGING_PROVENANCE_REQUIRED.
+      stagedByRotationId?: string;
+      stagedAt?: string;
     };
   };
 }
@@ -291,6 +303,13 @@ export interface GitHubAuthorityContext {
   // what drives the rotation attestation demand, so a rotation declared under a
   // foreign pull request number cannot suppress the attestation requirement.
   proposalAuthorityRotation?: ProviderResolvedPullRequest["authorityRotation"] | null;
+  // Staging provenance (the re-stage rotation id and its issuedAt) resolved by main() from
+  // the trusted on-disk main policy + rotation ledger, available on EVERY trigger - the
+  // pull_request merge gate, the schedule sweep, and the push fan-out - unlike the proposal
+  // observation, which is only plumbed on the current_pull_request scope. This is the
+  // authoritative success-path window start; when the proposal observation also carries it,
+  // verifyGitHubClosureAuthority requires the two to agree.
+  successorStagingProvenance?: { stagedByRotationId: string; stagedAt: string };
 }
 
 export interface GitHubAuthorityClient {
@@ -306,6 +325,9 @@ export interface GitHubAuthorityClient {
   listIssueEvents(number: number): Promise<GitHubIssueEvent[]>;
   listCommitStatuses(revision: string): Promise<GitHubCommitStatus[]>;
   getWorkflowRun(runId: number): Promise<GitHubWorkflowRun>;
+  // Content digest ("sha256:<hex>") of the file at `path` on `revision`, or null when the
+  // file is absent there. Binds a sibling success run to the exact staged workflow bytes.
+  getFileSha256(revision: string, path: string): Promise<string | null>;
   getIssue(number: number): Promise<GitHubIssue>;
 }
 
@@ -332,6 +354,19 @@ export interface GitHubAuthorityObservation {
   checkRunIds: number[];
   workflowRunIds: number[];
   reviewIds: number[];
+  // Set on the push observation for a merged activation bootstrap: the pull_request-time
+  // proofs were deliberately SKIPPED here (they are enforced proposal-side and re-verified by
+  // closure:check on main), not verified on the merged head. Named "skipped" rather than
+  // "observed" so it cannot read as a positive verification it did not perform.
+  activationVerificationSkipped?: { rotationId: string };
+  // Set on a pull_request activation when an open sibling proves the staged bytes' success
+  // path: the sibling pull request number and the run/check-run/status ids that proved it.
+  successorSuccessPath?: {
+    pullRequest: number;
+    runId: number;
+    checkRunId: number;
+    statusId: number;
+  };
   verdict: "pass" | "fail";
   issues: GitHubAuthorityIssue[];
 }
@@ -625,6 +660,73 @@ function requirementsWithoutLiveClosurePath(
     if (!hasOpenIssue && !hasLiveOpenPullRequest) failing.push(row.requirementId);
   }
   return failing;
+}
+
+/**
+ * A plain repository-relative path: every "/"-separated segment is a safe name and none is a
+ * traversal segment. Percent-encoding does NOT neutralise traversal (encodeURIComponent("..")
+ * === ".."), so this allowlist is what keeps a crafted path from reshaping a request path.
+ */
+function isSafeRepositoryPath(path: string): boolean {
+  if (path.length === 0) return false;
+  return path
+    .split("/")
+    .every((segment) => /^[A-Za-z0-9._-]+$/.test(segment) && segment !== "." && segment !== "..");
+}
+
+/**
+ * Resolve the staging provenance that bounds a successor activation's success-path window
+ * from the trusted on-disk main policy and rotation ledger. The window opens at the issue
+ * time of the rotation that staged the CURRENT bytes - the re-stage when one exists - which
+ * the policy records on the staged successor state as stagedByRotationId and whose issuedAt
+ * lives in the ledger. Returns null when no successor is staged or the named rotation is
+ * absent from the ledger, so the activation fails closed downstream
+ * (AUTHORITY_SUCCESSOR_STAGING_PROVENANCE_REQUIRED) rather than run on an unbounded window.
+ * main() calls this on EVERY trigger, so the window is bounded even on the schedule sweep and
+ * push fan-out, where the head-bound proposal observation is not plumbed.
+ */
+export function stagingProvenanceFromPolicy(
+  policy: { successor?: ClosureAuthorityPolicy["successor"] },
+  ledger: AuthorityRotationLedger,
+): { stagedByRotationId: string; stagedAt: string } | null {
+  const staged = policy.successor;
+  if (!staged || typeof staged.stagedByRotationId !== "string") return null;
+  const stagingRotation = (ledger.rotations ?? []).find(
+    (rotation) => rotation.rotationId === staged.stagedByRotationId,
+  );
+  if (!stagingRotation || typeof stagingRotation.issuedAt !== "string") return null;
+  return { stagedByRotationId: staged.stagedByRotationId, stagedAt: stagingRotation.issuedAt };
+}
+
+/**
+ * Read the rotation ledger from disk and thread the resolved staging provenance into the
+ * context. Fails closed to NO provenance (leaving context.successorStagingProvenance unset, so an
+ * activation then fails with AUTHORITY_SUCCESSOR_STAGING_PROVENANCE_REQUIRED) when the ledger is
+ * missing or unparseable, rather than throwing and taking the whole run down with
+ * GITHUB_AUTHORITY_UNAVAILABLE on every trigger, including non-activations. Exported so the
+ * ledger-read-and-thread seam main() relies on is covered by a test.
+ */
+export function applyContextStagingProvenance(
+  context: GitHubAuthorityContext,
+  root: string,
+  policy: {
+    successor?: ClosureAuthorityPolicy["successor"];
+    authorityRotationManifestPath?: string;
+  },
+): void {
+  let ledger: AuthorityRotationLedger;
+  try {
+    const ledgerPath = resolve(
+      root,
+      ...(policy.authorityRotationManifestPath ??
+        "config/production-closure-authority-rotation.json").split("/"),
+    );
+    ledger = JSON.parse(readFileSync(ledgerPath, "utf8")) as AuthorityRotationLedger;
+  } catch {
+    return;
+  }
+  const stagingProvenance = stagingProvenanceFromPolicy(policy, ledger);
+  if (stagingProvenance) context.successorStagingProvenance = stagingProvenance;
 }
 
 export async function verifyGitHubClosureAuthority(
@@ -1127,13 +1229,70 @@ export async function verifyGitHubClosureAuthority(
           String(bootstrap.number),
           "successor activation requires the exact staged workflow and check identity tuple",
         );
+      } else if (!isSafeRepositoryPath(successor.workflowPath)) {
+        // The workflow path is read back from the contents API (getFileSha256) to bind the
+        // sibling bytes, so a traversal path would reshape that request. Reject it before any
+        // request rather than relying on the run.path equality checks alone.
+        add(
+          issues,
+          "AUTHORITY_SUCCESSOR_WORKFLOW_PATH_INVALID",
+          successor.workflowPath,
+          "successor workflow path must be a plain repository path without traversal segments",
+        );
+      } else if (context.eventName === "push") {
+        // The activation pull request has merged - the push metadata mirror above requires
+        // the bootstrap to be in the merged state - so the predecessor-removal and
+        // identity-switch facts were already enforced proposal-side at pull_request time
+        // (AUTHORITY_SUCCESSOR_PREDECESSOR_NOT_REMOVED and the successor-tuple rules in
+        // production-closure-authority-rotation.ts) and are re-verified by closure:check on
+        // main. Re-demanding the pull_request-event live proof from runs on the merged head
+        // is unsatisfiable by construction, so record that verification was skipped here.
+        observation.activationVerificationSkipped = { rotationId: expectedRotation.rotationId };
+      } else if (!context.successorStagingProvenance) {
+        // F1: the success-path window start is resolved by main() from the trusted on-disk main
+        // policy + rotation ledger and threaded in as context.successorStagingProvenance, so it
+        // is present on EVERY trigger - the pull_request merge gate, the schedule sweep, and the
+        // push fan-out - not only when the head-bound proposal observation is plumbed. Relying on
+        // the proposal-carried value alone re-published an open activation PR as failure within
+        // 30 minutes of any green sweep, because the sweep never plumbs that observation and the
+        // author-declared matrix bootstrap cannot legally carry the provenance. Absent it, the
+        // window is unbounded, so fail closed rather than accept "any run ever".
+        add(
+          issues,
+          "AUTHORITY_SUCCESSOR_STAGING_PROVENANCE_REQUIRED",
+          successor.workflowPath,
+          "successor activation requires the staging rotation provenance that bounds the success-path window",
+        );
+      } else if (
+        // When the proposal observation also carried provenance (current_pull_request scope), it
+        // must equal the main-resolved value; a disagreement means the head-bound proposal and the
+        // trusted base ledger disagree about which rotation staged the current bytes.
+        (successor.stagedByRotationId !== undefined || successor.stagedAt !== undefined) &&
+        (successor.stagedByRotationId !== context.successorStagingProvenance.stagedByRotationId ||
+          successor.stagedAt !== context.successorStagingProvenance.stagedAt)
+      ) {
+        add(
+          issues,
+          "AUTHORITY_SUCCESSOR_STAGING_PROVENANCE_MISMATCH",
+          successor.workflowPath,
+          "proposal-carried and main-resolved successor staging provenance disagree",
+        );
       } else {
+        const currentBaseRevision = observation.mainRevisionStart;
+        const stagedAtMs = Date.parse(context.successorStagingProvenance.stagedAt);
+        // (i) Exact-head publication proof. Require a completed check-run whose conclusion is a
+        // real per-PR VERDICT - success OR failure, never cancelled/skipped/neutral/stale/
+        // timed_out/action_required - and a controller status in a real terminal verdict state -
+        // success OR failure, never error/pending. The per-PR verdict on the activation head is
+        // this very check, so it is failure until this check passes (the D1 circularity); the
+        // success path is proven separately in (ii). A non-verdict conclusion or state means the
+        // successor did not actually adjudicate this head, so it is not accepted as a live proof.
         const successorCheck = bootstrapCheckRuns
           .filter(
             (check) =>
               check.name === successor.externalCheckName &&
               check.status === "completed" &&
-              check.conclusion === "success" &&
+              (check.conclusion === "success" || check.conclusion === "failure") &&
               check.head_sha === liveBootstrap.head.sha &&
               check.app?.id === successor.externalCheckAppId,
           )
@@ -1142,7 +1301,7 @@ export async function verifyGitHubClosureAuthority(
           .filter(
             (status) =>
               status.context === successor.controllerCheckName &&
-              status.state === "success" &&
+              (status.state === "success" || status.state === "failure") &&
               status.creator.login.toLowerCase() ===
                 successor.controllerStatusCreatorLogin.toLowerCase() &&
               status.creator.id === successor.controllerStatusCreatorUserId,
@@ -1159,10 +1318,14 @@ export async function verifyGitHubClosureAuthority(
             issues,
             "AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED",
             successor.workflowPath,
-            "successor external and controller results must be successful, exact-head, App-bound, and linked to one workflow run",
+            "successor external and controller results must be a completed verdict (success or failure), exact-head, App-bound, and linked to one workflow run",
           );
         } else {
           const run = await client.getWorkflowRun(Number(checkRunId));
+          // The workflow RUN's own conclusion is required to be success: a per-PR verdict never
+          // fails the run (the workflow records the verdict on the check-run/status and exits 0),
+          // so the run conclusion is never the circular per-PR value - a non-success run means an
+          // infrastructure or systemic failure of the successor workflow, which is not a live proof.
           if (
             run.id !== Number(checkRunId) ||
             run.path.split("@", 1)[0] !== successor.workflowPath ||
@@ -1175,12 +1338,128 @@ export async function verifyGitHubClosureAuthority(
               issues,
               "AUTHORITY_SUCCESSOR_WORKFLOW_PROVENANCE_INVALID",
               successor.workflowPath,
-              "successor proof must come from the exact staged default-branch workflow and current base revision",
+              "successor proof must come from the exact staged default-branch workflow run (completed, success) on the current base revision",
             );
           } else {
             observation.checkRunIds.push(successorCheck.id);
             observation.workflowRunIds.push(run.id);
           }
+        }
+        // (ii) Success-path proof. The staged bytes must be shown to PASS from a run on a
+        // DIFFERENT open pull request within the staging window, proving the success path the
+        // circular exact-head verdict cannot. The App verdict is published on the pull request
+        // HEAD (the successor workflow attaches its check-run and controller status to the PR
+        // head, not to the pull_request_target run's head_sha, which is the base main revision),
+        // and such a run exits 0 regardless of the verdict, so neither the run's head_sha nor
+        // its conclusion carries the verdict - the check-run and status on the sibling head do.
+        // The GitHub API does not expose a run's workflow-file digest, so the staged BYTES are
+        // bound by the run's path plus the run's base (head_sha) being an ancestor of - so
+        // carrying the merge of - the re-staged bytes that reached main before the current base;
+        // created_at >= stagedAt confines it to the current staging episode.
+        // COVERAGE BOUND: only OPEN siblings are enumerated (from the open-PR set already
+        // fetched). A sibling that merged or closed between its success run and this activation
+        // is not seen; the observation window in this repository always holds open pull requests
+        // (D1 had eight sibling runs in 44 minutes), and a missing proof fails closed below.
+        let successPath:
+          | { pullRequest: number; runId: number; checkRunId: number; statusId: number }
+          | null = null;
+        // Tracks a sibling that satisfied every other gate but ran bytes that do not match the
+        // staged digest, so that case is reported with its own specific code rather than the
+        // generic unproven-success-path code.
+        let sawBytesMismatch = false;
+        for (const candidate of liveOpenPullRequests) {
+          if (
+            candidate.number === bootstrap.number ||
+            candidate.head.sha === liveBootstrap.head.sha
+          ) {
+            continue;
+          }
+          const siblingHead = candidate.head.sha;
+          const siblingCheck = (await client.listCheckRuns(siblingHead)).find(
+            (check) =>
+              check.name === successor.externalCheckName &&
+              check.status === "completed" &&
+              check.conclusion === "success" &&
+              check.head_sha === siblingHead &&
+              check.app?.id === successor.externalCheckAppId,
+          );
+          if (!siblingCheck) continue;
+          const siblingStatus = (await client.listCommitStatuses(siblingHead)).find(
+            (status) =>
+              status.context === successor.controllerCheckName &&
+              status.state === "success" &&
+              status.creator.login.toLowerCase() ===
+                successor.controllerStatusCreatorLogin.toLowerCase() &&
+              status.creator.id === successor.controllerStatusCreatorUserId,
+          );
+          if (!siblingStatus) continue;
+          const siblingCheckRunId = /\/actions\/runs\/(\d+)(?:\/|$)/.exec(
+            siblingCheck.details_url ?? "",
+          )?.[1];
+          const siblingStatusRunId = /\/actions\/runs\/(\d+)(?:\/|$)/.exec(
+            siblingStatus.target_url ?? "",
+          )?.[1];
+          if (!siblingCheckRunId || siblingCheckRunId !== siblingStatusRunId) continue;
+          const siblingRun = await client.getWorkflowRun(Number(siblingCheckRunId));
+          if (
+            // getWorkflowRun(id) returns the run with that id, so this equality cannot fire
+            // against a conformant client; it is defence-in-depth against a client that returns
+            // a different run than the one requested.
+            siblingRun.id !== Number(siblingCheckRunId) ||
+            siblingRun.path.split("@", 1)[0] !== successor.workflowPath ||
+            siblingRun.event !== "pull_request_target" ||
+            siblingRun.status !== "completed" ||
+            !Number.isFinite(Date.parse(siblingRun.created_at)) ||
+            Date.parse(siblingRun.created_at) < stagedAtMs ||
+            // currentBaseRevision is always set on the pull_request path (getMainRevision runs
+            // at the top of this function); the null check is a type-narrowing guard for the
+            // revisionIsAncestor call and cannot fire here.
+            currentBaseRevision === null ||
+            !(await client.revisionIsAncestor(siblingRun.head_sha, currentBaseRevision))
+          ) {
+            continue;
+          }
+          // F2: ancestry + created_at >= stagedAt still admit a sibling that ran the PREVIOUS
+          // bytes on a main revision after the re-stage receipt issued but before its bytes
+          // merged (the window opens at the receipt issuedAt, not at the merge). Bind the exact
+          // staged bytes: the workflow file at the run's base (its pull_request_target head_sha,
+          // the main revision that actually executed) must digest to the staged workflowSha256.
+          // This is the definitive gate, so a sibling that matches everything but the bytes is
+          // reported with its own code rather than folded into the generic unproven path.
+          const siblingBytes = await client.getFileSha256(
+            siblingRun.head_sha,
+            successor.workflowPath,
+          );
+          if (siblingBytes !== successor.workflowSha256) {
+            sawBytesMismatch = true;
+            continue;
+          }
+          successPath = {
+            pullRequest: candidate.number,
+            runId: siblingRun.id,
+            checkRunId: siblingCheck.id,
+            statusId: siblingStatus.id,
+          };
+          break;
+        }
+        if (successPath) {
+          observation.successorSuccessPath = successPath;
+          observation.workflowRunIds.push(successPath.runId);
+          observation.checkRunIds.push(successPath.checkRunId);
+        } else if (sawBytesMismatch) {
+          add(
+            issues,
+            "AUTHORITY_SUCCESSOR_SIBLING_BYTES_MISMATCH",
+            successor.workflowPath,
+            "a qualifying sibling success ran a workflow whose bytes at its base revision do not match the staged workflow digest",
+          );
+        } else {
+          add(
+            issues,
+            "AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN",
+            successor.workflowPath,
+            "successor activation requires one open sibling pull request whose head carries an App-bound success check-run and controller status linked to one completed pull_request_target run of the staged workflow within the staging window",
+          );
         }
       }
     }
@@ -1531,6 +1810,45 @@ export class GitHubRestClient implements GitHubAuthorityClient {
       `/repos/${this.repository}/actions/runs/${runId}`,
     );
   }
+  async getFileSha256(revision: string, path: string): Promise<string | null> {
+    // exactSha rejects any non-SHA revision before interpolation. Percent-encoding a path
+    // segment does NOT neutralise traversal (encodeURIComponent("..") === ".."), so reject any
+    // path that is not a plain safe repository path BEFORE issuing the request - otherwise a
+    // crafted path such as "../../../../user/repos" would reshape the request to a different
+    // endpoint under the App bearer.
+    if (!isSafeRepositoryPath(path)) {
+      throw new Error("invalid repository file path");
+    }
+    const encodedPath = path
+      .split("/")
+      .map((segment) => encodeURIComponent(segment))
+      .join("/");
+    const response = await fetchGitHubReadWithRetry(
+      `${this.apiBase}/repos/${this.repository}/contents/${encodedPath}?ref=${encodeURIComponent(exactSha(revision))}`,
+      {
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${this.token}`,
+          "user-agent": "mendpoint-production-closure-authority",
+          "x-github-api-version": "2022-11-28",
+        },
+      },
+      this.fetchImpl,
+      this.sleepImpl,
+    );
+    // An absent file at that revision is a definite "not the staged bytes", not an error.
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw new Error(`GitHub API request failed with HTTP ${response.status}`);
+    }
+    const body = (await response.json()) as { content?: unknown; encoding?: unknown };
+    if (body.encoding !== "base64" || typeof body.content !== "string") {
+      // A directory (array) or a too-large file (no inline content) is not the staged blob.
+      return null;
+    }
+    const bytes = Buffer.from(body.content, "base64");
+    return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  }
   async getIssue(number: number): Promise<GitHubIssue> {
     return this.request<GitHubIssue>(
       `/repos/${this.repository}/issues/${number}`,
@@ -1707,6 +2025,8 @@ async function main(): Promise<void> {
     repositoryId: number;
     repository: string;
     trustedReviewers: unknown;
+    authorityRotationManifestPath?: string;
+    successor?: ClosureAuthorityPolicy["successor"];
   };
   const eventPath = requiredEnvironment(process.env, "GITHUB_EVENT_PATH");
   const observationPath = requiredEnvironment(
@@ -1797,6 +2117,15 @@ async function main(): Promise<void> {
       ),
     ),
   ]);
+  // F1: resolve the successor staging-window start from the trusted on-disk main policy +
+  // rotation ledger and thread it into the context, so the success-path window is bounded on
+  // EVERY trigger - including the schedule sweep and push fan-out, where the head-bound proposal
+  // observation is not plumbed. During an activation PR's life the checked-out main still carries
+  // the staged successor state, so this resolves; once the activation merges, policy.successor is
+  // null and this is absent (the push path records activationVerificationSkipped instead). A
+  // missing or corrupt ledger yields no provenance (activations then fail closed) rather than
+  // failing the whole run - see applyContextStagingProvenance.
+  applyContextStagingProvenance(context, root, policy);
   const client = new GitHubRestClient(
     context.repository,
     requiredEnvironment(process.env, "GITHUB_TOKEN"),

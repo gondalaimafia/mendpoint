@@ -73,7 +73,10 @@ export interface ProposalAuthorityObservation {
     expiresAt: string;
     basePolicySha256: string;
     proposedPolicySha256: string;
-    successor: AuthoritySuccessorTuple | null;
+    // For an activate_successor rotation the parser augments the canonical tuple with
+    // the staging provenance (stagedByRotationId/stagedAt) resolved from the ledger, so
+    // github-authority can bound the success-path window. Absent on every other kind.
+    successor: (AuthoritySuccessorTuple & Partial<SuccessorStagingProvenance>) | null;
   } | null;
   verdict: "pass" | "fail";
   issues: ProductionClosureMatrixIssue[];
@@ -383,6 +386,39 @@ function successorWorkflowSafetyIssues(
     add(issues, "AUTHORITY_SUCCESSOR_WORKFLOW_UNSAFE", path, "staged successor workflow YAML is invalid");
   }
   return issues;
+}
+
+export interface SuccessorStagingProvenance {
+  stagedByRotationId: string;
+  stagedAt: string;
+}
+
+/**
+ * Resolve the staging provenance that bounds a successor activation's success-path
+ * window for the github-authority live proof. The window opens at the issue time of
+ * the rotation that staged the CURRENT bytes - the re-stage when one exists - which
+ * the base policy records on the staged successor state as stagedByRotationId, and
+ * whose issuedAt lives in the trusted base ledger this parser already reads. Runs
+ * created before that instant executed the previous bytes, so this instant is what the
+ * github-authority success-path proof measures from. Returns null when the base policy
+ * carries no staged successor state, or when the named rotation is absent from the
+ * ledger, so an activation that never validated cannot smuggle a forged window start;
+ * github-authority then fails closed (AUTHORITY_SUCCESSOR_STAGING_PROVENANCE_REQUIRED).
+ */
+export function successorStagingProvenance(
+  basePolicy: ClosureAuthorityPolicy,
+  baseLedger: AuthorityRotationLedger,
+): SuccessorStagingProvenance | null {
+  const staged = basePolicy.successor;
+  if (!staged || typeof staged.stagedByRotationId !== "string") return null;
+  const stagingRotation = (baseLedger.rotations ?? []).find(
+    (rotation) => rotation.rotationId === staged.stagedByRotationId,
+  );
+  if (!stagingRotation || typeof stagingRotation.issuedAt !== "string") return null;
+  return {
+    stagedByRotationId: staged.stagedByRotationId,
+    stagedAt: stagingRotation.issuedAt,
+  };
 }
 
 export async function verifyProductionClosureProposal(
@@ -908,6 +944,15 @@ export async function verifyProductionClosureProposal(
           "the current pull request declaration must bind the exact authority rotation receipt",
         );
       } else if (rotationIssues.length === 0) {
+        // An activation carries the staging provenance so github-authority can bound the
+        // success-path window to the current staging episode. The activation transition
+        // above already proved basePolicy.successor is the exact staged state whose
+        // stagedByRotationId names an in-ledger stage_successor receipt, so this resolves;
+        // it stays null for every other kind, which needs no window.
+        const stagingProvenance =
+          receipt.kind === "activate_successor"
+            ? successorStagingProvenance(policy, baseLedger)
+            : null;
         observation.authorityRotation = {
           rotationId: receipt.rotationId,
           kind: receipt.kind,
@@ -915,7 +960,10 @@ export async function verifyProductionClosureProposal(
           expiresAt: receipt.expiresAt,
           basePolicySha256: receipt.basePolicySha256,
           proposedPolicySha256: receipt.proposedPolicySha256,
-          successor: receipt.successor,
+          successor:
+            receipt.successor && stagingProvenance
+              ? { ...receipt.successor, ...stagingProvenance }
+              : receipt.successor,
         };
       }
     }
