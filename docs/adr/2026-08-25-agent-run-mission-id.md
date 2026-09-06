@@ -1,10 +1,10 @@
 # Bind POST /agent/runs to a claimed Mission
 
-- **Status:** Accepted
+- **Status:** Superseded
 - **Date:** 2026-08-25
 - **Author:** Cursor cloud agent (Claude)
 - **Supersedes:** none
-- **Superseded by:** none
+- **Superseded by:** canonical Fettler campaign Mission authority
 
 ## Context
 
@@ -35,3 +35,14 @@ missing.
 ## Rollback
 
 Revert the commit. Clients that omit `missionId` are unchanged.
+
+## Supersession
+
+The claimed id was not sufficient authority for the repository-scoped Mission
+task and blocking review handoff required after a candidate becomes ready. A
+direct run could therefore complete successfully and still be impossible to
+approve or regenerate. `POST /agent/runs` now rejects `missionId` before any
+queue or AgentRun persistence. Mission-bound Fettler work must enter through a
+campaign, which durably owns the exact tenant, repository, snapshot, policy,
+task, and handoff authority. Internal approved successors retain their complete
+Mission mutation authority for compatibility and replay.

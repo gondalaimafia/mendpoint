@@ -1,0 +1,512 @@
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { delimiter, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
+
+import { CORE_DISASTER_RECOVERY_POLICY } from "@mendpoint/ops";
+
+const root = resolve(import.meta.dirname, "..");
+const deliveryPath = resolve(root, ".github/workflows/customer-backup-delivery.yml");
+const deliverySource = readFileSync(deliveryPath, "utf8");
+const delivery = parse(deliverySource) as Record<string, any>;
+const controller = delivery.jobs.controller as Record<string, any>;
+const steps = controller.steps as Record<string, any>[];
+const backupPath = resolve(root, ".github/workflows/customer-backup.yml");
+const backup = parse(readFileSync(backupPath, "utf8")) as Record<string, any>;
+const executionGate = backup.jobs["execution-gate"] as Record<string, any> | undefined;
+
+function step(name: string): Record<string, any> {
+  const found = steps.find((candidate) => candidate.name === name);
+  if (!found) throw new Error(`step not found: ${name}`);
+  return found;
+}
+
+function executable(dir: string, name: string, source: string): string {
+  const path = join(dir, process.platform === "win32" ? name : name);
+  writeFileSync(path, source, "utf8");
+  chmodSync(path, 0o755);
+  return path;
+}
+
+function runController(options: {
+  activeRunId?: string;
+  activeCreatedAt?: string;
+  latestSuccess?: string;
+  backupJobSuccess?: boolean;
+  dispatchedWorkflowSuccess?: boolean;
+  acknowledgedRunId?: string;
+  handoffRunId?: string;
+  dispatchStatus?: string;
+  dispatchAcceptedOnError?: boolean;
+  handoffDispatchStatus?: string;
+  handoffAcceptedOnError?: boolean;
+  deliveryMaxAgeSeconds?: string;
+  deliveryRpoSeconds?: string;
+  deliverySleepSeconds?: string;
+  deliveryCycles?: string;
+  activeMetadataValid?: boolean;
+  acknowledgedMetadataValid?: boolean;
+  handoffMetadataValid?: boolean;
+}) {
+  const dir = mkdtempSync(join(tmpdir(), "customer-backup-delivery-"));
+  const log = join(dir, "gh.log");
+  const ledger = join(dir, "delivery.jsonl");
+  const dispatched = join(dir, "dispatched");
+  const handoffDispatched = join(dir, "handoff-dispatched");
+  writeFileSync(log, "", "utf8");
+  // Keep the workflow integration real while avoiding a new shell process for
+  // every simulated GitHub and sleep call. Windows process startup otherwise
+  // makes individual default-timeout tests nondeterministic under host load.
+  const controllerHarness = `sleep() {
+  :
+}
+gh() {
+printf '%s\\n' "$*" >> "$GH_STUB_LOG"
+case "$1 $2" in
+  'run list')
+    case "$*" in
+      *customer-backup-delivery.yml*)
+        if [ -f "$GH_STUB_HANDOFF_DISPATCHED" ]; then
+          printf '%s\\n' "\${GH_STUB_HANDOFF_RUN_ID:-}"
+        fi
+        ;;
+      *displayTitle*)
+        if [ -f "$GH_STUB_DISPATCHED" ]; then
+          printf '%s\\n' "\${GH_STUB_ACKNOWLEDGED_RUN_ID:-}"
+        fi
+        ;;
+      *'status != "completed"'*)
+        if [ -n "\${GH_STUB_ACTIVE_RUN_ID:-}" ]; then
+          printf '%s\\t%s\\n' "$GH_STUB_ACTIVE_RUN_ID" "$GH_STUB_ACTIVE_CREATED_AT"
+        fi
+        ;;
+      *)
+        if [ -f "$GH_STUB_DISPATCHED" ]; then
+          if [ "\${GH_STUB_DISPATCHED_WORKFLOW_SUCCESS:-1}" = 1 ]; then
+            printf '%s\\t%s\\n' '4242' "$GH_STUB_DISPATCHED_SUCCESS"
+          elif [ -n "\${GH_STUB_LATEST_SUCCESS:-}" ]; then
+            printf '%s\\t%s\\n' '777' "$GH_STUB_LATEST_SUCCESS"
+          fi
+        elif [ -n "\${GH_STUB_LATEST_SUCCESS:-}" ]; then
+          printf '%s\\t%s\\n' '777' "$GH_STUB_LATEST_SUCCESS"
+        fi
+        ;;
+    esac
+    ;;
+  'run view') printf '%s\\n' "\${GH_STUB_BACKUP_JOB_SUCCESS:-1}" ;;
+  'api repos/'*)
+    run_id="\${2##*/}"
+    case "$run_id" in
+      31337) printf '{"status":"in_progress","event":"workflow_dispatch","head_branch":"%s","path":".github/workflows/customer-backup.yml","display_title":"Customer production backup [backup-delivery-9000-1]","created_at":"%s"}\\n' "$GH_STUB_ACTIVE_BRANCH" "$GH_STUB_ACTIVE_CREATED_AT" ;;
+      4242) printf '{"status":"queued","event":"workflow_dispatch","head_branch":"%s","path":".github/workflows/customer-backup.yml","display_title":"Customer production backup [backup-delivery-9001-1]","created_at":"%s"}\\n' "$GH_STUB_ACK_BRANCH" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ;;
+      5252) printf '{"status":"queued","event":"workflow_dispatch","head_branch":"%s","path":".github/workflows/customer-backup-delivery.yml","display_title":"Customer production backup delivery [9001]","created_at":"%s"}\\n' "$GH_STUB_HANDOFF_BRANCH" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ;;
+    esac
+    ;;
+  'workflow run')
+    case "$*" in
+      *customer-backup.yml*)
+        status="\${GH_STUB_DISPATCH_STATUS:-0}"
+        if [ "$status" = 0 ] || [ "\${GH_STUB_DISPATCH_ACCEPTED_ON_ERROR:-0}" = 1 ]; then
+          : > "$GH_STUB_DISPATCHED"
+        fi
+        return "$status"
+        ;;
+      *customer-backup-delivery.yml*)
+        status="\${GH_STUB_HANDOFF_DISPATCH_STATUS:-0}"
+        if [ "$status" = 0 ] || [ "\${GH_STUB_HANDOFF_ACCEPTED_ON_ERROR:-0}" = 1 ]; then
+          : > "$GH_STUB_HANDOFF_DISPATCHED"
+        fi
+        return "$status"
+        ;;
+    esac
+    ;;
+esac
+return 0
+}
+`;
+  const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const env = {
+    ...process.env,
+    GH_TOKEN: "not-a-real-token",
+    GH_REPO: "mendpoint-tests/repository-that-does-not-exist",
+    BACKUP_WORKFLOW: "customer-backup.yml",
+    DELIVERY_WORKFLOW: "customer-backup-delivery.yml",
+    BACKUP_REF: "main",
+    CONTROLLER_RUN_ID: "9001",
+    DELIVERY_LEDGER_PATH: ledger,
+    DELIVERY_CYCLES: options.deliveryCycles ?? "2",
+    DELIVERY_SLEEP_SECONDS: options.deliverySleepSeconds ?? "0",
+    DELIVERY_MAX_AGE_SECONDS: options.deliveryMaxAgeSeconds ?? "900",
+    DELIVERY_RPO_SECONDS: options.deliveryRpoSeconds ?? "3600",
+    DELIVERY_MAX_ACTIVE_AGE_SECONDS: "1200",
+    DELIVERY_OBSERVATION_MARGIN_SECONDS: "300",
+    DELIVERY_OBSERVE_ATTEMPTS: "1",
+    DELIVERY_OBSERVE_SLEEP_SECONDS: "0",
+    DELIVERY_HANDOFF_ATTEMPTS: "2",
+    DELIVERY_HANDOFF_BACKOFF_SECONDS: "0",
+    GH_STUB_LOG: log,
+    GH_STUB_DISPATCHED: dispatched,
+    GH_STUB_HANDOFF_DISPATCHED: handoffDispatched,
+    GH_STUB_DISPATCHED_SUCCESS: now,
+    GH_STUB_ACTIVE_RUN_ID: options.activeRunId ?? "",
+    GH_STUB_ACTIVE_CREATED_AT: options.activeCreatedAt ?? now,
+    GH_STUB_LATEST_SUCCESS: options.latestSuccess ?? "2026-01-01T00:00:00Z",
+    GH_STUB_BACKUP_JOB_SUCCESS: options.backupJobSuccess === false ? "0" : "1",
+    GH_STUB_DISPATCHED_WORKFLOW_SUCCESS: options.dispatchedWorkflowSuccess === false ? "0" : "1",
+    GH_STUB_ACKNOWLEDGED_RUN_ID: options.acknowledgedRunId ?? "4242",
+    GH_STUB_HANDOFF_RUN_ID: options.handoffRunId ?? "5252",
+    GH_STUB_DISPATCH_STATUS: options.dispatchStatus ?? "0",
+    GH_STUB_DISPATCH_ACCEPTED_ON_ERROR: options.dispatchAcceptedOnError ? "1" : "0",
+    GH_STUB_HANDOFF_DISPATCH_STATUS: options.handoffDispatchStatus ?? "0",
+    GH_STUB_HANDOFF_ACCEPTED_ON_ERROR: options.handoffAcceptedOnError ? "1" : "0",
+    GH_STUB_ACTIVE_BRANCH: options.activeMetadataValid === false ? "unprotected-branch" : "main",
+    GH_STUB_ACK_BRANCH: options.acknowledgedMetadataValid === false ? "unprotected-branch" : "main",
+    GH_STUB_HANDOFF_BRANCH: options.handoffMetadataValid === false ? "unprotected-branch" : "main",
+  };
+  const run = (name: string, source: string) => {
+    const script = join(dir, `${name}.sh`);
+    writeFileSync(script, `${controllerHarness}\n${source}`, "utf8");
+    return spawnSync(
+      "bash",
+      ["--noprofile", "--norc", "-e", "-o", "pipefail", script.replaceAll("\\", "/")],
+      { cwd: root, encoding: "utf8", env },
+    );
+  };
+  const maintainResult = run("controller", step("Maintain continuous backup delivery").run);
+  const handoff = steps.find((candidate) => candidate.name === "Hand off continuous backup delivery");
+  const handoffResult = handoff
+    ? run("handoff", handoff.run)
+    : { status: 0, stdout: "", stderr: "" };
+  const status = maintainResult.status === 0 ? handoffResult.status : maintainResult.status;
+  return {
+    ...maintainResult,
+    status,
+    stdout: `${maintainResult.stdout ?? ""}${handoffResult.stdout ?? ""}`,
+    stderr: `${maintainResult.stderr ?? ""}${handoffResult.stderr ?? ""}`,
+    calls: readFileSync(log, "utf8").split("\n").filter(Boolean),
+    ledger: readFileSync(ledger, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)),
+  };
+}
+
+function runExecutionGate(completedAfterCurrentCreation: boolean) {
+  if (!executionGate) throw new Error("execution-gate job not found");
+  const dir = mkdtempSync(join(tmpdir(), "customer-backup-execution-gate-"));
+  const bin = join(dir, "bin");
+  const output = join(dir, "github-output");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(output, "", "utf8");
+  executable(bin, "gh", `#!/bin/sh
+case "$1 $2 $3" in
+  'run view 9001') printf '%s\\n' '2026-09-02T12:00:00Z' ;;
+  'run view 222') printf '%s\\n' '${completedAfterCurrentCreation ? "1" : "0"}' ;;
+  'run list --repo') printf '%s\\n' '222' ;;
+esac
+exit 0
+`);
+  const check = executionGate.steps.find((candidate: Record<string, any>) =>
+    candidate.name === "Recheck serialized backup freshness");
+  if (!check) throw new Error("execution gate check step not found");
+  const script = join(dir, "execution-gate.sh");
+  writeFileSync(script, check.run, "utf8");
+  const result = spawnSync("bash", ["--noprofile", "--norc", script.replaceAll("\\", "/")], {
+    cwd: root,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+      GH_TOKEN: "not-a-real-token",
+      GH_REPO: "mendpoint-tests/repository-that-does-not-exist",
+      CURRENT_RUN_ID: "9001",
+      BACKUP_REF: "main",
+      GITHUB_OUTPUT: output,
+    },
+  });
+  return { ...result, output: readFileSync(output, "utf8") };
+}
+
+describe("customer backup delivery controller workflow", () => {
+  it("keeps an event-driven controller alive across dropped schedules", () => {
+    expect(delivery.on.schedule).toEqual([{ cron: "17 * * * *" }]);
+    expect(delivery.on.workflow_run).toMatchObject({ workflows: ["CI"], types: ["completed"] });
+    expect(delivery.on).toHaveProperty("workflow_dispatch");
+    expect(delivery.concurrency["cancel-in-progress"]).toBe(false);
+    expect(String(delivery.concurrency.group)).toContain("customer-production-backup-delivery");
+    expect(controller["timeout-minutes"]).toBe(330);
+    expect(controller.environment).toBe("customer-production-backup");
+    expect(controller.if).toContain("default_branch");
+    expect(controller.permissions).toMatchObject({ actions: "write", issues: "write" });
+  });
+
+  it("dispatches only the exact protected backup workflow outside application startup", () => {
+    const maintain = step("Maintain continuous backup delivery");
+    const handoff = step("Hand off continuous backup delivery");
+    expect(maintain.env.BACKUP_WORKFLOW).toBe("customer-backup.yml");
+    expect(maintain.env.BACKUP_REF).toBe("${{ github.event.repository.default_branch }}");
+    const backupObserveWindow = Number(maintain.env.DELIVERY_OBSERVE_ATTEMPTS)
+      * Number(maintain.env.DELIVERY_OBSERVE_SLEEP_SECONDS);
+    const handoffAttempts = Number(handoff.env.DELIVERY_HANDOFF_ATTEMPTS);
+    const handoffObserveWindow = handoffAttempts
+      * Number(handoff.env.DELIVERY_OBSERVE_ATTEMPTS)
+      * Number(handoff.env.DELIVERY_OBSERVE_SLEEP_SECONDS);
+    const handoffBackoffWindow = Number(handoff.env.DELIVERY_HANDOFF_BACKOFF_SECONDS)
+      * handoffAttempts
+      * (handoffAttempts - 1)
+      / 2;
+    const combinedRpoEnvelope = Number(maintain.env.DELIVERY_MAX_AGE_SECONDS)
+      + Number(maintain.env.DELIVERY_MAX_ACTIVE_AGE_SECONDS)
+      + (2 * Number(maintain.env.DELIVERY_SLEEP_SECONDS))
+      + backupObserveWindow
+      + handoffObserveWindow
+      + handoffBackoffWindow
+      + Number(maintain.env.DELIVERY_OBSERVATION_MARGIN_SECONDS);
+    expect(combinedRpoEnvelope).toBe(3_510);
+    expect(deliverySource).toContain("= 3510.");
+    expect(combinedRpoEnvelope).toBeLessThan(CORE_DISASTER_RECOVERY_POLICY.rpoSeconds);
+    expect(Number(maintain.env.DELIVERY_RPO_SECONDS)).toBe(
+      CORE_DISASTER_RECOVERY_POLICY.rpoSeconds,
+    );
+    expect(maintain.run).toContain('gh workflow run "$BACKUP_WORKFLOW"');
+    expect(maintain.run).toContain('-f "delivery_id=$delivery_id"');
+    expect(maintain.run).toContain("displayTitle");
+    expect(maintain.run).toContain("customer_backup_delivery_run_not_observed");
+    expect(handoff.run).toContain('gh workflow run "$DELIVERY_WORKFLOW"');
+    expect(handoff.if).toBe("${{ always() && steps.gate.outputs.active == 'true' }}");
+    expect(Number(handoff.env.DELIVERY_HANDOFF_ATTEMPTS)).toBeGreaterThan(1);
+    expect(Number(handoff.env.DELIVERY_HANDOFF_BACKOFF_SECONDS)).toBeGreaterThan(0);
+    expect(handoffBackoffWindow).toBeGreaterThan(0);
+    expect(deliverySource).not.toContain("scripts/customer-backup.ts");
+    expect(deliverySource).not.toContain("scripts/start-fly.mjs");
+    expect(deliverySource).not.toContain("initializeWithMutationLease");
+  });
+
+  it("binds dispatch acknowledgement to a unique delivery identity", () => {
+    const result = runController({});
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup.yml")))
+      .toHaveLength(1);
+    expect(result.calls).toContainEqual(
+      expect.stringContaining("delivery_id=backup-delivery-9001-1"),
+    );
+    expect(result.calls).toContainEqual(expect.stringContaining("displayTitle"));
+    expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup-delivery.yml")))
+      .toHaveLength(1);
+    expect(result.calls).toContainEqual(expect.stringContaining("predecessor_run_id=9001"));
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_dispatched",
+      deliveryId: "backup-delivery-9001-1",
+      backupRunId: "4242",
+    }));
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "controller_handoff",
+      predecessorRunId: "9001",
+      successorRunId: "5252",
+    }));
+  });
+
+  it("does not queue a duplicate while an exact backup run is active", () => {
+    const result = runController({ activeRunId: "31337" });
+    expect(result.status).not.toBe(0);
+    expect(result.calls.some((call) => call.startsWith("workflow run customer-backup.yml"))).toBe(false);
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_active",
+      backupRunId: "31337",
+    }));
+  });
+
+  it("does not confuse a green workflow with authenticated backup-job completion", () => {
+    const maintain = step("Maintain continuous backup delivery");
+    expect(maintain.run).toContain('gh run view "$candidate_run_id"');
+    expect(maintain.run).toContain('.name == "backup" and .conclusion == "success"');
+    expect(maintain.run).toContain("backup_workflow_success_without_backup_job");
+
+    const result = runController({
+      latestSuccess: new Date().toISOString(),
+      backupJobSuccess: false,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.calls.some((call) => call.startsWith("run view 777"))).toBe(true);
+    expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup.yml")))
+      .toHaveLength(2);
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_workflow_success_without_backup_job",
+      backupRunId: "777",
+    }));
+  });
+
+  it("fails closed when no dispatched backup ever completes successfully", () => {
+    const result = runController({ backupJobSuccess: false, deliveryCycles: "1" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_delivery_completion_missing");
+    expect(result.calls.some((call) => call.startsWith("workflow run customer-backup-delivery.yml")))
+      .toBe(true);
+    expect(result.ledger).toContainEqual(expect.objectContaining({ event: "controller_handoff" }));
+  });
+
+  it("does not carry an early completion beyond the current freshness window", () => {
+    const result = runController({
+      latestSuccess: new Date(Date.now() - 2_000).toISOString(),
+      deliveryMaxAgeSeconds: "10",
+      deliveryRpoSeconds: "1",
+      dispatchedWorkflowSuccess: false,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_delivery_completion_missing");
+    expect(result.calls.some((call) => call.startsWith("workflow run customer-backup-delivery.yml")))
+      .toBe(true);
+  });
+
+  it("isolates irrelevant branch recovery runs from the accepted successor", () => {
+    expect(String(delivery.concurrency.group)).toContain("github.event.workflow_run.head_branch");
+    expect(String(delivery.concurrency.group)).toContain("github.run_id");
+    expect(String(delivery.concurrency.group)).toContain("head_repository.full_name");
+    expect(String(controller.if)).toContain("head_repository.full_name");
+    expect(String(controller.if)).toContain("workflow_run.event == 'push'");
+  });
+
+  it("validates exact protected run metadata for active and reconciled runs", () => {
+    const maintain = step("Maintain continuous backup delivery");
+    const handoff = step("Hand off continuous backup delivery");
+    expect(maintain.run).toContain('gh api "repos/$GH_REPO/actions/runs/$active_id"');
+    expect(maintain.run).toContain('head_branch == $branch');
+    expect(maintain.run).toContain('path == $path');
+    expect(maintain.run).toContain('event == "workflow_dispatch"');
+    expect(maintain.run).toContain('created_at >= $windowStart');
+    expect(maintain.run).toContain('--branch "$BACKUP_REF"');
+    expect(handoff.run).toContain('gh api "repos/$GH_REPO/actions/runs/$candidate_run_id"');
+    expect(handoff.run).toContain('head_branch == $branch');
+    expect(handoff.run).toContain('path == $path');
+    expect(handoff.run).toContain('created_at >= $windowStart');
+  });
+
+  it("rejects an active run outside the protected branch authority", () => {
+    const activeMismatch = runController({ activeRunId: "31337", activeMetadataValid: false });
+    expect(activeMismatch.status).not.toBe(0);
+    expect(activeMismatch.stderr).toContain("customer_backup_delivery_active_authority_invalid");
+  });
+
+  it("rejects a lost-response backup dispatch outside the protected branch authority", () => {
+    const dispatchMismatch = runController({ acknowledgedMetadataValid: false });
+    expect(dispatchMismatch.status).not.toBe(0);
+    expect(dispatchMismatch.stderr).toContain("customer_backup_delivery_run_not_observed");
+  });
+
+  it("rejects a successor handoff outside the protected branch authority", () => {
+    const handoffMismatch = runController({
+      latestSuccess: new Date().toISOString(),
+      handoffMetadataValid: false,
+    });
+    expect(handoffMismatch.status).not.toBe(0);
+    expect(handoffMismatch.stderr).toContain("customer_backup_delivery_successor_not_observed");
+  });
+
+  it("reconciles an accepted backup dispatch after the client loses its response", () => {
+    const result = runController({ dispatchStatus: "1", dispatchAcceptedOnError: true });
+    expect(result.status).toBe(0);
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_dispatched",
+      backupRunId: "4242",
+    }));
+  });
+
+  it("reconciles an accepted controller handoff after the client loses its response", () => {
+    const result = runController({
+      latestSuccess: new Date().toISOString(),
+      handoffDispatchStatus: "1",
+      handoffAcceptedOnError: true,
+    });
+    expect(result.status).toBe(0);
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "controller_handoff",
+      successorRunId: "5252",
+    }));
+  });
+
+  it("rechecks durable freshness inside serialized backup execution", () => {
+    expect(executionGate?.needs).toBe("profile-gate");
+    expect(executionGate?.permissions).toMatchObject({ actions: "read" });
+    expect(executionGate?.outputs.execute).toBeTruthy();
+    expect(executionGate?.steps.some((candidate: Record<string, any>) =>
+      candidate.run?.includes("duplicate_backup_execution_fenced"))).toBe(true);
+    expect(backup.jobs.backup.needs).toEqual(["profile-gate", "execution-gate"]);
+    expect(backup.jobs.backup.if).toContain("needs.execution-gate.outputs.execute == 'true'");
+
+    const raced = runExecutionGate(true);
+    expect(raced.status).toBe(0);
+    expect(raced.output).toContain("execute=false");
+    expect(raced.stdout).toContain("duplicate_backup_execution_fenced superseding_run_id=222");
+
+    const notRaced = runExecutionGate(false);
+    expect(notRaced.status).toBe(0);
+    expect(notRaced.output).toContain("execute=true");
+  });
+
+  it("accepts only an exact successful backup job as recent completion", () => {
+    const result = runController({ latestSuccess: new Date().toISOString() });
+    expect(result.status).toBe(0);
+    expect(result.calls.some((call) => call.startsWith("run view 777"))).toBe(true);
+    expect(result.calls.some((call) => call.startsWith("workflow run customer-backup.yml"))).toBe(false);
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_recent",
+      backupRunId: "777",
+    }));
+  });
+
+  it("fails loudly when GitHub accepts a dispatch but never exposes its exact run", () => {
+    const result = runController({ acknowledgedRunId: "" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_delivery_run_not_observed");
+    expect(result.calls.some((call) => call.startsWith("workflow run customer-backup-delivery.yml")))
+      .toBe(true);
+  });
+
+  it("fails loudly when GitHub accepts a handoff but never exposes the exact successor", () => {
+    const result = runController({
+      latestSuccess: new Date().toISOString(),
+      handoffRunId: "",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_delivery_successor_not_observed");
+  });
+
+  it("bounds an active backup instead of treating a hung run as delivery forever", () => {
+    const maintain = step("Maintain continuous backup delivery");
+    expect(maintain.env.DELIVERY_MAX_ACTIVE_AGE_SECONDS).toBeTruthy();
+    expect(Number(maintain.env.DELIVERY_MAX_ACTIVE_AGE_SECONDS)).toBeLessThan(
+      CORE_DISASTER_RECOVERY_POLICY.rpoSeconds,
+    );
+    expect(maintain.run).toContain("customer_backup_delivery_active_stalled");
+    const result = runController({
+      activeRunId: "31337",
+      activeCreatedAt: new Date(Date.now() - 1_300_000).toISOString(),
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_delivery_active_stalled");
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_active_stalled",
+      backupRunId: "31337",
+    }));
+  });
+
+  it("retains a deduplicated alert when controller delivery fails", () => {
+    const alert = step("Alert on backup delivery failure");
+    expect(alert.if).toBe("${{ failure() }}");
+    expect(alert.run).toContain('label="customer-production-backup-delivery-failure"');
+    expect(alert.run).toContain("gh issue comment");
+    expect(alert.run).toContain("gh issue create");
+  });
+
+  it("connects dispatch to authenticated evidence and the production readiness consumer", () => {
+    const backup = readFileSync(resolve(root, ".github/workflows/customer-backup.yml"), "utf8");
+    const producer = readFileSync(resolve(root, "scripts/customer-backup.ts"), "utf8");
+    const readiness = readFileSync(resolve(root, "packages/ops/src/readiness.ts"), "utf8");
+    expect(backup).toContain("delivery_id:");
+    expect(backup).toContain("inputs.delivery_id");
+    expect(deliverySource).toContain("predecessor_run_id:");
+    expect(deliverySource).toContain("inputs.predecessor_run_id");
+    expect(backup).toContain("scripts/customer-backup.ts");
+    expect(producer).toContain("recordLastVerifiedBackupEvidence");
+    expect(readiness).toContain('name: "last_verified_backup"');
+  });
+});

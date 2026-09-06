@@ -704,6 +704,34 @@
       "note": "reusable workflow; callers pass sandbox-production (manual) and sandbox-production-renewal (scheduled)"
     },
     {
+      "name": "SANDBOX_EGRESS_PROTECTED_APP_PREFIXES",
+      "type": "variable",
+      "scope": {
+        "kind": "environments",
+        "environments": [
+          "sandbox-production",
+          "sandbox-production-renewal"
+        ]
+      },
+      "status": "optional_gated",
+      "gatedBy": "the rotation step defaults this to mendpoint-fettler-production when unset or empty, so customer production is never stopped even with the var absent",
+      "note": "reusable workflow; callers pass sandbox-production (manual) and sandbox-production-renewal (scheduled)"
+    },
+    {
+      "name": "SANDBOX_EGRESS_READINESS_TIMEOUT_SECONDS",
+      "type": "variable",
+      "scope": {
+        "kind": "environments",
+        "environments": [
+          "sandbox-production",
+          "sandbox-production-renewal"
+        ]
+      },
+      "status": "optional_gated",
+      "gatedBy": "the rotation step defaults the post-rotation readiness wait to 300s (>= 5 min) when unset",
+      "note": "reusable workflow; callers pass sandbox-production (manual) and sandbox-production-renewal (scheduled)"
+    },
+    {
       "name": "SANDBOX_FLY_APP",
       "type": "variable",
       "scope": {

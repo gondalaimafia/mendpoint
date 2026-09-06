@@ -191,6 +191,45 @@
 **Correction:** Talal required the necessary skills to be fetched and used, and required findings to be fixed before merge.
 **Rule:** When an applicable review skill is incomplete, fetch its current authoritative runtime before continuing. For agent-authored PRs, use the fetched adversarial review and fixer workflow, then re-review the exact fixed head and require current-base CI before merge.
 
+### 2026-08-26 — Test remote ambiguity through worker settlement
+**Mistake:** A direct update-function replay test proved read-only reconciliation but did not exercise the generic worker failure classifier, job attempt cap, or cycle failure settlement. The remote effect could therefore remain unresolved after the only reconciliation job dead-lettered.
+**Correction:** The review required the post-begin ambiguity to run through real `processJobsOnce`, remain retryable past ordinary caps, and prove that retries do not issue a second remote mutation while the result is unknown.
+**Rule:** For every external point of no return, test both the operation and its real queue settlement. Start at the final ordinary attempt, assert all durable authority records enter uncertainty together, retry read-only reconciliation beyond the cap, and count remote mutation calls through terminal settlement.
+
+### 2026-08-26 — Settle proven absence before fresh authority checks
+**Mistake:** Exact reconciliation could prove a remote mutation was not applied, but the old CI and Mission uncertainty stayed active while feedback, pause, authority, and lease checks ran for a possible new attempt. Any failure in those checks could dead-letter the job and leave the Mission permanently fenced.
+**Correction:** The review required `not_applied` to settle the old uncertainty transactionally before any fresh decision, and required exact replay and lease-expiry tests at the real worker boundary.
+**Rule:** Treat a definitive no-effect result as its own durable terminal transition. Settle every authority record for the old attempt atomically, then create new intent only after fresh policy, feedback, cycle, and lease checks pass. Exact idempotent replays must return before broader fences or side effects.
+
+### 2026-08-26 — Close incompatible producers, not only downstream consumers
+**Mistake:** Upgrade fences protected delivery and update workers, but the public run producer could still enqueue a bare Mission id that no canonical review handoff could later resolve.
+**Correction:** The review traced the active `POST /agent/runs` producer through claim, candidate completion, and human review, exposing a job that could finish but never acquire the repository-scoped task authority required for approval or regeneration.
+**Rule:** When tightening a durable authority contract, inventory every active producer as well as every consumer. A producer must either write the complete canonical authority payload or reject the unsupported shape before persistence. Never accept a partial identity that can survive execution but strand the next state transition.
+
+**DEFERRED — not the rule this PR ships.** PR #499 restored `POST /agent/runs`
+acceptance of a bare `missionId` and made the delivery gates three-state, so a
+partial identity IS accepted today and proceeds unbound with the absence
+recorded. Rejecting the unsupported shape would strand every run enqueued before
+the authority contract existed, because nothing can mint authority for them
+retroactively. The owner chose to split that: the production review path binds
+and mints once #433 lands, and removing `missionId` from the public contract is a
+separate follow-up PR. Treat the rule above as the destination, not as a
+description of the shipped code.
+
+### 2026-08-26 — Attribute shipped work precisely
+**Mistake:** I reported all repository merges as my own shipping output even when Claude or Cursor authored them and another process merged them.
+**Correction:** Talal required attribution of Codex work separately from Claude/Cursor work.
+**Rule:** Report authored, reviewed, merged, and deployed as separate facts; count a PR as Codex-shipped only when Codex performed the material repair/review-to-merge path and has evidence.
+
+### 2026-08-26 — Resolve ambiguous authority references against immediate context
+**Mistake:** I interpreted "extend the authority timeline until Friday" as changing the protected production-closure receipt instead of extending the just-granted Codex self-deploy waiver.
+**Correction:** Talal clarified it was about Codex-owned work without Claude review.
+**Rule:** When "authority" could mean a protected technical artifact or conversational action authorization, bind it to the immediately preceding topic; do not mutate protected authority unless the user names that artifact or operation explicitly.
+
+### 2026-08-26 — Repair the persisted split as well as the split writer
+**Mistake:** The takeover path treated two related authority rows as independent transitions, and the first proposed boundary focused only on making future writes atomic.
+**Correction:** The full failure chain includes historical rows already persisted between those writes; exact reconciliation must recover them without weakening tenant, aggregate, or intent binding.
+**Rule:** When replacing a split durable transition with one transaction, enumerate every partially committed state that an older revision could have left behind. Prove both atomic rollback for new writes and bounded reconciliation for each historical split before declaring the state machine repaired.
 ### 2026-08-27 — Test unpinned multi-tenant scheduler entry points
 **Mistake:** I proved release-only scheduling only with a global tenant pin, while the production worker intentionally permits canonical configurations for multiple tenants without that pin.
 **Correction:** Spec review found that a fresh unpinned database could report a healthy scheduler run while silently executing zero configured releases.

@@ -1,11 +1,13 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
+  applyContextStagingProvenance,
   GitHubRestClient,
   githubAuthorityContextFromEvent,
+  stagingProvenanceFromPolicy,
   verifyGitHubClosureAuthority,
   writeGitHubAuthorityFailureObservation,
   writeGitHubAuthorityObservation,
@@ -181,7 +183,10 @@ class FixtureClient implements GitHubAuthorityClient {
     conclusion: "success",
     head_sha: HEAD,
     html_url: "https://github.com/gondalaimafia/mendpoint/actions/runs/101",
+    created_at: "2026-08-25T11:30:00.000Z",
   }];
+  checkRunsByHead = new Map<string, GitHubCheckRun[]>();
+  commitStatusesByHead = new Map<string, GitHubCommitStatus[]>();
   trackedWorkflowJobs: GitHubWorkflowJob[] = checks().map((check) => ({
     id: check.id,
     name: check.name,
@@ -219,9 +224,9 @@ class FixtureClient implements GitHubAuthorityClient {
     if (this.failure) throw this.failure;
     return this.pullRequestsForCommit ?? [this.trackedPullRequest];
   }
-  async listCheckRuns(): Promise<GitHubCheckRun[]> {
+  async listCheckRuns(revision: string): Promise<GitHubCheckRun[]> {
     if (this.failure) throw this.failure;
-    return this.trackedChecks;
+    return this.checkRunsByHead.get(revision) ?? this.trackedChecks;
   }
   async listWorkflowRuns(): Promise<GitHubWorkflowRun[]> {
     if (this.failure) throw this.failure;
@@ -242,13 +247,19 @@ class FixtureClient implements GitHubAuthorityClient {
     if (this.failure) throw this.failure;
     return this.trackedIssueEvents;
   }
-  async listCommitStatuses(): Promise<GitHubCommitStatus[]> {
-    return this.trackedStatuses;
+  async listCommitStatuses(revision: string): Promise<GitHubCommitStatus[]> {
+    return this.commitStatusesByHead.get(revision) ?? this.trackedStatuses;
   }
   async getWorkflowRun(runId: number): Promise<GitHubWorkflowRun> {
     const run = this.trackedWorkflowRuns.find((candidate) => candidate.id === runId);
     if (!run) throw new Error("workflow run missing");
     return run;
+  }
+  // Keyed by `${revision} ${path}`; absent entries return null (file absent at that ref).
+  fileSha256ByRef = new Map<string, string>();
+  async getFileSha256(revision: string, path: string): Promise<string | null> {
+    if (this.failure) throw this.failure;
+    return this.fileSha256ByRef.get(`${revision} ${path}`) ?? null;
   }
   async getIssue(number: number): Promise<GitHubIssue> {
     if (this.failure) throw this.failure;
@@ -914,81 +925,554 @@ describe("GitHub production closure authority", () => {
     expect(codes(result)).toContain("AUTHORITY_ROTATION_REVIEW_ATTESTATION_REQUIRED");
   });
 
-  it("requires a staged successor live run on the activation head and current base", async () => {
-    const rotation = {
+  // Production shape: the successor's App verdict is published on the sibling PR's HEAD
+  // (SIBLING_HEAD), while the pull_request_target run's own head_sha is the base main revision
+  // at the time (SIBLING_BASE, an ancestor of the current base MAIN).
+  describe("successor activation", () => {
+    const SIBLING_HEAD = "e".repeat(40);
+    const SIBLING_BASE = "7".repeat(40); // the sibling run's base main revision (ancestor of MAIN)
+    const SIBLING_PR = 441;
+    const STAGED_AT = "2026-08-25T07:38:35.000Z";
+    const STAGED_BY = "rotation-20260825-restage";
+    const EXT = "mendpoint-production-closure-authority-v2";
+    const CTRL = "mendpoint-production-closure-controller-v2";
+    // The predecessor's live contexts on the same App identity; they must be filtered out by
+    // name/context so the success-path proof binds to the successor, not the outgoing authority.
+    const PRED_EXT = "mendpoint-production-closure-authority";
+    const PRED_CTRL = "mendpoint-production-closure-controller";
+    const WORKFLOW_SHA = `sha256:${"3".repeat(64)}`;
+    const successorTuple = {
+      templatePath: "config/production-closure-successors/closure-authority-v2.yml",
+      workflowPath: ".github/workflows/closure-authority-v2.yml",
+      workflowSha256: WORKFLOW_SHA,
+      externalCheckName: EXT,
+      externalCheckAppId: 123,
+      controllerCheckName: CTRL,
+      controllerCheckAppId: 15368,
+      controllerStatusCreatorLogin: "github-actions[bot]",
+      controllerStatusCreatorUserId: 41898282,
+      activationDeadline: "2026-08-26T11:00:00.000Z",
+      stagedByRotationId: STAGED_BY,
+      stagedAt: STAGED_AT,
+    };
+    const activationRotation = (
+      successor: Partial<typeof successorTuple> | null = {},
+    ) => ({
       rotationId: "rotation-20260825-002",
       kind: "activate_successor" as const,
       issuedAt: "2026-08-25T11:00:00.000Z",
       expiresAt: "2026-08-26T11:00:00.000Z",
       basePolicySha256: `sha256:${"1".repeat(64)}`,
       proposedPolicySha256: `sha256:${"2".repeat(64)}`,
-      successor: {
-        templatePath: "config/production-closure-successors/closure-authority-v2.yml",
-        workflowPath: ".github/workflows/closure-authority-v2.yml",
-        workflowSha256: `sha256:${"3".repeat(64)}`,
-        externalCheckName: "mendpoint-production-closure-authority-v2",
-        externalCheckAppId: 123,
-        controllerCheckName: "mendpoint-production-closure-controller-v2",
-        controllerCheckAppId: 15368,
-        controllerStatusCreatorLogin: "github-actions[bot]",
-        controllerStatusCreatorUserId: 41898282,
-        activationDeadline: "2026-08-26T11:00:00.000Z",
-      },
+      successor: successor === null ? undefined : { ...successorTuple, ...successor },
+    });
+    const activationReview = () =>
+      reviews({
+        body: [
+          "## Authority rotation attestation",
+          "",
+          "- Rotation ID: rotation-20260825-002",
+          "- Transition: activate_successor",
+          `- Base policy: sha256:${"1".repeat(64)}`,
+          `- Proposed policy: sha256:${"2".repeat(64)}`,
+        ].join("\n"),
+      });
+    // Main-resolved staging provenance, threaded into the context on every trigger (F1).
+    const STAGING = { stagedByRotationId: STAGED_BY, stagedAt: STAGED_AT };
+    const runUrl = (id: number) =>
+      `https://github.com/gondalaimafia/mendpoint/actions/runs/${id}`;
+
+    // A fully-wired PASSING D1 activation fixture, production-shaped: on the activation
+    // pull_request the successor published a FAILURE verdict on the activation head (that verdict
+    // is this very check, so it is failure until this check passes), while a DIFFERENT open
+    // sibling pull request published a SUCCESS verdict inside the staging window. Each verdict
+    // lives on its pull request's HEAD (check-run + controller status); the pull_request_target
+    // run's own head_sha is the base main revision and the run exits 0 regardless of the verdict.
+    // The sibling head also carries the predecessor's competing check-run and status (same App id
+    // and creator, different name/context) so the name/context filters are load-bearing.
+    const activation = () => {
+      const configured = matrix();
+      // Production-shaped: the matrix bootstrap declares only the canonical 10-key tuple; the
+      // resolved staging provenance rides context.successorStagingProvenance / the proposal.
+      configured.releaseTrain.currentPullRequestBootstrap!.authorityRotation = activationRotation({
+        stagedByRotationId: undefined,
+        stagedAt: undefined,
+      });
+      const client = new FixtureClient();
+      client.openPullRequests = [
+        pullRequest(),
+        pullRequest({
+          number: SIBLING_PR,
+          html_url: `https://github.com/gondalaimafia/mendpoint/pull/${SIBLING_PR}`,
+          head: { ref: "codex/sibling-work", sha: SIBLING_HEAD },
+        }),
+      ];
+      client.trackedReviews = activationReview();
+      client.trackedChecks.push({
+        id: 202,
+        name: EXT,
+        status: "completed",
+        conclusion: "failure",
+        head_sha: HEAD,
+        html_url: "https://github.com/gondalaimafia/mendpoint/runs/202",
+        details_url: runUrl(202),
+        app: { id: 123 },
+      });
+      client.trackedStatuses = [{
+        id: 303,
+        context: CTRL,
+        state: "failure",
+        target_url: runUrl(202),
+        creator: { login: "github-actions[bot]", id: 41898282 },
+      }];
+      client.trackedWorkflowRuns.push({
+        id: 202,
+        path: ".github/workflows/closure-authority-v2.yml@refs/heads/main",
+        event: "pull_request_target",
+        status: "completed",
+        conclusion: "success",
+        head_sha: MAIN,
+        html_url: runUrl(202),
+        created_at: "2026-08-25T11:05:00.000Z",
+      });
+      client.checkRunsByHead.set(SIBLING_HEAD, [
+        {
+          // predecessor competing check (F6): same App id and creator, DIFFERENT name.
+          id: 210,
+          name: PRED_EXT,
+          status: "completed",
+          conclusion: "success",
+          head_sha: SIBLING_HEAD,
+          html_url: "https://github.com/gondalaimafia/mendpoint/runs/210",
+          details_url: runUrl(209),
+          app: { id: 123 },
+        },
+        {
+          id: 206,
+          name: EXT,
+          status: "completed",
+          conclusion: "success",
+          head_sha: SIBLING_HEAD,
+          html_url: "https://github.com/gondalaimafia/mendpoint/runs/206",
+          details_url: runUrl(205),
+          app: { id: 123 },
+        },
+      ]);
+      client.commitStatusesByHead.set(SIBLING_HEAD, [
+        {
+          // predecessor competing status (F6): different context.
+          id: 311,
+          context: PRED_CTRL,
+          state: "success",
+          target_url: runUrl(209),
+          creator: { login: "github-actions[bot]", id: 41898282 },
+        },
+        {
+          id: 307,
+          context: CTRL,
+          state: "success",
+          target_url: runUrl(205),
+          creator: { login: "github-actions[bot]", id: 41898282 },
+        },
+      ]);
+      client.trackedWorkflowRuns.push({
+        id: 205,
+        path: ".github/workflows/closure-authority-v2.yml@refs/heads/main",
+        event: "pull_request_target",
+        status: "completed",
+        conclusion: "success",
+        head_sha: SIBLING_BASE,
+        html_url: runUrl(205),
+        created_at: "2026-08-25T08:12:00.000Z",
+      });
+      client.trackedWorkflowRuns.push({
+        // the predecessor competing run, at the predecessor workflow path.
+        id: 209,
+        path: ".github/workflows/closure-authority.yml@refs/heads/main",
+        event: "pull_request_target",
+        status: "completed",
+        conclusion: "success",
+        head_sha: SIBLING_BASE,
+        html_url: runUrl(209),
+        created_at: "2026-08-25T08:00:00.000Z",
+      });
+      client.ancestorPairs.push(`${SIBLING_BASE}:${MAIN}`);
+      // The workflow file at the sibling run's base digests to the staged bytes (F2).
+      client.fileSha256ByRef.set(`${SIBLING_BASE} ${successorTuple.workflowPath}`, WORKFLOW_SHA);
+      return { configured, client };
     };
-    const configured = matrix();
-    configured.releaseTrain.currentPullRequestBootstrap!.authorityRotation = rotation;
-    const rotationContext = () => context({ proposalAuthorityRotation: rotation });
-    const client = new FixtureClient();
-    client.trackedReviews = reviews({
-      body: [
-        "## Authority rotation attestation",
-        "",
-        "- Rotation ID: rotation-20260825-002",
-        "- Transition: activate_successor",
-        `- Base policy: sha256:${"1".repeat(64)}`,
-        `- Proposed policy: sha256:${"2".repeat(64)}`,
-      ].join("\n"),
+    // Default pull_request run: the proposal observation carried the rotation, and main resolved
+    // the same staging provenance from the on-disk policy + ledger.
+    const runActivation = (
+      fx: ReturnType<typeof activation>,
+      ctxOverrides: Partial<GitHubAuthorityContext> = {},
+    ) =>
+      verifyGitHubClosureAuthority(
+        fx.configured,
+        context({
+          proposalAuthorityRotation: activationRotation(),
+          successorStagingProvenance: { ...STAGING },
+          ...ctxOverrides,
+        }),
+        fx.client,
+      );
+    const headCheck = (c: FixtureClient) => c.trackedChecks.find((k) => k.name === EXT)!;
+    const headStatus = (c: FixtureClient) => c.trackedStatuses.find((s) => s.context === CTRL)!;
+    const headRun = (c: FixtureClient) => c.trackedWorkflowRuns.find((r) => r.id === 202)!;
+    const sibCheck = (c: FixtureClient) =>
+      c.checkRunsByHead.get(SIBLING_HEAD)!.find((k) => k.name === EXT)!;
+    const sibStatus = (c: FixtureClient) =>
+      c.commitStatusesByHead.get(SIBLING_HEAD)!.find((s) => s.context === CTRL)!;
+    const sibRun = (c: FixtureClient) => c.trackedWorkflowRuns.find((r) => r.id === 205)!;
+
+    it("resolves staging provenance from the on-disk policy and ledger (F1)", () => {
+      const ledger = {
+        schemaVersion: 1 as const,
+        rotations: [
+          { kind: "stage_successor", rotationId: STAGED_BY, issuedAt: STAGED_AT } as never,
+        ],
+      };
+      const policy = { successor: { stagedByRotationId: STAGED_BY } as never };
+      expect(stagingProvenanceFromPolicy(policy, ledger)).toEqual({
+        stagedByRotationId: STAGED_BY,
+        stagedAt: STAGED_AT,
+      });
+      // No staged successor -> null.
+      expect(stagingProvenanceFromPolicy({ successor: null }, ledger)).toBeNull();
+      // The referenced rotation is absent from the ledger -> null (fail closed downstream).
+      expect(
+        stagingProvenanceFromPolicy(policy, { schemaVersion: 1, rotations: [] }),
+      ).toBeNull();
     });
-    client.trackedChecks.push({
-      id: 202,
-      name: "mendpoint-production-closure-authority-v2",
-      status: "completed",
-      conclusion: "success",
-      head_sha: HEAD,
-      html_url: "https://github.com/gondalaimafia/mendpoint/runs/202",
-      details_url: "https://github.com/gondalaimafia/mendpoint/actions/runs/202",
-      app: { id: 123 },
+
+    it("threads real-ledger staging provenance into the context via main() (F1, mutation G33)", () => {
+      // Covers the main()-side ledger-read-and-thread seam (applyContextStagingProvenance). The
+      // on-disk policy currently has successor: null (the D1 successor was activated), so mirror
+      // its on-disk shape and inject the staged state for the successor that
+      // rotation-20260902-020 staged; the real on-disk ledger supplies its exact issue time.
+      const root = resolve(import.meta.dirname, "..");
+      const onDiskPolicy = JSON.parse(
+        readFileSync(resolve(root, "config", "production-closure-authority.json"), "utf8"),
+      );
+      const stagedPolicy = {
+        ...onDiskPolicy,
+        successor: {
+          phase: "staged",
+          stagedByRotationId: "rotation-20260902-020",
+          activatedByRotationId: null,
+        } as never,
+      };
+      const ctx = context();
+      applyContextStagingProvenance(ctx, root, stagedPolicy);
+      expect(ctx.successorStagingProvenance).toEqual({
+        stagedByRotationId: "rotation-20260902-020",
+        stagedAt: "2026-09-02T07:38:35.637Z",
+      });
     });
-    client.trackedStatuses = [{
-      id: 303,
-      context: "mendpoint-production-closure-controller-v2",
-      state: "success",
-      target_url: "https://github.com/gondalaimafia/mendpoint/actions/runs/202",
-      creator: { login: "github-actions[bot]", id: 41898282 },
-    }];
-    client.trackedWorkflowRuns.push({
-      id: 202,
-      path: ".github/workflows/closure-authority-v2.yml@refs/heads/main",
-      event: "pull_request_target",
-      status: "completed",
-      conclusion: "success",
-      head_sha: MAIN,
-      html_url: "https://github.com/gondalaimafia/mendpoint/actions/runs/202",
+
+    it("fails closed to no provenance when the ledger is missing or corrupt (F1, NEW-3)", () => {
+      // A missing/corrupt ledger must not take the whole run down with
+      // GITHUB_AUTHORITY_UNAVAILABLE on every trigger; it yields no provenance, so only
+      // activations fail closed downstream via AUTHORITY_SUCCESSOR_STAGING_PROVENANCE_REQUIRED.
+      const ctx = context();
+      const stagedPolicy = {
+        successor: { stagedByRotationId: "rotation-20260902-020" } as never,
+        authorityRotationManifestPath: "config/does-not-exist.json",
+      };
+      expect(() =>
+        applyContextStagingProvenance(ctx, resolve(import.meta.dirname, ".."), stagedPolicy),
+      ).not.toThrow();
+      expect(ctx.successorStagingProvenance).toBeUndefined();
     });
 
-    const result = await verifyGitHubClosureAuthority(configured, rotationContext(), client);
+    it("rejects a successor workflow path with traversal segments before any request (NEW-2)", async () => {
+      const result = await runActivation(activation(), {
+        proposalAuthorityRotation: activationRotation({ workflowPath: "../../../../user/repos" }),
+      });
+      expect(codes(result)).toContain("AUTHORITY_SUCCESSOR_WORKFLOW_PATH_INVALID");
+    });
 
-    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
-    expect(result.workflowRunIds).toContain(202);
+    it("accepts the D1 activation shape (failure on the activation head, success on a sibling)", async () => {
+      const result = await runActivation(activation());
+      expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+      expect(result.successorSuccessPath).toEqual({
+        pullRequest: SIBLING_PR,
+        runId: 205,
+        checkRunId: 206,
+        statusId: 307,
+      });
+      expect(result.workflowRunIds).toContain(205);
+      expect(result.checkRunIds).toContain(206);
+    });
 
-    client.trackedChecks.at(-1)!.app = { id: 999 };
-    const wrongApp = await verifyGitHubClosureAuthority(configured, rotationContext(), client);
-    expect(codes(wrongApp)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+    it("passes on the schedule sweep, where only main-resolved provenance is available (F1)", async () => {
+      // Sweep shape: full_release_train scope, no proposal observation, so expectedRotation is
+      // the author-declared matrix bootstrap (the 10-key tuple, no staging fields). The window
+      // start is supplied solely by main() via context.successorStagingProvenance.
+      const result = await runActivation(activation(), {
+        observationScope: "full_release_train",
+        proposalAuthorityRotation: undefined,
+      });
+      expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+      expect(result.successorSuccessPath?.pullRequest).toBe(SIBLING_PR);
+    });
 
-    client.trackedChecks.at(-1)!.app = { id: 123 };
-    client.trackedStatuses[0].creator = { login: "untrusted-bot", id: 999 };
-    const wrongControllerProducer = await verifyGitHubClosureAuthority(configured, rotationContext(), client);
-    expect(codes(wrongControllerProducer)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+    it("fails closed when no staging provenance is available (F1)", async () => {
+      const result = await runActivation(activation(), { successorStagingProvenance: undefined });
+      expect(codes(result)).toContain("AUTHORITY_SUCCESSOR_STAGING_PROVENANCE_REQUIRED");
+    });
+
+    it("fails closed when proposal-carried and main-resolved provenance disagree (F1)", async () => {
+      const result = await runActivation(activation(), {
+        successorStagingProvenance: { stagedByRotationId: STAGED_BY, stagedAt: "2026-08-25T06:00:00.000Z" },
+      });
+      expect(codes(result)).toContain("AUTHORITY_SUCCESSOR_STAGING_PROVENANCE_MISMATCH");
+    });
+
+    it("rejects a sibling that ran the previous bytes at its base revision (F2)", async () => {
+      const fx = activation();
+      fx.client.fileSha256ByRef.set(
+        `${SIBLING_BASE} ${successorTuple.workflowPath}`,
+        `sha256:${"a".repeat(64)}`,
+      );
+      expect(codes(await runActivation(fx))).toContain(
+        "AUTHORITY_SUCCESSOR_SIBLING_BYTES_MISMATCH",
+      );
+    });
+
+    it("rejects a sibling whose staged workflow file is absent at its base revision (F2)", async () => {
+      const fx = activation();
+      fx.client.fileSha256ByRef.clear();
+      expect(codes(await runActivation(fx))).toContain(
+        "AUTHORITY_SUCCESSOR_SIBLING_BYTES_MISMATCH",
+      );
+    });
+
+    it("ignores the predecessor's competing check-run and status on the sibling head (F6)", async () => {
+      // The competing predecessor contexts are present in the fixture; the D1 pass proves the
+      // name/context filters bind to the successor, not the predecessor.
+      const result = await runActivation(activation());
+      expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+      expect(result.successorSuccessPath?.checkRunId).toBe(206);
+      expect(result.successorSuccessPath?.statusId).toBe(307);
+    });
+
+    it("rejects a non-verdict conclusion on the activation-head check-run (F3)", async () => {
+      for (const conclusion of ["cancelled", "skipped", "neutral", "stale", "timed_out"]) {
+        const fx = activation();
+        headCheck(fx.client).conclusion = conclusion;
+        expect(codes(await runActivation(fx)), conclusion).toContain(
+          "AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED",
+        );
+      }
+    });
+
+    it("rejects an error/pending state on the activation-head controller status (F3)", async () => {
+      for (const state of ["error", "pending"]) {
+        const fx = activation();
+        headStatus(fx.client).state = state;
+        expect(codes(await runActivation(fx)), state).toContain(
+          "AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED",
+        );
+      }
+    });
+
+    it("requires the activation-head run's own conclusion to be success (F4)", async () => {
+      const fx = activation();
+      headRun(fx.client).conclusion = "failure";
+      expect(codes(await runActivation(fx))).toContain(
+        "AUTHORITY_SUCCESSOR_WORKFLOW_PROVENANCE_INVALID",
+      );
+    });
+
+    it("rejects an activation-head run whose base is not the current base (G06)", async () => {
+      const fx = activation();
+      headRun(fx.client).head_sha = "b".repeat(40);
+      expect(codes(await runActivation(fx))).toContain(
+        "AUTHORITY_SUCCESSOR_WORKFLOW_PROVENANCE_INVALID",
+      );
+    });
+
+    it("requires the activation-head check-run to be completed (G01)", async () => {
+      const fx = activation();
+      headCheck(fx.client).status = "in_progress";
+      expect(codes(await runActivation(fx))).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+    });
+
+    it("requires the activation-head check and status to be App-bound and linked (G02)", async () => {
+      const fx = activation();
+      headStatus(fx.client).target_url = runUrl(999);
+      expect(codes(await runActivation(fx))).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+    });
+
+    it("rejects a sibling success run created before the staging window opened", async () => {
+      const fx = activation();
+      sibRun(fx.client).created_at = "2026-08-25T07:00:00.000Z";
+      expect(codes(await runActivation(fx))).toContain("AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN");
+    });
+
+    it("rejects a sibling success run with an unparseable created_at (G24)", async () => {
+      const fx = activation();
+      sibRun(fx.client).created_at = "not-a-date";
+      expect(codes(await runActivation(fx))).toContain("AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN");
+    });
+
+    it("rejects a sibling success run from the predecessor workflow path", async () => {
+      const fx = activation();
+      sibRun(fx.client).path = ".github/workflows/closure-authority.yml@refs/heads/main";
+      expect(codes(await runActivation(fx))).toContain("AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN");
+    });
+
+    it("rejects a sibling success run whose event is not pull_request_target", async () => {
+      const fx = activation();
+      sibRun(fx.client).event = "push";
+      expect(codes(await runActivation(fx))).toContain("AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN");
+    });
+
+    it("rejects a sibling success run that is not completed (G23)", async () => {
+      const fx = activation();
+      sibRun(fx.client).status = "in_progress";
+      expect(codes(await runActivation(fx))).toContain("AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN");
+    });
+
+    it("rejects a sibling whose base is not an ancestor of the current base", async () => {
+      const fx = activation();
+      fx.client.ancestorPairs = fx.client.ancestorPairs.filter(
+        (pair) => pair !== `${SIBLING_BASE}:${MAIN}`,
+      );
+      expect(codes(await runActivation(fx))).toContain("AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN");
+    });
+
+    it("excludes the bootstrap's own head from the sibling search", async () => {
+      // The only success verdict is on the activation head itself (both the number and the head
+      // exclusion must skip it, or the activation head's own verdict would prove its own path).
+      const fx = activation();
+      fx.client.openPullRequests = [
+        pullRequest(),
+        pullRequest({ number: SIBLING_PR, head: { ref: "codex/shares-bootstrap-head", sha: HEAD } }),
+      ];
+      headCheck(fx.client).conclusion = "success";
+      headStatus(fx.client).state = "success";
+      expect(codes(await runActivation(fx))).toContain("AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN");
+    });
+
+    it("excludes the bootstrap by number when the listing carries a stale head (TOCTOU)", async () => {
+      const fx = activation();
+      const OTHER_HEAD = "9".repeat(40);
+      fx.client.openPullRequests = [
+        pullRequest({ head: { ref: "codex/production-closure-authority-hardening", sha: OTHER_HEAD } }),
+      ];
+      fx.client.checkRunsByHead.set(OTHER_HEAD, [{
+        id: 208,
+        name: EXT,
+        status: "completed",
+        conclusion: "success",
+        head_sha: OTHER_HEAD,
+        html_url: "https://github.com/gondalaimafia/mendpoint/runs/208",
+        details_url: runUrl(205),
+        app: { id: 123 },
+      }]);
+      fx.client.commitStatusesByHead.set(OTHER_HEAD, [{
+        id: 308,
+        context: CTRL,
+        state: "success",
+        target_url: runUrl(205),
+        creator: { login: "github-actions[bot]", id: 41898282 },
+      }]);
+      fx.client.fileSha256ByRef.set(`${SIBLING_BASE} ${successorTuple.workflowPath}`, WORKFLOW_SHA);
+      expect(codes(await runActivation(fx))).toContain("AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN");
+    });
+
+    it("rejects a sibling success check-run not App-bound to the staged external check", async () => {
+      const fx = activation();
+      sibCheck(fx.client).app = { id: 999 };
+      expect(codes(await runActivation(fx))).toContain("AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN");
+    });
+
+    it("rejects a sibling success check-run whose conclusion is not success", async () => {
+      const fx = activation();
+      sibCheck(fx.client).conclusion = "failure";
+      expect(codes(await runActivation(fx))).toContain("AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN");
+    });
+
+    it("requires a sibling controller status on that head", async () => {
+      const fx = activation();
+      fx.client.commitStatusesByHead.set(SIBLING_HEAD, []);
+      expect(codes(await runActivation(fx))).toContain("AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN");
+    });
+
+    it("rejects a sibling controller status whose state is not success", async () => {
+      const fx = activation();
+      sibStatus(fx.client).state = "failure";
+      expect(codes(await runActivation(fx))).toContain("AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN");
+    });
+
+    it("rejects a sibling controller status from an untrusted creator (G18)", async () => {
+      const wrongLogin = activation();
+      sibStatus(wrongLogin.client).creator = { login: "attacker[bot]", id: 41898282 };
+      expect(codes(await runActivation(wrongLogin))).toContain(
+        "AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN",
+      );
+      const wrongId = activation();
+      sibStatus(wrongId.client).creator = { login: "github-actions[bot]", id: 999 };
+      expect(codes(await runActivation(wrongId))).toContain(
+        "AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN",
+      );
+    });
+
+    it("rejects a sibling whose check and status link to different runs", async () => {
+      const fx = activation();
+      sibStatus(fx.client).target_url = runUrl(999);
+      expect(codes(await runActivation(fx))).toContain("AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN");
+    });
+
+    it("requires the successor tuple to be present", async () => {
+      const fx = activation();
+      fx.configured.releaseTrain.currentPullRequestBootstrap!.authorityRotation =
+        activationRotation(null);
+      expect(codes(await runActivation(fx, { proposalAuthorityRotation: activationRotation(null) })))
+        .toContain("AUTHORITY_SUCCESSOR_DECLARATION_REQUIRED");
+    });
+
+    it("records a merged activation on push without re-demanding the pull_request proofs (F10)", async () => {
+      // On push the activation has merged (the metadata mirror requires the merged state), so
+      // the predecessor removal and identity switch were enforced proposal-side at pull_request
+      // time and are re-verified by closure:check on main; no exact-head or success-path proof is
+      // demanded here. No staging provenance is supplied, proving the push path never reaches the
+      // window logic.
+      const configured = matrix();
+      configured.releaseTrain.currentPullRequestBootstrap!.authorityRotation = activationRotation({
+        stagedByRotationId: undefined,
+        stagedAt: undefined,
+      });
+      const client = new FixtureClient();
+      client.trackedPullRequest = pullRequest({
+        state: "closed",
+        merged: true,
+        merge_commit_sha: MERGED,
+      });
+      client.openPullRequests = [];
+      client.mainRevisions = [MERGED, MERGED];
+      client.trackedChecks = checks();
+      client.trackedReviews = activationReview();
+
+      const result = await verifyGitHubClosureAuthority(
+        configured,
+        context({
+          eventName: "push",
+          githubSha: MERGED,
+          checkout: { headRevision: MERGED, parentRevisions: [MAIN] },
+          pullRequest: undefined,
+        }),
+        client,
+      );
+
+      expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+      expect(result.activationVerificationSkipped).toEqual({ rotationId: "rotation-20260825-002" });
+      expect(codes(result)).not.toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+      expect(codes(result)).not.toContain("AUTHORITY_SUCCESSOR_SUCCESS_PATH_UNPROVEN");
+      expect(codes(result)).not.toContain("AUTHORITY_SUCCESSOR_STAGING_PROVENANCE_REQUIRED");
+    });
   });
 
   it("accepts a matrix that omits a newer live-open pull request", async () => {
@@ -1328,6 +1812,29 @@ describe("GitHub production closure authority", () => {
 
     await expect(client.revisionIsAncestor("HEAD", "b".repeat(40))).rejects.toThrow();
     await expect(client.revisionIsAncestor("a".repeat(40), "origin/main")).rejects.toThrow();
+    expect(fetched).toBe(false);
+  });
+
+  it("getFileSha256 rejects a traversal path before issuing any request (NEW-2)", async () => {
+    let fetched = false;
+    const client = new GitHubRestClient(
+      "gondalaimafia/mendpoint",
+      "token-value",
+      (async () => {
+        fetched = true;
+        return new Response("{}", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+    );
+
+    await expect(
+      client.getFileSha256("a".repeat(40), "../../../../user/repos"),
+    ).rejects.toThrow();
+    await expect(
+      client.getFileSha256("a".repeat(40), ".github/workflows/../../secret.yml"),
+    ).rejects.toThrow();
     expect(fetched).toBe(false);
   });
 

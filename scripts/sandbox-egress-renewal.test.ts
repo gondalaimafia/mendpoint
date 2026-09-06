@@ -246,7 +246,7 @@ describe("sandbox egress engine — failure visibility before expiry", () => {
     // The accept job must actually hold issues:write, or the alert step 403s.
     expect(workflow.jobs.accept.permissions).toMatchObject({ issues: "write" });
     const page = step(workflow, "accept", "Alert on renewal failure");
-    expect(page.if).toBe("${{ failure() }}");
+    expect(page.if).toBe("${{ failure() || cancelled() }}");
     expect(page.run).toContain("gh issue create");
     expect(page.run).toContain("sandbox-egress-renewal-failure");
     // No external paging secret: the old notify-based renewal page is gone.

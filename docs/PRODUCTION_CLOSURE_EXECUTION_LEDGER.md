@@ -130,7 +130,7 @@ Wave 0 control-plane work (not a requirement row): Claude owns the #515 authorit
 | `ME-ENT-010` | partial | Partial on current main. Smallest gap is a production caller that traces the acceptance assertion end-to-end, plus a mutation test on that caller, then exact-revision evidence. | 438 | from current main after dependencies |
 | `ME-ENT-011` | scaffold | Scaffold only. Replace with a real production path or keep explicitly scaffolded; do not claim GA. | 438 | from current main after dependencies |
 | `ME-ENT-012` | scaffold | Scaffold only. Replace with a real production path or keep explicitly scaffolded; do not claim GA. | 438 | from current main after dependencies |
-| `ME-GTM-003` | partial | Partial on current main. Smallest gap is a production caller that traces the acceptance assertion end-to-end, plus a mutation test on that caller, then exact-revision evidence. | 433 | from current main after dependencies |
+| `ME-GTM-003` | partial | Partial on current main. Smallest gap is a production caller that traces the acceptance assertion end-to-end, plus a mutation test on that caller, then exact-revision evidence. | 642 | from current main after dependencies |
 
 ## Wave 11: Final 101-of-101 qualification
 

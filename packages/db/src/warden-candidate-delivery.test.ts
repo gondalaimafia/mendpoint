@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDb, getJob, insertAgentRun, type AppDb } from "./index.js";
+import { claimNextJob, createDb, getJob, insertAgentRun, insertPrincipal, type AppDb } from "./index.js";
+import { createMission, linkFettlerCampaignToMission } from "./mission.js";
+import { createWardenCampaign } from "./warden-campaign.js";
 import {
   bindWardenCandidateDeliveryScope,
   bindWardenCandidateDeliveryIntent,
@@ -15,6 +17,7 @@ import {
 } from "./warden-candidate-delivery.js";
 
 const NOW = "2026-08-06T12:00:00.000Z";
+const SEALED_PATH = "C:\\data\\warden-evidence\\tenant-a\\approvals\\seal.json";
 const opened: Array<{ db: AppDb; directory: string }> = [];
 
 function sealedProviderChange(repositoryId = "repo-1") {
@@ -75,7 +78,21 @@ function seedNotificationOnlyMigrationPr(db: AppDb, input: { id: string; consume
   ).run(input.id, input.consumerId, NOW);
 }
 
-function fixture() {
+/**
+ * The source job the approved run came from. It MUST exist: enqueue resolves the
+ * run's Mission binding from this row, so a fixture that names a `jobId` without
+ * inserting the row leaves that whole check dead — it silently reads undefined
+ * and skips. Defaults to an ordinary unbound Fettler run payload.
+ */
+function seedSourceJob(db: AppDb, payload: Record<string, unknown>) {
+  db.raw.prepare(
+    `INSERT INTO jobs (id, tenant_id, type, payload_json, status, attempts, max_attempts,
+       created_at, available_at, lease_generation)
+     VALUES ('source-job-1', 'tenant-a', 'agent.run', ?, 'done', 1, 5, ?, ?, 0)`,
+  ).run(JSON.stringify(payload), NOW, NOW);
+}
+
+function fixture(sourcePayload: Record<string, unknown> = { goal: "Repair the SDK", consumerId: "consumer-1" }) {
   const directory = mkdtempSync(join(tmpdir(), "mendpoint-warden-delivery-db-"));
   const db = createDb(join(directory, "test.sqlite"));
   opened.push({ db, directory });
@@ -84,6 +101,7 @@ function fixture() {
      VALUES ('tenant-a', 'tenant-a', 'Tenant A', 'team', 'active', 10, ?),
             ('tenant-b', 'tenant-b', 'Tenant B', 'team', 'active', 10, ?)`,
   ).run(NOW, NOW);
+  seedSourceJob(db, sourcePayload);
   insertAgentRun(db, {
     id: "warden-run-1",
     tenantId: "tenant-a",
@@ -127,6 +145,102 @@ afterEach(() => {
 });
 
 describe("Warden candidate delivery outbox", () => {
+  // A source job whose payload will not parse is UNKNOWN, not unbound. Reading
+  // it as "not Mission-bound" skips the binding check below it and enqueues a
+  // delivery with no authority. Both sibling readers already fail closed on this
+  // input; restore the swallowing catch here and this test dies.
+  it.each([
+    ["does not parse", "{not json"],
+    ["is not a plain object", "[]"],
+  ])("fails closed when the source job payload %s", (_label, payloadJson) => {
+    const db = fixture();
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1' AND tenant_id = 'tenant-a'")
+      .run(payloadJson);
+
+    expect(() => enqueueWardenCandidateDelivery(db, {
+      tenantId: "tenant-a",
+      runId: "warden-run-1",
+      repositoryId: "repo-1",
+      snapshotId: "snapshot-1",
+      baseBranch: "main",
+      expectedBaseRevision: "a".repeat(40),
+      sealedPath: SEALED_PATH,
+      sealedSha256: `sha256:${"b".repeat(64)}`,
+      requesterPrincipalId: "human:reviewer@example.com",
+      rationale: "The target and regression checks pass.",
+      now: NOW,
+    })).toThrow("warden_candidate_delivery_source_invalid");
+    expect(db.raw.prepare("SELECT COUNT(*) AS n FROM fettler_candidate_deliveries").get()).toEqual({ n: 0 });
+  });
+
+  // PINS THE OPEN GAP (Codex review 2026-09-01, B2), it does not fix it.
+  // A campaign-bound run resolves to a Mission through the campaign FK, but this
+  // reader consults only `payload.missionId`, so the run enqueues UNBOUND and the
+  // dispatch fence never runs for it. Making the readers campaign-aware is the
+  // owner decision (D7): it 409s every pilot-join approve until authority can be
+  // minted. This test asserts the CURRENT behaviour and that the gap is recorded
+  // rather than silent, so it stays visible until that decision is made.
+  it("enqueues a campaign-bound run unbound, and says so (open gap, not a fix)", () => {
+    const db = fixture({ goal: "Repair the SDK", consumerId: "consumer-1", fettlerCampaignId: "campaign-1" });
+    const delivery = enqueueWardenCandidateDelivery(db, {
+        tenantId: "tenant-a",
+        runId: "warden-run-1",
+        repositoryId: "repo-1",
+        snapshotId: "snapshot-1",
+        baseBranch: "main",
+        expectedBaseRevision: "a".repeat(40),
+        sealedPath: SEALED_PATH,
+        sealedSha256: `sha256:${"b".repeat(64)}`,
+        requesterPrincipalId: "human:reviewer@example.com",
+        rationale: "The target and regression checks pass.",
+      now: NOW,
+    });
+
+    // Current behaviour: accepted, unbound, no authority required.
+    expect(delivery.status).toBe("delivery_pending");
+    expect(delivery.missionAuthority).toBeNull();
+    // ...and the gap is on the durable record, not merely logged.
+    expect(db.raw.prepare(`SELECT action, resource_id, metadata_json FROM audit_events
+      WHERE action = 'fettler.candidate_delivery.campaign_binding_not_enforced'`).get())
+      .toMatchObject({ resource_id: delivery.id });
+    expect(String((db.raw.prepare(`SELECT metadata_json AS m FROM audit_events
+      WHERE action = 'fettler.candidate_delivery.campaign_binding_not_enforced'`).get() as { m: string }).m))
+      .toContain("campaign-1");
+  });
+
+  // §12 UPGRADE PATH. POST /agent/runs has always written `payload.missionId`,
+  // so every run enqueued before the authority contract existed looks like this:
+  // Mission bound, no authority, and no way to mint one retroactively. It must
+  // enqueue exactly as it does on main. Collapse the gate back to two-state
+  // (absent treated as mismatched) and this dies with binding_mismatch.
+  it("enqueues a pre-change Mission-bound run whose authority was never minted", () => {
+    const db = fixture({ goal: "Repair the SDK", consumerId: "consumer-1", missionId: "mission-legacy" });
+
+    const delivery = enqueueWardenCandidateDelivery(db, {
+      tenantId: "tenant-a",
+      runId: "warden-run-1",
+      repositoryId: "repo-1",
+      snapshotId: "snapshot-1",
+      baseBranch: "main",
+      expectedBaseRevision: "a".repeat(40),
+      sealedPath: SEALED_PATH,
+      sealedSha256: `sha256:${"b".repeat(64)}`,
+      requesterPrincipalId: "human:reviewer@example.com",
+      rationale: "The target and regression checks pass.",
+      now: NOW,
+    });
+
+    expect(delivery.status).toBe("delivery_pending");
+    // Unbound, and honestly so: no authority is invented for it.
+    expect(delivery.missionAuthority).toBeNull();
+    expect(JSON.parse(getJob(db, delivery.jobId, "tenant-a")!.payload_json))
+      .not.toHaveProperty("missionAuthority");
+    // "Proceeded unbound" is RECORDED, never silent: delete the record and this dies.
+    expect(db.raw.prepare(`SELECT resource_id FROM audit_events
+      WHERE action = 'fettler.candidate_delivery.mission_authority_absent'`).get())
+      .toEqual({ resource_id: delivery.id });
+  });
+
   it("atomically enqueues one deterministic tenant-scoped draft delivery", () => {
     const db = fixture();
     const input = {
@@ -488,15 +602,19 @@ describe("Warden candidate delivery outbox", () => {
   it("binds intent and records one draft delivery, idempotently", () => {
     const db = fixture();
     const delivery = enqueueWardenCandidateDelivery(db, deliveryInput);
+    const claimed = claimNextJob(db, ["warden.candidate.deliver"], {
+      tenantId: "tenant-a", workerId: "worker-a", leaseMs: 60_000,
+    })!;
+    const lease = { workerId: "worker-a", leaseGeneration: claimed.lease_generation };
 
     const bound = bindWardenCandidateDeliveryIntent(db, {
       tenantId: "tenant-a", deliveryId: delivery.id, intentDigest: `sha256:${"c".repeat(64)}`,
-      branchName: "mendpoint/warden-run-1", observedAt: NOW,
+      branchName: "mendpoint/warden-run-1", observedAt: NOW, ...lease,
     });
     expect(bound.intentDigest).toBe(`sha256:${"c".repeat(64)}`);
     expect(bindWardenCandidateDeliveryIntent(db, {
       tenantId: "tenant-a", deliveryId: delivery.id, intentDigest: `sha256:${"c".repeat(64)}`,
-      branchName: "mendpoint/warden-run-1", observedAt: NOW,
+      branchName: "mendpoint/warden-run-1", observedAt: NOW, ...lease,
     })).toEqual(bound);
 
     const delivered = recordWardenCandidateDeliverySuccess(db, {
@@ -536,6 +654,7 @@ describe("Warden candidate delivery outbox", () => {
     expect(() => bindWardenCandidateDeliveryIntent(db, {
       tenantId: "tenant-a", deliveryId: delivery.id, intentDigest: `sha256:${"c".repeat(64)}`,
       branchName: "mendpoint/warden-run-1", observedAt: NOW,
+      workerId: "worker-a", leaseGeneration: 1,
     })).toThrow("warden_candidate_delivery_not_pending");
     expect(() => recordWardenCandidateDeliverySuccess(db, {
       tenantId: "tenant-a", deliveryId: delivery.id, branchName: "mendpoint/warden-run-1",
