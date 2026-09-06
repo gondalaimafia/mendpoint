@@ -230,6 +230,7 @@ export {
   EnvelopeKeyLifecycleRegistry,
   DisabledExternalVaultProvider,
   ConfiguredEnvelopeKeyProvider,
+  createExternalKeyEncryptionKeyProvider,
   LocalEnvelopeKeyProvider,
   cryptographicKeyMaterialFingerprint,
   envelopeKeyProvidersFromEnvironment,
@@ -247,9 +248,23 @@ export {
   type EnvelopeSecret,
   type EnvelopeAccessAuditEvent,
   type KeyEncryptionKeyProvider,
+  type ExternalKeyEncryptionKeyBinding,
+  type ExternalKeyEncryptionKeyProviderConfig,
   type DurableEnvelopeSecretVersion,
   type DurableEnvelopeSecretProviderOptions,
 } from "./vault-envelope.js";
+
+export {
+  HttpsExternalKeyTransport,
+  createHttpsExternalKeyTransport,
+  type ExternalKeyAddressResolver,
+  type ExternalKeyDestinationPolicy,
+  type ExternalKeyHttpsRequest,
+  type ExternalKeyHttpsRequester,
+  type ExternalKeyHttpsResponse,
+  type ExternalKeyTransport,
+  type HttpsExternalKeyTransportConfig,
+} from "./external-kek-client.js";
 
 export {
   ExecutorRegistry,
