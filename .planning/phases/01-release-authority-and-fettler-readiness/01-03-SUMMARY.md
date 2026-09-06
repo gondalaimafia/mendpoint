@@ -30,7 +30,7 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 - RED runtime-boundary verification: null and undefined key objects escaped through native type errors across the public provider operations before the transport boundary.
 - RED identifier-boundary verification: fifteen cases proved `RegExp.test` coercion accepted null, undefined, and numeric provider and binding identifiers, while matching string forms let non-string runtime tenant identifiers reach all four transport operations.
 - `npm test --workspace @mendpoint/platform -- external-kek-client.test.ts vault-envelope.test.ts`: 106 tests passed.
-- `npm test --workspace @mendpoint/platform`: 341 of 342 tests passed across 20 files; the unrelated alert-volume test exceeded its five-second timeout under full-suite load on both attempts.
+- `npm test --workspace @mendpoint/platform`: 342 of 342 tests passed across 20 files; the alert-volume test passed in 376 ms.
 - `npm test --workspace @mendpoint/platform -- platform.test.ts -t "never evicts one tenant's alerts to make room for another tenant's volume"`: the isolated timed-out test passed in 1.217 seconds.
 - `npm run typecheck -w @mendpoint/platform`: passed.
 - `npm run build`: optimized production build passed, including all 64 static pages.
@@ -58,9 +58,9 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 
 ## Commits and range-diff identity
 
-The pre-summary stack contains 24 patch-identical commits: 15 implementation/test commits and 9 documentation-evidence commits. Five documentation-only commits follow the final implementation head.
+The pre-summary stack contains 24 patch-identical commits: 15 implementation/test commits and 9 documentation-evidence commits. The final implementation head is `bc9ecc33`; every non-merge commit after it on the branch touches only this summary file.
 
-The exact current base for this series is `5f9e47aeaa1235a663c7ee9d247b66b63f25d69c`; the commands above verify the exact pre-summary implementation head `bc9ecc33c838a7df9c70e0328ef4cb71aded3bf2`. Earlier reviews are superseded by the observability, runtime-boundary, and identifier-boundary patches plus this evidence refresh. A different reviewer must inspect and approve the final exact head before merge.
+The exact base for this series is the merge-base of the exact head with `main`, recorded in the pull request's Exact head evidence section. The commands above verify the exact pre-summary implementation head `bc9ecc33c838a7df9c70e0328ef4cb71aded3bf2`. Earlier reviews are superseded by the observability, runtime-boundary, and identifier-boundary patches plus this evidence refresh. A different reviewer must inspect and approve the final exact head before merge.
 
 ## Remaining Release Work
 
