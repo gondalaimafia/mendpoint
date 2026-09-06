@@ -58,7 +58,7 @@ The adapter keeps key-encryption-key material outside Mendpoint. It sends only t
 
 ## Commits and range-diff identity
 
-The pre-summary stack contains 24 patch-identical commits: 15 implementation/test commits and 9 documentation-evidence commits. Four documentation-only commits follow the final implementation head.
+The pre-summary stack contains 24 patch-identical commits: 15 implementation/test commits and 9 documentation-evidence commits. Five documentation-only commits follow the final implementation head.
 
 The exact current base for this series is `5f9e47aeaa1235a663c7ee9d247b66b63f25d69c`; the commands above verify the exact pre-summary implementation head `bc9ecc33c838a7df9c70e0328ef4cb71aded3bf2`. Earlier reviews are superseded by the observability, runtime-boundary, and identifier-boundary patches plus this evidence refresh. A different reviewer must inspect and approve the final exact head before merge.
 
