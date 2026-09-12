@@ -36,7 +36,8 @@ grep -rn "revert-obligation:" .
   scripts/customer-boot-sequence.ts) after they crash-looped production on 2026-09-02: the catch-up
   backup fired at boot, took the exclusive fence, and the worker's startup lease then refused. That
   design is not restored as reverted. Backup cadence is delivered from outside the process by the
-  customer backup delivery controller (#637) and the backup watchdog with its machine-start step
-  (#660), and the boot path was hardened against an orphaned fence in #661 (incident #659). An
-  in-process trigger may return only under a redesign that never holds the fence while startup
-  admission is pending, which is a new decision for the owner, not a re-land of this commit.
+  customer backup delivery controller (#637); the watchdog's machine-start step (#660) and the
+  boot-path hardening against an orphaned fence (#661) were open pull requests when this decision
+  was recorded, for incident #659. An in-process trigger may return only under a redesign that never
+  holds the fence while startup admission is pending, which is a new decision for the owner, not a
+  re-land of this commit.
