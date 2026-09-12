@@ -12,7 +12,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 // Resolve committed fixtures from this module's own location, not process.cwd():
@@ -189,7 +189,19 @@ it("does not construct standalone worker stores while a customer backup is exclu
   const fenceRoot = join(root, "fence");
   const databasePath = join(root, "worker.sqlite");
   mkdirSync(fenceRoot, { recursive: true });
-  writeFileSync(join(fenceRoot, "exclusive.json"), "{}\n");
+  // A live exclusive marker (this process's own host and pid) is not reapable, so
+  // admission is still refused. An orphaned or unparseable marker would instead be
+  // cleared by the boot reaper rather than block forever.
+  writeFileSync(join(fenceRoot, "exclusive.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    kind: "exclusive",
+    id: "customer-live-backup",
+    ownerToken: "owner-token-live-backup",
+    hostname: hostname(),
+    pid: process.pid,
+    processStartedAt: new Date(Date.now() - process.uptime() * 1_000).toISOString(),
+    acquiredAt: new Date().toISOString(),
+  })}\n`);
 
   expect(() =>
     initializeWorkerDurableState(
@@ -2777,6 +2789,62 @@ describe("worker runtime", () => {
     })).toEqual(expect.arrayContaining([
       expect.stringContaining("Sandbox egress authority invalid"),
     ]));
+  });
+
+  it("degrades to a boot warning on an authentic but expired egress attestation instead of failing preflight", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-egress-expired-"));
+    dirs.push(root);
+    const image = `registry.fly.io/mendpoint-sandbox@sha256:${"a".repeat(64)}`;
+    const policyDigest = `sha256:${"b".repeat(64)}`;
+    // Authentic and in-window at signing, but observed after expiry: every check in
+    // verifySandboxEgressAttestation passes except the final expiry test.
+    const testedAt = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    const expiresAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    const keys = generateKeyPairSync("ed25519");
+    const payloadBytes = sandboxEgressAttestationPayloadBytes({
+      schemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+      app: "mendpoint-sandbox",
+      image,
+      policyDigest,
+      testedAt,
+      expiresAt,
+      forbiddenOutbound: {
+        commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+        targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+        blocked: true,
+      },
+      allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true },
+      evidenceRefs: ["evidence://protected-egress-acceptance/expired"],
+    });
+    const envelope = Buffer.from(JSON.stringify({
+      payload: payloadBytes.toString("base64"),
+      signatures: [{
+        keyId: "sandbox-egress-key-1",
+        signature: sign(null, payloadBytes, keys.privateKey).toString("base64"),
+      }],
+    }), "utf8").toString("base64");
+    const base = {
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+      GITHUB_MODE: "mock",
+      MENDPOINT_DATA_DIR: root,
+      MENDPOINT_REPOS_DIR: root,
+      MENDPOINT_SANDBOX_KIND: "fly_machines",
+      MENDPOINT_SANDBOX_FLY_APP: "mendpoint-sandbox",
+      MENDPOINT_SANDBOX_FLY_TOKEN: "scoped-token",
+      MENDPOINT_SANDBOX_FLY_IMAGE: image,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64: envelope,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64:
+        keys.publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "sandbox-egress-key-1",
+      MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: policyDigest,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+    };
+    const warnings: string[] = [];
+    expect(validateWorkerProductionEnv(base, (warning) => warnings.push(warning))).toEqual([]);
+    expect(warnings).toEqual([
+      "worker_boot_degraded sandbox_egress_attestation_expired: sandbox launches are refused until the renewal delivers a fresh receipt",
+    ]);
   });
 
   it("refuses a production worker whose sandbox kind is unset or a customer worker that is not fly_machines", () => {
