@@ -87,6 +87,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
           BACKUP_WORKFLOW: customer-backup.yml
           BACKUP_REF: ${{ github.event.repository.default_branch }}
+          # Token-free liveness probe target only. The controller never receives
+          # the Fly token and never calls flyctl; the watchdog owns restarting a
+          # stopped machine. This binding lets the controller avoid dispatching a
+          # backup into an app that is currently down.
+          CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
           CONTROLLER_RUN_ID: ${{ github.run_id }}
           DELIVERY_LEDGER_PATH: test-results/customer-backup-delivery/events.jsonl
           # The complete authority envelope is kept below the one-hour RPO:
@@ -154,6 +159,10 @@ jobs:
             done <<< "$candidate_rows"
           }
 
+          # Counts cycles that reached the dispatch decision but found the app
+          # not live. If every cycle deferred, the run delivered no backup for a
+          # specific, nameable reason (below), not the generic completion-missing.
+          deferred=0
           for cycle in $(seq 1 "$DELIVERY_CYCLES"); do
             checked_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -217,6 +226,23 @@ jobs:
                   --argjson age "$age_seconds" --argjson cycle "$cycle" \
                   '{at:$at,event:"backup_recent",cycle:$cycle,backupRunId:$id,createdAt:$createdAt,ageSeconds:$age}'
               else
+                # Immediately before dispatch: probe the app's public liveness.
+                # Dispatching into a down app only produces a run that fails to
+                # back anything up (incident #659: ~200 failed dispatches/day
+                # against a stopped machine). The watchdog owns restarting the
+                # machine; this controller must never call flyctl, so it defers,
+                # records why, waits one normal cycle, and moves on.
+                livez_code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "https://${CUSTOMER_APP}.fly.dev/livez" || echo 000)"
+                if [ "$livez_code" != "200" ]; then
+                  echo "customer_backup_delivery_deferred_app_not_live livez=$livez_code" >&2
+                  record --arg at "$checked_at" --argjson cycle "$cycle" --arg code "$livez_code" \
+                    '{at:$at,event:"delivery_deferred_app_not_live",cycle:$cycle,livezCode:$code}'
+                  deferred=$((deferred + 1))
+                  if [ "$cycle" -lt "$DELIVERY_CYCLES" ]; then
+                    sleep "$DELIVERY_SLEEP_SECONDS"
+                  fi
+                  continue
+                fi
                 delivery_id="backup-delivery-${CONTROLLER_RUN_ID}-${cycle}"
                 expected_title="Customer production backup [$delivery_id]"
                 started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -263,6 +289,18 @@ jobs:
               sleep "$DELIVERY_SLEEP_SECONDS"
             fi
           done
+
+          # If the customer app was unreachable on every cycle that needed a
+          # dispatch, the run delivered no backup for a specific reason. Name it
+          # so the existing failure alert fires once with the real condition,
+          # rather than the generic completion-missing that masks an app outage
+          # as a delivery incident.
+          if [ "$deferred" -eq "$DELIVERY_CYCLES" ]; then
+            echo "customer_backup_delivery_deferred_app_down deferred_cycles=$deferred cycles=$DELIVERY_CYCLES" >&2
+            record --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson deferred "$deferred" \
+              '{at:$at,event:"delivery_deferred_app_down",deferredCycles:$deferred}'
+            exit 1
+          fi
 
           final_checked_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           final_success_row="$(latest_successful_backup "$final_checked_at" "$DELIVERY_CYCLES")"

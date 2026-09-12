@@ -46,6 +46,7 @@ function runController(options: {
   deliveryRpoSeconds?: string;
   deliverySleepSeconds?: string;
   deliveryCycles?: string;
+  livezCode?: string;
   activeMetadataValid?: boolean;
   acknowledgedMetadataValid?: boolean;
   handoffMetadataValid?: boolean;
@@ -61,6 +62,9 @@ function runController(options: {
   // makes individual default-timeout tests nondeterministic under host load.
   const controllerHarness = `sleep() {
   :
+}
+curl() {
+printf '%s' "\${GH_STUB_LIVEZ_CODE:-200}"
 }
 gh() {
 printf '%s\\n' "$*" >> "$GH_STUB_LOG"
@@ -147,6 +151,11 @@ return 0
     DELIVERY_HANDOFF_ATTEMPTS: "2",
     DELIVERY_HANDOFF_BACKOFF_SECONDS: "0",
     GH_STUB_LOG: log,
+    // The controller never receives the Fly token; CUSTOMER_APP is only the
+    // token-free /livez probe target. GH_STUB_LIVEZ_CODE is what the stubbed
+    // curl returns, defaulting to 200 so the healthy dispatch path is unchanged.
+    CUSTOMER_APP: "stub-app-that-does-not-exist",
+    GH_STUB_LIVEZ_CODE: options.livezCode ?? "200",
     GH_STUB_DISPATCHED: dispatched,
     GH_STUB_HANDOFF_DISPATCHED: handoffDispatched,
     GH_STUB_DISPATCHED_SUCCESS: now,
@@ -508,5 +517,60 @@ describe("customer backup delivery controller workflow", () => {
     expect(backup).toContain("scripts/customer-backup.ts");
     expect(producer).toContain("recordLastVerifiedBackupEvidence");
     expect(readiness).toContain('name: "last_verified_backup"');
+  });
+
+  it("probes app liveness before each dispatch and never calls flyctl", () => {
+    const maintain = step("Maintain continuous backup delivery");
+    // Bound from the same variable the watchdog and backup workflows use.
+    expect(maintain.env.CUSTOMER_APP).toBe("${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}");
+    // A token-free liveness probe, and the two named reasons it produces.
+    expect(maintain.run).toContain("http_code");
+    expect(maintain.run).toContain("${CUSTOMER_APP}.fly.dev/livez");
+    expect(maintain.run).toContain("delivery_deferred_app_not_live");
+    expect(maintain.run).toContain("customer_backup_delivery_deferred_app_down");
+    // The watchdog owns restarting the machine; the controller must never call
+    // flyctl. Strip comment lines (which mention it by name) before checking.
+    const commands = maintain.run
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("#"))
+      .join("\n");
+    expect(commands).not.toContain("flyctl");
+  });
+
+  it("never dispatches a backup into a customer app that is not live, and records why", () => {
+    const result = runController({ livezCode: "503", deliveryCycles: "2" });
+    // Zero backup dispatches: incident #659 was ~200 dispatches/day into a
+    // stopped machine, every one of which failed to back anything up.
+    expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup.yml")))
+      .toHaveLength(0);
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "delivery_deferred_app_not_live",
+      livezCode: "503",
+    }));
+  });
+
+  it("fails once, with the app-down reason, when every cycle deferred on a down app", () => {
+    const result = runController({ livezCode: "503", deliveryCycles: "2" });
+    expect(result.status).not.toBe(0);
+    // The named, specific reason — not the generic completion-missing that masks
+    // an app outage as a delivery incident. The existing failure alert dedupes
+    // by label, so it fires once.
+    expect(result.stderr).toContain("customer_backup_delivery_deferred_app_down");
+    expect(result.stderr).not.toContain("customer_backup_delivery_completion_missing");
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "delivery_deferred_app_down",
+      deferredCycles: 2,
+    }));
+  });
+
+  it("dispatches as before when the customer app is live", () => {
+    // The probe does not change the healthy path: a 200 dispatches exactly one.
+    const result = runController({ livezCode: "200" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup.yml")))
+      .toHaveLength(1);
+    expect(result.ledger).not.toContainEqual(expect.objectContaining({
+      event: "delivery_deferred_app_not_live",
+    }));
   });
 });
