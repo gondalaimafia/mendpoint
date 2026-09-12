@@ -34,6 +34,29 @@
     ]
   },
   "productionEvidenceAuthorities": [],
+  "publicClaimEvidenceHolds": [
+    {
+      "evidenceId": "CLM-001-EV01",
+      "recordedAt": "2026-09-12T20:42:09.544Z",
+      "expiresAt": "2026-09-16T00:00:00.000Z",
+      "reason": "incident #659: customer production has been stopped since 2026-09-08T10:30Z; live evidence cannot be observed until the fix deploys",
+      "authorizedBy": "owner gondalaimafia, 2026-09-12"
+    },
+    {
+      "evidenceId": "CLM-013-EV01",
+      "recordedAt": "2026-09-12T20:42:09.544Z",
+      "expiresAt": "2026-09-16T00:00:00.000Z",
+      "reason": "incident #659: customer production has been stopped since 2026-09-08T10:30Z; live evidence cannot be observed until the fix deploys",
+      "authorizedBy": "owner gondalaimafia, 2026-09-12"
+    },
+    {
+      "evidenceId": "CLM-013-EV02",
+      "recordedAt": "2026-09-12T20:42:09.544Z",
+      "expiresAt": "2026-09-16T00:00:00.000Z",
+      "reason": "incident #659: customer production has been stopped since 2026-09-08T10:30Z; live evidence cannot be observed until the fix deploys",
+      "authorizedBy": "owner gondalaimafia, 2026-09-12"
+    }
+  ],
   "protectedFiles": {
     "config/production-closure-successors/closure-authority-quiet-sweep.yml": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9",
     "config/production-closure-successors/closure-authority-systemic-escalation.yml": "sha256:955f0df2589cb71181621b8aa29ca4215d3bf4a29684985d74bf391d2b98e422",

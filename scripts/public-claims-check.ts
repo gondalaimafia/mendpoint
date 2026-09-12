@@ -278,6 +278,187 @@ export function collectPublicClaimIssues(
   return issues;
 }
 
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Full ISO 8601 date-time with an explicit UTC `Z` or numeric offset. A hold is
+ * a recorded exception, so its timestamps must be unambiguous instants, not bare
+ * dates or local wall-clock strings that {@link Date.parse} would read
+ * inconsistently across runners.
+ */
+const ISO_8601_INSTANT =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * A time-boxed, recorded exception that lets one stale live-evidence entry pass
+ * while its production surface is unreachable. Held evidence is still reported,
+ * never hidden: the hold only downgrades a `LIVE_EVIDENCE_STALE` blocker to a
+ * warning until `expiresAt`, after which staleness blocks again.
+ */
+export interface PublicClaimEvidenceHold {
+  evidenceId: string;
+  recordedAt: string;
+  expiresAt: string;
+  reason: string;
+  authorizedBy: string;
+}
+
+export interface EvidenceHoldOutcome {
+  /** Issues that still fail the gate; {@link main} prints these and throws. */
+  blocking: PublicClaimIssue[];
+  /** Non-blocking notices (held-stale or unused holds) printed as warnings. */
+  held: PublicClaimIssue[];
+}
+
+function isoInstant(value: unknown): number | null {
+  if (typeof value !== "string" || !ISO_8601_INSTANT.test(value)) return null;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function collectLiveEvidenceIds(registry: PublicClaimRegistry): Set<string> {
+  const ids = new Set<string>();
+  for (const claim of registry.claims ?? []) {
+    for (const evidence of claim.evidence ?? []) {
+      if (evidence.type === "live") ids.add(evidence.id);
+    }
+  }
+  return ids;
+}
+
+const byCodeThenSubject = (left: PublicClaimIssue, right: PublicClaimIssue): number =>
+  left.code.localeCompare(right.code) || left.subject.localeCompare(right.subject);
+
+/**
+ * Why a hold is rejected outright, or null when it is well-formed. A rejected
+ * hold provides no cover, so the staleness it names still blocks. `now` bounds
+ * `recordedAt` (a hold cannot be backdated from the future) and, with the 7-day
+ * ceiling, keeps every exception short-lived and re-authorized each rotation.
+ */
+function evidenceHoldRejection(
+  hold: Record<string, unknown>,
+  evidenceId: string,
+  nowMs: number,
+  liveEvidenceIds: Set<string>,
+): string | null {
+  if (evidenceId === "") return "evidenceId must be a non-empty string";
+  if (typeof hold.reason !== "string" || hold.reason.trim() === "") {
+    return "reason must be a non-empty string";
+  }
+  if (typeof hold.authorizedBy !== "string" || hold.authorizedBy.trim() === "") {
+    return "authorizedBy must be a non-empty string";
+  }
+  const recordedAtMs = isoInstant(hold.recordedAt);
+  if (recordedAtMs === null) return "recordedAt must be an ISO 8601 instant";
+  const expiresAtMs = isoInstant(hold.expiresAt);
+  if (expiresAtMs === null) return "expiresAt must be an ISO 8601 instant";
+  if (expiresAtMs <= recordedAtMs) return "expiresAt must be after recordedAt";
+  if (expiresAtMs - recordedAtMs > SEVEN_DAYS_MS) return "a hold may not exceed 7 days";
+  if (recordedAtMs > nowMs) return "recordedAt must not be in the future";
+  if (!liveEvidenceIds.has(evidenceId)) {
+    return `evidenceId ${evidenceId} is not a live evidence entry in the registry`;
+  }
+  return null;
+}
+
+/**
+ * Partitions public-claim issues against a set of recorded evidence holds. A
+ * valid, unexpired hold moves its `LIVE_EVIDENCE_STALE` issue to `held`
+ * (reported, not hidden); an expired hold whose evidence is still stale becomes
+ * a blocking `EVIDENCE_HOLD_EXPIRED` (stale evidence cannot hide behind a lapsed
+ * hold); a hold whose evidence is fresh is a non-blocking `EVIDENCE_HOLD_UNUSED`
+ * warning so cleanup never forces a ceremony; a malformed or duplicate hold is a
+ * blocking `EVIDENCE_HOLD_INVALID`. Every other issue code stays blocking. Pure
+ * so the matrix can be exercised without a working tree.
+ */
+export function applyEvidenceHolds(
+  issues: PublicClaimIssue[],
+  holds: readonly PublicClaimEvidenceHold[],
+  context: { registry: PublicClaimRegistry; now: Date },
+): EvidenceHoldOutcome {
+  const liveEvidenceIds = collectLiveEvidenceIds(context.registry);
+  const nowMs = context.now.getTime();
+  const staleSubjects = new Set(
+    issues.filter((issue) => issue.code === "LIVE_EVIDENCE_STALE").map((issue) => issue.subject),
+  );
+
+  const blocking: PublicClaimIssue[] = [];
+  const held: PublicClaimIssue[] = [];
+  const validHolds = new Map<string, { expiresAt: string; reason: string; expired: boolean }>();
+  const seen = new Set<string>();
+
+  for (const raw of holds ?? []) {
+    const hold = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    const evidenceId = typeof hold.evidenceId === "string" ? hold.evidenceId : "";
+    const subject = evidenceId === "" ? "(missing evidenceId)" : evidenceId;
+    const rejection =
+      evidenceId !== "" && seen.has(evidenceId)
+        ? "duplicate evidenceId"
+        : evidenceHoldRejection(hold, evidenceId, nowMs, liveEvidenceIds);
+    if (evidenceId !== "") seen.add(evidenceId);
+    if (rejection !== null) {
+      blocking.push({ code: "EVIDENCE_HOLD_INVALID", subject, message: rejection });
+      continue;
+    }
+    validHolds.set(evidenceId, {
+      expiresAt: hold.expiresAt as string,
+      reason: hold.reason as string,
+      expired: Date.parse(hold.expiresAt as string) <= nowMs,
+    });
+  }
+
+  for (const issue of issues) {
+    if (issue.code !== "LIVE_EVIDENCE_STALE") {
+      blocking.push(issue);
+      continue;
+    }
+    const hold = validHolds.get(issue.subject);
+    if (!hold) {
+      blocking.push(issue);
+    } else if (hold.expired) {
+      blocking.push({
+        code: "EVIDENCE_HOLD_EXPIRED",
+        subject: issue.subject,
+        message: `hold expired at ${hold.expiresAt}; ${issue.message}`,
+      });
+    } else {
+      held.push({
+        code: "LIVE_EVIDENCE_STALE_HELD",
+        subject: issue.subject,
+        message: `${issue.message}; held until ${hold.expiresAt} (${hold.reason})`,
+      });
+    }
+  }
+
+  for (const [evidenceId, hold] of validHolds) {
+    if (!staleSubjects.has(evidenceId)) {
+      held.push({
+        code: "EVIDENCE_HOLD_UNUSED",
+        subject: evidenceId,
+        message: `live evidence is fresh; remove this hold in the next rotation (${hold.reason})`,
+      });
+    }
+  }
+
+  return { blocking: blocking.sort(byCodeThenSubject), held: held.sort(byCodeThenSubject) };
+}
+
+/**
+ * Reads the optional `publicClaimEvidenceHolds` array from the closure authority
+ * policy under `repoRoot`. An absent file or key yields no holds, so the gate's
+ * behaviour is unchanged wherever no exception has been recorded.
+ */
+function readEvidenceHolds(repoRoot: string): PublicClaimEvidenceHold[] {
+  const policyPath = resolve(repoRoot, "config", "production-closure-authority.json");
+  if (!existsSync(policyPath)) return [];
+  const policy = JSON.parse(readFileSync(policyPath, "utf8")) as {
+    publicClaimEvidenceHolds?: unknown;
+  };
+  return Array.isArray(policy.publicClaimEvidenceHolds)
+    ? (policy.publicClaimEvidenceHolds as PublicClaimEvidenceHold[])
+    : [];
+}
+
 function main() {
   const repoRoot = resolve(process.cwd());
   const registryPath = resolve(repoRoot, "docs", "PUBLIC_CLAIMS.json");
@@ -290,15 +471,32 @@ function main() {
     readFileSync(requirementsPath, "utf8"),
   ) as ProductRequirementManifest;
   const issues = collectPublicClaimIssues(repoRoot, registry, requirements);
+  const { blocking, held } = applyEvidenceHolds(issues, readEvidenceHolds(repoRoot), {
+    registry,
+    now: new Date(),
+  });
 
-  if (issues.length > 0) {
-    for (const issue of issues.sort((left, right) => left.code.localeCompare(right.code))) {
-      console.error(`${issue.code} ${issue.subject}: ${issue.message}`);
-    }
-    throw new Error(`public claim registry has ${issues.length} issue${issues.length === 1 ? "" : "s"}`);
+  for (const notice of held) {
+    const line = `${notice.code} ${notice.subject}: ${notice.message}`;
+    console.error(line);
+    console.error(`::warning title=Live evidence held::${line}`);
   }
 
-  console.log(`PUBLIC CLAIMS PASS: ${registry.claims.length} claims, ${registry.destinations.length} destinations`);
+  if (blocking.length > 0) {
+    for (const issue of blocking) {
+      console.error(`${issue.code} ${issue.subject}: ${issue.message}`);
+    }
+    throw new Error(
+      `public claim registry has ${blocking.length} blocking issue${blocking.length === 1 ? "" : "s"}`,
+    );
+  }
+
+  console.log(
+    `PUBLIC CLAIMS PASS: ${registry.claims.length} claims, ${registry.destinations.length} destinations` +
+      (held.length > 0
+        ? `, ${held.length} held/unused evidence warning${held.length === 1 ? "" : "s"}`
+        : ""),
+  );
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) main();
