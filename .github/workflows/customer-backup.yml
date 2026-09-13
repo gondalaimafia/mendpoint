@@ -107,6 +107,16 @@ jobs:
     steps:
       - name: Install Fly CLI
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+        # Pinned: flyctl 0.4.101 and later answer "Error: unauthorized" to
+        # `flyctl apps list --json` for an app-scoped token, which breaks the
+        # next step's proof that MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN is app
+        # scoped. Last green backup run 34213697564 acquired 0.4.100; the first
+        # failure run 34305549375 acquired 0.4.101 and died at that step with
+        # customer_backup_token_not_app_scoped. Bumping this pin requires first
+        # re-proving `flyctl apps list --json` returns exactly one app with a
+        # freshly minted app-scoped token.
+        with:
+          version: "0.4.100"
 
       - name: Initialize backup evidence
         shell: bash
