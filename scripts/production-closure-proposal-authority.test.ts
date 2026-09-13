@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   releaseTrainIntegrityDigest,
   type ProductionClosureMatrix,
@@ -130,6 +130,30 @@ function baseAuthority() {
       resolve(root, "config", "production-closure-authority-rotation.json"),
     ),
   };
+}
+
+/**
+ * Serve a config-policy whose `publicClaimEvidenceHolds` are the given synthetic
+ * holds as the exact head, base, and merge-base bytes, so the proposal reads as
+ * an untouched product proposal (not a rotation) and the trusted policy the
+ * caller hands matches the base bytes. Returns the parsed policy for arg-1 and
+ * its bytes for `baseAuthority().policyBytes`. The real rotating holds in the
+ * live config are deliberately not exercised here (they rotate and expire on a
+ * real wall clock); the hold mechanism is exercised with these synthetic holds
+ * timed relative to the frozen OBSERVED_AT.
+ */
+function serveEvidenceHolds(
+  client: FixtureClient,
+  holds: unknown[],
+): { policy: ClosureAuthorityPolicy; bytes: Buffer } {
+  const parsed = policy();
+  parsed.publicClaimEvidenceHolds = holds;
+  const bytes = Buffer.from(JSON.stringify(parsed));
+  const blobSha = sha(bytes);
+  client.blobs.set(blobSha, bytes);
+  client.pathToSha.set("config/production-closure-authority.json", blobSha);
+  client.basePathToSha.set("config/production-closure-authority.json", blobSha);
+  return { policy: parsed, bytes };
 }
 
 function createDivergedRepository(): {
@@ -395,6 +419,131 @@ describe("production closure proposal authority", () => {
         .map((issue) => issue.subject),
       JSON.stringify(result.issues, null, 2),
     ).toEqual(["CLM-013-EV02"]);
+  });
+
+  it("holds a stale live claim under a valid, effective evidence hold without failing the proposal", async () => {
+    const client = new FixtureClient();
+    const claims = claimsFixture();
+    liveEvidence(claims, "CLM-013-EV02").freshUntil = "2026-08-25T11:59:59.999Z";
+    client.replace("docs/PUBLIC_CLAIMS.json", claims);
+    const { policy: heldPolicy, bytes } = serveEvidenceHolds(client, [
+      {
+        evidenceId: "CLM-013-EV02",
+        recordedAt: "2026-08-24T00:00:00.000Z",
+        expiresAt: "2026-08-26T00:00:00.000Z",
+        reason: "incident hold under test",
+        authorizedBy: "owner under test",
+      },
+    ]);
+
+    const warnings: string[] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args: unknown[]) => {
+        warnings.push(args.map((arg) => String(arg)).join(" "));
+      });
+    let result;
+    try {
+      result = await verifyProductionClosureProposal(
+        heldPolicy,
+        "gondalaimafia/mendpoint",
+        HEAD,
+        client,
+        OBSERVED_AT,
+        { ...baseAuthority(), policyBytes: bytes },
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(result.issues.map((issue) => issue.code)).not.toContain("LIVE_EVIDENCE_STALE");
+    expect(
+      warnings.some((line) => /LIVE_EVIDENCE_STALE_HELD CLM-013-EV02/.test(line)),
+      warnings.join("\n"),
+    ).toBe(true);
+  });
+
+  it("blocks a stale live claim whose evidence hold has expired", async () => {
+    const client = new FixtureClient();
+    const claims = claimsFixture();
+    liveEvidence(claims, "CLM-013-EV02").freshUntil = "2026-08-25T11:59:59.999Z";
+    client.replace("docs/PUBLIC_CLAIMS.json", claims);
+    const { policy: heldPolicy, bytes } = serveEvidenceHolds(client, [
+      {
+        evidenceId: "CLM-013-EV02",
+        recordedAt: "2026-08-19T00:00:00.000Z",
+        expiresAt: "2026-08-24T00:00:00.000Z",
+        reason: "lapsed incident hold under test",
+        authorizedBy: "owner under test",
+      },
+    ]);
+
+    const result = await verifyProductionClosureProposal(
+      heldPolicy,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      { ...baseAuthority(), policyBytes: bytes },
+    );
+
+    expect(result.verdict).toBe("fail");
+    expect(
+      result.issues
+        .filter((issue) => issue.code === "EVIDENCE_HOLD_EXPIRED")
+        .map((issue) => issue.subject),
+      JSON.stringify(result.issues, null, 2),
+    ).toEqual(["CLM-013-EV02"]);
+  });
+
+  it("does not let a not-yet-effective evidence hold cover a stale live claim", async () => {
+    const client = new FixtureClient();
+    const claims = claimsFixture();
+    liveEvidence(claims, "CLM-013-EV02").freshUntil = "2026-08-25T11:59:59.999Z";
+    client.replace("docs/PUBLIC_CLAIMS.json", claims);
+    const { policy: heldPolicy, bytes } = serveEvidenceHolds(client, [
+      {
+        evidenceId: "CLM-013-EV02",
+        recordedAt: "2026-08-26T00:00:00.000Z",
+        expiresAt: "2026-08-28T00:00:00.000Z",
+        reason: "future incident hold under test",
+        authorizedBy: "owner under test",
+      },
+    ]);
+
+    const warnings: string[] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args: unknown[]) => {
+        warnings.push(args.map((arg) => String(arg)).join(" "));
+      });
+    let result;
+    try {
+      result = await verifyProductionClosureProposal(
+        heldPolicy,
+        "gondalaimafia/mendpoint",
+        HEAD,
+        client,
+        OBSERVED_AT,
+        { ...baseAuthority(), policyBytes: bytes },
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(result.verdict).toBe("fail");
+    expect(
+      result.issues
+        .filter((issue) => issue.code === "LIVE_EVIDENCE_STALE")
+        .map((issue) => issue.subject),
+      JSON.stringify(result.issues, null, 2),
+    ).toEqual(["CLM-013-EV02"]);
+    expect(result.issues.map((issue) => issue.code)).not.toContain("EVIDENCE_HOLD_NOT_YET_EFFECTIVE");
+    expect(
+      warnings.some((line) => /EVIDENCE_HOLD_NOT_YET_EFFECTIVE CLM-013-EV02/.test(line)),
+      warnings.join("\n"),
+    ).toBe(true);
   });
 
   it("does not report an open pull request head the local object database cannot resolve, but still flags an unreachable merge revision", async () => {
