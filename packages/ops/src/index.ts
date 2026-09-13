@@ -27,6 +27,7 @@ export {
   computeCustomerReadiness,
   parseCustomerQualificationAttestation,
   verifyCustomerSandboxReceipt,
+  customerSandboxEgressReadinessCheck,
   CUSTOMER_QUALIFICATION_ATTESTATION_SCHEMA,
   CUSTOMER_QUALIFICATION_REQUIREMENT_COUNT,
   type CustomerCriticalHealth,

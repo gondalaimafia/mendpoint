@@ -25,7 +25,7 @@ import {
   SANDBOX_EGRESS_ALLOWED_PROBE_COMMAND,
   SANDBOX_EGRESS_FORBIDDEN_PROBE_COMMAND,
   sandboxEgressAuthorityFromEnv,
-  verifySandboxEgressAttestation,
+  verifySandboxEgressAuthority,
   type SandboxEgressAuthorityConfig,
 } from "./sandbox-egress-attestation.js";
 
@@ -479,8 +479,13 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
   const execTimeoutMs = flyOpts.execTimeoutMs ?? FLY_SANDBOX_DEFAULTS.execTimeoutMs;
   const retryOptions = flyOpts.retry;
   const configuredEgressAuthority = flyOpts.egressAuthority ?? sandboxEgressAuthorityFromEnv();
+  // Only the immutable authority CONFIG is frozen here (including the file path);
+  // the receipt bytes are NOT captured at construction. verifySandboxEgressAuthority
+  // re-reads the file on every validateEgressAuthority call below, so a renewal
+  // that installs a fresh receipt is seen without recreating this sandbox.
   const egressAuthority = Object.freeze({
     attestationBase64: configuredEgressAuthority.attestationBase64,
+    attestationPath: configuredEgressAuthority.attestationPath,
     publicKeySpkiBase64: configuredEgressAuthority.publicKeySpkiBase64,
     expectedKeyId: configuredEgressAuthority.expectedKeyId,
     expectedPolicyDigest: configuredEgressAuthority.expectedPolicyDigest,
@@ -492,7 +497,7 @@ export function createFlyMachinesSandbox(opts: CreateSandboxOpts = {}): FlySandb
     if (client.mode !== "live") return undefined;
     try {
       const observedAt = egressAuthority.now?.() ?? new Date().toISOString();
-      verifySandboxEgressAttestation({
+      verifySandboxEgressAuthority({
         ...egressAuthority,
         expectedApp: app ?? "",
         expectedImage: image,

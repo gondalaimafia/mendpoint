@@ -303,6 +303,9 @@ jobs:
           key_id="$(jq -r '.keyId' test-results/sandbox-egress/receipt.json)"
           policy_digest="$(jq -r '.policyDigest' test-results/sandbox-egress/receipt.json)"
           schema="$(jq -r '.payload.schemaVersion' test-results/sandbox-egress/receipt.json)"
+          # The freshly minted expiry, used by the protected file-delivery branch
+          # to confirm the app is serving THIS receipt (not a stale one) via /ready.
+          expires_at="$(jq -r '.payload.expiresAt' test-results/sandbox-egress/receipt.json)"
           # Enumerate the apps that consume the receipt FROM CONFIGURATION -- the
           # live Fly inventory filtered by the operator naming convention -- never
           # a hardcoded list (a hardcoded list is how this rotation reached only
@@ -356,6 +359,97 @@ jobs:
               and (.config.metadata.fly_process_group | type == "string" and length > 0)
             )' \
               <<<"$machines_json" >/dev/null
+            if [ "$is_protected_app" = true ]; then
+              # PROTECTED consuming app (customer production): deliver the signed
+              # receipt as a FILE the app re-reads, with NO machine update, NO
+              # secrets set, NO restart, and NO containment. Rolling-restarting or
+              # stopping this single, auto_start_machines=false machine is exactly
+              # what stopped customer production (run 33890068837 and the 2026-09-08
+              # boot-fence incident). The pre-flight guard above already proved
+              # every machine is started; a stopped protected machine is reported
+              # by that guard, never started or stopped here.
+              printf '%s\n' "$machines_json" \
+                >"test-results/sandbox-egress/rotation-before-${app}.json"
+              # (b) Install the receipt file INSIDE the machine over ssh. flyctl
+              # word-splits --command and execs without a shell, so the base64
+              # attestation is the single trailing argument (argv[2] to the script).
+              # Bounded by timeout so a hung ssh session can never wedge the
+              # 6-hourly renewal.
+              if ! install_json="$(timeout 120 flyctl ssh console --app "$app" --pty=false \
+                  --command "node --import tsx /app/scripts/sandbox-egress-attestation-install.ts $attestation" </dev/null)"; then
+                printf 'protected_install_failed\tapp=%s\n' "$app" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                echo "PROTECTED app ${app}: ssh receipt install failed or timed out; NOT containing. Failing loudly for the renewal-failure alert." >&2
+                exit 1
+              fi
+              install_line="$(printf '%s\n' "$install_json" | grep -E '"installed"' | tail -n1 || true)"
+              if [ -z "$install_line" ]; then install_line='{}'; fi
+              printf '%s\n' "$install_line" \
+                >"test-results/sandbox-egress/install-${app}.json"
+              if ! jq -e '.installed == true' <<<"$install_line" >/dev/null 2>&1; then
+                printf 'protected_install_not_confirmed\tapp=%s\n' "$app" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                echo "PROTECTED app ${app}: install did not report installed:true; NOT containing." >&2
+                exit 1
+              fi
+              # (c) Confirm from the app's OWN reader that it is now serving the
+              # file-sourced receipt: read /ready in-machine (the API listens on
+              # 127.0.0.1:3001) and require the egress check ok:true, source:file,
+              # and the exact new expiry. The reader JS has NO spaces and uses
+              # backtick string literals; single-quote the --command so bash never
+              # treats the backticks as command substitution and flyctl passes them
+              # through to node unchanged.
+              ready_out="$(timeout 120 flyctl ssh console --app "$app" --pty=false \
+                --command 'node -e fetch(`http://127.0.0.1:3001/ready`).then(r=>r.json()).then(j=>process.stdout.write(JSON.stringify((j.checks||[]).find(c=>c.name===`sandbox_egress_receipt`)||{}))).catch(()=>process.stdout.write(`{}`))' </dev/null \
+                || true)"
+              ready_line="$(printf '%s\n' "$ready_out" | grep -E '"sandbox_egress_receipt"' | tail -n1 || true)"
+              if [ -z "$ready_line" ]; then ready_line='{}'; fi
+              printf '%s\n' "$ready_line" \
+                >"test-results/sandbox-egress/ready-${app}.json"
+              if ! after_machines_json="$(flyctl machine list --app "$app" --json)"; then
+                after_machines_json='[]'
+              fi
+              printf '%s\n' "$after_machines_json" \
+                >"test-results/sandbox-egress/rotation-after-${app}.json"
+              ready_ok="$(jq -r '.ok // false' <<<"$ready_line" 2>/dev/null || echo false)"
+              ready_source="$(jq -r 'try ((.detail|fromjson|.source) // "") catch ""' <<<"$ready_line" 2>/dev/null || echo "")"
+              ready_expires="$(jq -r 'try ((.detail|fromjson|.expiresAt) // "") catch ""' <<<"$ready_line" 2>/dev/null || echo "")"
+              # readiness-confirmation-guard (mutation strips this if-fi to prove it is load-bearing)
+              if [ "$ready_ok" != "true" ] || [ "$ready_source" != "file" ] || [ "$ready_expires" != "$expires_at" ]; then
+                reason="readiness_disagreed:ok=${ready_ok},source=${ready_source},expiresAt=${ready_expires}"
+                printf '%s\tapp=%s\texpected_expiresAt=%s\n' "$reason" "$app" "$expires_at" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                echo "PROTECTED app ${app}: ${reason} (expected ok=true,source=file,expiresAt=${expires_at}); NOT containing. Failing loudly for the renewal-failure alert." >&2
+                exit 1
+              fi
+              # readiness-confirmation-guard-end
+              printf 'protected_file_delivery_ok\tapp=%s\tsource=%s\texpiresAt=%s\n' \
+                "$app" "$ready_source" "$ready_expires" \
+                >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+              # (e) Refresh the environment fallback copy WITHOUT a restart, now that
+              # the file is installed and confirmed. `--stage` sets the secret but
+              # skips deployment for machine apps (verified present in the pinned
+              # flyctl), so no machine restarts here: the volume file stays the live
+              # source, and a machine that later boots from a REPLACED volume (no file
+              # yet) reads a fresh env receipt instead of the frozen, long-expired copy
+              # this branch would otherwise leave behind. The file delivery already
+              # succeeded, so a staging failure is a warning, never fatal, and we NEVER
+              # fall back to a non-staged (deploying) secrets set. `secrets list`
+              # afterwards is recorded as evidence and must show this secret Staged,
+              # not Deployed (a Deployed status would mean a restart was triggered).
+              if flyctl secrets set --stage --app "$app" \
+                  MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64="$attestation" </dev/null; then
+                printf 'protected_env_fallback_staged\tapp=%s\n' "$app" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                flyctl secrets list --app "$app" --json </dev/null \
+                  >"test-results/sandbox-egress/secrets-after-${app}.json" 2>/dev/null || true
+              else
+                printf 'protected_env_fallback_stage_failed\tapp=%s\n' "$app" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                echo "PROTECTED app ${app}: staged env-fallback refresh failed (non-fatal; the receipt file was already installed and confirmed)." >&2
+              fi
+              continue
+            fi
             launch_groups_before="$(jq -cS '[.[] | {
               id,
               processGroup: .config.metadata.fly_process_group

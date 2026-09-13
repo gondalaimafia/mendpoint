@@ -405,3 +405,250 @@ describe("sandbox egress rotation — protected consuming apps are never stopped
     60_000,
   );
 });
+
+/**
+ * The SHIPPED protected file-delivery branch of the same rotation step. It is
+ * extracted verbatim from the workflow and run against a stubbed `flyctl` whose
+ * `ssh console` answers the install command and the in-machine /ready read. The
+ * guarantees a protected renewal must hold are proved by the ABSENCE of any
+ * `machine update`, `secrets set`, `machine stop`, or `machine start` call (no
+ * restart, no containment) and the PRESENCE of exactly one ssh install plus one
+ * ssh /ready read that must agree before the branch reports success.
+ */
+function protectedBranch(stripReadinessGuard = false): string {
+  let branch = extractRegion(
+    '            if [ "$is_protected_app" = true ]; then',
+    "              continue\n            fi",
+  );
+  if (stripReadinessGuard) {
+    const start = branch.indexOf("# readiness-confirmation-guard (mutation strips");
+    const endMarker = "# readiness-confirmation-guard-end";
+    const end = branch.indexOf(endMarker);
+    expect(start, "readiness confirmation guard start not found").toBeGreaterThan(-1);
+    expect(end, "readiness confirmation guard end not found").toBeGreaterThan(start);
+    branch = branch.slice(0, start) + branch.slice(end + endMarker.length);
+  }
+  return branch;
+}
+
+interface ProtectedOptions {
+  readyJson?: string;
+  installFail?: boolean;
+  stageFail?: boolean;
+  stripReadinessGuard?: boolean;
+  expiresAt?: string;
+}
+
+interface ProtectedResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  calls: string[];
+  installCalls: string[];
+  readyCalls: string[];
+  updateCalls: string[];
+  secretsCalls: string[];
+  stagedSecretsCalls: string[];
+  stopCalls: string[];
+  startCalls: string[];
+  recovery: string;
+}
+
+function runProtected(opts: ProtectedOptions = {}): ProtectedResult {
+  const dir = mkdtempSync(join(tmpdir(), "egress-protected-file-"));
+  const binDir = join(dir, "bin");
+  mkdirSync(binDir);
+  mkdirSync(join(dir, "test-results", "sandbox-egress"), { recursive: true });
+  const callLog = join(dir, "calls.log").replace(/\\/g, "/");
+  const app = "mendpoint-fettler-production";
+  const expiresAt = opts.expiresAt ?? "2026-08-19T19:00:00.000Z";
+  const installJson = JSON.stringify({
+    installed: true,
+    path: "/data/sandbox-egress/attestation.b64",
+    testedAt: "2026-08-18T19:55:00.000Z",
+    expiresAt,
+    sha256: "a".repeat(64),
+  });
+  const readyJson = opts.readyJson ?? JSON.stringify({
+    name: "sandbox_egress_receipt",
+    ok: true,
+    detail: JSON.stringify({ status: "verified", source: "file", expiresAt }),
+  });
+  const machinesJson = '[{"id":"84e696a22eee68","state":"started"}]';
+
+  // Stubbed flyctl: `ssh console ...install.ts...` answers the install (JSON line,
+  // or a non-zero exit when INSTALL_FAIL=1); `ssh console ...sandbox_egress_receipt...`
+  // answers the in-machine /ready read; `machine list` returns the current state.
+  // Every invocation is logged so the test can assert what was and was NOT called.
+  writeFileSync(
+    join(binDir, "flyctl"),
+    [
+      "#!/usr/bin/env bash",
+      `printf 'flyctl %s\\n' "$*" >>"${callLog}"`,
+      'case "$*" in',
+      '  *"ssh console"*"install.ts"*)',
+      '    if [ "${INSTALL_FAIL:-0}" = "1" ]; then exit 1; fi',
+      "    printf '%s\\n' \"$INSTALL_JSON\"",
+      "    ;;",
+      '  *"ssh console"*"sandbox_egress_receipt"*)',
+      "    printf '%s\\n' \"$READY_JSON\"",
+      "    ;;",
+      '  *"secrets set"*)',
+      '    if [ "${STAGE_FAIL:-0}" = "1" ]; then exit 1; fi',
+      "    ;;",
+      '  *"secrets list"*)',
+      "    printf '%s\\n' '[{\"name\":\"MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64\",\"status\":\"Staged\"}]'",
+      "    ;;",
+      '  *"machine list"*)',
+      "    printf '%s\\n' \"$MACHINES_JSON\"",
+      "    ;;",
+      "esac",
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(join(binDir, "flyctl"), 0o755);
+
+  const harness = [
+    "set -uo pipefail",
+    `app="${app}"`,
+    'attestation="dGVzdC1hdHRlc3RhdGlvbg=="',
+    `expires_at="${expiresAt}"`,
+    "is_protected_app=true",
+    `machines_json='${machinesJson}'`,
+    // timeout is stubbed to strip the bound and run the command directly.
+    'timeout() { shift; "$@"; }',
+    "sleep() { :; }",
+    // Wrap in a one-shot loop so the branch's `continue` is meaningful (it ends
+    // the loop, i.e. success), while any `exit 1` still aborts the whole run.
+    "for __protected_iter in 1; do",
+    protectedBranch(opts.stripReadinessGuard),
+    "done",
+    "",
+  ].join("\n");
+  writeFileSync(join(dir, "harness.sh"), harness);
+
+  const result = spawnSync("bash", ["harness.sh"], {
+    cwd: dir,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${binDir}${SEP}${process.env.PATH ?? ""}`,
+      INSTALL_JSON: installJson,
+      READY_JSON: readyJson,
+      MACHINES_JSON: machinesJson,
+      INSTALL_FAIL: opts.installFail ? "1" : "0",
+      STAGE_FAIL: opts.stageFail ? "1" : "0",
+    },
+  });
+
+  const calls = existsSync(callLog)
+    ? readFileSync(callLog, "utf8").split("\n").filter(Boolean)
+    : [];
+  const recoveryPath = join(dir, "test-results", "sandbox-egress", `rotation-recovery-${app}.txt`);
+  return {
+    status: result.status,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    calls,
+    installCalls: calls.filter((line) => line.includes("install.ts")),
+    readyCalls: calls.filter((line) => line.includes("sandbox_egress_receipt")),
+    updateCalls: calls.filter((line) => line.includes("machine update")),
+    secretsCalls: calls.filter((line) => line.includes("secrets set")),
+    stagedSecretsCalls: calls.filter((line) => line.includes("secrets set") && line.includes("--stage")),
+    stopCalls: calls.filter((line) => line.includes("machine stop")),
+    startCalls: calls.filter((line) => line.includes("machine start")),
+    recovery: existsSync(recoveryPath) ? readFileSync(recoveryPath, "utf8") : "",
+  };
+}
+
+describe("sandbox egress rotation — protected apps get the receipt as a file, never a restart", () => {
+  it("installs over ssh, confirms /ready, and stages the env fallback with no machine update / stop / start", () => {
+    const result = runProtected();
+    expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+    // Exactly one ssh install and one ssh /ready read.
+    expect(result.installCalls.length).toBe(1);
+    expect(result.readyCalls.length).toBe(1);
+    // Exactly one secrets set, and it is STAGED (skips deployment) -- never a
+    // deploying set that would restart the machine.
+    expect(result.secretsCalls.length).toBe(1);
+    expect(result.stagedSecretsCalls.length).toBe(1);
+    // No restart, no containment: none of these mutating calls happen.
+    expect(result.updateCalls).toEqual([]);
+    expect(result.stopCalls).toEqual([]);
+    expect(result.startCalls).toEqual([]);
+    expect(result.recovery).toContain("protected_file_delivery_ok");
+    expect(result.recovery).toContain("protected_env_fallback_staged");
+  }, 60_000);
+
+  it("(S1) refreshes the env fallback only with a --stage secrets set, and a staging failure is non-fatal", () => {
+    const result = runProtected({ stageFail: true });
+    // The receipt file was already installed and confirmed, so a staging failure
+    // must NOT fail the run and must NOT restart anything.
+    expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+    expect(result.secretsCalls.length).toBe(1);
+    expect(result.stagedSecretsCalls.length).toBe(1);
+    expect(result.updateCalls).toEqual([]);
+    expect(result.stopCalls).toEqual([]);
+    expect(result.startCalls).toEqual([]);
+    expect(result.recovery).toContain("protected_env_fallback_stage_failed");
+  }, 60_000);
+
+  it("fails with a named reason and no containment when /ready reports source:env", () => {
+    const result = runProtected({
+      readyJson: JSON.stringify({
+        name: "sandbox_egress_receipt",
+        ok: true,
+        detail: JSON.stringify({ status: "verified", source: "env", expiresAt: "2026-08-19T19:00:00.000Z" }),
+      }),
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.recovery).toContain("readiness_disagreed");
+    expect(result.stopCalls).toEqual([]);
+    expect(result.startCalls).toEqual([]);
+    expect(result.updateCalls).toEqual([]);
+    expect(result.secretsCalls).toEqual([]);
+  }, 60_000);
+
+  it("fails with a named reason when /ready reports a different expiresAt", () => {
+    const result = runProtected({
+      readyJson: JSON.stringify({
+        name: "sandbox_egress_receipt",
+        ok: true,
+        detail: JSON.stringify({ status: "verified", source: "file", expiresAt: "2020-01-01T00:00:00.000Z" }),
+      }),
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.recovery).toContain("readiness_disagreed");
+    expect(result.stopCalls).toEqual([]);
+    expect(result.startCalls).toEqual([]);
+  }, 60_000);
+
+  it("fails when the ssh install fails, without reading /ready or containing", () => {
+    const result = runProtected({ installFail: true });
+    expect(result.status).not.toBe(0);
+    expect(result.installCalls.length).toBe(1);
+    expect(result.readyCalls).toEqual([]);
+    expect(result.recovery).toContain("protected_install_failed");
+    expect(result.stopCalls).toEqual([]);
+    expect(result.startCalls).toEqual([]);
+  }, 60_000);
+
+  it("(mutation) deleting the /ready confirmation lets a source:env disagreement pass — the confirmation is load-bearing", () => {
+    const disagreeing = {
+      readyJson: JSON.stringify({
+        name: "sandbox_egress_receipt",
+        ok: true,
+        detail: JSON.stringify({ status: "verified", source: "env", expiresAt: "2026-08-19T19:00:00.000Z" }),
+      }),
+    };
+    const withGuard = runProtected(disagreeing);
+    expect(withGuard.status, "control: the confirmation catches the disagreement").not.toBe(0);
+
+    const withoutGuard = runProtected({ ...disagreeing, stripReadinessGuard: true });
+    expect(
+      withoutGuard.status,
+      `mutation: without the confirmation a source:env disagreement passes; stderr: ${withoutGuard.stderr}`,
+    ).toBe(0);
+  }, 60_000);
+});

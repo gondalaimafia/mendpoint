@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import {
   sandboxEgressAuthorityFromEnv,
-  verifySandboxEgressAttestation,
-  type VerifiedSandboxEgressAttestationPayload,
+  verifySandboxEgressAuthority,
+  type SandboxEgressAuthoritySource,
 } from "@mendpoint/platform";
 import { resolveEitherRenamedEnv } from "@mendpoint/shared";
 
@@ -59,6 +59,10 @@ export type CustomerQualificationTrustRoots = Readonly<{
 export type CustomerSandboxReceiptVerification =
   | Readonly<{
       status: "verified";
+      // Which candidate the app is actually reading: the file on the persistent
+      // volume ("file") or the environment value ("env"). Surfaced so a renewal
+      // can confirm a file delivery landed without a restart.
+      source: SandboxEgressAuthoritySource;
       app: string;
       image: string;
       policyDigest: string;
@@ -320,7 +324,7 @@ export function verifyCustomerSandboxReceipt(
   const expectedImage = env.MENDPOINT_SANDBOX_FLY_IMAGE?.trim();
   if (!expectedApp || !expectedImage) return Object.freeze({ status: "unavailable" });
   try {
-    const payload: VerifiedSandboxEgressAttestationPayload = verifySandboxEgressAttestation({
+    const { payload, source } = verifySandboxEgressAuthority({
       ...sandboxEgressAuthorityFromEnv(env as NodeJS.ProcessEnv),
       expectedApp,
       expectedImage,
@@ -328,6 +332,7 @@ export function verifyCustomerSandboxReceipt(
     });
     return Object.freeze({
       status: "verified",
+      source,
       app: payload.app,
       image: payload.image,
       policyDigest: payload.policyDigest,
@@ -337,6 +342,31 @@ export function verifyCustomerSandboxReceipt(
   } catch (error) {
     return sandboxReceiptFromError(error);
   }
+}
+
+/**
+ * The `/ready` egress check for a customer deployment. It verifies the sandbox
+ * egress receipt the SAME way the boot and per-launch paths do (file first,
+ * environment fallback) and reports whether the app is currently serving a
+ * verified receipt, WHICH source it came from, and WHEN it expires. The renewal
+ * reads this back over ssh to confirm a file delivery landed -- `source:"file"`
+ * with the freshly minted expiry -- without ever restarting the machine. The
+ * `detail` carries `source` and `expiresAt` as JSON so a machine reader can
+ * compare them exactly; a non-verified receipt reports only its status.
+ */
+export function customerSandboxEgressReadinessCheck(
+  env: Readonly<NodeJS.ProcessEnv>,
+  now: string,
+): Readonly<{ name: string; ok: boolean; detail: string }> {
+  const receipt = verifyCustomerSandboxReceipt(env, now);
+  const detail = receipt.status === "verified"
+    ? JSON.stringify({ status: "verified", source: receipt.source, expiresAt: receipt.expiresAt })
+    : JSON.stringify({ status: receipt.status });
+  return Object.freeze({
+    name: "sandbox_egress_receipt",
+    ok: receipt.status === "verified",
+    detail,
+  });
 }
 
 /**

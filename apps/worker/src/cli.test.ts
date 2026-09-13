@@ -2791,6 +2791,72 @@ describe("worker runtime", () => {
     ]));
   });
 
+  it("verifies the sandbox egress authority from the receipt FILE at startup, with env fallback", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-sandbox-authority-file-"));
+    dirs.push(root);
+    const image = `registry.fly.io/mendpoint-sandbox@sha256:${"a".repeat(64)}`;
+    const policyDigest = `sha256:${"b".repeat(64)}`;
+    const testedAt = new Date(Date.now() - 60_000).toISOString();
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+    const keys = generateKeyPairSync("ed25519");
+    const payloadBytes = sandboxEgressAttestationPayloadBytes({
+      schemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+      app: "mendpoint-sandbox",
+      image,
+      policyDigest,
+      testedAt,
+      expiresAt,
+      forbiddenOutbound: {
+        commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+        targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+        blocked: true,
+      },
+      allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true },
+      evidenceRefs: ["evidence://protected-egress-acceptance/file-startup"],
+    });
+    const envelope = Buffer.from(JSON.stringify({
+      payload: payloadBytes.toString("base64"),
+      signatures: [{
+        keyId: "sandbox-egress-key-1",
+        signature: sign(null, payloadBytes, keys.privateKey).toString("base64"),
+      }],
+    }), "utf8").toString("base64");
+    const attestationPath = join(root, "attestation.b64");
+    writeFileSync(attestationPath, envelope);
+    // The receipt is delivered ONLY as a file (no MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64):
+    // the boot check must verify it through the file-first wrapper.
+    const base = {
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+      GITHUB_MODE: "mock",
+      MENDPOINT_DATA_DIR: root,
+      MENDPOINT_REPOS_DIR: root,
+      MENDPOINT_SANDBOX_KIND: "fly_machines",
+      MENDPOINT_SANDBOX_FLY_APP: "mendpoint-sandbox",
+      MENDPOINT_SANDBOX_FLY_TOKEN: "scoped-token",
+      MENDPOINT_SANDBOX_FLY_IMAGE: image,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PATH: attestationPath,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64:
+        keys.publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "sandbox-egress-key-1",
+      MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: policyDigest,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+    };
+    expect(validateWorkerProductionEnv(base)).toEqual([]);
+
+    // A tampered file with no environment fallback is refused at boot.
+    writeFileSync(attestationPath, "dGFtcGVyZWQ=");
+    expect(validateWorkerProductionEnv(base)).toEqual(expect.arrayContaining([
+      expect.stringContaining("Sandbox egress authority invalid"),
+    ]));
+
+    // A tampered file falls back to a valid environment receipt -> boot passes.
+    expect(validateWorkerProductionEnv({
+      ...base,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64: envelope,
+    })).toEqual([]);
+  });
+
   it("degrades to a boot warning on an authentic but expired egress attestation instead of failing preflight", () => {
     const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-egress-expired-"));
     dirs.push(root);
@@ -2844,6 +2910,67 @@ describe("worker runtime", () => {
     expect(validateWorkerProductionEnv(base, (warning) => warnings.push(warning))).toEqual([]);
     expect(warnings).toEqual([
       "worker_boot_degraded sandbox_egress_attestation_expired: sandbox launches are refused until the renewal delivers a fresh receipt",
+    ]);
+  });
+
+  it("degrades (never crash-loops) on a corrupt/oversize FILE with an authentic-but-expired environment receipt, surfacing the file failure", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-egress-file-expired-"));
+    dirs.push(root);
+    const image = `registry.fly.io/mendpoint-sandbox@sha256:${"a".repeat(64)}`;
+    const policyDigest = `sha256:${"b".repeat(64)}`;
+    // Environment receipt: authentic, in-window at signing, observed after expiry.
+    const testedAt = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    const expiresAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    const keys = generateKeyPairSync("ed25519");
+    const payloadBytes = sandboxEgressAttestationPayloadBytes({
+      schemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+      app: "mendpoint-sandbox",
+      image,
+      policyDigest,
+      testedAt,
+      expiresAt,
+      forbiddenOutbound: {
+        commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+        targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+        blocked: true,
+      },
+      allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true },
+      evidenceRefs: ["evidence://protected-egress-acceptance/file-expired"],
+    });
+    const envelope = Buffer.from(JSON.stringify({
+      payload: payloadBytes.toString("base64"),
+      signatures: [{
+        keyId: "sandbox-egress-key-1",
+        signature: sign(null, payloadBytes, keys.privateKey).toString("base64"),
+      }],
+    }), "utf8").toString("base64");
+    // Volume FILE is oversize (a file-only failure, unrelated to the expiry). Before
+    // the fix this made boot fatal and crash-looped the single production machine.
+    const attestationPath = join(root, "attestation.b64");
+    writeFileSync(attestationPath, "A".repeat(40 * 1024));
+    const base = {
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+      GITHUB_MODE: "mock",
+      MENDPOINT_DATA_DIR: root,
+      MENDPOINT_REPOS_DIR: root,
+      MENDPOINT_SANDBOX_KIND: "fly_machines",
+      MENDPOINT_SANDBOX_FLY_APP: "mendpoint-sandbox",
+      MENDPOINT_SANDBOX_FLY_TOKEN: "scoped-token",
+      MENDPOINT_SANDBOX_FLY_IMAGE: image,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PATH: attestationPath,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64: envelope,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64:
+        keys.publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "sandbox-egress-key-1",
+      MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: policyDigest,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+    };
+    const warnings: string[] = [];
+    expect(validateWorkerProductionEnv(base, (warning) => warnings.push(warning))).toEqual([]);
+    expect(warnings).toEqual([
+      "worker_boot_degraded sandbox_egress_attestation_expired: sandbox launches are refused until the renewal delivers a fresh receipt",
+      "worker_boot_degraded sandbox_egress_attestation_file_unusable: sandbox_egress_attestation_file_too_large",
     ]);
   });
 

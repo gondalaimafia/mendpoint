@@ -8,7 +8,7 @@ import {
   mkdirSync,
   readdirSync,
 } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import {
   initializeWithMutationLease,
   resolveMutationFenceRoot,
@@ -31,6 +31,15 @@ const reposRoot = resolve(process.env.MENDPOINT_REPOS_DIR ?? `${dataRoot}/repos`
 const tenantRepos = resolve(reposRoot, tenantId);
 const appRoot = resolve(process.env.MENDPOINT_APP_ROOT ?? "/app");
 const deploymentProfile = process.env.MENDPOINT_DEPLOYMENT_PROFILE;
+// Directory that holds the file-delivered sandbox egress receipt. Created at
+// boot (like the other customer-owned paths) so the protected-app renewal can
+// install the receipt over ssh without a restart; the app re-reads it on every
+// egress verification. Absent for non-customer profiles, which do not set the
+// path and never verify a sandbox egress receipt.
+const sandboxEgressAttestationDir =
+  deploymentProfile === "customer" && process.env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PATH?.trim()
+    ? dirname(resolve(process.env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PATH.trim()))
+    : null;
 const childIdentity =
   process.platform !== "win32" && process.getuid?.() === 0
     ? { uid: 1000, gid: 1000 }
@@ -242,6 +251,10 @@ for (const path of [
   resolve(dataRoot, "runs"),
   resolve(dataRoot, "state"),
   resolve(dataRoot, "state", "mendpoint"),
+  // The signed egress receipt is a public artifact, so this directory stays
+  // world-readable (0755, owned by the app uid) rather than 0700 like the
+  // private backup and candidate paths below.
+  ...(sandboxEgressAttestationDir ? [sandboxEgressAttestationDir] : []),
   ...customerOwnedPaths,
 ]) {
   mkdirSync(path, { recursive: true });

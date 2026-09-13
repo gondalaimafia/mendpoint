@@ -1,6 +1,8 @@
 import { Buffer } from "node:buffer";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
@@ -16,6 +18,7 @@ import {
   resolveSandboxEgressMinimumSchema,
   sandboxEgressAttestationPayloadBytes,
   verifySandboxEgressAttestation,
+  verifySandboxEgressAuthority,
   type SandboxEgressAttestationPayload,
 } from "./sandbox-egress-attestation.js";
 
@@ -415,5 +418,230 @@ describe("acceptance verification sources expected values independent of the rec
         observedAt: NOW,
       }),
     ).toThrow("sandbox_egress_attestation_scope_mismatch");
+  });
+});
+
+describe("verifySandboxEgressAuthority (file-first resolver)", () => {
+  const basePayload = {
+    schemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+    app: APP,
+    image: IMAGE,
+    policyDigest: POLICY,
+    testedAt: "2026-08-18T19:55:00.000Z",
+    expiresAt: "2026-08-18T20:55:00.000Z",
+    forbiddenOutbound: {
+      commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+      targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+      blocked: true,
+    },
+    allowedVerification: {
+      commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST,
+      passed: true,
+    },
+    evidenceRefs: ["evidence://protected-egress-acceptance/1"],
+  } satisfies SandboxEgressAttestationPayload;
+
+  // A single Ed25519 key signs both candidates so the ONE configured public key
+  // can verify either -- the wrapper's job is to choose the source, not the key.
+  function makeAuthority() {
+    const keys = generateKeyPairSync("ed25519");
+    const publicKeySpkiBase64 = keys.publicKey.export({ format: "der", type: "spki" }).toString("base64");
+    const attestation = (
+      overrides: Partial<SandboxEgressAttestationPayload> = {},
+      opts: { wrongKey?: boolean } = {},
+    ): string => {
+      const payload = { ...basePayload, ...overrides } as SandboxEgressAttestationPayload;
+      const payloadBytes = sandboxEgressAttestationPayloadBytes(payload);
+      const signingKey = opts.wrongKey ? generateKeyPairSync("ed25519").privateKey : keys.privateKey;
+      const envelope = {
+        payload: payloadBytes.toString("base64"),
+        signatures: [{ keyId: "sandbox-egress-key-1", signature: sign(null, payloadBytes, signingKey).toString("base64") }],
+      };
+      return Buffer.from(JSON.stringify(envelope), "utf8").toString("base64");
+    };
+    return { publicKeySpkiBase64, attestation };
+  }
+
+  function config(publicKeySpkiBase64: string) {
+    return {
+      publicKeySpkiBase64,
+      expectedKeyId: "sandbox-egress-key-1",
+      expectedPolicyDigest: POLICY,
+      expectedApp: APP,
+      expectedImage: IMAGE,
+      observedAt: NOW,
+    };
+  }
+
+  const EXPIRED = { testedAt: "2026-08-18T18:00:00.000Z", expiresAt: "2026-08-18T19:00:00.000Z" } as const;
+
+  function tmpFile(name: string, content: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "egress-authority-"));
+    const path = join(dir, name);
+    writeFileSync(path, content);
+    return path;
+  }
+
+  // Symlink creation needs privilege on some Windows hosts; probe once so the
+  // symlink case runs on CI (Linux) and is skipped only where it cannot be set up.
+  let canSymlink = false;
+  try {
+    const probe = mkdtempSync(join(tmpdir(), "egress-symlink-probe-"));
+    writeFileSync(join(probe, "target"), "x");
+    symlinkSync(join(probe, "target"), join(probe, "link"));
+    canSymlink = true;
+  } catch {
+    canSymlink = false;
+  }
+
+  it("prefers the file candidate when it verifies (source: file)", () => {
+    const authority = makeAuthority();
+    const path = tmpFile("attestation.b64", authority.attestation());
+    const result = verifySandboxEgressAuthority({
+      ...config(authority.publicKeySpkiBase64),
+      attestationBase64: authority.attestation(),
+      attestationPath: path,
+    });
+    expect(result.source).toBe("file");
+    expect(result.payload).toMatchObject({ app: APP, image: IMAGE, policyDigest: POLICY });
+  });
+
+  it("falls back to the environment when the file is present but tampered (source: env)", () => {
+    const authority = makeAuthority();
+    const path = tmpFile("attestation.b64", authority.attestation({}, { wrongKey: true }));
+    const result = verifySandboxEgressAuthority({
+      ...config(authority.publicKeySpkiBase64),
+      attestationBase64: authority.attestation(),
+      attestationPath: path,
+    });
+    expect(result.source).toBe("env");
+  });
+
+  it("uses the environment when the file is missing (source: env)", () => {
+    const authority = makeAuthority();
+    const missing = join(mkdtempSync(join(tmpdir(), "egress-missing-")), "absent.b64");
+    const result = verifySandboxEgressAuthority({
+      ...config(authority.publicKeySpkiBase64),
+      attestationBase64: authority.attestation(),
+      attestationPath: missing,
+    });
+    expect(result.source).toBe("env");
+  });
+
+  it.skipIf(!canSymlink)("refuses a symlinked attestation path (file error surfaced when the environment cannot cover)", () => {
+    const authority = makeAuthority();
+    const dir = mkdtempSync(join(tmpdir(), "egress-symlink-"));
+    const target = join(dir, "real.b64");
+    writeFileSync(target, authority.attestation());
+    const link = join(dir, "attestation.b64");
+    symlinkSync(target, link);
+    expect(() =>
+      verifySandboxEgressAuthority({
+        ...config(authority.publicKeySpkiBase64),
+        attestationBase64: undefined,
+        attestationPath: link,
+      }),
+    ).toThrow("sandbox_egress_attestation_file_symlink");
+  });
+
+  it("refuses an oversize attestation file (file error surfaced when the environment cannot cover)", () => {
+    const authority = makeAuthority();
+    const path = tmpFile("attestation.b64", "A".repeat(40 * 1024));
+    expect(() =>
+      verifySandboxEgressAuthority({
+        ...config(authority.publicKeySpkiBase64),
+        attestationBase64: undefined,
+        attestationPath: path,
+      }),
+    ).toThrow("sandbox_egress_attestation_file_too_large");
+  });
+
+  it("falls back to a fresh environment receipt when the file receipt is expired (source: env)", () => {
+    const authority = makeAuthority();
+    const path = tmpFile("attestation.b64", authority.attestation(EXPIRED));
+    const result = verifySandboxEgressAuthority({
+      ...config(authority.publicKeySpkiBase64),
+      attestationBase64: authority.attestation(),
+      attestationPath: path,
+    });
+    expect(result.source).toBe("env");
+  });
+
+  it("throws the file's error (not the environment's) when neither candidate verifies", () => {
+    const authority = makeAuthority();
+    // The file candidate's error is expiry; the environment candidate's is a bad
+    // signature. The file's error must win, proving a present-but-bad file is
+    // surfaced rather than masked by the environment's failure.
+    const path = tmpFile("attestation.b64", authority.attestation(EXPIRED));
+    expect(() =>
+      verifySandboxEgressAuthority({
+        ...config(authority.publicKeySpkiBase64),
+        attestationBase64: authority.attestation({}, { wrongKey: true }),
+        attestationPath: path,
+      }),
+    ).toThrow("sandbox_egress_attestation_expired");
+  });
+
+  // S2: on total failure the resolver must prefer an authentic-but-expired
+  // ENVIRONMENT receipt so the worker boot handler degrades rather than
+  // crash-loops the single production machine on an unrelated file corruption.
+  describe("total-failure preference degrades on an authentic-but-expired environment receipt (S2)", () => {
+    it("fresh environment receipt + bad file → environment is used (no throw)", () => {
+      const authority = makeAuthority();
+      const path = tmpFile("attestation.b64", authority.attestation({}, { wrongKey: true }));
+      const result = verifySandboxEgressAuthority({
+        ...config(authority.publicKeySpkiBase64),
+        attestationBase64: authority.attestation(),
+        attestationPath: path,
+      });
+      expect(result.source).toBe("env");
+    });
+
+    it("expired environment receipt + expired file → throws expired (boot can degrade)", () => {
+      const authority = makeAuthority();
+      const path = tmpFile("attestation.b64", authority.attestation(EXPIRED));
+      expect(() =>
+        verifySandboxEgressAuthority({
+          ...config(authority.publicKeySpkiBase64),
+          attestationBase64: authority.attestation(EXPIRED),
+          attestationPath: path,
+        }),
+      ).toThrow("sandbox_egress_attestation_expired");
+    });
+
+    it("expired environment receipt + oversize file → throws expired and surfaces the file failure code", () => {
+      const authority = makeAuthority();
+      const path = tmpFile("attestation.b64", "A".repeat(40 * 1024));
+      let thrown: unknown;
+      try {
+        verifySandboxEgressAuthority({
+          ...config(authority.publicKeySpkiBase64),
+          attestationBase64: authority.attestation(EXPIRED),
+          attestationPath: path,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as Error).message).toBe("sandbox_egress_attestation_expired");
+      // The file's own failure code is surfaced so an operator sees the file is unusable.
+      expect((thrown as { fileCandidateError?: string }).fileCandidateError).toBe(
+        "sandbox_egress_attestation_file_too_large",
+      );
+    });
+
+    it("both candidates invalid (neither expired) → throws the file's error (fatal at boot)", () => {
+      const authority = makeAuthority();
+      // File oversize (a file-only code) + environment bad signature: neither is the
+      // authentic-but-expired case, so the file's error wins and boot stays fatal.
+      const path = tmpFile("attestation.b64", "A".repeat(40 * 1024));
+      expect(() =>
+        verifySandboxEgressAuthority({
+          ...config(authority.publicKeySpkiBase64),
+          attestationBase64: authority.attestation({}, { wrongKey: true }),
+          attestationPath: path,
+        }),
+      ).toThrow("sandbox_egress_attestation_file_too_large");
+    });
   });
 });

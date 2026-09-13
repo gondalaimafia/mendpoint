@@ -200,6 +200,14 @@
       "status": "required_when_active",
       "activatedBy": "MENDPOINT_SECRET_LIFECYCLE_ENABLED=1",
       "note": "Distinct retained material-lineage keyring; must not reuse replay or envelope-key material"
+    },
+    {
+      "name": "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PATH",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_DEPLOYMENT_PROFILE=customer with MENDPOINT_SANDBOX_KIND=fly_machines; the persistent-volume receipt file the app re-reads at every egress verification and the protected-app renewal installs over ssh",
+      "note": "Absolute path for the signed sandbox egress receipt delivered without a restart; the app falls back to the MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64 secret when the file is absent. The protected-app renewal refreshes that fallback secret with `flyctl secrets set --stage`, so it does not restart the machine now and the refreshed value takes effect at the next boot/deploy (e.g. a replaced volume with no file yet)"
     }
   ],
   "entries": [

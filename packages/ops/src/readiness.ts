@@ -8,6 +8,7 @@ import { releaseBanner, resolveRelease } from "./release.js";
 import { validateApiEnv } from "./env.js";
 import {
   assessCustomerReadiness,
+  customerSandboxEgressReadinessCheck,
   type CustomerReadinessAuthority,
 } from "./customer-readiness.js";
 import { featureMatrix } from "./features.js";
@@ -158,6 +159,19 @@ export function readiness(opts?: {
         ? "ready"
         : `${customerReadiness.status}: ${customerReadiness.reasons.join("; ") || "qualified"}; digest=${customerReadiness.digest}`,
     });
+  }
+
+  // The sandbox egress receipt is a readiness condition (docs/SANDBOX_VERIFIER.md):
+  // a customer app on the Fly-machine sandbox must be serving a verified receipt.
+  // The check re-reads the receipt (file first, environment fallback) on every
+  // probe, so a renewal that installs a fresh receipt file is reflected without a
+  // restart, and its source ("file"/"env") and expiry are surfaced so the renewal
+  // can confirm exactly which receipt the app is using.
+  if (
+    process.env.MENDPOINT_DEPLOYMENT_PROFILE === "customer" &&
+    process.env.MENDPOINT_SANDBOX_KIND === "fly_machines"
+  ) {
+    checks.push({ ...customerSandboxEgressReadinessCheck(process.env, new Date().toISOString()) });
   }
 
   const fail = checks.some((c) => !c.ok);
