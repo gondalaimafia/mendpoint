@@ -11,7 +11,9 @@ import {
 import { resolve } from "node:path";
 import {
   initializeWithMutationLease,
+  resolveMutationFenceRoot,
   validateCustomerBackupPathSafety,
+  waitForMutationFenceRelease,
 } from "@mendpoint/ops";
 import {
   customerWardenChildEnvironment,
@@ -186,6 +188,34 @@ const preflight = spawnSync(
 if (preflight.status !== 0) {
   for (const child of children.values()) child.kill("SIGTERM");
   throw new Error("Runtime environment validation failed before startup");
+}
+
+function resolveStartupFenceWaitMs(env) {
+  const raw = env.MENDPOINT_STARTUP_FENCE_WAIT_MS?.trim();
+  if (!raw) return 600_000;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    console.error(
+      `MENDPOINT_STARTUP_FENCE_WAIT_MS must be a non-negative integer (got "${raw}"); using default 600000`,
+    );
+    return 600_000;
+  }
+  return parsed;
+}
+
+// An outage longer than a backup marker's lifetime used to be unrecoverable: a
+// marker left by the process a restart killed refused every subsequent boot. Wait
+// for the fence to clear instead of racing straight into admission; the reaper
+// inside clears a provably dead owner on the first poll, while a genuine live
+// backup on this machine becomes a bounded wait.
+if (
+  deploymentProfile === "customer" ||
+  process.env.MENDPOINT_BACKUP_FENCE_ROOT?.trim()
+) {
+  await waitForMutationFenceRelease(resolveMutationFenceRoot(process.env), {
+    timeoutMs: resolveStartupFenceWaitMs(process.env),
+    pollMs: 5000,
+  });
 }
 
 initializeWithMutationLease(() => {

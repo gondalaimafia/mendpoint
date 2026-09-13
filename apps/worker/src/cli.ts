@@ -2329,6 +2329,7 @@ function releaseFanoutRunUsage(
 
 export function validateWorkerProductionEnv(
   env: NodeJS.ProcessEnv = process.env,
+  onWarning?: (warning: string) => void,
 ): string[] {
   if (env.NODE_ENV !== "production") return [];
   const errors: string[] = [];
@@ -2469,9 +2470,25 @@ export function validateWorkerProductionEnv(
         observedAt: new Date().toISOString(),
       });
     } catch (error) {
-      errors.push(
-        `Sandbox egress authority invalid: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      // `expired` is the LAST check in verifySandboxEgressAttestation (see
+      // packages/platform/src/sandbox-egress-attestation.ts, ~line 372): reaching it
+      // means the signature, key, scope, schema, and time-window checks all passed,
+      // so the receipt is authentic and merely past its expiry. A boot-fatal error
+      // here makes any outage longer than the ~23h receipt lifetime unrecoverable,
+      // because the egress renewal workflow only rotates a fresh attestation onto a
+      // machine that is already started. Sandbox launches stay refused at use time
+      // (fly-sandbox.ts validateEgressAuthority) and /ready still reports it
+      // (customer-readiness.ts), so degrade to a boot warning rather than crash-loop.
+      // Every other failure code stays fatal exactly as before.
+      if (message === "sandbox_egress_attestation_expired") {
+        const warning =
+          "worker_boot_degraded sandbox_egress_attestation_expired: sandbox launches are refused until the renewal delivers a fresh receipt";
+        process.stderr.write(`${warning}\n`);
+        onWarning?.(warning);
+      } else {
+        errors.push(`Sandbox egress authority invalid: ${message}`);
+      }
     }
   }
   errors.push(...validateDelegatedPrVerificationEnvironment(env));
