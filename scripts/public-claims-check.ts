@@ -306,7 +306,7 @@ export interface PublicClaimEvidenceHold {
 export interface EvidenceHoldOutcome {
   /** Issues that still fail the gate; {@link main} prints these and throws. */
   blocking: PublicClaimIssue[];
-  /** Non-blocking notices (held-stale or unused holds) printed as warnings. */
+  /** Non-blocking notices (held-stale, unused, or not-yet-effective holds) printed as warnings. */
   held: PublicClaimIssue[];
 }
 
@@ -331,14 +331,17 @@ const byCodeThenSubject = (left: PublicClaimIssue, right: PublicClaimIssue): num
 
 /**
  * Why a hold is rejected outright, or null when it is well-formed. A rejected
- * hold provides no cover, so the staleness it names still blocks. `now` bounds
- * `recordedAt` (a hold cannot be backdated from the future) and, with the 7-day
- * ceiling, keeps every exception short-lived and re-authorized each rotation.
+ * hold provides no cover, so the staleness it names still blocks. The 7-day
+ * ceiling on the recorded-to-expiry span keeps every exception short-lived and
+ * re-authorized each rotation. A hold recorded after the observation clock is
+ * NOT rejected here: it is well-formed but not yet in effect, and the caller
+ * reports it as a non-blocking `EVIDENCE_HOLD_NOT_YET_EFFECTIVE` notice while
+ * the staleness it names, if any, stays blocking (a future-dated hold is inert
+ * until its `recordedAt`, so it extends no cover yet).
  */
 function evidenceHoldRejection(
   hold: Record<string, unknown>,
   evidenceId: string,
-  nowMs: number,
   liveEvidenceIds: Set<string>,
 ): string | null {
   if (evidenceId === "") return "evidenceId must be a non-empty string";
@@ -354,7 +357,6 @@ function evidenceHoldRejection(
   if (expiresAtMs === null) return "expiresAt must be an ISO 8601 instant";
   if (expiresAtMs <= recordedAtMs) return "expiresAt must be after recordedAt";
   if (expiresAtMs - recordedAtMs > SEVEN_DAYS_MS) return "a hold may not exceed 7 days";
-  if (recordedAtMs > nowMs) return "recordedAt must not be in the future";
   if (!liveEvidenceIds.has(evidenceId)) {
     return `evidenceId ${evidenceId} is not a live evidence entry in the registry`;
   }
@@ -363,13 +365,16 @@ function evidenceHoldRejection(
 
 /**
  * Partitions public-claim issues against a set of recorded evidence holds. A
- * valid, unexpired hold moves its `LIVE_EVIDENCE_STALE` issue to `held`
- * (reported, not hidden); an expired hold whose evidence is still stale becomes
- * a blocking `EVIDENCE_HOLD_EXPIRED` (stale evidence cannot hide behind a lapsed
- * hold); a hold whose evidence is fresh is a non-blocking `EVIDENCE_HOLD_UNUSED`
- * warning so cleanup never forces a ceremony; a malformed or duplicate hold is a
- * blocking `EVIDENCE_HOLD_INVALID`. Every other issue code stays blocking. Pure
- * so the matrix can be exercised without a working tree.
+ * valid, effective, unexpired hold moves its `LIVE_EVIDENCE_STALE` issue to
+ * `held` (reported, not hidden); an expired hold whose evidence is still stale
+ * becomes a blocking `EVIDENCE_HOLD_EXPIRED` (stale evidence cannot hide behind
+ * a lapsed hold); a well-formed hold recorded after the observation clock is a
+ * non-blocking `EVIDENCE_HOLD_NOT_YET_EFFECTIVE` notice that extends no cover,
+ * so the staleness it names, if any, stays blocking; a hold whose evidence is
+ * fresh is a non-blocking `EVIDENCE_HOLD_UNUSED` warning so cleanup never forces
+ * a ceremony; a malformed or duplicate hold is a blocking `EVIDENCE_HOLD_INVALID`.
+ * Every other issue code stays blocking. Pure so the matrix can be exercised
+ * without a working tree.
  */
 export function applyEvidenceHolds(
   issues: PublicClaimIssue[],
@@ -394,10 +399,23 @@ export function applyEvidenceHolds(
     const rejection =
       evidenceId !== "" && seen.has(evidenceId)
         ? "duplicate evidenceId"
-        : evidenceHoldRejection(hold, evidenceId, nowMs, liveEvidenceIds);
+        : evidenceHoldRejection(hold, evidenceId, liveEvidenceIds);
     if (evidenceId !== "") seen.add(evidenceId);
     if (rejection !== null) {
       blocking.push({ code: "EVIDENCE_HOLD_INVALID", subject, message: rejection });
+      continue;
+    }
+    // A well-formed hold recorded after the observation clock is not yet in
+    // effect: it is inert until its recordedAt, so it extends no cover and never
+    // enters the cover map. It is reported as a non-blocking notice, and the
+    // staleness it names, if any, stays blocking (handled below by the absent
+    // cover-map entry).
+    if (Date.parse(hold.recordedAt as string) > nowMs) {
+      held.push({
+        code: "EVIDENCE_HOLD_NOT_YET_EFFECTIVE",
+        subject: evidenceId,
+        message: `hold recorded at ${hold.recordedAt as string} is after the observation clock; it is not yet in effect`,
+      });
       continue;
     }
     validHolds.set(evidenceId, {
@@ -494,7 +512,7 @@ function main() {
   console.log(
     `PUBLIC CLAIMS PASS: ${registry.claims.length} claims, ${registry.destinations.length} destinations` +
       (held.length > 0
-        ? `, ${held.length} held/unused evidence warning${held.length === 1 ? "" : "s"}`
+        ? `, ${held.length} held/unused/not-yet-effective evidence warning${held.length === 1 ? "" : "s"}`
         : ""),
   );
 }
