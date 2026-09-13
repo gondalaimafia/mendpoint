@@ -1371,6 +1371,55 @@
           "toMode": "100644"
         }
       ]
+    },
+    {
+      "kind": "runtime",
+      "rotationId": "rotation-20260913-026",
+      "previousRotationId": "rotation-20260905-025",
+      "baseRevision": "06ed40ea8145064eccde529835646ffcc89f202e",
+      "issuedAt": "2026-09-13T04:33:35.260Z",
+      "expiresAt": "2026-09-14T04:33:35.260Z",
+      "baseLedgerSha256": "sha256:11fbce57009aaac7aa78efcd3e9fb2c04a1f0c5764e2ae7c5642aed3e3d6de91",
+      "basePolicySha256": "sha256:86adc5d071c030de13c300219edbe3db78fa0a28bde10c5737099eee3066efab",
+      "proposedPolicySha256": "sha256:76f67312e7b685d0fb2947d052d83d32255a6000244b0b168dacaa04f6bc9e15",
+      "successor": null,
+      "changes": [
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:86adc5d071c030de13c300219edbe3db78fa0a28bde10c5737099eee3066efab",
+          "toSha256": "sha256:76f67312e7b685d0fb2947d052d83d32255a6000244b0b168dacaa04f6bc9e15",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:d0667ddd71a8b0ecff4ddca09db586901fccd48dd9f45ce87b781d9f3d799aa3",
+          "toSha256": "sha256:c78512b2f62b622b310b061e837bbba2b476417b7ff160a9a441a9fdaf82db71",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "package-lock.json",
+          "fromSha256": "sha256:61e37bea40726703826869897433710bc659a5c92fc1654fdf96c9c145acac6d",
+          "toSha256": "sha256:2e17589cf4818c9280c8715bc5f8beda197c804bb6ddceb6c131d59a9460c079",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "package.json",
+          "fromSha256": "sha256:bc2f6c4d90c1a1a6dabe2b0aac3f39ef152425be62d362fb48aeda6c8a113f5d",
+          "toSha256": "sha256:61799e4b175a2949e7dc3f99f4d22554a49a6a144d2306aac257f8de6decabd6",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/public-claims-check.ts",
+          "fromSha256": "sha256:07be1c40f0667cd3b25736ec3af88a678c4c048d6e3d4775c4e46629276572da",
+          "toSha256": "sha256:70a5a0be6bc10c267163419581824737584d20dce440b02a8dac1d87944f22b2",
+          "fromMode": "100644",
+          "toMode": "100644"
+        }
+      ]
     }
   ]
 }

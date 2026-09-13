@@ -2075,17 +2075,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-09-05T00:32:40.545Z",
-    "observedMainRevision": "843966fc80b6f0024f504014bd3878fe00a394b1",
-    "observationDigest": "sha256:b48968f4b9b1770462a4a9b57ddc7e26b92b7fb43f70880933859c984ba5e6fd",
+    "observedAt": "2026-09-13T04:33:35.260Z",
+    "observedMainRevision": "06ed40ea8145064eccde529835646ffcc89f202e",
+    "observationDigest": "sha256:dd8e328c7e052a1968f8b5cfd6bc4dd32ef5c8a271d160a2e1841c0cc672cf80",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 650,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/650",
-      "title": "closure: make the successor live proof satisfiable (authority rotation)",
+      "number": 664,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/664",
+      "title": "closure: dependency advisories and time-boxed live-evidence holds (authority rotation)",
       "baseBranch": "main",
-      "headBranch": "claude/successor-live-proof-satisfiable",
+      "headBranch": "claude/deps-audit-2026-09-12",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2100,12 +2100,12 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260905-025",
+        "rotationId": "rotation-20260913-026",
         "kind": "runtime",
-        "issuedAt": "2026-09-05T00:32:40.545Z",
-        "expiresAt": "2026-09-06T00:32:40.545Z",
-        "basePolicySha256": "sha256:79c66e52bd3eddb3d21153ff514d9c4028f86295e842b8b129d09c41c7f8dd7f",
-        "proposedPolicySha256": "sha256:86adc5d071c030de13c300219edbe3db78fa0a28bde10c5737099eee3066efab"
+        "issuedAt": "2026-09-13T04:33:35.260Z",
+        "expiresAt": "2026-09-14T04:33:35.260Z",
+        "basePolicySha256": "sha256:86adc5d071c030de13c300219edbe3db78fa0a28bde10c5737099eee3066efab",
+        "proposedPolicySha256": "sha256:76f67312e7b685d0fb2947d052d83d32255a6000244b0b168dacaa04f6bc9e15"
       }
     },
     "pullRequests": [
