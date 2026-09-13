@@ -4,13 +4,15 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import type { PublicClaimRegistry } from "@mendpoint/contract";
+import type { PublicClaimIssue, PublicClaimRegistry } from "@mendpoint/contract";
 import { detectStaleClaims } from "../packages/contract/src/public-claims.js";
 import type { ProductRequirementManifest } from "../packages/contract/src/product-requirements.js";
 import {
+  applyEvidenceHolds,
   collectPublicClaimIssues,
   compareSurfaces,
   revisionReachabilityIssues,
+  type PublicClaimEvidenceHold,
 } from "./public-claims-check.js";
 
 const REACHABLE = "a".repeat(40);
@@ -347,4 +349,237 @@ describe("collectPublicClaimIssues wires staleness into the gate", () => {
     },
     GIT_TEST_TIMEOUT,
   );
+});
+
+// applyEvidenceHolds is a pure partition of already-collected issues against a
+// set of recorded holds, so it needs no working tree. The registry is consulted
+// only to learn which evidence IDs are "live"; a minimal hand-built registry
+// with one non-live entry is enough to drive every branch, and an explicit
+// `now` keeps recordedAt/expiresAt deterministic across runners.
+describe("applyEvidenceHolds", () => {
+  const holdRegistry = {
+    claims: [
+      {
+        id: "CLM-001",
+        evidence: [
+          { id: "EV-STALE-1", type: "live", locator: "https://x/livez", revision: REACHABLE },
+          { id: "EV-STALE-2", type: "live", locator: "https://x/readyz", revision: REACHABLE },
+          { id: "EV-FRESH", type: "live", locator: "https://x/healthz", revision: REACHABLE },
+          {
+            id: "EV-NONLIVE",
+            type: "test",
+            locator: "packages/contract/src/public-claims.test.ts",
+          },
+        ],
+      },
+    ],
+  } as unknown as PublicClaimRegistry;
+
+  const HOLD_NOW = new Date("2026-09-13T00:00:00.000Z");
+
+  function staleIssue(subject: string): PublicClaimIssue {
+    return {
+      code: "LIVE_EVIDENCE_STALE",
+      subject,
+      message: `live evidence ${subject} was last observed too long ago`,
+    };
+  }
+
+  // A well-formed hold on the stale entry EV-STALE-1: recorded 3 days before
+  // `now` and expiring 2 days after it, a 5-day window inside the 7-day ceiling.
+  // Overrides mutate exactly one field per invalid case.
+  function validHold(overrides: Record<string, unknown> = {}): PublicClaimEvidenceHold {
+    return {
+      evidenceId: "EV-STALE-1",
+      recordedAt: "2026-09-10T00:00:00.000Z",
+      expiresAt: "2026-09-15T00:00:00.000Z",
+      reason: "production probe unreachable during a planned migration",
+      authorizedBy: "release-captain",
+      ...overrides,
+    } as unknown as PublicClaimEvidenceHold;
+  }
+
+  function apply(issues: PublicClaimIssue[], holds: readonly PublicClaimEvidenceHold[]) {
+    return applyEvidenceHolds(issues, holds, { registry: holdRegistry, now: HOLD_NOW });
+  }
+
+  it("moves a stale issue to held under a valid, unexpired hold and blocks nothing", () => {
+    const { blocking, held } = apply([staleIssue("EV-STALE-1")], [validHold()]);
+    expect(blocking).toEqual([]);
+    expect(held).toHaveLength(1);
+    expect(held[0].code).toBe("LIVE_EVIDENCE_STALE_HELD");
+    expect(held[0].subject).toBe("EV-STALE-1");
+    expect(held[0].message).toContain("2026-09-15T00:00:00.000Z");
+  });
+
+  it("blocks EVIDENCE_HOLD_EXPIRED when an expired hold still names stale evidence", () => {
+    const { blocking, held } = apply(
+      [staleIssue("EV-STALE-1")],
+      [validHold({ recordedAt: "2026-09-05T00:00:00.000Z", expiresAt: "2026-09-10T00:00:00.000Z" })],
+    );
+    expect(held).toEqual([]);
+    expect(blocking).toHaveLength(1);
+    expect(blocking[0].code).toBe("EVIDENCE_HOLD_EXPIRED");
+    expect(blocking[0].subject).toBe("EV-STALE-1");
+    // Stale evidence cannot hide behind a lapsed hold: the original staleness is
+    // carried into the expiry message so the gate still blocks on it.
+    expect(blocking[0].message).toContain("was last observed too long ago");
+  });
+
+  it("reports a non-blocking EVIDENCE_HOLD_UNUSED for a hold on fresh evidence", () => {
+    const { blocking, held } = apply([], [validHold({ evidenceId: "EV-FRESH" })]);
+    expect(blocking).toEqual([]);
+    expect(held).toHaveLength(1);
+    expect(held[0].code).toBe("EVIDENCE_HOLD_UNUSED");
+    expect(held[0].subject).toBe("EV-FRESH");
+  });
+
+  it("reports EVIDENCE_HOLD_NOT_YET_EFFECTIVE (non-blocking) for a future-dated hold, and the stale issue still blocks", () => {
+    const { blocking, held } = apply(
+      [staleIssue("EV-STALE-1")],
+      [validHold({ recordedAt: "2026-09-20T00:00:00.000Z", expiresAt: "2026-09-21T00:00:00.000Z" })],
+    );
+    expect(held).toHaveLength(1);
+    expect(held[0].code).toBe("EVIDENCE_HOLD_NOT_YET_EFFECTIVE");
+    expect(held[0].subject).toBe("EV-STALE-1");
+    // A future-dated hold is inert until its recordedAt, so it extends no cover:
+    // the staleness it names stays blocking.
+    expect(blocking).toHaveLength(1);
+    expect(blocking[0].code).toBe("LIVE_EVIDENCE_STALE");
+    expect(blocking[0].subject).toBe("EV-STALE-1");
+  });
+
+  it("reports EVIDENCE_HOLD_NOT_YET_EFFECTIVE (non-blocking) for a future-dated hold on fresh evidence, with nothing blocking", () => {
+    const { blocking, held } = apply(
+      [],
+      [validHold({ evidenceId: "EV-FRESH", recordedAt: "2026-09-20T00:00:00.000Z", expiresAt: "2026-09-21T00:00:00.000Z" })],
+    );
+    expect(blocking).toEqual([]);
+    expect(held).toHaveLength(1);
+    expect(held[0].code).toBe("EVIDENCE_HOLD_NOT_YET_EFFECTIVE");
+    expect(held[0].subject).toBe("EV-FRESH");
+  });
+
+  // Each malformed or unauthorized hold is rejected outright with its own
+  // message; because a rejected hold provides no cover, the staleness it named
+  // stays blocking. Duplicates are covered separately since they need a
+  // preceding valid hold.
+  const invalidHoldCases: Array<{ name: string; holds: PublicClaimEvidenceHold[]; message: string }> = [
+    {
+      name: "a hold longer than 7 days",
+      holds: [validHold({ recordedAt: "2026-09-01T00:00:00.000Z", expiresAt: "2026-09-12T00:00:00.000Z" })],
+      message: "a hold may not exceed 7 days",
+    },
+    {
+      name: "a hold whose expiresAt is not after recordedAt",
+      holds: [validHold({ recordedAt: "2026-09-10T00:00:00.000Z", expiresAt: "2026-09-10T00:00:00.000Z" })],
+      message: "expiresAt must be after recordedAt",
+    },
+    {
+      name: "a hold with a blank reason",
+      holds: [validHold({ reason: "   " })],
+      message: "reason must be a non-empty string",
+    },
+    {
+      name: "a hold with a missing authorizedBy",
+      holds: [validHold({ authorizedBy: undefined })],
+      message: "authorizedBy must be a non-empty string",
+    },
+    {
+      name: "a hold with a malformed recordedAt",
+      holds: [validHold({ recordedAt: "2026-09-10" })],
+      message: "recordedAt must be an ISO 8601 instant",
+    },
+    {
+      name: "a hold with a malformed expiresAt",
+      holds: [validHold({ expiresAt: "not-a-timestamp" })],
+      message: "expiresAt must be an ISO 8601 instant",
+    },
+    {
+      name: "a hold on an unknown evidence ID",
+      holds: [validHold({ evidenceId: "EV-UNKNOWN" })],
+      message: "evidenceId EV-UNKNOWN is not a live evidence entry in the registry",
+    },
+    {
+      name: "a hold on a non-live evidence ID",
+      holds: [validHold({ evidenceId: "EV-NONLIVE" })],
+      message: "evidenceId EV-NONLIVE is not a live evidence entry in the registry",
+    },
+  ];
+
+  for (const testCase of invalidHoldCases) {
+    it(`blocks EVIDENCE_HOLD_INVALID for ${testCase.name}, and the stale issue still blocks`, () => {
+      const { blocking, held } = apply([staleIssue("EV-STALE-1")], testCase.holds);
+      const invalid = blocking.filter((issue) => issue.code === "EVIDENCE_HOLD_INVALID");
+      expect(invalid).toHaveLength(1);
+      expect(invalid[0].message).toBe(testCase.message);
+      expect(
+        blocking.some(
+          (issue) => issue.code === "LIVE_EVIDENCE_STALE" && issue.subject === "EV-STALE-1",
+        ),
+      ).toBe(true);
+      expect(held).toEqual([]);
+    });
+  }
+
+  it("gives every invalid rejection a distinct, non-empty message", () => {
+    const messages = invalidHoldCases.map(
+      (testCase) =>
+        apply([staleIssue("EV-STALE-1")], testCase.holds).blocking.find(
+          (issue) => issue.code === "EVIDENCE_HOLD_INVALID",
+        )?.message,
+    );
+    expect(messages.every((message) => typeof message === "string" && message.length > 0)).toBe(true);
+    expect(new Set(messages).size).toBe(messages.length);
+  });
+
+  it("blocks a duplicate hold while the first valid hold still holds the stale issue", () => {
+    const { blocking, held } = apply([staleIssue("EV-STALE-1")], [validHold(), validHold()]);
+    const invalid = blocking.filter((issue) => issue.code === "EVIDENCE_HOLD_INVALID");
+    expect(invalid).toHaveLength(1);
+    expect(invalid[0].message).toBe("duplicate evidenceId");
+    expect(invalid[0].subject).toBe("EV-STALE-1");
+    // The first, valid occurrence still downgrades the staleness to held; only
+    // the redundant second occurrence is rejected.
+    expect(held.map((issue) => issue.code)).toEqual(["LIVE_EVIDENCE_STALE_HELD"]);
+  });
+
+  it("holds the first stale entry while a second stale entry without a hold still blocks", () => {
+    const { blocking, held } = apply(
+      [staleIssue("EV-STALE-1"), staleIssue("EV-STALE-2")],
+      [validHold()],
+    );
+    expect(held.map((issue) => issue.subject)).toEqual(["EV-STALE-1"]);
+    expect(held[0].code).toBe("LIVE_EVIDENCE_STALE_HELD");
+    expect(blocking).toHaveLength(1);
+    expect(blocking[0].code).toBe("LIVE_EVIDENCE_STALE");
+    expect(blocking[0].subject).toBe("EV-STALE-2");
+  });
+
+  // A hold only ever downgrades LIVE_EVIDENCE_STALE. Every other issue code stays
+  // blocking even when a valid hold names the same subject; the hold is then a
+  // mere unused notice.
+  for (const code of ["SURFACE_PATH_MISSING", "EVIDENCE_MISSING", "LIVE_EVIDENCE_REVISION_UNREACHABLE"]) {
+    it(`keeps ${code} blocking even when a valid hold names its subject`, () => {
+      const { blocking, held } = apply(
+        [{ code, subject: "EV-STALE-1", message: `${code} for EV-STALE-1` }],
+        [validHold()],
+      );
+      expect(blocking.some((issue) => issue.code === code && issue.subject === "EV-STALE-1")).toBe(true);
+      expect(held.map((issue) => issue.code)).toEqual(["EVIDENCE_HOLD_UNUSED"]);
+    });
+  }
+
+  it("blocks every issue unchanged when there are no holds (empty or null)", () => {
+    const issues: PublicClaimIssue[] = [
+      staleIssue("EV-STALE-1"),
+      { code: "SURFACE_PATH_MISSING", subject: "CLM-001", message: "surface.tsx does not exist" },
+    ];
+    for (const holds of [[], null as unknown as PublicClaimEvidenceHold[]]) {
+      const { blocking, held } = apply(issues, holds);
+      expect(held).toEqual([]);
+      expect(blocking).toHaveLength(2);
+      expect(blocking).toEqual(expect.arrayContaining(issues));
+    }
+  });
 });
