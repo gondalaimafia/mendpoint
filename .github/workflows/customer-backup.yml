@@ -141,7 +141,23 @@ jobs:
             echo customer_backup_app_binding_invalid >&2
             exit 1
           }
-          mapfile -t visible_apps < <(flyctl apps list --json | jq -r '.[] | (.Name // .name)' | sort -u)
+          # Capture the listing with its own exit status. Process substitution
+          # runs in a subshell whose failure does NOT trip the runner's -e, so
+          # the old `mapfile < <(flyctl apps list ... )` reported an unauthorized
+          # or network error as an EMPTY app list -> customer_backup_token_not_app_scoped.
+          # That third state (flyctl could not answer) masquerading as a scope
+          # violation is exactly what hid the 0.4.101 apps-list regression. A
+          # failed call, or output that is not the JSON array we expect, is
+          # scope-UNDETERMINED, distinct from a proven scope violation.
+          if ! apps_json="$(flyctl apps list --json)"; then
+            echo customer_backup_scope_undetermined >&2
+            exit 1
+          fi
+          if ! printf '%s' "$apps_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo customer_backup_scope_undetermined >&2
+            exit 1
+          fi
+          mapfile -t visible_apps < <(printf '%s' "$apps_json" | jq -r '.[] | (.Name // .name)' | sort -u)
           if [ "${#visible_apps[@]}" -ne 1 ] || [ "${visible_apps[0]:-}" != "$CUSTOMER_APP" ]; then
             echo customer_backup_token_not_app_scoped >&2
             exit 1
