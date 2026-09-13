@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -85,7 +85,7 @@ afterEach(() => {
 });
 
 describe("customer launcher preflight", () => {
-  it("permits absent optional SCIM bindings before blocking startup on an exclusive backup", () => {
+  it("permits absent optional SCIM bindings, then bounds startup with a fence-wait timeout on a live exclusive backup", () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-start-fence-"));
     temporaryRoots.push(parent);
     const dataRoot = join(parent, "data");
@@ -93,7 +93,20 @@ describe("customer launcher preflight", () => {
     const fenceRoot = join(backupSourceRoot, "backup-fence");
     const databasePath = join(dataRoot, "db", "mendpoint.sqlite");
     mkdirSync(fenceRoot, { recursive: true });
-    writeFileSync(join(fenceRoot, "exclusive.json"), "{}\n");
+    // A live exclusive marker whose owner (this test process) the launcher can see
+    // is not reapable, so the fence wait cannot clear it and startup halts at a
+    // bounded backup_fence_wait_timeout instead of ever creating durable state. The
+    // short MENDPOINT_STARTUP_FENCE_WAIT_MS below keeps that bounded wait fast here.
+    writeFileSync(join(fenceRoot, "exclusive.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      kind: "exclusive",
+      id: "customer-live-backup",
+      ownerToken: "owner-token-live-backup",
+      hostname: hostname(),
+      pid: process.pid,
+      processStartedAt: new Date(Date.now() - process.uptime() * 1_000).toISOString(),
+      acquiredAt: new Date().toISOString(),
+    })}\n`);
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const env: NodeJS.ProcessEnv = {
       ...process.env,
@@ -120,6 +133,7 @@ describe("customer launcher preflight", () => {
       MENDPOINT_BACKUP_SOURCE_ROOT: backupSourceRoot,
       MENDPOINT_BACKUP_OUTPUT_ROOT: join(parent, "backups"),
       MENDPOINT_BACKUP_FENCE_ROOT: fenceRoot,
+      MENDPOINT_STARTUP_FENCE_WAIT_MS: "500",
       MENDPOINT_BACKUP_EVIDENCE_PATH: join(backupSourceRoot, "backup-state", "last-verified.json"),
       MENDPOINT_BACKUP_STORAGE_CLASS: "durable_isolated_mount",
       MENDPOINT_BACKUP_KEY: "11".repeat(32),
@@ -149,7 +163,7 @@ describe("customer launcher preflight", () => {
 
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}\n${result.stderr}`).toContain(
-      "customer_startup_blocked_by_backup",
+      "backup_fence_wait_timeout",
     );
     expect(existsSync(databasePath)).toBe(false);
   }, 15_000);

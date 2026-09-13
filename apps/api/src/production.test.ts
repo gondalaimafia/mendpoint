@@ -8,7 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearRateLimits } from "@mendpoint/ops";
 import { createDb } from "@mendpoint/db";
@@ -90,7 +90,19 @@ describe("production rate limit identity", () => {
     const transformerCampaignPath = join(root, "transformer-control-plane.sqlite");
     const transformerExecutionPath = join(root, "transformer-pilot.sqlite");
     mkdirSync(fenceRoot, { recursive: true });
-    writeFileSync(join(fenceRoot, "exclusive.json"), "{}\n");
+    // A live exclusive marker (this process's own host and pid) is not reapable, so
+    // admission is still refused. An orphaned or unparseable marker would instead be
+    // cleared by the boot reaper rather than block forever.
+    writeFileSync(join(fenceRoot, "exclusive.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      kind: "exclusive",
+      id: "customer-live-backup",
+      ownerToken: "owner-token-live-backup",
+      hostname: hostname(),
+      pid: process.pid,
+      processStartedAt: new Date(Date.now() - process.uptime() * 1_000).toISOString(),
+      acquiredAt: new Date().toISOString(),
+    })}\n`);
 
     expect(() =>
       initializeApiRuntime({

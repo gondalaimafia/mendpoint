@@ -34,7 +34,11 @@ import {
   type ProductionClosureMatrixIssue,
   type ProductionEvidenceTrustRoot,
 } from "./production-closure-matrix.js";
-import { revisionReachabilityIssues } from "./public-claims-check.js";
+import {
+  applyEvidenceHolds,
+  revisionReachabilityIssues,
+  type PublicClaimEvidenceHold,
+} from "./public-claims-check.js";
 
 const SHA = /^[a-f0-9]{40}$/;
 const MAX_BLOB_BYTES = 10 * 1024 * 1024;
@@ -1038,6 +1042,25 @@ export async function verifyProductionClosureProposal(
 
     const requirements = allRequirements(manifest);
     issues.push(...validatePublicClaimRegistry(claims, { requirements, asOf: new Date(observedAt) }));
+    // #664: honour time-boxed live-evidence holds recorded in the closure
+    // authority policy so a stale production surface does not fail the proposal
+    // authority (and, through it, github-authority) for every PR while the hold
+    // is valid. Held staleness is still reported to stderr as a warning, never
+    // hidden; every other issue code stays blocking. The hold judgement reads
+    // the same policy object the script already loaded and uses the same
+    // `observedAt` clock as the staleness judgement above, so both agree.
+    const evidenceHolds =
+      (policy as { publicClaimEvidenceHolds?: PublicClaimEvidenceHold[] })
+        .publicClaimEvidenceHolds ?? [];
+    const evidenceHoldOutcome = applyEvidenceHolds(issues, evidenceHolds, {
+      registry: claims,
+      now: new Date(observedAt),
+    });
+    issues.length = 0;
+    issues.push(...evidenceHoldOutcome.blocking);
+    for (const notice of evidenceHoldOutcome.held) {
+      console.error(`${notice.code} ${notice.subject}: ${notice.message}`);
+    }
     for (const claim of claims.claims ?? []) {
       if (!(claim.surfacePaths ?? []).some((path) =>
         bytesByPath.get(normalizedPath(path) ?? "")?.toString("utf8").includes(claim.id),
