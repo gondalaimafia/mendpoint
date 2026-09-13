@@ -106,6 +106,7 @@ import {
   registrySummaryMarkdown,
 } from "@mendpoint/db";
 import { parseAuditExportLimit } from "./audit-export.js";
+import { createDependencyOutageRoutes } from "./dependency-outage-routes.js";
 import { changeDetailBody } from "./change-detail.js";
 import {
   detectVendors,
@@ -260,6 +261,7 @@ import {
   isProduction,
   flushTelemetry,
   isTelemetryEnabled,
+  classifyDependencyOutage,
 } from "@mendpoint/ops";
 import {
   requestIdMiddleware,
@@ -938,6 +940,7 @@ app.route("/platform/sandbox", createPlatformSandboxRoutes());
 app.route("/learning", createLearningConsentRoutes({ db }));
 app.route("/organization-memory", createOrganizationMemoryRoutes({ db }));
 app.route("/audit-governance", createAuditGovernanceRoutes({ db }));
+app.route("/dependency-outages", createDependencyOutageRoutes({ db }));
 
 // Persist alerts under data/
 try {
@@ -1863,6 +1866,7 @@ app.post("/providers/:slug/publish", async (c) => {
       providerSlug: c.req.param("slug"),
       db,
       tenantId: requestTenantId(c),
+      dependencyOutagePolicy: classifyDependencyOutage,
       consumerIds: requestConsumerIds(c),
       severity: body.severity,
       notificationsOnly: body.notificationsOnly,
@@ -2167,6 +2171,7 @@ app.post("/feeds/poll", async (c) => {
         providerSlug: slug,
         db: d,
         tenantId: requestTenantId(c),
+        dependencyOutagePolicy: classifyDependencyOutage,
         consumerIds: requestConsumerIds(c),
       });
       return { changeId: report.changeId };
