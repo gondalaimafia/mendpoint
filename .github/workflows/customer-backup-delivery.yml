@@ -253,7 +253,7 @@ jobs:
                 # against a stopped machine). The watchdog owns restarting the
                 # machine; this controller must never call flyctl, so it defers,
                 # records why, waits one normal cycle, and moves on.
-                livez_code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "https://${CUSTOMER_APP}.fly.dev/livez" || echo 000)"
+                livez_code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "https://${CUSTOMER_APP}.fly.dev/livez" || true)"
                 if [ "$livez_code" != "200" ]; then
                   echo "customer_backup_delivery_deferred_app_not_live livez=$livez_code" >&2
                   record --arg at "$checked_at" --argjson cycle "$cycle" --arg code "$livez_code" \
