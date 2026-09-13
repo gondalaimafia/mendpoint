@@ -47,16 +47,19 @@ function runController(options: {
   deliverySleepSeconds?: string;
   deliveryCycles?: string;
   livezCode?: string;
+  customerApp?: string;
   activeMetadataValid?: boolean;
   acknowledgedMetadataValid?: boolean;
   handoffMetadataValid?: boolean;
 }) {
   const dir = mkdtempSync(join(tmpdir(), "customer-backup-delivery-"));
   const log = join(dir, "gh.log");
+  const flyctlLog = join(dir, "flyctl.log");
   const ledger = join(dir, "delivery.jsonl");
   const dispatched = join(dir, "dispatched");
   const handoffDispatched = join(dir, "handoff-dispatched");
   writeFileSync(log, "", "utf8");
+  writeFileSync(flyctlLog, "", "utf8");
   // Keep the workflow integration real while avoiding a new shell process for
   // every simulated GitHub and sleep call. Windows process startup otherwise
   // makes individual default-timeout tests nondeterministic under host load.
@@ -65,6 +68,10 @@ function runController(options: {
 }
 curl() {
 printf '%s' "\${GH_STUB_LIVEZ_CODE:-200}"
+}
+flyctl() {
+printf '%s\\n' "$*" >> "$GH_STUB_FLYCTL_LOG"
+return 127
 }
 gh() {
 printf '%s\\n' "$*" >> "$GH_STUB_LOG"
@@ -154,8 +161,9 @@ return 0
     // The controller never receives the Fly token; CUSTOMER_APP is only the
     // token-free /livez probe target. GH_STUB_LIVEZ_CODE is what the stubbed
     // curl returns, defaulting to 200 so the healthy dispatch path is unchanged.
-    CUSTOMER_APP: "stub-app-that-does-not-exist",
+    CUSTOMER_APP: options.customerApp ?? "stub-app-that-does-not-exist",
     GH_STUB_LIVEZ_CODE: options.livezCode ?? "200",
+    GH_STUB_FLYCTL_LOG: flyctlLog,
     GH_STUB_DISPATCHED: dispatched,
     GH_STUB_HANDOFF_DISPATCHED: handoffDispatched,
     GH_STUB_DISPATCHED_SUCCESS: now,
@@ -195,6 +203,7 @@ return 0
     stdout: `${maintainResult.stdout ?? ""}${handoffResult.stdout ?? ""}`,
     stderr: `${maintainResult.stderr ?? ""}${handoffResult.stderr ?? ""}`,
     calls: readFileSync(log, "utf8").split("\n").filter(Boolean),
+    flyctlCalls: readFileSync(flyctlLog, "utf8").split("\n").filter(Boolean),
     ledger: readFileSync(ledger, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)),
   };
 }
@@ -519,22 +528,40 @@ describe("customer backup delivery controller workflow", () => {
     expect(readiness).toContain('name: "last_verified_backup"');
   });
 
-  it("probes app liveness before each dispatch and never calls flyctl", () => {
+  it("never invokes flyctl from the controller, which is bound to no Fly token", () => {
     const maintain = step("Maintain continuous backup delivery");
     // Bound from the same variable the watchdog and backup workflows use.
     expect(maintain.env.CUSTOMER_APP).toBe("${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}");
-    // A token-free liveness probe, and the two named reasons it produces.
-    expect(maintain.run).toContain("http_code");
-    expect(maintain.run).toContain("${CUSTOMER_APP}.fly.dev/livez");
-    expect(maintain.run).toContain("delivery_deferred_app_not_live");
-    expect(maintain.run).toContain("customer_backup_delivery_deferred_app_down");
-    // The watchdog owns restarting the machine; the controller must never call
-    // flyctl. Strip comment lines (which mention it by name) before checking.
-    const commands = maintain.run
-      .split("\n")
-      .filter((line) => !line.trim().startsWith("#"))
-      .join("\n");
-    expect(commands).not.toContain("flyctl");
+    // Structural invariant that cannot be behavioural: the controller is bound to
+    // no Fly token, so it CANNOT restart a machine even by mistake.
+    expect(maintain.env).not.toHaveProperty("FLY_API_TOKEN");
+    // Behavioural, not a source scan: a healthy run probes /livez and dispatches,
+    // and the harness routes any flyctl call to a logger. An empty log proves the
+    // controller stayed token-free rather than merely looking so in the source.
+    const result = runController({ livezCode: "200" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.flyctlCalls).toEqual([]);
+    expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup.yml")))
+      .toHaveLength(1);
+  });
+
+  it("fails with the named app-binding error when CUSTOMER_APP is unset or malformed", () => {
+    // An unset or malformed binding would make the /livez probe target
+    // `https://.fly.dev/livez`, which never returns 200, so every cycle would
+    // defer and a config error would read as an app outage. Validate first, with
+    // the same regex the backup workflow uses, and fail with the named
+    // delivery-specific reason instead.
+    for (const badApp of ["", "Bad_App.example"]) {
+      const result = runController({ customerApp: badApp });
+      expect(result.status, `app=${JSON.stringify(badApp)}`).not.toBe(0);
+      expect(result.stderr).toContain("customer_backup_delivery_app_binding_invalid");
+      // No backup dispatched, and not mislabelled as an app outage.
+      expect(result.calls.some((call) => call.startsWith("workflow run customer-backup.yml"))).toBe(false);
+      expect(result.stderr).not.toContain("customer_backup_delivery_deferred_app_down");
+      expect(result.ledger).toContainEqual(expect.objectContaining({
+        event: "delivery_app_binding_invalid",
+      }));
+    }
   });
 
   it("never dispatches a backup into a customer app that is not live, and records why", () => {
