@@ -1394,11 +1394,15 @@ export function mutationMarkerOwnerTermination(
     const startEpochMs = processStartEpochMs(marker.pid);
     const markerStartedMs = Date.parse(marker.processStartedAt);
     // Skip when either /proc file is unreadable: a live same-boot owner must not read
-    // as reused just because its start epoch could not be recomputed.
+    // as reused just because its start epoch could not be recomputed. The test is
+    // one-sided on purpose: a recycled pid can only have started LATER than the
+    // marker's owner, while a forward wall-clock step after boot (chrony, suspend
+    // and resume) shifts marker timestamps ahead of the kernel's fixed btime for
+    // every live process, which must never read as reuse.
     if (
       startEpochMs !== null &&
       Number.isFinite(markerStartedMs) &&
-      Math.abs(startEpochMs - markerStartedMs) > 15_000
+      startEpochMs - markerStartedMs > 15_000
     ) {
       return "pid_reused_start_time_mismatch";
     }
