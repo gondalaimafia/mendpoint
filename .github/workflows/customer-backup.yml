@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       delivery_id:
-        description: Exact backup-delivery controller identity
+        description: Exact dispatcher identity (backup-delivery controller or backup watchdog)
         required: false
         type: string
 

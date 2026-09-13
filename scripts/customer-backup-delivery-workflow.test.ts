@@ -111,6 +111,8 @@ case "$1 $2" in
     run_id="\${2##*/}"
     case "$run_id" in
       31337) printf '{"status":"in_progress","event":"workflow_dispatch","head_branch":"%s","path":".github/workflows/customer-backup.yml","display_title":"Customer production backup [backup-delivery-9000-1]","created_at":"%s"}\\n' "$GH_STUB_ACTIVE_BRANCH" "$GH_STUB_ACTIVE_CREATED_AT" ;;
+      12321) printf '{"status":"in_progress","event":"workflow_dispatch","head_branch":"%s","path":".github/workflows/customer-backup.yml","display_title":"Customer production backup [backup-watchdog-123-1]","created_at":"%s"}\\n' "$GH_STUB_ACTIVE_BRANCH" "$GH_STUB_ACTIVE_CREATED_AT" ;;
+      13579) printf '{"status":"in_progress","event":"workflow_dispatch","head_branch":"%s","path":".github/workflows/customer-backup.yml","display_title":"Customer production backup","created_at":"%s"}\\n' "$GH_STUB_ACTIVE_BRANCH" "$GH_STUB_ACTIVE_CREATED_AT" ;;
       4242) printf '{"status":"queued","event":"workflow_dispatch","head_branch":"%s","path":".github/workflows/customer-backup.yml","display_title":"Customer production backup [backup-delivery-9001-1]","created_at":"%s"}\\n' "$GH_STUB_ACK_BRANCH" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ;;
       5252) printf '{"status":"queued","event":"workflow_dispatch","head_branch":"%s","path":".github/workflows/customer-backup-delivery.yml","display_title":"Customer production backup delivery [9001]","created_at":"%s"}\\n' "$GH_STUB_HANDOFF_BRANCH" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ;;
     esac
@@ -402,6 +404,38 @@ describe("customer backup delivery controller workflow", () => {
     const activeMismatch = runController({ activeRunId: "31337", activeMetadataValid: false });
     expect(activeMismatch.status).not.toBe(0);
     expect(activeMismatch.stderr).toContain("customer_backup_delivery_active_authority_invalid");
+  });
+
+  it("treats a watchdog-dispatched backup as delivery in progress, not a metadata mismatch", () => {
+    // The remediation the watchdog dispatches carries `backup-watchdog-<run>-
+    // <attempt>` as its delivery_id, so its title is
+    // `Customer production backup [backup-watchdog-123-1]`. This must read as an
+    // active delivery, exactly like the controller's own `backup-delivery-`
+    // title, instead of tripping the authority filter and paging the owner —
+    // which is what happened on controller run 34760797936.
+    const watchdogActive = runController({ activeRunId: "12321" });
+    expect(watchdogActive.stderr).not.toContain("metadata_mismatch");
+    expect(watchdogActive.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_active",
+      backupRunId: "12321",
+    }));
+    expect(watchdogActive.ledger).not.toContainEqual(expect.objectContaining({
+      event: "backup_active_authority_invalid",
+    }));
+  });
+
+  it("still rejects a bare-titled workflow_dispatch backup as a metadata mismatch", () => {
+    // The strictness the fix must keep: a workflow_dispatch run with the bare
+    // `Customer production backup` title (no `[backup-...]` identity) is still
+    // an unauthenticated active run and must fail closed.
+    const bareActive = runController({ activeRunId: "13579" });
+    expect(bareActive.status).not.toBe(0);
+    expect(bareActive.stderr).toContain("customer_backup_delivery_active_authority_invalid");
+    expect(bareActive.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_active_authority_invalid",
+      backupRunId: "13579",
+      reason: "metadata_mismatch",
+    }));
   });
 
   it("rejects a lost-response backup dispatch outside the protected branch authority", () => {

@@ -120,14 +120,24 @@ jobs:
             jq -nc "$@" >> "$DELIVERY_LEDGER_PATH"
           }
 
+          # A backup run has two legitimate dispatcher identities, and both are
+          # accepted here as delivery-in-progress: the scheduled */30 cron
+          # (event schedule, bare title), and either dispatcher that sets an
+          # exact `delivery_id` — this controller (`backup-delivery-<run>-<cycle>`)
+          # or the customer-backup watchdog (`backup-watchdog-<run>-<attempt>`).
+          # Accepting the watchdog's identity is what stops a watchdog remediation
+          # from reading here as a metadata mismatch and paging the owner.
           exact_active_metadata() {
             local metadata="$1"
             local window_start="$2"
             local window_end="$3"
-            local filter='(.status != "completed") and (.head_branch == $branch) and (.path == $path) and (.created_at >= $windowStart) and (.created_at <= $windowEnd) and ((.event == "schedule" and .display_title == "Customer production backup") or (.event == "workflow_dispatch" and (.display_title | startswith("Customer production backup [backup-delivery-")) and (.display_title | endswith("]"))))'
+            local filter='(.status != "completed") and (.head_branch == $branch) and (.path == $path) and (.created_at >= $windowStart) and (.created_at <= $windowEnd) and ((.event == "schedule" and .display_title == "Customer production backup") or (.event == "workflow_dispatch" and ((.display_title | startswith("Customer production backup [backup-delivery-")) or (.display_title | startswith("Customer production backup [backup-watchdog-"))) and (.display_title | endswith("]"))))'
             jq -e --arg branch "$BACKUP_REF" --arg path ".github/workflows/$BACKUP_WORKFLOW" --arg windowStart "$window_start" --arg windowEnd "$window_end" "$filter" <<< "$metadata" >/dev/null
           }
 
+          # Deliberately NOT widened to the watchdog identity: this binds the
+          # controller's OWN dispatch by its exact `backup-delivery-` title, so
+          # it must only ever match a run this controller started.
           exact_dispatched_backup_metadata() {
             local metadata="$1"
             local expected_title="$2"
