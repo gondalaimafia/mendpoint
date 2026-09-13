@@ -132,7 +132,11 @@ describe("sandbox egress engine — rotation reaches every configured app", () =
     expect(rotate).toContain('while IFS= read -r app');
     expect(rotate).toContain('flyctl machine list --app "$app" --json');
     expect(rotate).toContain('flyctl secrets set --app "$app"');
-    expect(rotate).not.toContain("flyctl secrets set --stage");
+    // The non-protected path DEPLOYS the receipt secret (asserted above). The
+    // protected branch instead STAGES a refreshed environment fallback (applied at
+    // the next boot, never a restart now), scoped to the consuming app -- never the
+    // verifying/sandbox-image app (guarded below).
+    expect(rotate).toContain('flyctl secrets set --stage --app "$app"');
     expect(rotate).toContain('flyctl machine update "$machine_id" --app "$app"');
     expect(rotate).toContain('--image "$machine_image"');
     expect(rotate).toContain('.image_ref | "\\(.registry)/\\(.repository)@\\(.digest)"');

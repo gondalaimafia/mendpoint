@@ -313,4 +313,40 @@ describe("readiness storage boundary", () => {
       Object.assign(process.env, previous);
     }
   });
+
+  it("(S3) wires the sandbox_egress_receipt check into readiness only for a customer fly_machines deployment", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-readiness-egress-check-"));
+    roots.push(root);
+    const previous = { ...process.env };
+    const hasEgressCheck = () =>
+      readiness({ dbPath: join(root, "mendpoint.sqlite"), dbPing: () => true }).checks.some(
+        (check) => check.name === "sandbox_egress_receipt",
+      );
+    try {
+      Object.assign(process.env, {
+        NODE_ENV: "test",
+        MENDPOINT_DATA_DIR: join(root, "db"),
+        MENDPOINT_DEPLOYMENT_PROFILE: "customer",
+        MENDPOINT_SANDBOX_KIND: "fly_machines",
+      });
+      // Present for a customer deployment on the Fly-machine sandbox. Deleting the
+      // checks.push({ ...customerSandboxEgressReadinessCheck(...) }) block in
+      // readiness.ts makes this assertion fail (mutation control).
+      expect(hasEgressCheck()).toBe(true);
+
+      // Absent when the sandbox is not fly_machines (no receipt is expected).
+      process.env.MENDPOINT_SANDBOX_KIND = "local";
+      expect(hasEgressCheck()).toBe(false);
+
+      // Absent for a non-customer profile even on fly_machines.
+      process.env.MENDPOINT_SANDBOX_KIND = "fly_machines";
+      process.env.MENDPOINT_DEPLOYMENT_PROFILE = "demo";
+      expect(hasEgressCheck()).toBe(false);
+    } finally {
+      for (const key of Object.keys(process.env)) {
+        if (!(key in previous)) delete process.env[key];
+      }
+      Object.assign(process.env, previous);
+    }
+  });
 });

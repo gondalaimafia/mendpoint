@@ -25,7 +25,7 @@ import {
   resolveFanoutSettlementMcuMicros,
   SANDBOX_EGRESS_ATTESTATION_SCHEMA,
   sandboxEgressAuthorityFromEnv,
-  verifySandboxEgressAttestation,
+  verifySandboxEgressAuthority,
   type FanoutRunMeterSignals,
 } from "@mendpoint/platform";
 import {
@@ -2463,7 +2463,7 @@ export function validateWorkerProductionEnv(
   }
   if (env.MENDPOINT_SANDBOX_KIND?.trim() === "fly_machines") {
     try {
-      verifySandboxEgressAttestation({
+      verifySandboxEgressAuthority({
         ...sandboxEgressAuthorityFromEnv(env),
         expectedApp: env.MENDPOINT_SANDBOX_FLY_APP?.trim() ?? "",
         expectedImage: env.MENDPOINT_SANDBOX_FLY_IMAGE?.trim() ?? "",
@@ -2486,6 +2486,16 @@ export function validateWorkerProductionEnv(
           "worker_boot_degraded sandbox_egress_attestation_expired: sandbox launches are refused until the renewal delivers a fresh receipt";
         process.stderr.write(`${warning}\n`);
         onWarning?.(warning);
+        // The resolver degrades to the authentic-but-expired environment receipt
+        // when the volume FILE candidate also failed; surface that file failure so
+        // an operator sees the file is unusable (e.g. corrupt or truncated), not
+        // merely that the environment copy expired.
+        const fileCandidateError = (error as { fileCandidateError?: unknown }).fileCandidateError;
+        if (typeof fileCandidateError === "string" && fileCandidateError) {
+          const fileWarning = `worker_boot_degraded sandbox_egress_attestation_file_unusable: ${fileCandidateError}`;
+          process.stderr.write(`${fileWarning}\n`);
+          onWarning?.(fileWarning);
+        }
       } else {
         errors.push(`Sandbox egress authority invalid: ${message}`);
       }
