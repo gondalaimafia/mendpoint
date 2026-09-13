@@ -165,9 +165,14 @@ jobs:
       - name: Install Fly CLI
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
         with:
-          # Pinned to the last flyctl proven to work with the app-scoped backup
-          # token: 0.4.101+ regressed `flyctl apps list` to `Error: unauthorized`
-          # for app-scoped tokens. Bumping this requires re-proving that command.
+          # Pinned to the same flyctl as customer-backup.yml, so both consumers
+          # of the app-scoped backup token run one proven CLI. The commands THIS
+          # workflow depends on — `flyctl machine list`, `machine start`,
+          # `ssh console` — were proven at 0.4.100 by the 2026-09-08 runs and
+          # still work at 0.4.102; the constraint comes from the backup run this
+          # watchdog dispatches, which needs `flyctl apps list` that 0.4.101+
+          # regressed to `Error: unauthorized` for app-scoped tokens. Bumping
+          # this pin means re-proving those commands with the app-scoped token.
           version: "0.4.100"
 
       # Before anything reads the machine, make sure the machine is up. The

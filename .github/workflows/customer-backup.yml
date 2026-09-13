@@ -13,7 +13,11 @@ on:
   workflow_dispatch:
     inputs:
       delivery_id:
-        description: Exact dispatcher identity (backup-delivery controller or backup watchdog)
+        description: >-
+          Exact dispatcher identity (backup-delivery controller or backup
+          watchdog). Required for any dispatch the delivery controller must
+          recognise; a dispatch without it is reported as an invalid active
+          backup and pages the owner.
         required: false
         type: string
 
