@@ -832,18 +832,48 @@ describe("customer backup watchdog — a stale backup is remediated once, before
   const DECIDE = "Fail unless the final verdict is provably fresh";
   const ALERT = "Alert on stale or undetermined backup freshness";
 
+  // The runner-provided identity of THIS watchdog run, echoed into the dispatch
+  // as `backup-watchdog-<run>-<attempt>` and into the run title the stub lists.
+  const WATCHDOG_RUN_ID = "555";
+  const WATCHDOG_RUN_ATTEMPT = "1";
+  const WATCHDOG_DELIVERY_ID = `backup-watchdog-${WATCHDOG_RUN_ID}-${WATCHDOG_RUN_ATTEMPT}`;
+  const WATCHDOG_TITLE = `Customer production backup [${WATCHDOG_DELIVERY_ID}]`;
+
   /**
    * A `gh` that cannot reach GitHub, and that LOGS every invocation, so "how
    * many backups were dispatched" is a counted fact rather than an inference
    * from the script's shape. The env knobs let one stub cover the dispatch
    * refused / run never observed / run failed branches without a second stub
    * that might diverge from this one.
+   *
+   * `run list` returns the real `gh run list --json ...` array shape (the step
+   * pipes it through the real `jq` to bind by display title), and the title it
+   * lists is built from the `delivery_id` the dispatch actually carried — so
+   * the whole chain dispatch identity -> run title -> title binding is exercised
+   * end to end. Drop the `-f delivery_id` from the step and the listed title no
+   * longer matches the title the step waits for. `GH_STUB_DECOY_TITLE`, when
+   * set, prepends a differently titled run so a step that picked "the first
+   * workflow_dispatch run" instead of the exact title would bind to the wrong id.
    */
   const GH_STUB = `#!/bin/sh
 echo "$1 $2" >> "$GH_STUB_LOG"
 case "$1 $2" in
-  'workflow run') exit \${GH_STUB_DISPATCH_STATUS:-0} ;;
-  'run list') echo "\${GH_STUB_RUN_ID-4242}" ;;
+  'workflow run')
+    for arg in "$@"; do
+      case "$arg" in
+        delivery_id=*) printf '%s' "\${arg#delivery_id=}" > "$GH_STUB_DISPATCHED_ID" ;;
+      esac
+    done
+    exit \${GH_STUB_DISPATCH_STATUS:-0} ;;
+  'run list')
+    dispatched=""
+    [ -f "$GH_STUB_DISPATCHED_ID" ] && dispatched="$(cat "$GH_STUB_DISPATCHED_ID")"
+    if [ -n "\${GH_STUB_DECOY_TITLE:-}" ]; then
+      printf '[{"databaseId":9999,"createdAt":"2026-01-01T00:00:00Z","displayTitle":"%s"},{"databaseId":4242,"createdAt":"2026-09-13T13:40:00Z","displayTitle":"Customer production backup [%s]"}]\\n' "$GH_STUB_DECOY_TITLE" "$dispatched"
+    else
+      printf '[{"databaseId":4242,"createdAt":"2026-09-13T13:40:00Z","displayTitle":"Customer production backup [%s]"}]\\n' "$dispatched"
+    fi
+    ;;
   'run view') echo "\${GH_STUB_RUN_STATE:-completed success}" ;;
 esac
 exit 0
@@ -895,6 +925,8 @@ exit 0
     machine?: Record<string, unknown>;
     /** The verdict the judge step already wrote, before remediation runs. */
     verdict?: Record<string, unknown>;
+    /** A differently titled run the stub lists FIRST, ahead of the real one. */
+    decoyTitle?: string;
     gh?: Record<string, string>;
   }) {
     const dir = workspace();
@@ -907,6 +939,7 @@ exit 0
     const report = join(dir, "verdict.json");
     const capture = join(dir, "evidence-capture.json");
     const machinePath = join(dir, "last-verified.json");
+    const dispatchedIdPath = join(dir, "dispatched-delivery-id");
     const ghLog = join(dir, "gh-invocations.log");
     writeFileSync(ghLog, "", "utf8");
     writeFileSync(
@@ -937,8 +970,16 @@ exit 0
         MENDPOINT_BACKUP_EVIDENCE_PATH: machinePath,
         MENDPOINT_BACKUP_EVIDENCE_CAPTURE_PATH: capture,
         MENDPOINT_BACKUP_FRESHNESS_REPORT_PATH: report,
+        // The runner-provided identity the dispatch stamps into `delivery_id`.
+        GITHUB_RUN_ID: WATCHDOG_RUN_ID,
+        GITHUB_RUN_ATTEMPT: WATCHDOG_RUN_ATTEMPT,
         GH_STUB_LOG: ghLog,
+        GH_STUB_DISPATCHED_ID: dispatchedIdPath,
+        ...(options.decoyTitle ? { GH_STUB_DECOY_TITLE: options.decoyTitle } : {}),
         ...options.gh,
+      },
+      dispatchedId(): string {
+        return existsSync(dispatchedIdPath) ? readFileSync(dispatchedIdPath, "utf8") : "";
       },
       calls(): string[] {
         return readFileSync(ghLog, "utf8").split("\n").filter(Boolean);
@@ -996,6 +1037,8 @@ exit 0
       dispatched: true,
       runId: "4242",
       outcome: "backup_run_completed",
+      // The exact identity carried on the dispatch, retained in the verdict.
+      deliveryId: WATCHDOG_DELIVERY_ID,
     });
 
     // The staleness stays visible even though remediation worked. Without both
@@ -1006,6 +1049,42 @@ exit 0
     expect(decided.status).toBe(0);
     expect(decided.stdout).toContain("::warning title=Backup freshness required remediation::");
     expect(decided.stdout).toContain("customer_backup_final state=fresh remediated=true");
+  });
+
+  it("dispatches with an exact backup-watchdog identity the delivery controller accepts", () => {
+    // The whole fix: the dispatch must carry `delivery_id=backup-watchdog-<run>-
+    // <attempt>` so the backup run's title is one the controller's active-run
+    // filter recognises. The step text names the identity, and the stub records
+    // the flag it was actually invoked with, so removing `-f delivery_id` from
+    // the workflow is caught two ways.
+    const run = shippedStep(REMEDIATE).run;
+    expect(run).toContain('delivery_id="backup-watchdog-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"');
+    expect(run).toContain('-f "delivery_id=$delivery_id"');
+
+    const context = scenario({ machine: freshEvidence() });
+    const step = remediate(context);
+    expect(step.status).toBe(0);
+    expect(context.dispatchedId()).toBe(WATCHDOG_DELIVERY_ID);
+    expect(context.verdict().remediation).toMatchObject({
+      runId: "4242",
+      deliveryId: WATCHDOG_DELIVERY_ID,
+    });
+  });
+
+  it("binds the wait to the exact dispatched title, never the first workflow_dispatch listed", () => {
+    // A decoy run — a differently identified workflow_dispatch — is listed
+    // FIRST. Binding to "the first run after now" (the defect) would pick the
+    // decoy's id; binding to the exact title picks the run this dispatch made.
+    const context = scenario({
+      machine: freshEvidence(),
+      decoyTitle: "Customer production backup [backup-delivery-8888-3]",
+    });
+    const step = remediate(context);
+
+    expect(step.status).toBe(0);
+    // 4242 is the exact-title match; 9999 is the decoy the stub lists first.
+    expect(context.verdict().remediation).toMatchObject({ runId: "4242" });
+    expect(context.verdict().remediation.runId).not.toBe("9999");
   });
 
   it("still fails, and still opens the issue, when the backup is stale after remediation", () => {

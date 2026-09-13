@@ -164,6 +164,16 @@ jobs:
 
       - name: Install Fly CLI
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+        with:
+          # Pinned to the same flyctl as customer-backup.yml, so both consumers
+          # of the app-scoped backup token run one proven CLI. The commands THIS
+          # workflow depends on — `flyctl machine list`, `machine start`,
+          # `ssh console` — were proven at 0.4.100 by the 2026-09-08 runs and
+          # still work at 0.4.102; the constraint comes from the backup run this
+          # watchdog dispatches, which needs `flyctl apps list` that 0.4.101+
+          # regressed to `Error: unauthorized` for app-scoped tokens. Bumping
+          # this pin means re-proving those commands with the app-scoped token.
+          version: "0.4.100"
 
       # Before anything reads the machine, make sure the machine is up. The
       # customer profile is bounded to ONE machine with auto_start_machines off
@@ -588,33 +598,45 @@ jobs:
 
           echo "::warning title=Customer backup was stale::The newest verified backup was PAST the RPO, so the watchdog is dispatching one Customer production backup run. GitHub is dropping the */30 backup cron; this keeps the RPO but does not fix that."
 
-          # Taken BEFORE the dispatch, so the run waited on below cannot be an
-          # older one that merely happened to still be listed.
-          started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # An exact identity for this dispatch. `delivery_id` sets the backup
+          # run's display title (see customer-backup.yml `run-name`) to
+          # `Customer production backup [backup-watchdog-<run>-<attempt>]`, which
+          # is unique to this watchdog run and attempt. The delivery controller's
+          # active-run filter accepts exactly this identity, so a bare-titled
+          # remediation dispatch no longer reads to it as a metadata mismatch and
+          # alerts the owner; and the wait below binds to the run THIS dispatch
+          # created rather than to whichever workflow_dispatch was listed first.
+          delivery_id="backup-watchdog-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          expected_title="Customer production backup [$delivery_id]"
           dispatch=0
-          gh workflow run "$BACKUP_WORKFLOW" --repo "$GH_REPO" --ref "$BACKUP_REF" || dispatch=$?
+          gh workflow run "$BACKUP_WORKFLOW" --repo "$GH_REPO" --ref "$BACKUP_REF" \
+            -f "delivery_id=$delivery_id" || dispatch=$?
           if [ "$dispatch" -ne 0 ]; then
             echo "customer_backup_remediation_dispatch_failed status=$dispatch" >&2
-            record "$(jq -nc --argjson status "$dispatch" \
-              '{attempted:true,dispatched:false,outcome:"dispatch_failed",dispatchStatus:$status}')"
+            record "$(jq -nc --argjson status "$dispatch" --arg deliveryId "$delivery_id" \
+              '{attempted:true,dispatched:false,outcome:"dispatch_failed",dispatchStatus:$status,deliveryId:$deliveryId}')"
             exit 1
           fi
 
           # Bounded INSIDE the step (<=3min), never by the job timeout: a wait
           # that hit `timeout-minutes` would CANCEL the job, and `if: failure()`
           # steps do not run on a cancelled job, so the remediation would have
-          # muted the very alarm it is supposed to protect.
+          # muted the very alarm it is supposed to protect. Bound to the EXACT
+          # display title this dispatch set, never "the first run after now":
+          # that first run could be someone else's workflow_dispatch.
           run_id=""
           for _ in $(seq 1 18); do
             run_id="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
-              --event workflow_dispatch --limit 20 --json databaseId,createdAt \
-              --jq "[.[] | select(.createdAt >= \"$started\")] | first | .databaseId // empty" || true)"
+              --event workflow_dispatch --limit 20 --json databaseId,createdAt,displayTitle \
+              | jq -r --arg title "$expected_title" \
+                '[.[] | select(.displayTitle == $title)] | first | .databaseId // empty' || true)"
             if [ -n "$run_id" ]; then break; fi
             sleep 10
           done
           if [ -z "$run_id" ]; then
             echo "customer_backup_remediation_run_not_observed" >&2
-            record '{"attempted":true,"dispatched":true,"outcome":"run_not_observed"}'
+            record "$(jq -nc --arg deliveryId "$delivery_id" \
+              '{attempted:true,dispatched:true,outcome:"run_not_observed",deliveryId:$deliveryId}')"
             exit 1
           fi
 
@@ -631,8 +653,8 @@ jobs:
           done
           if [ "$conclusion" != "success" ]; then
             echo "customer_backup_remediation_run_unsuccessful conclusion=${conclusion:-not_completed}" >&2
-            record "$(jq -nc --arg id "$run_id" --arg conclusion "${conclusion:-not_completed}" \
-              '{attempted:true,dispatched:true,runId:$id,outcome:"backup_run_unsuccessful",conclusion:$conclusion}')"
+            record "$(jq -nc --arg id "$run_id" --arg conclusion "${conclusion:-not_completed}" --arg deliveryId "$delivery_id" \
+              '{attempted:true,dispatched:true,runId:$id,outcome:"backup_run_unsuccessful",conclusion:$conclusion,deliveryId:$deliveryId}')"
             exit 1
           fi
 
@@ -654,8 +676,8 @@ jobs:
           judge=0
           MENDPOINT_BACKUP_EVIDENCE_CAPTURE_STATUS="$status" \
             node --import tsx scripts/check-customer-backup-freshness.ts || judge=$?
-          record "$(jq -nc --arg id "$run_id" \
-            '{attempted:true,dispatched:true,runId:$id,outcome:"backup_run_completed"}')"
+          record "$(jq -nc --arg id "$run_id" --arg deliveryId "$delivery_id" \
+            '{attempted:true,dispatched:true,runId:$id,outcome:"backup_run_completed",deliveryId:$deliveryId}')"
           echo "post-remediation judge exit status: $judge"
 
       # The meta case: the judge itself did not run to completion, so nothing
