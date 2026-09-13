@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,12 +8,16 @@ import {
   createDb,
   createInvoiceExport,
   createUsageEntitlement,
+  createUsageFinanceAuthorization,
   createUsagePriceVersion,
   creditUsage,
   getInvoiceExport,
   insertPrincipal,
   insertTenant,
+  putTenantMembership,
   reconcileInvoiceExport,
+  reconcileGrossMargin,
+  reconcileUsageLedger,
   reserveUsage,
   settleUsageReservation,
   transitionInvoiceExportState,
@@ -69,9 +73,20 @@ function seed(db: AppDb) {
       id: `actor-${tenant.at(-1)}`,
       tenantId: tenant,
       kind: "human",
-      subject: `finance-${tenant}@example.test`,
+      subject: `https://identity.example.test|finance-${tenant}`,
       displayName: `Finance ${tenant}`,
+      audience: "https://identity.example.test",
       createdAt: PERIOD_START,
+    });
+    putTenantMembership(db, {
+      tenantId: tenant,
+      issuer: "https://identity.example.test",
+      subject: `finance-${tenant}`,
+      email: `finance-${tenant}@example.test`,
+      displayName: `Finance ${tenant}`,
+      role: "owner",
+      status: "active",
+      updatedAt: PERIOD_START,
     });
     createUsagePriceVersion(db, {
       id: `price-${tenant}`,
@@ -113,10 +128,38 @@ function seed(db: AppDb) {
     idempotencyKey: "settle-a",
     reservationId: reservation.id,
     actualMcuMicros: 4_000_000,
+    invoiceReference: "invoice-a",
     reason: "accepted work",
     actorPrincipalId: "actor-a",
     createdAt: "2026-08-10T10:01:00.000Z",
   });
+}
+
+function financeAuthorization(db: AppDb, input: {
+  entryType: "adjustment" | "credit";
+  idempotencyKey: string;
+  mcuMicrosDelta: number;
+  reason: string;
+  createdAt: string;
+}) {
+  const authorization = createUsageFinanceAuthorization(db, {
+    id: `finance-${input.idempotencyKey}`,
+    tenantId: "tenant-a",
+    approvedByPrincipalId: "actor-a",
+    actorPrincipalId: "actor-a",
+    entryType: input.entryType,
+    invoiceReference: "invoice-a",
+    entryIdempotencyKey: input.idempotencyKey,
+    mcuMicrosDelta: input.mcuMicrosDelta,
+    reason: input.reason,
+    approvedAt: "2026-08-10T10:01:30.000Z",
+    expiresAt: "2026-09-01T00:00:00.000Z",
+  });
+  return {
+    invoiceReference: "invoice-a",
+    financeAuthorizationId: authorization.id,
+    financeAuthorizationDigest: authorization.authorizationDigest,
+  };
 }
 
 function createInput(overrides: Record<string, unknown> = {}) {
@@ -140,11 +183,15 @@ function createInput(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function legacyUsageEntryHash(input: Readonly<Record<string, unknown>>): string {
+  return createHash("sha256").update(JSON.stringify(input)).digest("hex");
+}
+
 describe("signed invoice exports", () => {
   it("derives and signs immutable exact-price lines, replays once, and reconciles", () => {
     const { db } = open();
     seed(db);
-    creditUsage(db, {
+    const creditInput = {
       id: "credit-a",
       tenantId: "tenant-a",
       idempotencyKey: "credit-a",
@@ -154,8 +201,11 @@ describe("signed invoice exports", () => {
       reason: "service credit",
       actorPrincipalId: "actor-a",
       createdAt: "2026-08-15T00:00:00.000Z",
-    });
-    adjustUsage(db, {
+    } as const;
+    creditUsage(db, { ...creditInput, ...financeAuthorization(db, {
+      entryType: "credit", ...creditInput,
+    }) });
+    const refundInput = {
       id: "refund-a",
       tenantId: "tenant-a",
       idempotencyKey: "refund-a",
@@ -165,8 +215,11 @@ describe("signed invoice exports", () => {
       reason: "customer refund",
       actorPrincipalId: "actor-a",
       createdAt: "2026-08-20T00:00:00.000Z",
-    });
-    adjustUsage(db, {
+    } as const;
+    creditUsage(db, { ...refundInput, ...financeAuthorization(db, {
+      entryType: "credit", ...refundInput,
+    }) });
+    const adjustmentInput = {
       id: "adjustment-a",
       tenantId: "tenant-a",
       idempotencyKey: "adjustment-a",
@@ -176,7 +229,10 @@ describe("signed invoice exports", () => {
       reason: "late measured usage correction",
       actorPrincipalId: "actor-a",
       createdAt: "2026-08-21T00:00:00.000Z",
-    });
+    } as const;
+    adjustUsage(db, { ...adjustmentInput, ...financeAuthorization(db, {
+      entryType: "adjustment", ...adjustmentInput,
+    }) });
 
     const invoice = createInvoiceExport(db, createInput());
     expect(invoice).toMatchObject({
@@ -195,7 +251,7 @@ describe("signed invoice exports", () => {
     expect(invoice.lines.map((line) => line.kind)).toEqual([
       "usage",
       "credit",
-      "refund",
+      "credit",
       "adjustment",
     ]);
     expect(invoice.lines.map((line) => line.priceVersionId)).toEqual([
@@ -220,6 +276,159 @@ describe("signed invoice exports", () => {
     expect(() => db.raw.prepare(
       "UPDATE invoice_export_lines SET money_micros = 1 WHERE invoice_id = 'invoice-a'",
     ).run()).toThrow("invoice_export_lines_append_only");
+  });
+
+  it("exports every split credit as a non-positive credit while preserving exact multi-price money", () => {
+    const { db } = open();
+    seed(db);
+    createUsagePriceVersion(db, {
+      id: "price-tenant-a-later",
+      tenantId: "tenant-a",
+      formulaVersion: "mcu-v1",
+      currency: "USD",
+      pricePerMcuMoneyMicros: 30_000,
+      effectiveAt: "2026-08-15T00:00:00.000Z",
+      expiresAt: PERIOD_END,
+      contractReference: "contract-tenant-a",
+      createdAt: "2026-08-15T00:00:00.000Z",
+    });
+    createUsageEntitlement(db, {
+      id: "entitlement-tenant-a-later",
+      tenantId: "tenant-a",
+      priceVersionId: "price-tenant-a-later",
+      quotaMcuMicros: 20_000_000,
+      features: ["fettler"],
+      contractReference: "contract-tenant-a",
+      periodStart: "2026-08-15T00:00:00.000Z",
+      periodEnd: PERIOD_END,
+      createdAt: "2026-08-15T00:00:00.000Z",
+    });
+    const laterReservation = reserveUsage(db, {
+      id: "reservation-a-later",
+      tenantId: "tenant-a",
+      idempotencyKey: "reserve-a-later",
+      taskId: "task-a",
+      campaignId: "campaign-a",
+      mcuMicros: 2_000_000,
+      reason: "later price allocation",
+      actorPrincipalId: "actor-a",
+      createdAt: "2026-08-20T10:00:00.000Z",
+    });
+    settleUsageReservation(db, {
+      id: "settlement-a-later",
+      tenantId: "tenant-a",
+      idempotencyKey: "settle-a-later",
+      reservationId: laterReservation.id,
+      actualMcuMicros: 2_000_000,
+      invoiceReference: "invoice-a",
+      reason: "later price settlement",
+      actorPrincipalId: "actor-a",
+      createdAt: "2026-08-20T10:01:00.000Z",
+    });
+    const creditInput = {
+      id: "credit-a-split",
+      tenantId: "tenant-a",
+      idempotencyKey: "credit-a-split",
+      taskId: "task-a",
+      campaignId: "campaign-a",
+      mcuMicrosDelta: -5_000_000,
+      reason: "multi-price service credit",
+      actorPrincipalId: "actor-a",
+      createdAt: "2026-08-21T00:00:00.000Z",
+    } as const;
+    creditUsage(db, {
+      ...creditInput,
+      ...financeAuthorization(db, { entryType: "credit", ...creditInput }),
+    });
+
+    const invoice = createInvoiceExport(db, createInput());
+    const creditLines = invoice.lines.filter((line) => line.kind === "credit");
+    expect(creditLines).toHaveLength(2);
+    expect(creditLines.every((line) => line.mcuMicros < 0 && line.moneyMicros < 0)).toBe(true);
+    expect(invoice.lines.filter((line) => line.mcuMicros > 0 && line.kind !== "usage"))
+      .toEqual([]);
+    expect(invoice.subtotalMoneyMicros).toBe(30_000);
+    expect(reconcileInvoiceExport(db, "tenant-a", invoice.id, hmacSigner())).toMatchObject({
+      complete: true,
+      usageChain: { ok: true },
+    });
+  });
+
+  it("prices a late adjustment from its approved historical invoice allocation", () => {
+    const { db } = open();
+    seed(db);
+    createUsagePriceVersion(db, {
+      id: "price-tenant-a-current",
+      tenantId: "tenant-a",
+      formulaVersion: "mcu-v1",
+      currency: "USD",
+      pricePerMcuMoneyMicros: 40_000,
+      effectiveAt: "2026-09-01T00:00:00.000Z",
+      expiresAt: "2026-10-01T00:00:00.000Z",
+      contractReference: "contract-tenant-a-current",
+      createdAt: "2026-09-01T00:00:00.000Z",
+    });
+    createUsageEntitlement(db, {
+      id: "entitlement-tenant-a-current",
+      tenantId: "tenant-a",
+      priceVersionId: "price-tenant-a-current",
+      quotaMcuMicros: 20_000_000,
+      features: ["fettler"],
+      contractReference: "contract-tenant-a-current",
+      periodStart: "2026-09-01T00:00:00.000Z",
+      periodEnd: "2026-10-01T00:00:00.000Z",
+      createdAt: "2026-09-01T00:00:00.000Z",
+    });
+    const authorization = createUsageFinanceAuthorization(db, {
+      id: "finance-late-adjustment-a",
+      tenantId: "tenant-a",
+      approvedByPrincipalId: "actor-a",
+      actorPrincipalId: "actor-a",
+      entryType: "adjustment",
+      invoiceReference: "invoice-a",
+      entryIdempotencyKey: "late-adjustment-a",
+      mcuMicrosDelta: 1_000_000,
+      reason: "late historical correction",
+      approvedAt: "2026-09-02T12:00:00.000Z",
+      expiresAt: "2026-09-02T12:05:00.000Z",
+    });
+    const adjustment = adjustUsage(db, {
+      id: "late-adjustment-a",
+      tenantId: "tenant-a",
+      idempotencyKey: "late-adjustment-a",
+      taskId: "task-a",
+      campaignId: "campaign-a",
+      mcuMicrosDelta: 1_000_000,
+      invoiceReference: "invoice-a",
+      reason: "late historical correction",
+      actorPrincipalId: "actor-a",
+      financeAuthorizationId: authorization.id,
+      financeAuthorizationDigest: authorization.authorizationDigest,
+      createdAt: "2026-09-02T12:01:00.000Z",
+    });
+    expect(adjustment).toMatchObject({
+      entitlementId: "entitlement-tenant-a",
+      priceVersion: "price-tenant-a",
+    });
+    const invoice = createInvoiceExport(db, createInput({
+      id: "invoice-late-adjustment-a",
+      idempotencyKey: "invoice-late-adjustment-a",
+      periodStart: "2026-09-02T00:00:00.000Z",
+      periodEnd: "2026-09-03T00:00:00.000Z",
+      issuedAt: "2026-09-04T00:00:00.000Z",
+    }));
+    expect(invoice.lines).toMatchObject([{
+      usageEntryId: "late-adjustment-a",
+      kind: "adjustment",
+      priceVersionId: "price-tenant-a",
+      mcuMicros: 1_000_000,
+      moneyMicros: 20_000,
+    }]);
+    expect(reconcileGrossMargin(db, "tenant-a")).toMatchObject({
+      adjustedMcuMicros: 1_000_000,
+      adjustmentMoneyMicros: 20_000,
+      netRevenueMoneyMicros: 100_000,
+    });
   });
 
   it("rejects changed replay, cross-tenant authority, missing signing authority, and invalid tax", () => {
@@ -453,7 +662,7 @@ describe("signed invoice exports", () => {
       authority: hmacSigner(),
     })).toThrow("invoice_export_not_found");
 
-    creditUsage(db, {
+    const lateCreditInput = {
       id: "late-credit",
       tenantId: "tenant-a",
       idempotencyKey: "late-credit",
@@ -462,7 +671,10 @@ describe("signed invoice exports", () => {
       reason: "late refund",
       actorPrincipalId: "actor-a",
       createdAt: "2026-08-31T23:59:00.000Z",
-    });
+    } as const;
+    creditUsage(db, { ...lateCreditInput, ...financeAuthorization(db, {
+      entryType: "credit", ...lateCreditInput,
+    }) });
     expect(() => createInvoiceExport(db, createInput()))
       .toThrow("invoice_export_idempotency_conflict");
 
@@ -511,5 +723,232 @@ describe("signed invoice exports", () => {
       "invoice_export_state_events_append_only_update",
     ]));
     expect(upgraded.raw.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+
+  it("migrates legacy adjustment and credit rows as explicit unverified authority without rewriting bytes", () => {
+    const opened = open("legacy-finance-upgrade.sqlite");
+    seed(opened.db);
+    const historicalInvoice = createInvoiceExport(opened.db, createInput());
+    const previous = opened.db.raw.prepare(
+      `SELECT entry_sequence, entry_hash FROM usage_ledger_entries
+       WHERE tenant_id = 'tenant-a' ORDER BY entry_sequence DESC LIMIT 1`,
+    ).get() as { entry_sequence: number; entry_hash: string };
+    opened.db.raw.exec("PRAGMA foreign_keys = OFF");
+    opened.db.raw.exec(`
+      DROP TRIGGER usage_ledger_entries_append_only_update;
+      DROP TRIGGER usage_ledger_entries_append_only_delete;
+      CREATE TABLE usage_ledger_entries_legacy (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES tenants(id),
+        entry_type TEXT NOT NULL CHECK (
+          entry_type IN ('reservation', 'settlement', 'release', 'adjustment', 'credit')
+        ),
+        entitlement_id TEXT NOT NULL REFERENCES usage_entitlements(id),
+        idempotency_key TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        campaign_id TEXT,
+        reservation_id TEXT REFERENCES usage_ledger_entries_legacy(id),
+        price_version TEXT NOT NULL,
+        reserved_mcu_micros_delta INTEGER NOT NULL,
+        consumed_mcu_micros_delta INTEGER NOT NULL,
+        invoice_reference TEXT,
+        reason TEXT NOT NULL,
+        actor_principal_id TEXT,
+        entry_sequence INTEGER NOT NULL,
+        prev_hash TEXT,
+        entry_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (tenant_id, idempotency_key),
+        UNIQUE (tenant_id, entry_sequence)
+      );
+      INSERT INTO usage_ledger_entries_legacy
+        (id, tenant_id, entry_type, entitlement_id, idempotency_key, task_id, campaign_id,
+         reservation_id, price_version, reserved_mcu_micros_delta, consumed_mcu_micros_delta,
+         invoice_reference, reason, actor_principal_id, entry_sequence, prev_hash, entry_hash,
+         created_at)
+      SELECT id, tenant_id, entry_type, entitlement_id, idempotency_key, task_id, campaign_id,
+             reservation_id, price_version, reserved_mcu_micros_delta, consumed_mcu_micros_delta,
+             invoice_reference, reason, actor_principal_id, entry_sequence, prev_hash, entry_hash,
+             created_at
+        FROM usage_ledger_entries;
+      DROP TABLE usage_ledger_entries;
+      ALTER TABLE usage_ledger_entries_legacy RENAME TO usage_ledger_entries;
+      DROP TABLE usage_finance_authorizations;
+      CREATE TABLE usage_finance_authorizations (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES tenants(id),
+        kind TEXT NOT NULL CHECK (kind IN ('adjustment', 'credit')),
+        invoice_reference TEXT NOT NULL,
+        actor_principal_id TEXT NOT NULL REFERENCES principals(id),
+        entry_id TEXT NOT NULL,
+        entry_idempotency_key TEXT NOT NULL,
+        mcu_micros_delta INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        intent_digest TEXT NOT NULL,
+        authorization_digest TEXT NOT NULL,
+        approved_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (tenant_id, entry_id),
+        UNIQUE (tenant_id, entry_idempotency_key)
+      );
+    `);
+    const adjustment = {
+      id: "legacy-adjustment-a",
+      tenantId: "tenant-a",
+      entrySequence: previous.entry_sequence + 1,
+      entryType: "adjustment",
+      entitlementId: "entitlement-tenant-a",
+      idempotencyKey: "legacy-adjustment-a",
+      taskId: "task-a",
+      campaignId: "campaign-a",
+      reservationId: null,
+      priceVersion: "price-tenant-a",
+      reservedDelta: 0,
+      consumedDelta: 250_000,
+      invoiceReference: "invoice-a",
+      reason: "legacy measured correction",
+      actorPrincipalId: "actor-a",
+      previousHash: previous.entry_hash,
+      createdAt: "2026-08-11T00:00:00.000Z",
+    } as const;
+    const adjustmentHash = legacyUsageEntryHash(adjustment);
+    const credit = {
+      ...adjustment,
+      id: "legacy-credit-a",
+      entrySequence: adjustment.entrySequence + 1,
+      entryType: "credit",
+      idempotencyKey: "legacy-credit-a",
+      consumedDelta: -100_000,
+      reason: "legacy customer credit",
+      previousHash: adjustmentHash,
+      createdAt: "2026-08-12T00:00:00.000Z",
+    } as const;
+    const insertLegacy = opened.db.raw.prepare(`
+      INSERT INTO usage_ledger_entries
+        (id, tenant_id, entry_type, entitlement_id, idempotency_key, task_id, campaign_id,
+         reservation_id, price_version, reserved_mcu_micros_delta, consumed_mcu_micros_delta,
+         invoice_reference, reason, actor_principal_id, entry_sequence, prev_hash, entry_hash,
+         created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const entry of [
+      { ...adjustment, entryHash: adjustmentHash },
+      { ...credit, entryHash: legacyUsageEntryHash(credit) },
+    ]) {
+      insertLegacy.run(
+        entry.id,
+        entry.tenantId,
+        entry.entryType,
+        entry.entitlementId,
+        entry.idempotencyKey,
+        entry.taskId,
+        entry.campaignId,
+        entry.reservationId,
+        entry.priceVersion,
+        entry.reservedDelta,
+        entry.consumedDelta,
+        entry.invoiceReference,
+        entry.reason,
+        entry.actorPrincipalId,
+        entry.entrySequence,
+        entry.previousHash,
+        entry.entryHash,
+        entry.createdAt,
+      );
+    }
+    opened.db.raw.close();
+    databases.pop();
+
+    const upgraded = createDb(opened.path);
+    databases.push(upgraded);
+    expect(upgraded.raw.prepare(
+      `SELECT entry_id, authority_status, entry_hash
+       FROM usage_legacy_finance_evidence ORDER BY entry_id`,
+    ).all()).toEqual([
+      {
+        entry_id: "legacy-adjustment-a",
+        authority_status: "legacy_unverified",
+        entry_hash: adjustmentHash,
+      },
+      {
+        entry_id: "legacy-credit-a",
+        authority_status: "legacy_unverified",
+        entry_hash: legacyUsageEntryHash(credit),
+      },
+    ]);
+    expect(() => upgraded.raw.prepare(
+      "UPDATE usage_legacy_finance_evidence SET entry_hash = ? WHERE entry_id = ?",
+    ).run("0".repeat(64), "legacy-credit-a"))
+      .toThrow("usage_legacy_finance_evidence_append_only");
+    expect(upgraded.raw.prepare(
+      "PRAGMA table_info(usage_finance_authorizations)",
+    ).all()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "allocation_entitlement_id" }),
+      expect.objectContaining({ name: "allocation_price_version" }),
+    ]));
+    expect(upgraded.raw.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+    ).get("usage_finance_authorizations_allocation_guard_update")).toEqual({
+      name: "usage_finance_authorizations_allocation_guard_update",
+    });
+    expect(reconcileUsageLedger(upgraded, "tenant-a")).toMatchObject({
+      ok: false,
+      error: "usage_finance_authority_legacy_unverified",
+      financeAuthorityStatus: "legacy_unverified",
+      legacyUnverifiedFinanceEntryIds: ["legacy-adjustment-a", "legacy-credit-a"],
+      invoices: { "invoice-a": 4_150_000 },
+    });
+    expect(() => createInvoiceExport(upgraded, createInput({
+      id: "invoice-after-legacy-upgrade",
+      idempotencyKey: "invoice-after-legacy-upgrade",
+    }))).toThrow("invoice_export_usage_chain_invalid");
+    expect(reconcileInvoiceExport(
+      upgraded,
+      "tenant-a",
+      historicalInvoice.id,
+      hmacSigner(),
+    )).toMatchObject({
+      complete: false,
+      issues: expect.arrayContaining(["invoice_usage_chain_invalid"]),
+      usageChain: {
+        ok: false,
+        financeAuthorityStatus: "legacy_unverified",
+        legacyUnverifiedFinanceEntryIds: ["legacy-adjustment-a", "legacy-credit-a"],
+      },
+    });
+    expect(reconcileGrossMargin(upgraded, "tenant-a")).toMatchObject({
+      complete: false,
+      usageIntegrity: {
+        ok: false,
+        financeAuthorityStatus: "legacy_unverified",
+        legacyUnverifiedFinanceEntryIds: ["legacy-adjustment-a", "legacy-credit-a"],
+      },
+      exactGrossMarginMoneyMicros: null,
+    });
+
+    // Model a process crash after both ALTER statements committed but before
+    // the legacy evidence INSERT ran. The next boot must independently repair
+    // this state even though neither column is newly added on that boot.
+    upgraded.raw.exec("DROP TRIGGER usage_legacy_finance_evidence_guard_delete");
+    upgraded.raw.exec("DELETE FROM usage_legacy_finance_evidence");
+    upgraded.raw.close();
+    databases.pop();
+    const resumedUpgrade = createDb(opened.path);
+    databases.push(resumedUpgrade);
+    expect(resumedUpgrade.raw.prepare(
+      `SELECT entry_id, authority_status, entry_hash
+       FROM usage_legacy_finance_evidence ORDER BY entry_id`,
+    ).all()).toEqual([
+      {
+        entry_id: "legacy-adjustment-a",
+        authority_status: "legacy_unverified",
+        entry_hash: adjustmentHash,
+      },
+      {
+        entry_id: "legacy-credit-a",
+        authority_status: "legacy_unverified",
+        entry_hash: legacyUsageEntryHash(credit),
+      },
+    ]);
   });
 });
