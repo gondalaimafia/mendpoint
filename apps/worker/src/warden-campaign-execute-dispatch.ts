@@ -151,6 +151,7 @@ export async function runWardenCampaignExecuteTarget(input: {
    * job payload (per job — each campaign target carries its own change). */
   resolveDependencies: (renames: readonly FieldRename[], tenantId: string) => WardenCampaignExecutionDependencies;
   execute?: WardenCampaignExecutor;
+  now?: () => string;
 }): Promise<WardenCampaignExecuteOutcome> {
   const execute = input.execute ?? executeWardenCampaignTarget;
   let payload: ExecutePayload;
@@ -171,7 +172,9 @@ export async function runWardenCampaignExecuteTarget(input: {
       ownerApproval: payload.ownerApproval,
       actorPrincipalId: payload.actorPrincipalId,
       runId: payload.runId,
-      createdAt: payload.createdAt,
+      // The queued timestamp remains provenance, not authority to execute later.
+      // Maintenance windows and snapshot freshness must use the worker clock.
+      createdAt: input.now?.() ?? new Date().toISOString(),
       dependencies: input.resolveDependencies(payload.renames, input.job.tenant_id),
     });
     return { status: "executed", stage: result.stage };

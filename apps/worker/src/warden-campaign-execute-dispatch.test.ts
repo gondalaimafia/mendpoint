@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppDb } from "@mendpoint/db";
 import {
   WardenCampaignExecutionError,
@@ -13,6 +13,7 @@ import {
 
 const db = {} as unknown as AppDb;
 const dependencies = {} as unknown as WardenCampaignExecutionDependencies;
+afterEach(() => vi.useRealTimers());
 
 function validPayload(): Record<string, unknown> {
   return {
@@ -55,6 +56,23 @@ describe("parseWardenCampaignExecuteJob", () => {
 });
 
 describe("runWardenCampaignExecuteTarget", () => {
+  it("defaults to the worker clock without changing queued provenance or approvals", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-03T00:00:00.000Z"));
+    const payload = validPayload();
+    const queuedJob = job(payload);
+    let received: Parameters<WardenCampaignExecutor>[0] | null = null;
+    const execute: WardenCampaignExecutor = async (input) => {
+      received = input;
+      return { stage: "review" } as Awaited<ReturnType<WardenCampaignExecutor>>;
+    };
+    await runWardenCampaignExecuteTarget({ db, job: queuedJob, resolveDependencies: () => dependencies, execute });
+    expect(received!.createdAt).toBe("2026-01-03T00:00:00.000Z");
+    expect(received!.rolloutApproval).toEqual(payload.rolloutApproval);
+    expect(received!.ownerApproval).toEqual(payload.ownerApproval);
+    expect(parseWardenCampaignExecuteJob(queuedJob).createdAt).toBe(payload.createdAt);
+  });
+
   it("returns executed with the review stage and passes the parsed authority through", async () => {
     let received: Parameters<WardenCampaignExecutor>[0] | null = null;
     const execute = (async (input) => {

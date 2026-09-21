@@ -25,6 +25,7 @@ import {
   type WardenCampaignExecutionDependencies,
 } from "@mendpoint/pipeline";
 import { fieldRenameRecipeDependencies } from "./warden-campaign-recipe.js";
+import { runWardenCampaignExecuteTarget } from "./warden-campaign-execute-dispatch.js";
 
 const opened: Array<{ db: AppDb; graph: GraphLearnDb; dir: string }> = [];
 const createdAt = "2026-08-02T14:00:00.000Z";
@@ -40,7 +41,7 @@ afterEach(() => {
   }
 });
 
-function fixture() {
+function fixture(options: { expiresAt?: string; maintenanceStart?: string } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "mendpoint-recipe-e2e-"));
   const snapshotRoot = join(dir, "snapshot");
   mkdirSync(join(snapshotRoot, "src"), { recursive: true });
@@ -70,7 +71,7 @@ function fixture() {
      30, 'ready', ?, ?)`).run(createdAt, createdAt);
   insertRepositorySnapshot(db, { id: "snapshot-a", tenantId: "tenant-a", repositoryId: "repo-a",
     requestedRef: "main", resolvedSha, manifestSha256, storagePath: snapshotRoot, createdAt,
-    expiresAt: "2026-08-03T14:00:00.000Z" });
+    expiresAt: options.expiresAt ?? "2026-08-03T14:00:00.000Z" });
   insertRepositorySnapshotPolicy(db, { id: "snapshot-policy", tenantId: "tenant-a", snapshotId: "snapshot-a",
     codeowners: { "src/**": ["@payments"] }, ciFiles: [".github/workflows/ci.yml"],
     verificationCommands: ["node check.mjs"], protectedBranch: { name: "main" }, createdAt });
@@ -98,7 +99,7 @@ function fixture() {
     expectedCampaignRevision: 1,
     profiles: [{ targetId: "target-a", risk: "medium", environment: "test", verificationConfidence: 0.99,
       canaryEligible: true, ownerGroup: "payments", ownerMaxParallel: 1,
-      maintenanceWindow: { start: "2026-08-02T13:00:00.000Z", end: "2026-08-02T16:00:00.000Z" } }],
+      maintenanceWindow: { start: options.maintenanceStart ?? "2026-08-02T13:00:00.000Z", end: "2026-08-02T16:00:00.000Z" } }],
     canaryTargetId: "target-a", maxCohortSize: 1,
     stopConditions: { pauseFailureRate: 0.1, abortFailureRate: 0.25, minimumVerificationConfidence: 0.9,
       abortOnCriticalFailure: true },
@@ -135,6 +136,67 @@ function source(): UnifiedSourceArtifact {
 }
 
 describe("field-rename recipe end to end through the campaign executor", () => {
+  it.each([
+    {
+      name: "refuses a queued job after its maintenance window closes",
+      enqueuedAt: createdAt,
+      maintenanceStart: "2026-08-02T13:00:00.000Z",
+      executionTime: "2026-08-02T17:00:00.000Z",
+      expiresAt: "2026-08-03T14:00:00.000Z",
+      expected: { status: "retry_scheduled", code: "warden_maintenance_window_closed" },
+      stage: "queued",
+    },
+    {
+      name: "refuses a snapshot that expires while its job waits in the queue",
+      enqueuedAt: createdAt,
+      maintenanceStart: "2026-08-02T13:00:00.000Z",
+      executionTime: "2026-08-02T15:00:00.000Z",
+      expiresAt: "2026-08-02T15:00:00.000Z",
+      expected: { status: "failed", code: "warden_snapshot_expired" },
+      stage: "queued",
+    },
+    {
+      name: "executes a waiting job once its maintenance window opens",
+      enqueuedAt: createdAt,
+      maintenanceStart: "2026-08-02T14:30:00.000Z",
+      executionTime: "2026-08-02T15:00:00.000Z",
+      expiresAt: "2026-08-03T14:00:00.000Z",
+      expected: { status: "executed", stage: "review" },
+      stage: "review",
+    },
+  ])("$name", async ({ enqueuedAt, executionTime, expiresAt, maintenanceStart, expected, stage }) => {
+    const value = fixture({ expiresAt, maintenanceStart });
+    let verificationCalls = 0;
+    const queuedJob = {
+      id: "job-a", tenant_id: "tenant-a", type: "warden.campaign.execute-target",
+      payload_json: JSON.stringify({
+        campaignId: "campaign-a", targetId: "target-a", rolloutDecisionId: "rollout-a",
+        source: source(), actorPrincipalId: "worker", runId: "run-a", createdAt: enqueuedAt,
+        rolloutApproval: { decisionSha256: value.decision.decisionSha256, approvedByPrincipalId: "reviewer", approvedAt: createdAt },
+        ownerApproval: { ownerPrincipalId: "owner", ownerHandle: "@payments", approvedAt: createdAt },
+        renames: [{ from: "amount_cents", to: "amount" }],
+      }),
+    };
+    const originalPayload = queuedJob.payload_json;
+    const outcome = await runWardenCampaignExecuteTarget({
+      db: value.db, job: queuedJob, now: () => executionTime,
+      resolveDependencies: (renames) => ({
+        ...fieldRenameRecipeDependencies({ deriveRename: () => renames[0]!, graphDb: value.graph }),
+        verify: async (input) => {
+          verificationCalls++;
+          return input.commands.map((command) => ({
+            command, status: "passed" as const, failureFingerprints: [],
+            outputSha256: digest(`${command}:passed`), durationMs: 1, sandboxBackend: "fly_machines" as const,
+          }));
+        },
+      }),
+    });
+    expect(outcome).toEqual(expected);
+    expect(listWardenCampaignTargets(value.db, "tenant-a", "campaign-a")[0]).toMatchObject({ stage });
+    expect(verificationCalls).toBe(stage === "review" ? 2 : 0);
+    expect(queuedJob.payload_json).toBe(originalPayload);
+  });
+
   it("plans and applies the rename, verifies, and lands a review package with typed edits", async () => {
     const value = fixture();
     const dependencies: WardenCampaignExecutionDependencies = {

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   addWardenCampaignTarget,
   createDb,
@@ -42,6 +42,7 @@ const manifestSha256 = "b".repeat(64);
 const digest = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const item of opened.splice(0)) {
     item.db.raw.close();
     item.graph.raw.close();
@@ -151,6 +152,11 @@ const passingVerify: WardenCampaignExecutionDependencies["verify"] = async (inpu
   }));
 
 describe("field-rename activation end to end through the worker loop", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(createdAt));
+  });
+
   it("routes the payload rename through resolveDependencies and lands the target in review", async () => {
     const value = fixture();
     enqueueJob(value.db, {
