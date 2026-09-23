@@ -380,7 +380,7 @@ export async function authenticatedWebSubject(
 }
 
 export async function authenticatedWebCredential(
-  request: NextRequest,
+  request: { cookies: Pick<NextRequest["cookies"], "get"> },
   now = new Date(),
 ): Promise<AuthenticatedWebCredential | null> {
   const accessToken = process.env.MENDPOINT_WEB_ACCESS_TOKEN?.trim();
