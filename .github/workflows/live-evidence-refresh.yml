@@ -166,13 +166,20 @@ jobs:
           }
           # Any unhandled failure in the push/reset path (git fetch, a non-force
           # or -u push, a jq on the summary) must surface as the FAILED issue, not
-          # a red run with no issue. set -E propagates the trap into functions.
-          # The trap preserves the exit code and never re-reports a failure an
-          # explicit path already opened (FAILED_REPORTED), and it disables itself
-          # first so a failure while reporting cannot recurse.
+          # a red run with no issue. set -E propagates the trap into functions AND
+          # into $(...) subshells, where FAILED_REPORTED is only a COPY: a subshell
+          # that reported would create a duplicate (and, in a for-list, an opened-
+          # then-closed) issue. So a subshell trap only re-raises (exit "$rc"); the
+          # failed substitution then fails its parent assignment under set -e and
+          # the top-level shell (BASH_SUBSHELL 0) reports exactly once. The report
+          # disables the trap first so a failure while reporting cannot recurse,
+          # never re-reports a failure an explicit path already opened
+          # (FAILED_REPORTED, set in upsert_issue for the FAILED label), and
+          # preserves the exit code.
           report_unexpected_failure() {
-            trap - ERR
             local rc="$1"
+            if [ "${BASH_SUBSHELL:-0}" -gt 0 ]; then exit "$rc"; fi
+            trap - ERR
             if [ "$FAILED_REPORTED" -eq 0 ]; then
               upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" \
                 "$(printf 'The live evidence refresh failed unexpectedly (command exited %s near line %s). No branch push is trusted after an unexpected failure; a human should inspect the run.\n\nRun: %s' "$rc" "${2:-?}" "$RUN_URL")" || true
@@ -181,8 +188,16 @@ jobs:
           }
           trap 'report_unexpected_failure "$?" "$LINENO"' ERR
           close_issues() { # label
-            for number in $(gh issue list --repo "$GH_REPO" --state open --label "$1" \
-              --json number --jq '.[].number'); do
+            # Capture the list with an explicit status check first: a failed
+            # lookup must NOT iterate over garbage and must NOT close anything. On
+            # failure return non-zero so the caller's bare invocation trips the
+            # top-level trap (reported once) rather than silently closing nothing.
+            local list status
+            list="$(gh issue list --repo "$GH_REPO" --state open --label "$1" \
+              --json number --jq '.[].number')" && status=0 || status=$?
+            if [ "${status:-0}" -ne 0 ]; then return "$status"; fi
+            local number
+            for number in $list; do
               gh issue close "$number" --repo "$GH_REPO" --reason completed \
                 --comment "Resolved automatically by $RUN_URL."
             done
@@ -201,9 +216,14 @@ jobs:
           # never read as "no open PR" and let the reset path force-push.
           refresh_pr_state() {
             local json status count
+            # .isCrossRepository == false (not |not): a null/missing value fails
+            # closed as "not same-repo" rather than being negated into a match.
+            # .baseRefName == "main": only a PR that actually targets main is the
+            # refresh; a PR retargeted elsewhere is not adopted. .headRefName is
+            # matched EXACTLY (not startswith) so bot/anything-else is not adopted.
             json="$(gh pr list --repo "$GH_REPO" --state open --head "$BRANCH" \
-              --json number,isCrossRepository,headRefName \
-              --jq "map(select((.isCrossRepository|not) and .headRefName==\"$BRANCH\"))" 2>/dev/null)" \
+              --json number,isCrossRepository,headRefName,baseRefName \
+              --jq "map(select(.isCrossRepository == false and .headRefName == \"$BRANCH\" and .baseRefName == \"main\"))" 2>/dev/null)" \
               && status=0 || status=$?
             if [ "${status:-0}" -ne 0 ]; then echo "failed"; return; fi
             count="$(printf '%s' "$json" | jq 'length' 2>/dev/null)" || { echo "failed"; return; }

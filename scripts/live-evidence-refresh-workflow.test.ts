@@ -71,11 +71,11 @@ describe("live-evidence-refresh workflow shape", () => {
     expect(act.run).toContain('grep -qi "not permitted to create or approve pull requests"');
   });
 
-  it("filters open PRs to same-repo (non-fork) heads on the exact branch", () => {
+  it("filters open PRs to same-repo (non-fork) heads on the exact branch targeting main", () => {
     const act = step("Open a review PR, or a tracking issue, for the refresh");
-    expect(act.run).toContain("isCrossRepository");
-    expect(act.run).toContain(".isCrossRepository|not");
-    expect(act.run).toContain("isCrossRepository,headRefName");
+    expect(act.run).toContain(".isCrossRepository == false");
+    expect(act.run).toContain('.baseRefName == "main"');
+    expect(act.run).toContain("isCrossRepository,headRefName,baseRefName");
   });
 
   it("checks both author and committer email on the branch", () => {
@@ -108,10 +108,13 @@ const GH_STUB = [
   "done",
   'case "$1 $2" in',
   '  "issue list")',
+  '    if [ -n "${STUB_LIST_FAIL_LABEL:-}" ] && [ "$label" = "$STUB_LIST_FAIL_LABEL" ]; then exit 4; fi',
   '    case "$label" in',
   '      live-evidence-refresh-failed) [ -n "${STUB_FAILED_ISSUE:-}" ] && echo "$STUB_FAILED_ISSUE" ;;',
   '      live-evidence-refresh-ready) [ -n "${STUB_READY_ISSUE:-}" ] && echo "$STUB_READY_ISSUE" ;;',
   "    esac ;;",
+  '  "issue create")',
+  '    if [ -n "${STUB_CREATE_FAIL_LABEL:-}" ] && [ "$label" = "$STUB_CREATE_FAIL_LABEL" ]; then exit 5; fi ;;',
   '  "pr list")',
   '    if [ -n "${STUB_PR_LIST_EXIT:-}" ]; then exit "$STUB_PR_LIST_EXIT"; fi',
   // Apply the workflow's real --jq expression to a fixture dataset with real jq,
@@ -120,7 +123,7 @@ const GH_STUB = [
   '    jqexpr=""; prev="";',
   '    for a in "$@"; do [ "$prev" = "--jq" ] && jqexpr="$a"; prev="$a"; done',
   '    if [ -n "${STUB_PR_LIST_JSON:-}" ]; then data="$STUB_PR_LIST_JSON";',
-  '    elif [ -n "${STUB_OPEN_PR:-}" ]; then data="[{\\"number\\":${STUB_OPEN_PR},\\"isCrossRepository\\":false,\\"headRefName\\":\\"bot/live-evidence-refresh\\"}]";',
+  '    elif [ -n "${STUB_OPEN_PR:-}" ]; then data="[{\\"number\\":${STUB_OPEN_PR},\\"isCrossRepository\\":false,\\"headRefName\\":\\"bot/live-evidence-refresh\\",\\"baseRefName\\":\\"main\\"}]";',
   '    else data="[]"; fi',
   '    if [ -n "$jqexpr" ]; then printf "%s" "$data" | jq "$jqexpr"; else printf "%s" "$data"; fi ;;',
   '  "pr create")',
@@ -389,7 +392,7 @@ describe("live-evidence-refresh Act step under GitHub's shell", () => {
   it("refreshed + only a FORK PR matches the branch name: treated as none, never edits the fork PR", () => {
     const result = runActStep(REFRESHED_SUMMARY, {
       STUB_PR_LIST_JSON:
-        '[{"number":99,"isCrossRepository":true,"headRefName":"bot/live-evidence-refresh"}]',
+        '[{"number":99,"isCrossRepository":true,"headRefName":"bot/live-evidence-refresh","baseRefName":"main"}]',
     });
     expect(result.status).toBe(0);
     // The fork PR is filtered out, so the bot opens its OWN PR and never edits #99.
@@ -402,8 +405,8 @@ describe("live-evidence-refresh Act step under GitHub's shell", () => {
       STUB_REMOTE_BRANCH: "1",
       // Fork listed FIRST (newer); a naive .[0] would pick it.
       STUB_PR_LIST_JSON:
-        '[{"number":99,"isCrossRepository":true,"headRefName":"bot/live-evidence-refresh"},' +
-        '{"number":42,"isCrossRepository":false,"headRefName":"bot/live-evidence-refresh"}]',
+        '[{"number":99,"isCrossRepository":true,"headRefName":"bot/live-evidence-refresh","baseRefName":"main"},' +
+        '{"number":42,"isCrossRepository":false,"headRefName":"bot/live-evidence-refresh","baseRefName":"main"}]',
     });
     expect(result.status).toBe(0);
     expect(result.gh).toContain("pr edit 42");
@@ -414,13 +417,65 @@ describe("live-evidence-refresh Act step under GitHub's shell", () => {
   it("refreshed + two same-repo PRs on the branch: ambiguous, fails the job, no push", () => {
     const result = runActStep(REFRESHED_SUMMARY, {
       STUB_PR_LIST_JSON:
-        '[{"number":42,"isCrossRepository":false,"headRefName":"bot/live-evidence-refresh"},' +
-        '{"number":43,"isCrossRepository":false,"headRefName":"bot/live-evidence-refresh"}]',
+        '[{"number":42,"isCrossRepository":false,"headRefName":"bot/live-evidence-refresh","baseRefName":"main"},' +
+        '{"number":43,"isCrossRepository":false,"headRefName":"bot/live-evidence-refresh","baseRefName":"main"}]',
     });
     expect(result.status).toBe(1);
     expect(result.gh).toContain("issue create");
     expect(result.gh).toContain("live-evidence-refresh-failed");
     expect(result.git).not.toContain("push");
+  });
+
+  it("refreshed + a same-repo PR whose head is bot/other (not the exact branch): treated as none", () => {
+    const result = runActStep(REFRESHED_SUMMARY, {
+      STUB_PR_LIST_JSON:
+        '[{"number":77,"isCrossRepository":false,"headRefName":"bot/other-branch","baseRefName":"main"}]',
+    });
+    expect(result.status).toBe(0);
+    // Exact headRefName match: bot/other-branch is NOT adopted.
+    expect(result.gh).not.toContain("pr edit");
+    expect(result.gh).toContain("pr create");
+  });
+
+  const failedCreates = (gh: string) =>
+    (gh.match(/issue create[^\n]*live-evidence-refresh-failed/g) || []).length;
+
+  it("(a) close_issues lookup fails on the not-due path: ONE FAILED issue, no close, non-zero", () => {
+    const result = runActStep(JSON.stringify({ outcome: "not_due" }), {
+      STUB_LIST_FAIL_LABEL: "live-evidence-refresh-ready",
+      STUB_READY_ISSUE: "8",
+    });
+    expect(result.status).not.toBe(0);
+    expect(failedCreates(result.gh)).toBe(1);
+    expect(result.gh).not.toContain("issue close");
+  });
+
+  it("(b) upsert on the 403 READY path fails: ONE FAILED issue, non-zero", () => {
+    const result = runActStep(REFRESHED_SUMMARY, {
+      STUB_PR_CREATE_EXIT: "1",
+      STUB_PR_CREATE_403: "1",
+      STUB_LIST_FAIL_LABEL: "live-evidence-refresh-ready",
+    });
+    expect(result.status).not.toBe(0);
+    expect(failedCreates(result.gh)).toBe(1);
+  });
+
+  it("(c) invalid summary JSON: ONE FAILED issue, non-zero", () => {
+    const result = runActStep("{ this is not valid json", {});
+    expect(result.status).not.toBe(0);
+    expect(failedCreates(result.gh)).toBe(1);
+  });
+
+  it("the FAILED_REPORTED guard prevents the trap re-attempting an explicit report", () => {
+    // The explicit refused path opens the FAILED issue (flag set); its gh issue
+    // create fails, tripping the top-level trap. With the guard the trap skips
+    // (one create attempt); with `if true` it retries (two).
+    const result = runActStep(
+      JSON.stringify({ outcome: "refused", refusalReason: "some refusal" }),
+      { STUB_CREATE_FAIL_LABEL: "live-evidence-refresh-failed" },
+    );
+    expect(result.status).not.toBe(0);
+    expect(failedCreates(result.gh)).toBe(1);
   });
 
   it("refreshed + a commit whose committer is human (bot author): refuses, no push", () => {
