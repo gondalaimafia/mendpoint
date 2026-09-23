@@ -1,0 +1,473 @@
+name: Live evidence refresh
+
+# Keeps docs/PUBLIC_CLAIMS.json's three `type: "live"` entries fresh so the
+# required `test` CI job does not go red on a calendar.
+#
+# Each live entry pins observedAt/freshUntil (observedAt + 7 days) and the
+# revision production served. Once freshUntil passes, `npm run claims:check`
+# fails with LIVE_EVIDENCE_STALE and takes main and every open PR down until a
+# human re-observes the endpoints. That refresh used to be manual (PR #687). This
+# workflow does it automatically AND truthfully: scripts/refresh-live-evidence.ts
+# re-observes each endpoint one at a time, confirms /version is unchanged across
+# the run, confirms the deployed revision is an ancestor of origin/main, and
+# refuses (writing nothing) if any claim's audited surface changed between the
+# current auditedRevision and the deployed revision — because moving
+# auditedRevision asserts the claims were audited there, which only holds when no
+# audited surface moved. A refusal opens ONE tracking issue for a human; it never
+# forces a stale or dishonest edit through.
+#
+# It never merges and never approves. On a successful refresh it pushes the fixed
+# branch bot/live-evidence-refresh and tries to open a pull request (label
+# release-owner:codex) for the usual independent review and attestation.
+#
+# PR-creation setting: creating a PR with GITHUB_TOKEN requires the repository
+# setting "Allow GitHub Actions to create and approve pull requests"
+# (can_approve_pull_request_reviews). That setting is currently OFF, and the
+# owner has been handed the command to enable it. Until it is enabled, EVERY run
+# takes the tracking-issue path: it pushes the branch and opens ONE "ready for
+# review" issue with a compare link for a maintainer to open the PR by hand. That
+# issue path is a fully supported mode, not a degraded fallback — the branch is
+# always pushed and the evidence is never lost. Once the setting is enabled, the
+# same runs open the PR directly and no issue is needed. `gh pr create` is
+# attempted first on every run, so no configuration change to this workflow is
+# needed when the setting flips.
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    # Daily, off the top of the hour to dodge cron congestion. With a 72h "due"
+    # threshold and a 7-day window this gives ~4 attempts before any entry
+    # expires, so a single dropped run cannot let the registry go stale.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Refresh even if no live entry is close to expiring"
+        type: boolean
+        default: false
+
+# Own group, never cancelled: a cancelled run could interrupt the push/PR work
+# with nothing left to report it. Serialize rather than collapse.
+concurrency:
+  group: live-evidence-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    # Default branch only. Schedule always runs there; a manual dispatch from a
+    # side branch must not observe production or push with an unreviewed script.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      # PRs opened with GITHUB_TOKEN require pull-requests: write AND the repo
+      # setting "Allow GitHub Actions to create and approve pull requests", which
+      # is currently OFF. This scope is harmless while it is off (gh pr create
+      # 403s and the run takes the issue path) and lets PR creation work the
+      # moment the owner enables the setting, with no change here.
+      pull-requests: write
+      issues: write
+      # workflow_dispatch is exempt from the rule that GITHUB_TOKEN events create
+      # no new run, so `gh workflow run` below really starts the CI and sweep runs.
+      actions: write
+    steps:
+      # fetch-depth: 0 so the script can read docs/PUBLIC_CLAIMS.json at the
+      # current auditedRevision and diff it against the deployed revision, and so
+      # `git merge-base --is-ancestor` has full history. A shallow clone makes the
+      # comparison indeterminate, which the script treats as a refusal.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install
+        run: npm ci
+
+      # Runs the refresh (due check unless force). The script exits non-zero on a
+      # refusal; capture that with `|| true` so the Act step below can open the
+      # tracking issue before the job fails. It always writes the summary JSON
+      # first, so the Act step reads the outcome from disk regardless of exit code.
+      - name: Refresh live evidence
+        id: refresh
+        shell: bash
+        env:
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force == true }}
+        run: |
+          set -uo pipefail
+          # origin/main must exist for the script's ancestor check; checkout with
+          # fetch-depth: 0 provides it, and this keeps it current.
+          git fetch --no-tags origin main >/dev/null 2>&1 || true
+          force_flag=""
+          if [ "$FORCE" = "true" ]; then force_flag="--force"; fi
+          node --import tsx scripts/refresh-live-evidence.ts \
+            --if-expiring-within-hours=72 \
+            --summary="$GITHUB_WORKSPACE/refresh-summary.json" \
+            $force_flag || true
+          if [ ! -s "$GITHUB_WORKSPACE/refresh-summary.json" ]; then
+            printf '{"outcome":"refused","refusalReason":"the refresh script produced no summary"}\n' \
+              >"$GITHUB_WORKSPACE/refresh-summary.json"
+          fi
+
+      # One self-contained step so the whole branch/PR/issue decision is testable
+      # under `bash --noprofile --norc -e -o pipefail` with stubbed gh/git (see
+      # scripts/live-evidence-refresh-workflow.test.ts). It reads the outcome from
+      # the summary file, never from a GitHub `if:` expression.
+      #
+      #   not_due   -> nothing to push; close the FAILED issue, and close the
+      #                READY issue when no open refresh PR remains (the PR merged).
+      #   refused   -> open/update ONE "Live evidence refresh FAILED" issue
+      #                (dedup: comment an existing one, never open a second), then
+      #                fail the job.
+      #   refreshed -> commit as github-actions[bot] onto the FIXED branch
+      #                bot/live-evidence-refresh (update an open PR's branch in
+      #                place with a new commit; reset it from main only when its
+      #                PR is gone), then try `gh pr create` (label
+      #                release-owner:codex). Only the specific 403 "not permitted
+      #                to create or approve pull requests" falls back to the READY
+      #                tracking issue (a supported mode while the repo setting is
+      #                off); ANY other gh pr create failure fails the job via the
+      #                FAILED issue. Then dispatch CI and the closure sweep and
+      #                close the FAILED issue.
+      - name: Open a review PR, or a tracking issue, for the refresh
+        id: act
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SUMMARY: ${{ github.workspace }}/refresh-summary.json
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -Eeuo pipefail
+          FAILED_LABEL="live-evidence-refresh-failed"
+          READY_LABEL="live-evidence-refresh-ready"
+          BRANCH="bot/live-evidence-refresh"
+          BOT_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          FAILED_REPORTED=0
+
+          upsert_issue() { # label title body
+            # Opening the FAILED issue marks it reported, so the ERR trap below
+            # never double-comments a failure an explicit path already surfaced.
+            [ "$1" = "$FAILED_LABEL" ] && FAILED_REPORTED=1
+            gh label create "$1" --repo "$GH_REPO" --color b60205 \
+              --description "Automated: live evidence refresh" >/dev/null 2>&1 || true
+            existing="$(gh issue list --repo "$GH_REPO" --state open --label "$1" \
+              --json number --jq '.[0].number // empty')"
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$GH_REPO" --body "$3"
+            else
+              gh issue create --repo "$GH_REPO" --label "$1" --title "$2" --body "$3"
+            fi
+          }
+          # Any unhandled failure in the push/reset path (git fetch, a non-force
+          # or -u push, a jq on the summary) must surface as the FAILED issue, not
+          # a red run with no issue. set -E propagates the trap into functions AND
+          # into $(...) subshells, where FAILED_REPORTED is only a COPY: a subshell
+          # that reported would create a duplicate (and, in a for-list, an opened-
+          # then-closed) issue. So a subshell trap only re-raises (exit "$rc"); the
+          # failed substitution then fails its parent assignment under set -e and
+          # the top-level shell (BASH_SUBSHELL 0) reports exactly once. The report
+          # disables the trap first so a failure while reporting cannot recurse,
+          # never re-reports a failure an explicit path already opened
+          # (FAILED_REPORTED, set in upsert_issue for the FAILED label), and
+          # preserves the exit code.
+          report_unexpected_failure() {
+            local rc="$1"
+            if [ "${BASH_SUBSHELL:-0}" -gt 0 ]; then exit "$rc"; fi
+            trap - ERR
+            if [ "$FAILED_REPORTED" -eq 0 ]; then
+              upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" \
+                "$(printf 'The live evidence refresh failed unexpectedly (command exited %s near line %s). No branch push is trusted after an unexpected failure; a human should inspect the run.\n\nRun: %s' "$rc" "${2:-?}" "$RUN_URL")" || true
+            fi
+            exit "$rc"
+          }
+          trap 'report_unexpected_failure "$?" "$LINENO"' ERR
+          close_issues() { # label
+            # Capture the list with an explicit status check first: a failed
+            # lookup must NOT iterate over garbage and must NOT close anything. On
+            # failure return non-zero so the caller's bare invocation trips the
+            # top-level trap (reported once) rather than silently closing nothing.
+            local list status
+            list="$(gh issue list --repo "$GH_REPO" --state open --label "$1" \
+              --json number --jq '.[].number')" && status=0 || status=$?
+            if [ "${status:-0}" -ne 0 ]; then return "$status"; fi
+            local number
+            for number in $list; do
+              gh issue close "$number" --repo "$GH_REPO" --reason completed \
+                --comment "Resolved automatically by $RUN_URL."
+            done
+          }
+          # Three-valued open-PR lookup: "found <n>" / "none" / "failed".
+          #
+          # SECURITY: `gh pr list --head "$BRANCH"` matches by ref NAME only, so a
+          # PR opened from a FORK whose branch is also named bot/live-evidence-
+          # refresh would match. Acting on it (push, `gh pr edit` its title/body
+          # with our label, close our issues) could dress an outsider's fork code
+          # up as "the refresh" for a reviewer to merge. Same-repo is the security
+          # boundary: filter to non-cross-repository PRs whose head ref is exactly
+          # this branch. A same-repo PR opened by a human from the compare link is
+          # legitimate; a fork PR is not, whoever opened it. More than one match
+          # is ambiguous -> failed (fail closed). A swallowed lookup error must
+          # never read as "no open PR" and let the reset path force-push.
+          refresh_pr_state() {
+            local json status count
+            # .isCrossRepository == false (not |not): a null/missing value fails
+            # closed as "not same-repo" rather than being negated into a match.
+            # .baseRefName == "main": only a PR that actually targets main is the
+            # refresh; a PR retargeted elsewhere is not adopted. .headRefName is
+            # matched EXACTLY (not startswith) so bot/anything-else is not adopted.
+            json="$(gh pr list --repo "$GH_REPO" --state open --head "$BRANCH" \
+              --json number,isCrossRepository,headRefName,baseRefName \
+              --jq "map(select(.isCrossRepository == false and .headRefName == \"$BRANCH\" and .baseRefName == \"main\"))" 2>/dev/null)" \
+              && status=0 || status=$?
+            if [ "${status:-0}" -ne 0 ]; then echo "failed"; return; fi
+            count="$(printf '%s' "$json" | jq 'length' 2>/dev/null)" || { echo "failed"; return; }
+            if [ "${count:-0}" -gt 1 ]; then echo "failed"; return; fi
+            if [ "${count:-0}" -eq 1 ]; then
+              echo "found $(printf '%s' "$json" | jq -r '.[0].number')"
+            else
+              echo "none"
+            fi
+          }
+          # Three-valued remote-branch lookup: "exists <sha>" / "absent" / "failed".
+          # Exact refspec, so only this branch head is matched.
+          remote_branch_state() {
+            local out status
+            out="$(git ls-remote origin "refs/heads/${BRANCH}" 2>/dev/null)" && status=0 || status=$?
+            if [ "${status:-0}" -ne 0 ]; then echo "failed"; return; fi
+            if [ -n "$out" ]; then echo "exists $(printf '%s\n' "$out" | awk 'NR==1{print $1}')"; else echo "absent"; fi
+          }
+          # Fails the job (via the FAILED issue) unless every commit the remote
+          # branch carries beyond main is authored by the bot. Used before BOTH
+          # the in-place update and the reset, so a reviewer's commit is never
+          # pushed over or force-reset away. -F: the bot email contains [ ] +,
+          # which a regex would read as a character class, making the bot's own
+          # commits look foreign.
+          assert_bot_only_branch() {
+            git fetch --no-tags origin "$BRANCH"
+            # Read the authors as its own statement so a FAILED git log is a
+            # distinct third state, not folded into "" (which would read as
+            # bot-only and permit a force-push). Empty output from a SUCCESSFUL
+            # log means no commits beyond main = bot-only.
+            # Both author AND committer email (%ae%n%ce): a reviewer's amend or
+            # rebase leaves the bot as author but the human as committer, and that
+            # is still a human commit we must not push over or reset away.
+            local authors status foreign
+            authors="$(git log --format='%ae%n%ce' "origin/main..origin/${BRANCH}")" && status=0 || status=$?
+            if [ "${status:-0}" -ne 0 ]; then
+              upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" \
+                "$(printf 'Could not read the commit authors of %s (git log failed, exit %s). Refusing to touch the branch.\n\nRun: %s' "$BRANCH" "${status:-?}" "$RUN_URL")"
+              echo "refused: git log failed on ${BRANCH}; not pushing" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            # -F: the bot email contains [ ] +, which a regex would read as a
+            # character class, making the bot's own commits look foreign.
+            foreign="$(printf '%s\n' "$authors" | grep -vxF "$BOT_EMAIL" || true)"
+            if [ -n "$foreign" ]; then
+              upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" \
+                "$(printf 'The refresh branch %s carries commits by a non-bot author:\n%s\n\nRefusing to touch it: a push on top, or a reset, would risk those commits. A human must reconcile the branch.\n\nRun: %s' "$BRANCH" "$foreign" "$RUN_URL")"
+              echo "refused: ${BRANCH} has non-bot commits; not pushing" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          }
+
+          OUTCOME="$(jq -r '.outcome // "refused"' "$SUMMARY")"
+          echo "outcome=$OUTCOME" >> "$GITHUB_OUTPUT"
+
+          case "$OUTCOME" in
+            not_due)
+              echo "Live evidence is fresh; nothing to refresh." | tee -a "$GITHUB_STEP_SUMMARY"
+              close_issues "$FAILED_LABEL"
+              # Close the READY issue only when we can PROVE no open refresh PR
+              # remains (the PR merged). "found" (PR still open) and "failed"
+              # (could not look) both leave it, so a failed lookup never resolves
+              # a tracking issue on uncertainty.
+              #
+              # Branch cleanup: after the refresh PR merges (this repo squash-
+              # merges), the fixed branch bot/live-evidence-refresh should be
+              # deleted so the next refresh starts from main rather than resetting
+              # a stale branch. Enable "Automatically delete head branches" in the
+              # repo settings; this workflow deliberately does NOT delete it here,
+              # because deletion is only safe once the branch is both fully merged
+              # AND bot-only, and doing that check fail-closed is not worth the
+              # risk of deleting a branch a reviewer still has open work on. The
+              # reset path already rebuilds a stale bot-only branch from main.
+              if [ "$(refresh_pr_state)" = "none" ]; then close_issues "$READY_LABEL"; fi
+              exit 0
+              ;;
+            refused)
+              reason="$(jq -r '.refusalReason // "unknown"' "$SUMMARY")"
+              body="$(printf 'The scheduled live evidence refresh REFUSED and wrote nothing.\n\nReason: %s\n\nRun: %s\n\nA human must investigate (re-audit the affected claims if a surface changed, or confirm production health) before live evidence can advance.' "$reason" "$RUN_URL")"
+              upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" "$body"
+              echo "refused: $reason" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+            refreshed) : ;;
+            *) echo "unexpected outcome: $OUTCOME" >&2; exit 1 ;;
+          esac
+
+          old_rev="$(jq -r '.oldRevision' "$SUMMARY")"
+          new_rev="$(jq -r '.newRevision' "$SUMMARY")"
+          earliest="$(jq -r '.earliestFreshUntil // "unknown"' "$SUMMARY")"
+          title="Refresh production live evidence ($(date -u +%Y-%m-%d))"
+          compare="${SERVER_URL}/${GH_REPO}/compare/main...${BRANCH}?expand=1"
+
+          # Observation table, shared by the PR body and the READY issue.
+          {
+            echo "Automated refresh of docs/PUBLIC_CLAIMS.json live evidence."
+            echo
+            echo "auditedRevision \`${old_rev}\` -> \`${new_rev}\` (the revision production served, an ancestor of origin/main)."
+            echo
+            echo "| evidence | locator | HTTP | observedAt | freshUntil |"
+            echo "| --- | --- | --- | --- | --- |"
+            jq -r '(.observations | map({key: .evidenceId, value: .}) | from_entries) as $o
+              | .changes[]
+              | "| \(.evidenceId) | \($o[.evidenceId].locator) | \($o[.evidenceId].httpStatus) | \(.observedAt) | \(.freshUntil) |"' "$SUMMARY"
+            echo
+            echo "Earliest freshUntil before this refresh: ${earliest}."
+            echo
+            echo "Reviewer: this is machine-generated. Review it independently, keep the release-owner:codex label, attest, and merge before the earliest new freshUntil. This workflow never approves or merges."
+            echo
+            echo "Run: ${RUN_URL}"
+          } > pr-body.md
+
+          # The refresh script wrote the new evidence into the working tree on
+          # main. Stash it, restore main's version so the branch checkout is
+          # clean, then re-apply it on the branch.
+          refreshed="$RUNNER_TEMP/refreshed-claims.json"
+          cp docs/PUBLIC_CLAIMS.json "$refreshed"
+          git checkout -- docs/PUBLIC_CLAIMS.json
+          git config user.name "github-actions[bot]"
+          git config user.email "$BOT_EMAIL"
+
+          commit_msg="$(printf 'Refresh production live evidence\n\nauditedRevision %s -> %s; re-observed the three live endpoints against production.' "$old_rev" "$new_rev")"
+          commit_new_evidence() {
+            cp "$refreshed" docs/PUBLIC_CLAIMS.json
+            git add docs/PUBLIC_CLAIMS.json
+            git commit -m "$commit_msg"
+          }
+
+          pr_state="$(refresh_pr_state)"
+          if [ "$pr_state" = "failed" ]; then
+            upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" \
+              "$(printf 'Could not determine whether an open PR exists for %s (gh pr list failed). Refusing to touch the branch, so a lookup error can never be read as "no open PR" and force-push over a reviewer.\n\nRun: %s' "$BRANCH" "$RUN_URL")"
+            echo "refused: gh pr list failed; refusing to touch the branch" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          if [ "${pr_state%% *}" = "found" ]; then
+            existing_pr="${pr_state#found }"
+            # An open PR depends on this branch. Update it in place with a NEW
+            # commit on top, never a force-push over commits someone else added.
+            assert_bot_only_branch
+            git checkout -B "$BRANCH" "origin/${BRANCH}"
+            cp "$refreshed" docs/PUBLIC_CLAIMS.json
+            git add docs/PUBLIC_CLAIMS.json
+            if git diff --cached --quiet; then
+              echo "Branch ${BRANCH} already carries this evidence; nothing to push." | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              git commit -m "$commit_msg"
+              # Non-force: adds a commit on top of the reviewer's branch.
+              git push origin "HEAD:${BRANCH}"
+            fi
+            # Refresh the PR title and observation table so the open PR reflects
+            # the latest run even when the file was already current. A failed edit
+            # is non-fatal (the branch is already updated) but is surfaced in the
+            # job summary rather than swallowed silently.
+            if ! gh pr edit "$existing_pr" --repo "$GH_REPO" --title "$title" \
+              --body-file pr-body.md --add-label release-owner:codex; then
+              echo "::warning::could not update PR #${existing_pr} title/body (branch was still updated)"
+              echo "Warning: gh pr edit failed for PR #${existing_pr}; the branch was updated but its title/body were not refreshed." | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
+            pr_path="pr_updated"
+            close_issues "$READY_LABEL"
+            echo "Updated the branch behind open PR #${existing_pr}." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            # No open PR (pr_state == none). Build the branch from CURRENT MAIN,
+            # never from the old branch tip, so a stale branch cannot carry
+            # unrelated commits forward.
+            remote_state="$(remote_branch_state)"
+            if [ "$remote_state" = "failed" ]; then
+              upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" \
+                "$(printf 'Could not determine whether the remote branch %s exists (git ls-remote failed). Refusing to push.\n\nRun: %s' "$BRANCH" "$RUN_URL")"
+              echo "refused: git ls-remote failed" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            # A remote branch with no open PR had its PR merged/closed, so a
+            # reset is safe — but only if it is bot-only. Assert that BEFORE
+            # building or committing, so a non-bot branch (or a failed git log)
+            # refuses with nothing done locally.
+            if [ "${remote_state%% *}" = "exists" ]; then assert_bot_only_branch; fi
+            git checkout -B "$BRANCH" main
+            commit_new_evidence
+            if [ "${remote_state%% *}" = "exists" ]; then
+              # Reset only against the exact sha we observed (the lease is pinned
+              # so a concurrent push cannot be clobbered).
+              remote_sha="${remote_state#exists }"
+              # A rejected lease means the remote moved since we observed it (a
+              # concurrent push). Route that to the FAILED issue rather than a
+              # bare set -e exit, so it is visible and never retried blindly.
+              if ! git push --force-with-lease="${BRANCH}:${remote_sha}" origin "HEAD:${BRANCH}"; then
+                upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" \
+                  "$(printf 'Refusing to force-reset %s: the --force-with-lease push was rejected, so the remote branch moved from %s since it was observed (a concurrent push). A human must reconcile the branch.\n\nRun: %s' "$BRANCH" "$remote_sha" "$RUN_URL")"
+                echo "refused: force-with-lease rejected on ${BRANCH}" | tee -a "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+            else
+              git push -u origin "HEAD:${BRANCH}"
+            fi
+
+            # Try to open the PR. A PR opened with GITHUB_TOKEN does NOT trigger
+            # pull_request / pull_request_target workflows, which is why the two
+            # dispatches below are still required after the PR exists.
+            create_err="$RUNNER_TEMP/pr-create-stderr.log"
+            if gh pr create --repo "$GH_REPO" --base main --head "$BRANCH" \
+                --label release-owner:codex --title "$title" --body-file pr-body.md 2>"$create_err"; then
+              pr_path="pr_created"
+              close_issues "$READY_LABEL"
+              echo "Opened a review PR for ${BRANCH}." | tee -a "$GITHUB_STEP_SUMMARY"
+            elif grep -qi "not permitted to create or approve pull requests" "$create_err"; then
+              # The specific 403: the repo PR-creation setting is off. Supported
+              # mode — open the READY tracking issue with the compare link. Any
+              # OTHER failure is a real error, handled below, never silently
+              # treated as this one.
+              pr_path="issue_fallback"
+              body="$(cat pr-body.md)"
+              body="$(printf '%s\n\nGitHub Actions cannot open the PR until the owner enables "Allow GitHub Actions to create and approve pull requests". Until then this is the supported path: open the PR from the compare link and add the release-owner:codex label.\n%s' "$body" "$compare")"
+              upsert_issue "$READY_LABEL" "Live evidence refresh ready for review" "$body"
+              echo "PR creation is disabled (403); opened the ready-for-review tracking issue." | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              detail="$(head -c 500 "$create_err" || true)"
+              cat "$create_err" >&2 || true
+              body="$(printf 'The live evidence refresh pushed %s but gh pr create FAILED for a reason other than the PR-creation setting:\n%s\n\nRun: %s' "$BRANCH" "$detail" "$RUN_URL")"
+              upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" "$body"
+              echo "refused: gh pr create failed unexpectedly" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          fi
+          echo "pr_path=$pr_path" >> "$GITHUB_OUTPUT"
+
+          # Dispatch CI on the branch (ci.yml's deploy job is gated to
+          # refs/heads/main, so this is safe on a bot branch) and the closure sweep
+          # (its sweep evaluates every open PR). Non-fatal: a dispatch hiccup must
+          # not fail an otherwise-good refresh.
+          gh workflow run ci.yml --repo "$GH_REPO" --ref "$BRANCH" \
+            || echo "::warning::could not dispatch ci.yml for $BRANCH"
+          gh workflow run closure-authority-systemic-escalation.yml --repo "$GH_REPO" \
+            || echo "::warning::could not dispatch the closure sweep"
+
+          close_issues "$FAILED_LABEL"
+
+      - name: Upload the refresh summary
+        if: ${{ always() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: live-evidence-refresh-${{ github.run_id }}-${{ github.run_attempt }}
+          path: refresh-summary.json
+          if-no-files-found: warn
+          retention-days: 30
