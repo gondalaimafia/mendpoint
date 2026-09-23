@@ -21,9 +21,26 @@ const root = resolve(import.meta.dirname, "..");
 // data here; keeping the rest of the file real means the produced registry is
 // exercised against the actual contract validator and the actual requirements.
 const REAL_REGISTRY = readFileSync(resolve(root, "docs/PUBLIC_CLAIMS.json"), "utf8");
-const FIXTURE = REAL_REGISTRY.replaceAll(
-  "mendpoint-fettler-production.fly.dev",
-  "prod.example.invalid",
+// The live entries' timestamps change on every refresh (that is the point of
+// the workflow under test), so they are pinned here to fixed points. Without
+// this, merging a refresh would break the very tests that guard it: the
+// dueness cases below reason about a 2026-09-30 expiry.
+const PINNED_LIVE_TIMES: Readonly<Record<string, readonly [string, string]>> = {
+  "CLM-001-EV01": ["2026-09-23T17:34:44.551Z", "2026-09-30T17:34:44.551Z"],
+  "CLM-013-EV01": ["2026-09-23T17:34:45.114Z", "2026-09-30T17:34:45.114Z"],
+  "CLM-013-EV02": ["2026-09-23T17:34:45.953Z", "2026-09-30T17:34:45.953Z"],
+};
+function pinLiveTimes(text: string): string {
+  let out = text;
+  for (const [id, [observedAt, freshUntil]] of Object.entries(PINNED_LIVE_TIMES)) {
+    const line = new RegExp(`(\{[^\n]*"id": "${id}"[^\n]*"observedAt": ")[^"]+(", "freshUntil": ")[^"]+(")`);
+    if (!line.test(out)) throw new Error(`fixture: live entry ${id} not found in docs/PUBLIC_CLAIMS.json`);
+    out = out.replace(line, `$1${observedAt}$2${freshUntil}$3`);
+  }
+  return out;
+}
+const FIXTURE = pinLiveTimes(
+  REAL_REGISTRY.replaceAll("mendpoint-fettler-production.fly.dev", "prod.example.invalid"),
 );
 const REQUIREMENTS = JSON.parse(
   readFileSync(resolve(root, "docs/PRODUCT_REQUIREMENTS.json"), "utf8"),
