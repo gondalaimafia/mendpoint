@@ -167,9 +167,41 @@ jobs:
                 --comment "Resolved automatically by $RUN_URL."
             done
           }
-          open_refresh_pr() { # prints the open PR number for BRANCH, or empty
-            gh pr list --repo "$GH_REPO" --head "$BRANCH" --state open \
-              --json number --jq '.[0].number // empty' 2>/dev/null || true
+          # Three-valued open-PR lookup: "found <n>" / "none" / "failed". A
+          # swallowed lookup error must NOT read as "no open PR" — that would let
+          # the reset path force-push over a reviewer's branch. "failed" is a
+          # distinct state the callers fail closed on.
+          refresh_pr_state() {
+            local out status
+            out="$(gh pr list --repo "$GH_REPO" --head "$BRANCH" --state open \
+              --json number --jq '.[0].number // empty' 2>/dev/null)" && status=0 || status=$?
+            if [ "${status:-0}" -ne 0 ]; then echo "failed"; return; fi
+            if [ -n "$out" ]; then echo "found $out"; else echo "none"; fi
+          }
+          # Three-valued remote-branch lookup: "exists <sha>" / "absent" / "failed".
+          remote_branch_state() {
+            local out status
+            out="$(git ls-remote --heads origin "$BRANCH" 2>/dev/null)" && status=0 || status=$?
+            if [ "${status:-0}" -ne 0 ]; then echo "failed"; return; fi
+            if [ -n "$out" ]; then echo "exists $(printf '%s\n' "$out" | awk 'NR==1{print $1}')"; else echo "absent"; fi
+          }
+          # Fails the job (via the FAILED issue) unless every commit the remote
+          # branch carries beyond main is authored by the bot. Used before BOTH
+          # the in-place update and the reset, so a reviewer's commit is never
+          # pushed over or force-reset away. -F: the bot email contains [ ] +,
+          # which a regex would read as a character class, making the bot's own
+          # commits look foreign.
+          assert_bot_only_branch() {
+            git fetch --no-tags origin "$BRANCH"
+            local foreign
+            foreign="$(git log --format='%ae' "origin/main..origin/${BRANCH}" \
+              | grep -vxF "$BOT_EMAIL" || true)"
+            if [ -n "$foreign" ]; then
+              upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" \
+                "$(printf 'The refresh branch %s carries commits by a non-bot author:\n%s\n\nRefusing to touch it: a push on top, or a reset, would risk those commits. A human must reconcile the branch.\n\nRun: %s' "$BRANCH" "$foreign" "$RUN_URL")"
+              echo "refused: ${BRANCH} has non-bot commits; not pushing" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
           }
 
           OUTCOME="$(jq -r '.outcome // "refused"' "$SUMMARY")"
@@ -179,9 +211,11 @@ jobs:
             not_due)
               echo "Live evidence is fresh; nothing to refresh." | tee -a "$GITHUB_STEP_SUMMARY"
               close_issues "$FAILED_LABEL"
-              # If the refresh PR has merged, no open refresh PR remains and the
-              # READY tracking issue is done too.
-              if [ -z "$(open_refresh_pr)" ]; then close_issues "$READY_LABEL"; fi
+              # Close the READY issue only when we can PROVE no open refresh PR
+              # remains (the PR merged). "found" (PR still open) and "failed"
+              # (could not look) both leave it, so a failed lookup never resolves
+              # a tracking issue on uncertainty.
+              if [ "$(refresh_pr_state)" = "none" ]; then close_issues "$READY_LABEL"; fi
               exit 0
               ;;
             refused)
@@ -229,51 +263,64 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "$BOT_EMAIL"
 
+          commit_msg="$(printf 'Refresh production live evidence\n\nauditedRevision %s -> %s; re-observed the three live endpoints against production.' "$old_rev" "$new_rev")"
           commit_new_evidence() {
             cp "$refreshed" docs/PUBLIC_CLAIMS.json
             git add docs/PUBLIC_CLAIMS.json
-            git commit -m "$(printf 'Refresh production live evidence\n\nauditedRevision %s -> %s; re-observed the three live endpoints against production.' "$old_rev" "$new_rev")"
+            git commit -m "$commit_msg"
           }
 
-          existing_pr="$(open_refresh_pr)"
-          remote_branch="$(git ls-remote --heads origin "$BRANCH" || true)"
+          pr_state="$(refresh_pr_state)"
+          if [ "$pr_state" = "failed" ]; then
+            upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" \
+              "$(printf 'Could not determine whether an open PR exists for %s (gh pr list failed). Refusing to touch the branch, so a lookup error can never be read as "no open PR" and force-push over a reviewer.\n\nRun: %s' "$BRANCH" "$RUN_URL")"
+            echo "refused: gh pr list failed; refusing to touch the branch" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
-          if [ -n "$existing_pr" ]; then
+          if [ "${pr_state%% *}" = "found" ]; then
+            existing_pr="${pr_state#found }"
             # An open PR depends on this branch. Update it in place with a NEW
             # commit on top, never a force-push over commits someone else added.
-            git fetch --no-tags origin "$BRANCH"
-            # -F: the bot email contains [ ] + which would otherwise be read as a
-            # regex ([bot] as a character class), so the bot's own commits would
-            # look foreign and every update would wrongly refuse.
-            foreign="$(git log --format='%ae' "origin/main..origin/${BRANCH}" \
-              | grep -vxF "$BOT_EMAIL" || true)"
-            if [ -n "$foreign" ]; then
-              body="$(printf 'The refresh branch %s carries commits by a non-bot author:\n%s\n\nRefusing to update it, because a push on top or a reset would risk those commits. A human must reconcile the branch or close PR #%s.\n\nRun: %s' "$BRANCH" "$foreign" "$existing_pr" "$RUN_URL")"
-              upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" "$body"
-              echo "refused: ${BRANCH} has non-bot commits; not pushing" | tee -a "$GITHUB_STEP_SUMMARY"
-              exit 1
-            fi
+            assert_bot_only_branch
             git checkout -B "$BRANCH" "origin/${BRANCH}"
             cp "$refreshed" docs/PUBLIC_CLAIMS.json
             git add docs/PUBLIC_CLAIMS.json
             if git diff --cached --quiet; then
               echo "Branch ${BRANCH} already carries this evidence; nothing to push." | tee -a "$GITHUB_STEP_SUMMARY"
             else
-              git commit -m "$(printf 'Refresh production live evidence\n\nauditedRevision %s -> %s; re-observed the three live endpoints against production.' "$old_rev" "$new_rev")"
+              git commit -m "$commit_msg"
               # Non-force: adds a commit on top of the reviewer's branch.
               git push origin "HEAD:${BRANCH}"
             fi
+            # Refresh the PR title and observation table so the open PR reflects
+            # the latest run even when the file was already current.
+            gh pr edit "$existing_pr" --repo "$GH_REPO" --title "$title" \
+              --body-file pr-body.md --add-label release-owner:codex || true
             pr_path="pr_updated"
             close_issues "$READY_LABEL"
             echo "Updated the branch behind open PR #${existing_pr}." | tee -a "$GITHUB_STEP_SUMMARY"
           else
-            # No open PR. Build the branch from current main. Force-reset is safe
-            # ONLY here: a remote branch with no open PR had its PR merged/closed,
-            # so nothing open depends on it.
-            git checkout -B "$BRANCH"
+            # No open PR (pr_state == none). Build the branch from CURRENT MAIN,
+            # never from the old branch tip, so a stale branch cannot carry
+            # unrelated commits forward.
+            remote_state="$(remote_branch_state)"
+            if [ "$remote_state" = "failed" ]; then
+              upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" \
+                "$(printf 'Could not determine whether the remote branch %s exists (git ls-remote failed). Refusing to push.\n\nRun: %s' "$BRANCH" "$RUN_URL")"
+              echo "refused: git ls-remote failed" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            git checkout -B "$BRANCH" main
             commit_new_evidence
-            if [ -n "$remote_branch" ]; then
-              git push --force-with-lease origin "HEAD:${BRANCH}"
+            if [ "${remote_state%% *}" = "exists" ]; then
+              # A remote branch with no open PR had its PR merged/closed, so a
+              # reset is safe — but only if it is bot-only, and only against the
+              # exact sha we observed (the lease is pinned so a concurrent push
+              # cannot be clobbered).
+              assert_bot_only_branch
+              remote_sha="${remote_state#exists }"
+              git push --force-with-lease="${BRANCH}:${remote_sha}" origin "HEAD:${BRANCH}"
             else
               git push -u origin "HEAD:${BRANCH}"
             fi

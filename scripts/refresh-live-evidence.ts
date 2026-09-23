@@ -352,8 +352,9 @@ export function refreshLiveEvidence(input: RefreshInput): RefreshOutcome {
   newText = newText.replace(auditedPattern, `$1${input.deployedRevision}$2`);
 
   // Final guard: the produced registry must pass contract validation (this is
-  // the pure half of what `npm run claims:check` enforces; the IO wrapper and
-  // the workflow both re-run the full check against the written file).
+  // the pure half of what `npm run claims:check` enforces). Only the IO wrapper
+  // (runRefresh) re-runs the full claims check against the written file, and
+  // restores the original bytes if it fails.
   let produced: PublicClaimRegistry;
   try {
     produced = JSON.parse(newText) as PublicClaimRegistry;

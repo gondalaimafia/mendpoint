@@ -94,7 +94,9 @@ const GH_STUB = [
   '      live-evidence-refresh-failed) [ -n "${STUB_FAILED_ISSUE:-}" ] && echo "$STUB_FAILED_ISSUE" ;;',
   '      live-evidence-refresh-ready) [ -n "${STUB_READY_ISSUE:-}" ] && echo "$STUB_READY_ISSUE" ;;',
   "    esac ;;",
-  '  "pr list") [ -n "${STUB_OPEN_PR:-}" ] && echo "$STUB_OPEN_PR" ;;',
+  '  "pr list")',
+  '    if [ -n "${STUB_PR_LIST_EXIT:-}" ]; then exit "$STUB_PR_LIST_EXIT"; fi',
+  '    [ -n "${STUB_OPEN_PR:-}" ] && echo "$STUB_OPEN_PR" ;;',
   '  "pr create")',
   '    if [ "${STUB_PR_CREATE_EXIT:-0}" != "0" ]; then',
   '      if [ -n "${STUB_PR_CREATE_403:-}" ]; then',
@@ -113,8 +115,18 @@ const GIT_STUB = [
   "#!/bin/sh",
   'printf "%s\\n" "$*" >> "$GIT_CALL_LOG"',
   'case "$1" in',
-  '  ls-remote) [ -n "${STUB_REMOTE_BRANCH:-}" ] && echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef refs/heads/bot/live-evidence-refresh"; exit 0 ;;',
-  '  log) if [ -n "${STUB_FOREIGN:-}" ]; then echo "$STUB_FOREIGN"; else echo "41898282+github-actions[bot]@users.noreply.github.com"; fi; exit 0 ;;',
+  '  ls-remote)',
+  '    if [ -n "${STUB_LS_REMOTE_FAIL:-}" ]; then exit 2; fi',
+  '    [ -n "${STUB_REMOTE_BRANCH:-}" ] && echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef refs/heads/bot/live-evidence-refresh"; exit 0 ;;',
+  '  log)',
+  // Honour the commit range: only report a foreign author when the real
+  // main..origin/branch range is asked for, so an emptied/altered range in the
+  // source (a mutation) makes the non-bot branch look bot-only and its test die.
+  '    if [ -n "${STUB_FOREIGN:-}" ] && printf "%s" "$*" | grep -q "origin/main[.][.]origin/bot/live-evidence-refresh"; then',
+  '      echo "$STUB_FOREIGN";',
+  '    else',
+  '      echo "41898282+github-actions[bot]@users.noreply.github.com";',
+  '    fi; exit 0 ;;',
   '  diff) exit "${STUB_DIFF_EMPTY:-1}" ;;',
   "esac",
   "exit 0",
@@ -223,13 +235,17 @@ describe("live-evidence-refresh Act step under GitHub's shell", () => {
     expect(result.gh).not.toContain("workflow run");
   });
 
-  it("refreshed + an existing open PR: updates the branch in place, opens no second PR", () => {
+  it("refreshed + an existing open PR: updates the branch in place, refreshes it, opens no second PR", () => {
     const result = runActStep(REFRESHED_SUMMARY, { STUB_OPEN_PR: "42", STUB_REMOTE_BRANCH: "1" });
     expect(result.status).toBe(0);
     expect(result.gh).not.toContain("pr create");
+    // Builds on the reviewer's branch, not main.
+    expect(result.git).toContain("checkout -B bot/live-evidence-refresh origin/bot/live-evidence-refresh");
     // Non-force push of a new commit on top of the reviewer's branch.
     expect(result.git).toContain("push origin HEAD:bot/live-evidence-refresh");
     expect(result.git).not.toContain("force");
+    // Refreshes the open PR's title/table.
+    expect(result.gh).toContain("pr edit 42");
     expect(result.gh).toContain("workflow run ci.yml");
   });
 
@@ -243,6 +259,41 @@ describe("live-evidence-refresh Act step under GitHub's shell", () => {
     expect(result.gh).toContain("issue create");
     expect(result.gh).toContain("live-evidence-refresh-failed");
     expect(result.git).not.toContain("push");
+  });
+
+  it("refreshed + remote branch, no open PR, bot-only: resets FROM MAIN and force-with-lease pinned", () => {
+    const result = runActStep(REFRESHED_SUMMARY, { STUB_REMOTE_BRANCH: "1" });
+    expect(result.status).toBe(0);
+    // Built from main, not the old branch tip.
+    expect(result.git).toContain("checkout -B bot/live-evidence-refresh main");
+    expect(result.git).not.toContain("checkout -B bot/live-evidence-refresh origin/bot/live-evidence-refresh");
+    // Lease pinned to the observed remote sha, not a bare --force.
+    expect(result.git).toContain(
+      "push --force-with-lease=bot/live-evidence-refresh:deadbeefdeadbeefdeadbeefdeadbeefdeadbeef origin HEAD:bot/live-evidence-refresh",
+    );
+    expect(result.git).not.toMatch(/push --force (?!-with-lease)/);
+    // With no open PR it then tries to open one.
+    expect(result.gh).toContain("pr create");
+  });
+
+  it("refreshed + remote branch, no open PR, has a non-bot commit: refuses, no push", () => {
+    const result = runActStep(REFRESHED_SUMMARY, {
+      STUB_REMOTE_BRANCH: "1",
+      STUB_FOREIGN: "someone-else@example.com",
+    });
+    expect(result.status).toBe(1);
+    expect(result.gh).toContain("issue create");
+    expect(result.gh).toContain("live-evidence-refresh-failed");
+    expect(result.git).not.toContain("push");
+  });
+
+  it("refreshed + gh pr list fails: fails the job, pushes nothing", () => {
+    const result = runActStep(REFRESHED_SUMMARY, { STUB_PR_LIST_EXIT: "1", STUB_REMOTE_BRANCH: "1" });
+    expect(result.status).toBe(1);
+    expect(result.gh).toContain("issue create");
+    expect(result.gh).toContain("live-evidence-refresh-failed");
+    expect(result.git).not.toContain("push");
+    expect(result.gh).not.toContain("pr create");
   });
 
   it("refused + an existing FAILED issue: comments (dedup), never a second issue", () => {
