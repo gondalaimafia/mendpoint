@@ -1437,4 +1437,63 @@ describe("usage ledger", () => {
       "SELECT COUNT(*) AS count FROM usage_legacy_measurement_evidence WHERE entry_id = ?",
     ).get(settlement.id)).toEqual({ count: 0 });
   });
+
+  it("never blocks boot when a legacy finance entry's tenant no longer exists", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-usage-finance-orphan-"));
+    dirs.push(dir);
+    const path = join(dir, "usage.sqlite");
+    const db = createDb(path);
+    createUsagePriceVersion(db, {
+      id: "price-finance-orphan",
+      tenantId: "tenant_default",
+      formulaVersion: "mcu-v1",
+      currency: "USD",
+      pricePerMcuMoneyMicros: 20_000,
+      effectiveAt: "2026-08-01T00:00:00.000Z",
+      expiresAt: "2026-09-01T00:00:00.000Z",
+      contractReference: "contract-finance-orphan",
+      createdAt: at,
+    });
+    createUsageEntitlement(db, {
+      id: "entitlement-finance-orphan",
+      tenantId: "tenant_default",
+      priceVersionId: "price-finance-orphan",
+      quotaMcuMicros: 10_000_000,
+      features: ["fettler"],
+      contractReference: "contract-finance-orphan",
+      periodStart: "2026-08-01T00:00:00.000Z",
+      periodEnd: "2026-09-01T00:00:00.000Z",
+      createdAt: at,
+    });
+    // A genuine pre-finance-authority credit row: entry_type credit with NULL finance
+    // authority (what the finance backfill marks legacy_unverified). Inserted raw
+    // because the credit API now requires finance authorization.
+    db.raw.prepare(
+      `INSERT INTO usage_ledger_entries
+        (id, tenant_id, entry_type, entitlement_id, idempotency_key, task_id, campaign_id,
+         reservation_id, price_version, reserved_mcu_micros_delta, consumed_mcu_micros_delta,
+         invoice_reference, reason, actor_principal_id, finance_authorization_id,
+         finance_authorization_digest, consumption_provenance, entry_sequence, prev_hash,
+         entry_hash, created_at)
+       VALUES ('legacy-credit-orphan', 'tenant_default', 'credit', 'entitlement-finance-orphan',
+         'legacy-credit-orphan', 'task-orphan', NULL, NULL, 'price-finance-orphan', 0, -100,
+         'invoice-orphan', 'legacy credit', NULL, NULL, NULL, NULL, 1, NULL,
+         '0000000000000000000000000000000000000000000000000000000000000000',
+         '2026-08-01T12:01:00.000Z')`,
+    ).run();
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+    db.raw.prepare("DELETE FROM tenants WHERE id = 'tenant_default'").run();
+    db.raw.close();
+    dbs.pop();
+
+    // The finance backfill must skip the orphaned row rather than throw a FOREIGN KEY
+    // constraint at boot. Reverting the finance backfill's tenant guard reintroduces
+    // the throw and fails this expectation.
+    let reopened: ReturnType<typeof createDb> | undefined;
+    expect(() => { reopened = createDb(path); }).not.toThrow();
+    dbs.push(reopened!);
+    expect(reopened!.raw.prepare(
+      "SELECT COUNT(*) AS count FROM usage_legacy_finance_evidence WHERE entry_id = ?",
+    ).get("legacy-credit-orphan")).toEqual({ count: 0 });
+  });
 });

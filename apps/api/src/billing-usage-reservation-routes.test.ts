@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
@@ -14,7 +14,11 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import { createAuthMiddleware, createRbacMiddleware, type ApiEnv, type OidcVerifier } from "./auth.js";
-import { createBillingUsageReservationRoutes } from "./billing-usage-routes.js";
+import {
+  createBillingUsageReservationRoutes,
+  mountBillingUsageRoutes,
+  type BillingUsageAuditInput,
+} from "./billing-usage-routes.js";
 
 const opened: AppDb[] = [];
 const directories: string[] = [];
@@ -36,7 +40,18 @@ const errors = [
   { internalCode: "tenant_scope_required", status: 403 },
 ] as const;
 
-function fixture() {
+type MountOptions = {
+  db: AppDb;
+  errors: typeof errors;
+  id: () => string;
+  now: () => string;
+  audit: (context: Context<ApiEnv>, input: BillingUsageAuditInput) => void;
+};
+
+function fixture(
+  mount: (app: Hono<ApiEnv>, options: MountOptions) => void =
+    (app, options) => app.route("/billing/usage", createBillingUsageReservationRoutes(options)),
+) {
   process.env.API_AUTH = "required";
   const directory = mkdtempSync(join(tmpdir(), "mendpoint-billing-usage-reservation-"));
   directories.push(directory);
@@ -108,7 +123,7 @@ function fixture() {
   });
   app.use("*", createAuthMiddleware(db, { oidc, now: () => new Date(observedAt) }));
   app.use("*", createRbacMiddleware());
-  app.route("/billing/usage", createBillingUsageReservationRoutes({
+  const options: MountOptions = {
     db,
     errors,
     id: () => `reservation-route-${++identifier}`,
@@ -123,7 +138,8 @@ function fixture() {
         requestId: context.get("requestId") ?? null,
       });
     },
-  }));
+  };
+  mount(app, options);
   return { app, db };
 }
 
@@ -191,9 +207,23 @@ describe("billing usage reservation routes", () => {
     expect((await app.request(unauthenticated.path, unauthenticated.init)).status).toBe(401);
     expect(listUsageLedger(db, "tenant-a")).toEqual([]);
 
-    // admin-b reserving lands under tenant-b (the route's requestTenantId), never a
-    // tenant named in the request body. If the route dropped tenant scoping this would
-    // land elsewhere; tenant-b sees its own reservation and tenant-a stays empty.
+    // admin-a reserving while the request body names tenant-b: the route must ignore
+    // body.tenantId and scope to the authenticated tenant (requestTenantId). The
+    // reservation lands on tenant-a, and tenant-b stays empty. A route that honoured
+    // body.tenantId would land it on tenant-b, so these assertions die under that
+    // mutation.
+    const reserveAsA = post("admin.a.jwt", "/billing/usage/reservations", {
+      idempotencyKey: "reserve-a-spoof",
+      taskId: "task-a",
+      tenantId: "tenant-b",
+      mcuMicros: 1_000,
+      reason: "spoofed tenant in body",
+    });
+    expect((await app.request(reserveAsA.path, reserveAsA.init)).status).toBe(201);
+    expect(listUsageLedger(db, "tenant-a")).toHaveLength(1);
+    expect(listUsageLedger(db, "tenant-b")).toEqual([]);
+
+    // admin-b reserving lands under tenant-b (the route's requestTenantId).
     const reserveB = post("admin.b.jwt", "/billing/usage/reservations", {
       idempotencyKey: "reserve-b",
       taskId: "task-b",
@@ -201,7 +231,25 @@ describe("billing usage reservation routes", () => {
       reason: "tenant-b run",
     });
     expect((await app.request(reserveB.path, reserveB.init)).status).toBe(201);
-    expect(listUsageLedger(db, "tenant-a")).toEqual([]);
+    expect(listUsageLedger(db, "tenant-a")).toHaveLength(1);
     expect(listUsageLedger(db, "tenant-b")).toHaveLength(1);
+  });
+
+  it("mounts reservation routes before finance routes so POST /reservations reaches the reservation handler", async () => {
+    // Mount both route sets exactly as the server does, via mountBillingUsageRoutes.
+    // POST /billing/usage/reservations must reach the reservation handler (201), not
+    // the finance sub-app's `/:kind` route (which would answer 404 usage_entry_kind_invalid
+    // with kind="reservations"). Swapping the mount order inside mountBillingUsageRoutes
+    // makes `/:kind` shadow the static path and this dies.
+    const { app } = fixture(mountBillingUsageRoutes);
+    const reserve = post("admin.a.jwt", "/billing/usage/reservations", {
+      idempotencyKey: "reserve-order",
+      taskId: "task-order",
+      mcuMicros: 1_000,
+      reason: "mount order",
+    });
+    const response = await app.request(reserve.path, reserve.init);
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ entryType: "reservation" });
   });
 });

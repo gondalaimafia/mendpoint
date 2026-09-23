@@ -101,10 +101,7 @@ import {
   registrySummaryMarkdown,
 } from "@mendpoint/db";
 import { parseAuditExportLimit } from "./audit-export.js";
-import {
-  createBillingUsageFinanceRoutes,
-  createBillingUsageReservationRoutes,
-} from "./billing-usage-routes.js";
+import { mountBillingUsageRoutes } from "./billing-usage-routes.js";
 import { changeDetailBody } from "./change-detail.js";
 import {
   detectVendors,
@@ -3544,20 +3541,13 @@ app.post("/billing/entitlements", async (c) => {
   }
 });
 
-// Reserve/settle/release routes are extracted into a factory so the money path has
-// an isolated HTTP harness. Mounted before the finance routes so the static
-// `/reservations` path is not shadowed by the finance sub-app's `/:kind` param.
-app.route("/billing/usage", createBillingUsageReservationRoutes({
+// Reserve/settle/release and finance routes are mounted under /billing/usage in a
+// load-bearing order (reservation before finance) centralized in mountBillingUsageRoutes.
+mountBillingUsageRoutes(app, {
   db,
   errors: USAGE_ERRORS,
   audit: requestAudit,
-}));
-
-app.route("/billing/usage", createBillingUsageFinanceRoutes({
-  db,
-  errors: USAGE_ERRORS,
-  audit: requestAudit,
-}));
+});
 
 app.get("/tenants", (c) => {
   const principal = c.get("principal");

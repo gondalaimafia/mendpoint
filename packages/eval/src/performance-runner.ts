@@ -651,7 +651,7 @@ export async function runPerformanceProbe(
     // `observedRepository` is the shape the probe RETURNED, which validateMeasurement
     // requires to equal the operator-declared `options.repository` exactly. The runner
     // cannot prove the probe measured rather than echoed it, so tier-floor grading here
-    // is against an operator-declared, probe-confirmed shape, not an independently
+    // is against an operator-declared, probe-echoed shape, not an independently
     // audited one. The closure artifact records evidence.status: not_observed
     // accordingly. See docs/PERFORMANCE_CONTRACT.md ("Declared versus observed").
     repository: observedRepository ?? options.repository,

@@ -20,7 +20,7 @@ The measured repository must fall within every floor and ceiling. The producer m
 
 ### Declared versus observed repository shape
 
-The repository shape a report binds is the operator-declared shape (`--repository-*`), which the instrumented probe is required to independently measure and return; the runner accepts the run only when the probe's returned shape matches the declaration exactly. The runner cannot by itself prove the probe measured rather than echoed the declaration, so a report's tier assignment is an operator-declared binding that a genuinely instrumented probe confirms. Until such a probe runs in production, the closure artifact records `evidence.status: not_observed` for the performance contract and claims no observed tier. Treat the tier in any report as declared-and-probe-confirmed, never as an independently audited measurement, until observed evidence is supplied.
+The repository shape a report binds is the operator-declared shape (`--repository-*`), which the instrumented probe is required to independently measure and return; the runner accepts the run only when the probe's returned shape matches the declaration exactly. The runner cannot by itself prove the probe measured rather than echoed the declaration, so a report's tier assignment is an operator-declared binding that a genuinely instrumented probe confirms. Until such a probe runs in production, the closure artifact records `evidence.status: not_observed` for the performance contract and claims no observed tier. Treat the tier in any report as declared-and-probe-echoed, never as an independently audited measurement, until observed evidence is supplied.
 
 ## Tier-specific objectives
 

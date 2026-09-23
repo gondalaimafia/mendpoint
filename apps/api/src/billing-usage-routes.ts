@@ -309,3 +309,19 @@ export function createBillingUsageReservationRoutes(
 
   return routes;
 }
+
+/**
+ * Mount the billing-usage routes on an app under `/billing/usage`. The order is
+ * load-bearing: the reservation routes MUST mount before the finance routes, because
+ * the finance sub-app's `/:kind` param route would otherwise shadow the static
+ * `/reservations` path and turn `POST /billing/usage/reservations` into a
+ * `usage_entry_kind_invalid` 404. Kept in one place so the server and its tests agree
+ * on the order.
+ */
+export function mountBillingUsageRoutes(
+  app: Hono<ApiEnv>,
+  options: BillingUsageRouteOptions,
+): void {
+  app.route("/billing/usage", createBillingUsageReservationRoutes(options));
+  app.route("/billing/usage", createBillingUsageFinanceRoutes(options));
+}

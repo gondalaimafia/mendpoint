@@ -81,9 +81,22 @@ describe("fanout run usage settlement provenance", () => {
     expect(settlementProvenance(db)).toBe("not_measured:fanout_estimate_hold");
   });
 
-  it("records the settlement as measured when self-serve billing is on", () => {
+  it("records the settlement as measured when self-serve billing is on and the metered figure is not capped", () => {
     const { db, payload, report } = setup();
+    // report surfaces = 0 -> metered MCU (0) is well under the reservation, so the
+    // metered figure stands as a genuine measurement.
     settleFanoutRunUsage(db, "tenant_default", payload, report, { MENDPOINT_SELF_SERVE_BILLING: "1" });
     expect(settlementProvenance(db)).toBe("measured");
+  });
+
+  it("records not_measured:capped_at_reservation when the metered figure exceeds the reservation", () => {
+    const { db, payload } = setup();
+    // reserved = 2_000_000 (2 MCU); a report exposing 30,000 graph objects meters to
+    // 3 MCU, which is clamped down to the reservation. A clamped figure is the
+    // reservation estimate, not a measurement, so it must record not_measured.
+    // Forcing `measured` on the writer records "measured" here, so this dies.
+    const cappedReport = { surfaces: 30_000, consumers: [] } as unknown as PipelineReport;
+    settleFanoutRunUsage(db, "tenant_default", payload, cappedReport, { MENDPOINT_SELF_SERVE_BILLING: "1" });
+    expect(settlementProvenance(db)).toBe("not_measured:capped_at_reservation");
   });
 });

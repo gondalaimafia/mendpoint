@@ -22,6 +22,7 @@ import {
   resolveTenantGraphHandle,
 } from "@mendpoint/pipeline";
 import {
+  computeFanoutRunMcuMicros,
   resolveFanoutSettlementMcuMicros,
   SANDBOX_EGRESS_ATTESTATION_SCHEMA,
   sandboxEgressAuthorityFromEnv,
@@ -75,6 +76,7 @@ import {
   type AppDb,
   type FeedScheduleRow,
   type MissionMutationAuthorityV1,
+  type SettlementConsumption,
 } from "@mendpoint/db";
 import {
   listCatalogFeeds,
@@ -2276,25 +2278,39 @@ export function settleFanoutRunUsage(
   const reserved = payload[RUN_USAGE_RESERVED_MCU_KEY];
   if (typeof reservationId !== "string" || !reservationId) return;
   if (typeof reserved !== "number" || !Number.isSafeInteger(reserved) || reserved <= 0) return;
+  const signals = fanoutRunMeterSignalsFromReport(report);
   const actualMcuMicros = resolveFanoutSettlementMcuMicros({
     reservedMcuMicros: reserved,
-    signals: fanoutRunMeterSignalsFromReport(report),
+    signals,
     env,
   });
-  // The fanout meter derives MCU from real work only when self-serve billing is on.
-  // When it is off, settlement falls back to the reserved estimate (a hold, not a
-  // measurement), so the ledger must record it as not-measured rather than conflate
-  // the estimate with observed consumption.
-  const measured = selfServeBillingEnabled(env);
+  // Measurement provenance for the fanout settlement:
+  // - billing OFF (default): the settlement is the reserved estimate, a hold and not
+  //   a measurement.
+  // - billing ON, uncapped (metered MCU <= reserved): the metered figure stands. Per
+  //   the metering contract (packages/platform/src/billing-metering.ts:12-19) this
+  //   MCU deliberately covers only the graph/impact/edit work the run exposes and
+  //   excludes model USD, sandbox vCPU/GiB, and retrieval bytes — that exclusion is
+  //   the contract's own MCU definition, not an oversight, so an uncapped figure is a
+  //   genuine measurement.
+  // - billing ON, capped (metered MCU > reserved, so the figure was clamped down to
+  //   the reservation): the recorded value is the reservation estimate, not the
+  //   metered value, so it is not a measurement.
+  let consumption: SettlementConsumption;
+  if (!selfServeBillingEnabled(env)) {
+    consumption = { kind: "not_measured", reason: "fanout_estimate_hold" };
+  } else if (computeFanoutRunMcuMicros(signals) > reserved) {
+    consumption = { kind: "not_measured", reason: "capped_at_reservation" };
+  } else {
+    consumption = { kind: "measured" };
+  }
   try {
     settleRunUsage(db, {
       tenantId,
       reservationId,
       actualMcuMicros,
       reason: "run completed: pipeline.fanout",
-      consumption: measured
-        ? { kind: "measured" }
-        : { kind: "not_measured", reason: "fanout_estimate_hold" },
+      consumption,
       createdAt: nowIso(),
     });
   } catch (error) {
