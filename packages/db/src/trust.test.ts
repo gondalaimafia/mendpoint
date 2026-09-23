@@ -398,7 +398,7 @@ describe("trust records", () => {
     expect(resolved?.id).toBe("principal-mtask-raced");
   });
 
-  it("treats a display-name change with matching authority fields as a rename", () => {
+  it("treats a display-name change with matching authority fields as a rename when opted in", () => {
     const db = setup();
     const created = insertPrincipal(db, {
       id: "principal-rename", tenantId: "tenant-a", kind: "service",
@@ -408,7 +408,7 @@ describe("trust records", () => {
     const renamed = insertPrincipal(db, {
       id: "principal-rename", tenantId: "tenant-a", kind: "service",
       subject: "rename-service", displayName: "New name",
-      audience: "pipeline", createdAt: at,
+      audience: "pipeline", createdAt: at, onDisplayNameChange: "relabel",
     });
     expect(renamed.display_name).toBe("New name");
     // Persisted, not just returned: re-read from the DB.
@@ -423,6 +423,63 @@ describe("trust records", () => {
       )
       .get("tenant-a", "service", "rename-service") as { n: number };
     expect(count.n).toBe(1);
+  });
+
+  it("throws principal_identity_conflict on a display-name-only change by default and leaves the row unchanged", () => {
+    const db = setup();
+    const created = insertPrincipal(db, {
+      id: "principal-default", tenantId: "tenant-a", kind: "service",
+      subject: "default-service", displayName: "Old name",
+      audience: "pipeline", createdAt: at,
+    });
+    expect(() =>
+      insertPrincipal(db, {
+        id: "principal-default", tenantId: "tenant-a", kind: "service",
+        subject: "default-service", displayName: "New name",
+        audience: "pipeline", createdAt: at,
+      }),
+    ).toThrow("principal_identity_conflict");
+    // The label is untouched: default mode never rewrites in place.
+    expect(getPrincipalBySubject(db, "tenant-a", "service", "default-service"))
+      .toEqual(created);
+  });
+
+  it("still throws principal_identity_conflict in relabel mode when authority fields drift", () => {
+    const db = setup();
+    insertPrincipal(db, {
+      id: "principal-relabel-aud", tenantId: "tenant-a", kind: "service",
+      subject: "relabel-aud", displayName: "Name", audience: "pipeline", createdAt: at,
+    });
+    expect(() =>
+      insertPrincipal(db, {
+        id: "principal-relabel-aud", tenantId: "tenant-a", kind: "service",
+        subject: "relabel-aud", displayName: "New name", audience: "review",
+        createdAt: at, onDisplayNameChange: "relabel",
+      }),
+    ).toThrow("principal_identity_conflict");
+    insertPrincipal(db, {
+      id: "principal-relabel-exp", tenantId: "tenant-a", kind: "api_key",
+      subject: "relabel-exp", displayName: "Name",
+      expiresAt: "2026-09-01T00:00:00.000Z", createdAt: at,
+    });
+    expect(() =>
+      insertPrincipal(db, {
+        id: "principal-relabel-exp", tenantId: "tenant-a", kind: "api_key",
+        subject: "relabel-exp", displayName: "New name",
+        expiresAt: "2026-10-01T00:00:00.000Z", createdAt: at, onDisplayNameChange: "relabel",
+      }),
+    ).toThrow("principal_identity_conflict");
+    insertPrincipal(db, {
+      id: "principal-relabel-rev", tenantId: "tenant-a", kind: "service",
+      subject: "relabel-rev", displayName: "Name", createdAt: at,
+    });
+    expect(() =>
+      insertPrincipal(db, {
+        id: "principal-relabel-rev", tenantId: "tenant-a", kind: "service",
+        subject: "relabel-rev", displayName: "New name",
+        revokedAt: "2026-09-01T00:00:00.000Z", createdAt: at, onDisplayNameChange: "relabel",
+      }),
+    ).toThrow("principal_identity_conflict");
   });
 
   it("still throws principal_identity_conflict on audience drift", () => {
@@ -484,7 +541,7 @@ describe("trust records", () => {
     const reregistered = insertPrincipal(db, {
       id: "principal-warden-pipeline", tenantId: "tenant-a", kind: "service",
       subject: "warden-pipeline", displayName: "Fettler pipeline",
-      audience: "pipeline", createdAt: at,
+      audience: "pipeline", createdAt: at, onDisplayNameChange: "relabel",
     });
     expect(reregistered.display_name).toBe("Fettler pipeline");
     expect(getPrincipalBySubject(db, "tenant-a", "service", "warden-pipeline")?.display_name)

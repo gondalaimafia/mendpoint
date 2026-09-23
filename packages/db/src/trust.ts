@@ -62,6 +62,15 @@ export function insertPrincipal(
     expiresAt?: string | null;
     revokedAt?: string | null;
     createdAt: string;
+    /**
+     * How to treat a re-registration whose authority-relevant fields (audience,
+     * expires_at, revoked_at) all match an existing row but whose display_name
+     * differs. Default "conflict" throws principal_identity_conflict on any
+     * display-name difference, reproducing the identity check every caller relied
+     * on. "relabel" instead updates the label in place; only the deterministic,
+     * system-owned pipeline principal opts in (see packages/pipeline/src/index.ts).
+     */
+    onDisplayNameChange?: "conflict" | "relabel";
   },
 ): PrincipalRow {
   if (!PRINCIPAL_KINDS.has(input.kind)) throw new Error("principal_kind_invalid");
@@ -79,16 +88,29 @@ export function insertPrincipal(
       existing.expires_at === (input.expiresAt ?? null) &&
       existing.revoked_at === (input.revokedAt ?? null);
     if (!authorityMatches) throw new Error("principal_identity_conflict");
-    // A display name is a label, not identity; the identity is
-    // (tenant_id, kind, subject). Renaming the deterministic service principal
-    // (e.g. "Warden pipeline" -> "Fettler pipeline") must not throw and
-    // dead-letter every job that re-registers it, so update the label in place
-    // when the authority-relevant fields (audience, expires_at, revoked_at) all
-    // match, and return the re-read row with the new display name.
     if (existing.display_name !== input.displayName) {
+      // A display name is a label, not identity; the identity is
+      // (tenant_id, kind, subject). Renaming the deterministic service principal
+      // (e.g. "Warden pipeline" -> "Fettler pipeline") must not throw and
+      // dead-letter every job that re-registers it. But relabelling is opt-in:
+      // by default any display-name difference is an identity conflict, so a
+      // tenant manager cannot rename a protected principal (e.g. the SCIM
+      // bootstrap authority) out from under the boot-time exact-match check.
+      if (input.onDisplayNameChange !== "relabel") {
+        throw new Error("principal_identity_conflict");
+      }
       db.raw
         .prepare(`UPDATE principals SET display_name = ? WHERE id = ? AND tenant_id = ?`)
         .run(input.displayName, existing.id, input.tenantId);
+      console.warn(
+        JSON.stringify({
+          event: "principal_display_name_relabelled",
+          tenantId: input.tenantId,
+          principalId: existing.id,
+          from: existing.display_name,
+          to: input.displayName,
+        }),
+      );
       return one<PrincipalRow>(db, `SELECT * FROM principals WHERE id = ?`, [existing.id])!;
     }
     return existing;
