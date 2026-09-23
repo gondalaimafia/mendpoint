@@ -11,13 +11,15 @@
 import { createHash } from "node:crypto";
 import {
   ensureMissionTaskForJob,
+  assertMissionMutationAuthority,
   getLatestActualExecutionCostForTaskBeforeAttempt,
   getMissionTask,
-  getMission,
   insertPrincipal,
   listRepositorySnapshots,
   missionTaskIdForJob,
   openTaskHandoff,
+  parseMissionMutationAuthority,
+  getMission,
   recordRoutingOutcomeExactlyOnce,
   recordExecutionCostFromRoutingLedger,
   resolveMissionForFettlerCampaign,
@@ -58,6 +60,10 @@ function textField(record: Record<string, unknown> | undefined, key: string): st
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+function missionAuthority(record: Record<string, unknown> | undefined) {
+  return record?.missionAuthority === undefined ? null : parseMissionMutationAuthority(record.missionAuthority);
+}
+
 function parseRisk(value: unknown): MissionTaskRisk {
   if (value === "low" || value === "medium" || value === "high" || value === "critical") {
     return value;
@@ -73,6 +79,17 @@ function resumeTaskEvent(jobId: string, revision: number): { eventId: string; id
   return {
     eventId: `e-mtask-${digest}`,
     idempotencyKey: `mission-task-job:${jobId}:agent_working_from_resume:r${revision}`,
+  };
+}
+
+function completeTaskEvent(jobId: string, revision: number): { eventId: string; idempotencyKey: string } {
+  const digest = createHash("sha256")
+    .update(`mission-task:job:${jobId}:complete:r${revision}`)
+    .digest("hex")
+    .slice(0, 32);
+  return {
+    eventId: `e-mtask-${digest}`,
+    idempotencyKey: `mission-task-job:${jobId}:complete:r${revision}`,
   };
 }
 function missionTaskAgentPrincipal(db: AppDb, tenantId: string, createdAt: string) {
@@ -115,10 +132,39 @@ export function bridgeClaimedJobToMissionTask(
   job: BridgedJob,
   createdAt: string,
 ): MissionTask | undefined {
+  const payload = payloadRecord(job);
+  const authority = missionAuthority(payload);
+  const claimedMissionId = textField(payload, "missionId");
   const mission = resolveBoundMissionForJob(db, job);
   if (!mission) return undefined;
+  if ((job.type === "warden.candidate.deliver" || job.type === "warden.candidate.update") && !authority) {
+    return undefined;
+  }
   const agent = missionTaskAgentPrincipal(db, job.tenant_id, createdAt);
-  const payload = payloadRecord(job);
+  if (authority) {
+    if (authority.missionId !== mission.id || claimedMissionId !== mission.id) {
+      throw new Error("mission_task_job_authority_mismatch");
+    }
+    const authorized = assertMissionMutationAuthority(db, job.tenant_id, authority, { allowClaimedTask: true });
+    if (!authority.taskId) return undefined;
+    const exactTask = authorized.task;
+    if (!exactTask) throw new Error("mission_task_job_authority_mismatch");
+    if (exactTask.status === "agent_working") return exactTask;
+    if (exactTask.status !== "agent_resume" || exactTask.revision !== authority.taskRevision) {
+      throw new Error("mission_task_job_authority_mismatch");
+    }
+    return transitionMissionTask(db, {
+      tenantId: job.tenant_id,
+      taskId: exactTask.id,
+      expectedRevision: exactTask.revision,
+      to: "agent_working",
+      actorPrincipalId: agent.id,
+      assignedPrincipalId: agent.id,
+      ...resumeTaskEvent(job.id, exactTask.revision),
+      correlationId: job.id,
+      createdAt,
+    });
+  }
   const task = ensureMissionTaskForJob(db, {
     tenantId: job.tenant_id,
     jobId: job.id,
@@ -157,6 +203,23 @@ export function handoffCompletedJobToMissionReview(
 ): MissionTask | undefined {
   const mission = resolveBoundMissionForJob(db, job);
   if (!mission) return undefined;
+  const payload = payloadRecord(job);
+  const authority = missionAuthority(payload);
+  if (authority && authority.taskId === null) {
+    assertMissionMutationAuthority(db, job.tenant_id, authority, { allowClaimedTask: true });
+    openTaskHandoff(db, {
+      tenantId: job.tenant_id,
+      missionId: mission.id,
+      reason: "architecture_decision_required",
+      question: `Should job ${job.id} (${job.type}) under mission ${mission.id} proceed after advisory verification passed?`,
+      context: `Review-first job ${job.id} settled successfully. Human approval is required before delivery.`,
+      ownerPrincipalId: mission.ownerPrincipalId,
+      observedAgainst: { snapshotId: authority.snapshotId, resolvedSha: authority.resolvedSha },
+      correlationId: job.id,
+      createdAt,
+    });
+    return undefined;
+  }
   const task = bridgeClaimedJobToMissionTask(db, job, createdAt)
     ?? getMissionTask(db, job.tenant_id, missionTaskIdForJob(job.id));
   if (!task) throw new Error("mission_task_job_review_task_missing");

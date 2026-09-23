@@ -34,7 +34,11 @@ import {
   type ProductionClosureMatrixIssue,
   type ProductionEvidenceTrustRoot,
 } from "./production-closure-matrix.js";
-import { revisionReachabilityIssues } from "./public-claims-check.js";
+import {
+  applyEvidenceHolds,
+  revisionReachabilityIssues,
+  type PublicClaimEvidenceHold,
+} from "./public-claims-check.js";
 
 const SHA = /^[a-f0-9]{40}$/;
 const MAX_BLOB_BYTES = 10 * 1024 * 1024;
@@ -73,7 +77,10 @@ export interface ProposalAuthorityObservation {
     expiresAt: string;
     basePolicySha256: string;
     proposedPolicySha256: string;
-    successor: AuthoritySuccessorTuple | null;
+    // For an activate_successor rotation the parser augments the canonical tuple with
+    // the staging provenance (stagedByRotationId/stagedAt) resolved from the ledger, so
+    // github-authority can bound the success-path window. Absent on every other kind.
+    successor: (AuthoritySuccessorTuple & Partial<SuccessorStagingProvenance>) | null;
   } | null;
   verdict: "pass" | "fail";
   issues: ProductionClosureMatrixIssue[];
@@ -383,6 +390,39 @@ function successorWorkflowSafetyIssues(
     add(issues, "AUTHORITY_SUCCESSOR_WORKFLOW_UNSAFE", path, "staged successor workflow YAML is invalid");
   }
   return issues;
+}
+
+export interface SuccessorStagingProvenance {
+  stagedByRotationId: string;
+  stagedAt: string;
+}
+
+/**
+ * Resolve the staging provenance that bounds a successor activation's success-path
+ * window for the github-authority live proof. The window opens at the issue time of
+ * the rotation that staged the CURRENT bytes - the re-stage when one exists - which
+ * the base policy records on the staged successor state as stagedByRotationId, and
+ * whose issuedAt lives in the trusted base ledger this parser already reads. Runs
+ * created before that instant executed the previous bytes, so this instant is what the
+ * github-authority success-path proof measures from. Returns null when the base policy
+ * carries no staged successor state, or when the named rotation is absent from the
+ * ledger, so an activation that never validated cannot smuggle a forged window start;
+ * github-authority then fails closed (AUTHORITY_SUCCESSOR_STAGING_PROVENANCE_REQUIRED).
+ */
+export function successorStagingProvenance(
+  basePolicy: ClosureAuthorityPolicy,
+  baseLedger: AuthorityRotationLedger,
+): SuccessorStagingProvenance | null {
+  const staged = basePolicy.successor;
+  if (!staged || typeof staged.stagedByRotationId !== "string") return null;
+  const stagingRotation = (baseLedger.rotations ?? []).find(
+    (rotation) => rotation.rotationId === staged.stagedByRotationId,
+  );
+  if (!stagingRotation || typeof stagingRotation.issuedAt !== "string") return null;
+  return {
+    stagedByRotationId: staged.stagedByRotationId,
+    stagedAt: stagingRotation.issuedAt,
+  };
 }
 
 export async function verifyProductionClosureProposal(
@@ -908,6 +948,15 @@ export async function verifyProductionClosureProposal(
           "the current pull request declaration must bind the exact authority rotation receipt",
         );
       } else if (rotationIssues.length === 0) {
+        // An activation carries the staging provenance so github-authority can bound the
+        // success-path window to the current staging episode. The activation transition
+        // above already proved basePolicy.successor is the exact staged state whose
+        // stagedByRotationId names an in-ledger stage_successor receipt, so this resolves;
+        // it stays null for every other kind, which needs no window.
+        const stagingProvenance =
+          receipt.kind === "activate_successor"
+            ? successorStagingProvenance(policy, baseLedger)
+            : null;
         observation.authorityRotation = {
           rotationId: receipt.rotationId,
           kind: receipt.kind,
@@ -915,7 +964,10 @@ export async function verifyProductionClosureProposal(
           expiresAt: receipt.expiresAt,
           basePolicySha256: receipt.basePolicySha256,
           proposedPolicySha256: receipt.proposedPolicySha256,
-          successor: receipt.successor,
+          successor:
+            receipt.successor && stagingProvenance
+              ? { ...receipt.successor, ...stagingProvenance }
+              : receipt.successor,
         };
       }
     }
@@ -979,11 +1031,36 @@ export async function verifyProductionClosureProposal(
         trustedProductionEvidenceAuthorities:
           policy.productionEvidenceAuthorities as ProductionEvidenceTrustRoot[],
         requireCurrentPullRequestBootstrap: true,
+        // The CI-attested number keys the validator's bootstrap-slot dependency
+        // exemption when a caller supplies it. In production it is undefined (the
+        // workflow sets MENDPOINT_CLOSURE_PR_NUMBER only on the github-authority step;
+        // see main()), so the validator falls back to the declared bootstrap exactly
+        // as its requirement bindings do.
+        currentPullRequestNumber,
       }),
     );
 
     const requirements = allRequirements(manifest);
     issues.push(...validatePublicClaimRegistry(claims, { requirements, asOf: new Date(observedAt) }));
+    // #664: honour time-boxed live-evidence holds recorded in the closure
+    // authority policy so a stale production surface does not fail the proposal
+    // authority (and, through it, github-authority) for every PR while the hold
+    // is valid. Held staleness is still reported to stderr as a warning, never
+    // hidden; every other issue code stays blocking. The hold judgement reads
+    // the same policy object the script already loaded and uses the same
+    // `observedAt` clock as the staleness judgement above, so both agree.
+    const evidenceHolds =
+      (policy as { publicClaimEvidenceHolds?: PublicClaimEvidenceHold[] })
+        .publicClaimEvidenceHolds ?? [];
+    const evidenceHoldOutcome = applyEvidenceHolds(issues, evidenceHolds, {
+      registry: claims,
+      now: new Date(observedAt),
+    });
+    issues.length = 0;
+    issues.push(...evidenceHoldOutcome.blocking);
+    for (const notice of evidenceHoldOutcome.held) {
+      console.error(`${notice.code} ${notice.subject}: ${notice.message}`);
+    }
     for (const claim of claims.claims ?? []) {
       if (!(claim.surfacePaths ?? []).some((path) =>
         bytesByPath.get(normalizedPath(path) ?? "")?.toString("utf8").includes(claim.id),

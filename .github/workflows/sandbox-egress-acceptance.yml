@@ -35,7 +35,10 @@ on:
 jobs:
   accept:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Worst case per app is the readiness window (default 300s = 30 polls x up
+    # to ~20s) plus the rotation itself; 45 min leaves headroom across all
+    # consuming apps so the job finishes rather than being cancelled mid-app.
+    timeout-minutes: 45
     environment: ${{ inputs.environment }}
     # The renewal-failure alarm is a GitHub issue opened in this repo (see the
     # "Alert on renewal failure" step), so this job needs issues:write on top of
@@ -63,6 +66,20 @@ jobs:
       # the operator naming convention (prefixes) and optional org filter select
       # apps from the live Fly inventory.
       SANDBOX_EGRESS_ROTATION_APP_PREFIXES: ${{ vars.SANDBOX_EGRESS_ROTATION_APP_PREFIXES }}
+      # Protected consuming apps: customer production that this job must NEVER
+      # stop. fly.customer-warden.toml sets auto_start_machines=false, so a
+      # machine this job stops never returns on its own -- run 33890068837
+      # stopped mendpoint-fettler-production machine 84e696a22eee68 for 4.5h. For
+      # an app whose name starts with one of these prefixes, containment keeps
+      # machines running and STARTS any Fly reports stopped instead of stopping
+      # them. The rotation script defaults this to mendpoint-fettler-production
+      # when the var is unset or empty, so customer production stays protected
+      # with no configuration at all.
+      SANDBOX_EGRESS_PROTECTED_APP_PREFIXES: ${{ vars.SANDBOX_EGRESS_PROTECTED_APP_PREFIXES }}
+      # Post-rotation readiness wait: poll /livez and machine state every 10s for
+      # up to this many seconds before judging an app "did not become healthy".
+      # The script defaults this to 300 (>= 5 min) when the var is unset.
+      SANDBOX_EGRESS_READINESS_TIMEOUT_SECONDS: ${{ vars.SANDBOX_EGRESS_READINESS_TIMEOUT_SECONDS }}
       FLY_ORG: ${{ vars.FLY_ORG }}
       # Failure visibility: a failed or skipped renewal must be loud BEFORE the
       # receipt lapses. The sink is a GitHub issue opened by the "Alert on
@@ -286,6 +303,9 @@ jobs:
           key_id="$(jq -r '.keyId' test-results/sandbox-egress/receipt.json)"
           policy_digest="$(jq -r '.policyDigest' test-results/sandbox-egress/receipt.json)"
           schema="$(jq -r '.payload.schemaVersion' test-results/sandbox-egress/receipt.json)"
+          # The freshly minted expiry, used by the protected file-delivery branch
+          # to confirm the app is serving THIS receipt (not a stale one) via /ready.
+          expires_at="$(jq -r '.payload.expiresAt' test-results/sandbox-egress/receipt.json)"
           # Enumerate the apps that consume the receipt FROM CONFIGURATION -- the
           # live Fly inventory filtered by the operator naming convention -- never
           # a hardcoded list (a hardcoded list is how this rotation reached only
@@ -310,6 +330,21 @@ jobs:
           printf '%s\n' "$targets" > test-results/sandbox-egress/rotation-targets.txt
           while IFS= read -r app; do
             test -n "$app" || continue
+            # Is THIS app protected (customer production that must never be
+            # stopped by this job)? Production is ALWAYS protected: prepend
+            # mendpoint-fettler-production, then union the configured list, so
+            # neither a whitespace-only var nor a configured list that omits
+            # production can ever unprotect it. Each entry is trimmed and empty
+            # entries are skipped below (so whitespace-only entries do nothing).
+            # contain_current_machines reads this flag for start-not-stop recovery.
+            protected_prefixes="mendpoint-fettler-production,${SANDBOX_EGRESS_PROTECTED_APP_PREFIXES:-}"
+            is_protected_app=false
+            while IFS= read -r protected_prefix; do
+              test -n "$protected_prefix" || continue
+              case "$app" in
+                "$protected_prefix"*) is_protected_app=true; break ;;
+              esac
+            done < <(printf '%s\n' "$protected_prefixes" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             # A direct Machines-API app with a volume is unsafe to rotate through
             # Launch because it can infer new capacity while the only volume is
             # attached. Require an existing Launch process group before rotating
@@ -324,6 +359,97 @@ jobs:
               and (.config.metadata.fly_process_group | type == "string" and length > 0)
             )' \
               <<<"$machines_json" >/dev/null
+            if [ "$is_protected_app" = true ]; then
+              # PROTECTED consuming app (customer production): deliver the signed
+              # receipt as a FILE the app re-reads, with NO machine update, NO
+              # secrets set, NO restart, and NO containment. Rolling-restarting or
+              # stopping this single, auto_start_machines=false machine is exactly
+              # what stopped customer production (run 33890068837 and the 2026-09-08
+              # boot-fence incident). The pre-flight guard above already proved
+              # every machine is started; a stopped protected machine is reported
+              # by that guard, never started or stopped here.
+              printf '%s\n' "$machines_json" \
+                >"test-results/sandbox-egress/rotation-before-${app}.json"
+              # (b) Install the receipt file INSIDE the machine over ssh. flyctl
+              # word-splits --command and execs without a shell, so the base64
+              # attestation is the single trailing argument (argv[2] to the script).
+              # Bounded by timeout so a hung ssh session can never wedge the
+              # 6-hourly renewal.
+              if ! install_json="$(timeout 120 flyctl ssh console --app "$app" --pty=false \
+                  --command "node --import tsx /app/scripts/sandbox-egress-attestation-install.ts $attestation" </dev/null)"; then
+                printf 'protected_install_failed\tapp=%s\n' "$app" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                echo "PROTECTED app ${app}: ssh receipt install failed or timed out; NOT containing. Failing loudly for the renewal-failure alert." >&2
+                exit 1
+              fi
+              install_line="$(printf '%s\n' "$install_json" | grep -E '"installed"' | tail -n1 || true)"
+              if [ -z "$install_line" ]; then install_line='{}'; fi
+              printf '%s\n' "$install_line" \
+                >"test-results/sandbox-egress/install-${app}.json"
+              if ! jq -e '.installed == true' <<<"$install_line" >/dev/null 2>&1; then
+                printf 'protected_install_not_confirmed\tapp=%s\n' "$app" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                echo "PROTECTED app ${app}: install did not report installed:true; NOT containing." >&2
+                exit 1
+              fi
+              # (c) Confirm from the app's OWN reader that it is now serving the
+              # file-sourced receipt: read /ready in-machine (the API listens on
+              # 127.0.0.1:3001) and require the egress check ok:true, source:file,
+              # and the exact new expiry. The reader JS has NO spaces and uses
+              # backtick string literals; single-quote the --command so bash never
+              # treats the backticks as command substitution and flyctl passes them
+              # through to node unchanged.
+              ready_out="$(timeout 120 flyctl ssh console --app "$app" --pty=false \
+                --command 'node -e fetch(`http://127.0.0.1:3001/ready`).then(r=>r.json()).then(j=>process.stdout.write(JSON.stringify((j.checks||[]).find(c=>c.name===`sandbox_egress_receipt`)||{}))).catch(()=>process.stdout.write(`{}`))' </dev/null \
+                || true)"
+              ready_line="$(printf '%s\n' "$ready_out" | grep -E '"sandbox_egress_receipt"' | tail -n1 || true)"
+              if [ -z "$ready_line" ]; then ready_line='{}'; fi
+              printf '%s\n' "$ready_line" \
+                >"test-results/sandbox-egress/ready-${app}.json"
+              if ! after_machines_json="$(flyctl machine list --app "$app" --json)"; then
+                after_machines_json='[]'
+              fi
+              printf '%s\n' "$after_machines_json" \
+                >"test-results/sandbox-egress/rotation-after-${app}.json"
+              ready_ok="$(jq -r '.ok // false' <<<"$ready_line" 2>/dev/null || echo false)"
+              ready_source="$(jq -r 'try ((.detail|fromjson|.source) // "") catch ""' <<<"$ready_line" 2>/dev/null || echo "")"
+              ready_expires="$(jq -r 'try ((.detail|fromjson|.expiresAt) // "") catch ""' <<<"$ready_line" 2>/dev/null || echo "")"
+              # readiness-confirmation-guard (mutation strips this if-fi to prove it is load-bearing)
+              if [ "$ready_ok" != "true" ] || [ "$ready_source" != "file" ] || [ "$ready_expires" != "$expires_at" ]; then
+                reason="readiness_disagreed:ok=${ready_ok},source=${ready_source},expiresAt=${ready_expires}"
+                printf '%s\tapp=%s\texpected_expiresAt=%s\n' "$reason" "$app" "$expires_at" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                echo "PROTECTED app ${app}: ${reason} (expected ok=true,source=file,expiresAt=${expires_at}); NOT containing. Failing loudly for the renewal-failure alert." >&2
+                exit 1
+              fi
+              # readiness-confirmation-guard-end
+              printf 'protected_file_delivery_ok\tapp=%s\tsource=%s\texpiresAt=%s\n' \
+                "$app" "$ready_source" "$ready_expires" \
+                >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+              # (e) Refresh the environment fallback copy WITHOUT a restart, now that
+              # the file is installed and confirmed. `--stage` sets the secret but
+              # skips deployment for machine apps (verified present in the pinned
+              # flyctl), so no machine restarts here: the volume file stays the live
+              # source, and a machine that later boots from a REPLACED volume (no file
+              # yet) reads a fresh env receipt instead of the frozen, long-expired copy
+              # this branch would otherwise leave behind. The file delivery already
+              # succeeded, so a staging failure is a warning, never fatal, and we NEVER
+              # fall back to a non-staged (deploying) secrets set. `secrets list`
+              # afterwards is recorded as evidence and must show this secret Staged,
+              # not Deployed (a Deployed status would mean a restart was triggered).
+              if flyctl secrets set --stage --app "$app" \
+                  MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64="$attestation" </dev/null; then
+                printf 'protected_env_fallback_staged\tapp=%s\n' "$app" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                flyctl secrets list --app "$app" --json </dev/null \
+                  >"test-results/sandbox-egress/secrets-after-${app}.json" 2>/dev/null || true
+              else
+                printf 'protected_env_fallback_stage_failed\tapp=%s\n' "$app" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                echo "PROTECTED app ${app}: staged env-fallback refresh failed (non-fatal; the receipt file was already installed and confirmed)." >&2
+              fi
+              continue
+            fi
             launch_groups_before="$(jq -cS '[.[] | {
               id,
               processGroup: .config.metadata.fly_process_group
@@ -362,6 +488,66 @@ jobs:
 
             contain_current_machines() {
               local reason="$1"
+              # PROTECTED consuming apps (customer production) are NEVER stopped
+              # here. Stopping one is what caused the incident: with
+              # auto_start_machines=false a stopped machine stays down until an
+              # operator starts it (run 33890068837, 4.5h outage). Instead keep
+              # machines running, START any Fly reports stopped (bounded retries),
+              # re-verify, record before/after, and fail loudly so the
+              # failure()-guarded "Alert on renewal failure" step opens an issue.
+              if [ "${is_protected_app:-true}" = true ]; then
+                printf 'protect\t%s\n' "$reason" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                if ! protect_before_json="$(flyctl machine list --app "$app" --json)"; then
+                  protect_before_json='[]'
+                fi
+                printf '%s\n' "$protect_before_json" \
+                  >"test-results/sandbox-egress/protect-before-${app}.json"
+                for protect_attempt in 1 2 3; do
+                  if ! protect_pass_json="$(flyctl machine list --app "$app" --json)"; then
+                    break
+                  fi
+                  if jq -e 'length > 0 and all(.[]; .state == "started")' \
+                      <<<"$protect_pass_json" >/dev/null; then
+                    break
+                  fi
+                  while IFS= read -r protect_machine_id; do
+                    test -n "$protect_machine_id" || continue
+                    # START, never stop, a protected machine.
+                    flyctl machine start "$protect_machine_id" --app "$app" || true
+                  done < <(jq -r '.[] | select(.state != "started") | .id' \
+                    <<<"$protect_pass_json")
+                  sleep 5
+                done
+                protect_after_read_failed=false
+                if ! protect_after_json="$(flyctl machine list --app "$app" --json)"; then
+                  protect_after_json='[]'
+                  protect_after_read_failed=true
+                fi
+                printf '%s\n' "$protect_after_json" \
+                  >"test-results/sandbox-egress/protect-after-${app}.json"
+                if [ "$protect_after_read_failed" = true ]; then
+                  # A failed post-state read is UNKNOWN, not clean: never report
+                  # "none" (which would read as "all started").
+                  protect_not_started="unknown (machine list read failed)"
+                else
+                  protect_not_started="$(jq -r \
+                    '[.[] | select(.state != "started") | .id] | join(",")' \
+                    <<<"$protect_after_json" 2>/dev/null || true)"
+                  protect_not_started="${protect_not_started:-none}"
+                fi
+                printf 'protected_not_stopped\t%s\tapp=%s\tmachines_not_started=%s\n' \
+                  "$reason" "$app" "$protect_not_started" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                echo "PROTECTED app ${app} was NOT stopped after ${reason}; machines not started: ${protect_not_started}. Failing loudly for the renewal-failure alert." >&2
+                return 1
+              fi
+              # --- NON-PROTECTED consuming apps: fail-closed containment ---
+              # A non-protected consuming machine must never be left running with
+              # an unverified or mismatched egress receipt: stopping it preserves
+              # the security property that such a machine cannot serve traffic
+              # while bypassing the egress isolation the receipt attests to. This
+              # stop path is unchanged; only protected apps opt out of it above.
               printf 'contain\t%s\n' "$reason" \
                 >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
               if ! containment_before_json="$(flyctl machine list --app "$app" --json)"; then
@@ -603,23 +789,75 @@ jobs:
             # changed the same way for the same reason (PR #555).
             # /healthz is still probed and printed below, as diagnostic output
             # only -- never gating.
-            healthy=false
-            for attempt in $(seq 1 24); do
+            # Bounded readiness wait + post-state assertion (replaces the old
+            # single short probe). After rotating this app, poll BOTH the app's
+            # /livez AND every machine's state every readiness_interval seconds
+            # for up to readiness_timeout seconds. Machine state is read from
+            # `flyctl machine list --json` -- its `.state` is the same field
+            # `flyctl machine status --json` reports, and list is used because a
+            # rotation touches every machine of the app, not one. The app is
+            # "ready" only when /livez answers 200 AND every machine that was
+            # `started` before the update is `started` now, so a machine left
+            # `stopped` during the window is never counted healthy. When the
+            # window elapses without readiness, contain_current_machines applies:
+            # for a protected app it STARTS any stopped machine and fails loudly
+            # (never stops); for a non-protected app the fail-closed stop remains.
+            # Validate the window as a non-negative integer; fall back to 300s
+            # with a logged notice on anything else ("5m", "300s", empty,
+            # negative). A misconfigured var must never abort the rotation.
+            readiness_timeout="${SANDBOX_EGRESS_READINESS_TIMEOUT_SECONDS:-}"
+            if ! [[ "$readiness_timeout" =~ ^[0-9]+$ ]]; then
+              echo "  SANDBOX_EGRESS_READINESS_TIMEOUT_SECONDS='${readiness_timeout}' is not a non-negative integer; falling back to 300s" >&2
+              readiness_timeout=300
+            fi
+            readiness_interval=10
+            # Bound by attempt COUNT so the loop terminates deterministically
+            # (real 10s sleeps on CI; instant under test where sleep is stubbed).
+            readiness_attempts=$(( (readiness_timeout + readiness_interval - 1) / readiness_interval ))
+            if [ "$readiness_attempts" -lt 1 ]; then
+              readiness_attempts=1
+            fi
+            started_before_ids="$(jq -cS \
+              '[.[] | select(.state == "started") | .id] | sort' <<<"$machines_json")"
+            printf '%s\n' "$machines_json" \
+              >"test-results/sandbox-egress/rotation-before-${app}.json"
+            ready=false
+            readiness_after_json='[]'
+            for readiness_attempt in $(seq 1 "$readiness_attempts"); do
+              if ! readiness_after_json="$(flyctl machine list --app "$app" --json)"; then
+                readiness_after_json='[]'
+              fi
+              livez_ok=false
               if curl --silent --show-error --fail --max-time 10 \
                   "https://${app}.fly.dev/livez" \
                   >"test-results/sandbox-egress/livez-${app}.json"; then
-                healthy=true
+                livez_ok=true
+              fi
+              # Every machine that was started before the update must be started
+              # now; a stopped one keeps states_ok false (item 3 / item 2).
+              states_ok=false
+              if jq -e --argjson before "$started_before_ids" '
+                  ([.[] | select(.state == "started") | .id] | sort) as $now
+                  | all($before[]; . as $id | ($now | index($id)) != null)
+                ' <<<"$readiness_after_json" >/dev/null 2>&1; then
+                states_ok=true
+              fi
+              if [ "$livez_ok" = true ] && [ "$states_ok" = true ]; then
+                ready=true
                 break
               fi
-              sleep 5
+              sleep "$readiness_interval"
             done
+            # Record the before/after machine states in the evidence artifact.
+            printf '%s\n' "$readiness_after_json" \
+              >"test-results/sandbox-egress/rotation-after-${app}.json"
             # Diagnostic only. A red /healthz here is worth seeing precisely
             # because we now know it used to have a destructive consequence.
             health_code="$(curl --silent --output "test-results/sandbox-egress/healthz-${app}.json" \
               --write-out '%{http_code}' --max-time 10 \
               "https://${app}.fly.dev/healthz" || true)"
             echo "  /healthz -> http ${health_code} (diagnostic only -- rotation does NOT gate on this; see the note above)"
-            if [ "$healthy" != true ]; then
+            if [ "$ready" != true ]; then
               contain_current_machines "post_rotation_health_failed"
               echo "The app $app did not become healthy after receipt rotation"
               exit 1
@@ -642,7 +880,11 @@ jobs:
           if-no-files-found: error
           retention-days: 90
       - name: Alert on renewal failure
-        if: ${{ failure() }}
+        if: ${{ failure() || cancelled() }}
+        # if: MUST stay on the line directly after the step name: the "Validate
+        # protected authority" self-check greps that line for failure(). It still
+        # contains failure(); cancelled() additionally opens the alert issue when
+        # a run is killed (e.g. the job timeout) rather than lapsing silently.
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

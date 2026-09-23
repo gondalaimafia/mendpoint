@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "repositoryId": 1309389373,
   "repository": "gondalaimafia/mendpoint",
-  "workflowPath": ".github/workflows/closure-authority-quiet-sweep.yml",
+  "workflowPath": ".github/workflows/closure-authority-systemic-escalation.yml",
   "requiredCiWorkflowPath": ".github/workflows/ci.yml",
-  "externalCheckName": "mendpoint-production-closure-authority-quiet-sweep",
+  "externalCheckName": "mendpoint-production-closure-authority-systemic-escalation",
   "externalCheckAppId": 4718395,
-  "controllerCheckName": "mendpoint-production-closure-controller-quiet-sweep",
+  "controllerCheckName": "mendpoint-production-closure-controller-systemic-escalation",
   "controllerCheckAppId": 15368,
   "protectionMode": "classic_branch",
   "protectionBranch": "main",
@@ -20,21 +20,7 @@
     "scripts/production-closure-matrix.test.ts",
     "scripts/production-closure-proposal-authority.test.ts"
   ],
-  "successor": {
-    "templatePath": "config/production-closure-successors/closure-authority-systemic-escalation.yml",
-    "workflowPath": ".github/workflows/closure-authority-systemic-escalation.yml",
-    "workflowSha256": "sha256:955f0df2589cb71181621b8aa29ca4215d3bf4a29684985d74bf391d2b98e422",
-    "externalCheckName": "mendpoint-production-closure-authority-systemic-escalation",
-    "externalCheckAppId": 4718395,
-    "controllerCheckName": "mendpoint-production-closure-controller-systemic-escalation",
-    "controllerCheckAppId": 15368,
-    "controllerStatusCreatorLogin": "github-actions[bot]",
-    "controllerStatusCreatorUserId": 41898282,
-    "activationDeadline": "2026-09-08T06:34:50.583Z",
-    "phase": "staged",
-    "stagedByRotationId": "rotation-20260902-020",
-    "activatedByRotationId": null
-  },
+  "successor": null,
   "trustedReviewers": {
     "Claude": [
       {
@@ -48,23 +34,45 @@
     ]
   },
   "productionEvidenceAuthorities": [],
+  "publicClaimEvidenceHolds": [
+    {
+      "evidenceId": "CLM-001-EV01",
+      "recordedAt": "2026-09-12T20:42:09.544Z",
+      "expiresAt": "2026-09-16T00:00:00.000Z",
+      "reason": "incident #659: customer production has been stopped since 2026-09-08T10:30Z; live evidence cannot be observed until the fix deploys",
+      "authorizedBy": "owner gondalaimafia, 2026-09-12"
+    },
+    {
+      "evidenceId": "CLM-013-EV01",
+      "recordedAt": "2026-09-12T20:42:09.544Z",
+      "expiresAt": "2026-09-16T00:00:00.000Z",
+      "reason": "incident #659: customer production has been stopped since 2026-09-08T10:30Z; live evidence cannot be observed until the fix deploys",
+      "authorizedBy": "owner gondalaimafia, 2026-09-12"
+    },
+    {
+      "evidenceId": "CLM-013-EV02",
+      "recordedAt": "2026-09-12T20:42:09.544Z",
+      "expiresAt": "2026-09-16T00:00:00.000Z",
+      "reason": "incident #659: customer production has been stopped since 2026-09-08T10:30Z; live evidence cannot be observed until the fix deploys",
+      "authorizedBy": "owner gondalaimafia, 2026-09-12"
+    }
+  ],
   "protectedFiles": {
     "config/production-closure-successors/closure-authority-quiet-sweep.yml": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9",
     "config/production-closure-successors/closure-authority-systemic-escalation.yml": "sha256:955f0df2589cb71181621b8aa29ca4215d3bf4a29684985d74bf391d2b98e422",
     ".github/workflows/ci.yml": "sha256:af2e34aa2a94375846fc34ba41978598f05dedbe03a68dd161434199a6a975b3",
     "scripts/production-closure-ci-workflow.test.ts": "sha256:5942062f144d6fc9ce4c15c4ba0bc7a38ebc6bbcc793d409fb9faedbe9a63d24",
     "package.json": "sha256:5166abfa08925beec8bbf6cc0078435bf37f1d4165e25524608924d840dd606a",
-    "package-lock.json": "sha256:193181927b3e5813f43471c60c343c0300c6c71540a9b3921968a215cb57cd0d",
+    "package-lock.json": "sha256:2e17589cf4818c9280c8715bc5f8beda197c804bb6ddceb6c131d59a9460c079",
     "tsconfig.base.json": "sha256:7c157e5eafd2be931e382044c0bdbf7008e111c119c3932f6fd31603a28e8ede",
     "scripts/tsconfig.json": "sha256:8607a9e57b531b9c941819da05b1ba70c991389a5d1b3d13be06d109d49b22e5",
-    "scripts/production-closure-proposal-authority.ts": "sha256:d2648ed808e0d257e3d1fa23f7d3c72c04343c77320f64d9b75e598a1f803b7c",
-    "scripts/production-closure-github-authority.ts": "sha256:551404bce6c205304e4f59fcc5befa906c974dfe8c21006849744eb597b8baf4",
+    "scripts/production-closure-proposal-authority.ts": "sha256:a146a8368cd6240615ca7895f1a632bfcbe9593a3f2eb1a4ac287aa49aa022c1",
+    "scripts/production-closure-github-authority.ts": "sha256:ee704e213df4f9e20f65c100436749ce03fe03f0f402ec9cdee604445a8b4c65",
     "scripts/production-closure-authority-rotation.ts": "sha256:e5557ab767353b4817ef07c235ee97b24dbb59d14b8697a92f1b781cab1717e7",
-    "scripts/production-closure-matrix.ts": "sha256:01bd2b42846270d64638e0d5317688c4d4b0eef046b1630a480c4f1c5dcfb292",
-    "scripts/public-claims-check.ts": "sha256:31ce71d0cc998a4b534714bf8fd17f577876b235ca1255a2a76c8e38815ea248",
+    "scripts/production-closure-matrix.ts": "sha256:5c2d948443d32ecb9f2ef86b1e4ce7823d18f13eebc227d674851d6c4efc5654",
+    "scripts/public-claims-check.ts": "sha256:030d56a1bd8e6a3ecc627bd668b84d9075ff994fd71f2b583ef7ded9ed9fb55d",
     "packages/contract/src/product-requirements.ts": "sha256:a0ee9719e472bee1a73f44c44df9626f5f91d881608c628d5b2eb4c9fb7f4e98",
-    "packages/contract/src/public-claims.ts": "sha256:10b9739ff30ea52f17a8d1ca9822268f8c57e09b5a5f2d31a3b9a9189ad6aac0",
-    ".github/workflows/closure-authority-quiet-sweep.yml": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9",
+    "packages/contract/src/public-claims.ts": "sha256:bf381f35221172597e8dd6571643873f3d5e622259b22bcae99086c277382555",
     ".github/workflows/closure-authority-systemic-escalation.yml": "sha256:955f0df2589cb71181621b8aa29ca4215d3bf4a29684985d74bf391d2b98e422"
   }
 }

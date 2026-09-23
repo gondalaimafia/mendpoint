@@ -67,7 +67,91 @@ function raise(db: AppDb, opts: { blocking?: boolean; observedAgainst?: Snapshot
     observedAgainst: opts.observedAgainst, correlationId: "corr", createdAt: T0 });
 }
 
+function insertMissionDispatch(
+  db: AppDb,
+  state: "authorized" | "dispatching" | "uncertain",
+  suffix: string,
+  tenantId = "t1",
+  missionId = "m1",
+) {
+  db.raw.prepare(`INSERT INTO mission_mutation_dispatches
+    (id, tenant_id, mission_id, job_id, mutation_kind, aggregate_id, authority_json,
+     intent_digest, state, lease_owner, lease_generation, authorized_at, dispatching_at,
+     uncertain_at, updated_at)
+    VALUES (?, ?, ?, ?, 'fettler_candidate_delivery', ?, '{}', ?, ?, 'worker-1', 1, ?, ?, ?, ?)`)
+    .run(`dispatch-${suffix}`, tenantId, missionId, `job-${suffix}`, `aggregate-${suffix}`,
+      `sha256:${"e".repeat(64)}`, state, T0, state === "dispatching" ? T0 : null,
+      state === "uncertain" ? T0 : null, T0);
+}
+
+function dispatchState(db: AppDb, suffix: string): string {
+  return (db.raw.prepare(`SELECT state FROM mission_mutation_dispatches WHERE id = ?`)
+    .get(`dispatch-${suffix}`) as { state: string }).state;
+}
+
+function exceptionEventCount(db: AppDb, tenantId = "t1", missionId = "m1"): number {
+  return (db.raw.prepare(`SELECT COUNT(*) AS count FROM domain_events
+    WHERE tenant_id = ? AND aggregate_type = 'mission' AND aggregate_id = ?
+      AND event_type LIKE 'mission.exception_%'`).get(tenantId, missionId) as { count: number }).count;
+}
+
 describe("mission exception register", () => {
+  // The tenant predicate at the id lookup IS distinguishable — by the fence
+  // side-effect, not by the return value — but only when the CALLER owns the
+  // transaction, because otherwise this function's own ROLLBACK erases the
+  // difference. Unmutated: the scoped lookup misses, so the blocking path runs
+  // revokePendingMissionMutationDispatches BEFORE the insert fails on the id
+  // collision, leaving the dispatch 'revoked'. Mutated: the unscoped lookup hits
+  // the foreign row and hydrate() throws first, so the fence never runs and the
+  // dispatch is still 'authorized'. Tenant isolation itself is unaffected either
+  // way: no caller ever receives the other tenant's row.
+  it("runs the dispatch fence before failing on a foreign record id collision", () => {
+    const db = fixture();
+    const input = {
+      tenantId: "t1", missionId: "m1", reason: "policy_exception",
+      impact: "A policy blocker forbids remote mutation.",
+      ownerPrincipalId: "p1", resolutionPath: "Resolve the policy exception.",
+      blocking: true, correlationId: "corr", createdAt: T0,
+    } as const;
+    // The record id is a content digest of the input, so the same input yields
+    // the same id in any database. Learn it here, then plant a row under the
+    // other tenant carrying that id in a fresh database. The table is
+    // append-only, so this is the only way to construct the collision at all.
+    const raised = raiseMissionException(db, input);
+
+    const other = fixture();
+    other.raw.prepare(`INSERT INTO mission_exceptions
+      (id, tenant_id, mission_id, reason, impact, owner_principal_id, resolution_path,
+       blocking, status, content_digest, created_at)
+      VALUES (?, 't2', 'm2', 'policy_exception', 'Another tenant entirely.', 'p2',
+        'Resolve it over there.', 1, 'open', ?, ?)`)
+      .run(raised.id, "f".repeat(64), T0);
+    other.raw.prepare(`INSERT INTO mission_mutation_dispatches
+      (id, tenant_id, mission_id, job_id, mutation_kind, aggregate_id, authority_json,
+       intent_digest, state, lease_owner, lease_generation, authorized_at, updated_at)
+      VALUES ('d1', 't1', 'm1', 'job-1', 'fettler_candidate_delivery', 'agg-1', '{}',
+        ?, 'authorized', 'worker-a', 1, ?, ?)`)
+      .run(`sha256:${"c".repeat(64)}`, T0, T0);
+
+    // The caller owns the transaction, so this function will not roll back.
+    other.raw.exec("BEGIN IMMEDIATE");
+    let code = "";
+    let returned: ReturnType<typeof raiseMissionException> | undefined;
+    try { returned = raiseMissionException(other, input); }
+    catch (error) { code = error instanceof Error ? error.message : String(error); }
+    const dispatch = other.raw.prepare("SELECT state FROM mission_mutation_dispatches WHERE id = 'd1'")
+      .get() as { state: string };
+    other.raw.exec("ROLLBACK");
+
+    // Isolation, unconditionally: t1 never receives t2's row.
+    expect(returned).toBeUndefined();
+    expect(returned?.tenantId).not.toBe("t2");
+    // The named failure, not merely "something threw".
+    expect(code).toContain("UNIQUE constraint failed");
+    // The fence ran. Drop the tenant predicate and this is "authorized".
+    expect(dispatch).toEqual({ state: "revoked" });
+  });
+
   it("blocks the mission while an open blocking exception stands", () => {
     const db = fixture();
     raise(db);
@@ -124,6 +208,20 @@ describe("mission exception register", () => {
     expect(evaluateMissionExceptions(db, "t1", "m1").missionBlocked).toBe(false);
   });
 
+  it("keeps an exact stale blocking raise replay independent from newer dispatch authority", () => {
+    const db = fixture();
+    const original = raise(db, { observedAgainst: snapA });
+    expect(evaluateMissionExceptions(db, "t1", "m1", snapB).missionBlocked).toBe(false);
+    insertMissionDispatch(db, "authorized", "raise-stale-replay");
+    const beforeEvents = exceptionEventCount(db);
+
+    const replay = raise(db, { observedAgainst: snapA });
+
+    expect(replay).toEqual(original);
+    expect(dispatchState(db, "raise-stale-replay")).toBe("authorized");
+    expect(exceptionEventCount(db)).toBe(beforeEvents);
+  });
+
   it("re-affirming a stale exception against the current snapshot blocks again", () => {
     const db = fixture();
     const e = raise(db, { observedAgainst: snapA });
@@ -132,6 +230,99 @@ describe("mission exception register", () => {
     expect(evaluateMissionExceptions(db, "t1", "m1", snapB).missionBlocked).toBe(true);
     // The original, now superseded, is no longer a live head.
     expect(evaluateMissionExceptions(db, "t1", "m1", snapB).stale).toHaveLength(0);
+  });
+
+  it("revokes authorized Mission mutation authority before reaffirming a blocking head", () => {
+    const db = fixture();
+    const prior = raise(db, { observedAgainst: snapA });
+    insertMissionDispatch(db, "authorized", "reaffirm-authorized");
+
+    const reaffirmed = reaffirmMissionException(db, { tenantId: "t1", priorExceptionId: prior.id,
+      blocking: true, observedAgainst: snapB, actorPrincipalId: "p1", correlationId: "corr",
+      createdAt: "2026-01-04T00:00:00.000Z" });
+
+    expect(reaffirmed.supersedesId).toBe(prior.id);
+    expect(dispatchState(db, "reaffirm-authorized")).toBe("revoked");
+    expect(evaluateMissionExceptions(db, "t1", "m1", snapB).blocking).toHaveLength(1);
+  });
+
+  it.each(["dispatching", "uncertain"] as const)(
+    "rolls back a blocking reaffirmation while a Mission mutation is %s",
+    (state) => {
+      const db = fixture();
+      const prior = raise(db, { observedAgainst: snapA });
+      insertMissionDispatch(db, state, `reaffirm-${state}`);
+      const beforeRows = listMissionExceptions(db, "t1", "m1");
+      const beforeEvents = exceptionEventCount(db);
+
+      expect(() => reaffirmMissionException(db, { tenantId: "t1", priorExceptionId: prior.id,
+        blocking: true, observedAgainst: snapB, actorPrincipalId: "p1", correlationId: "corr",
+        createdAt: "2026-01-04T00:00:00.000Z" }))
+        .toThrow("mission_mutation_dispatch_in_flight");
+
+      expect(dispatchState(db, `reaffirm-${state}`)).toBe(state);
+      expect(listMissionExceptions(db, "t1", "m1")).toEqual(beforeRows);
+      expect(exceptionEventCount(db)).toBe(beforeEvents);
+      expect(evaluateMissionExceptions(db, "t1", "m1", snapB)).toMatchObject({
+        missionBlocked: false,
+        blocking: [],
+      });
+      expect(evaluateMissionExceptions(db, "t1", "m1", snapB).stale).toHaveLength(1);
+    },
+  );
+
+  it("fences only the exact tenant and Mission during blocking reaffirmation", () => {
+    const db = fixture();
+    const prior = raise(db, { observedAgainst: snapA });
+    insertMissionDispatch(db, "authorized", "reaffirm-exact");
+    insertMissionDispatch(db, "dispatching", "reaffirm-sibling-tenant", "t2", "m2");
+
+    reaffirmMissionException(db, { tenantId: "t1", priorExceptionId: prior.id, blocking: true,
+      observedAgainst: snapB, actorPrincipalId: "p1", correlationId: "corr",
+      createdAt: "2026-01-04T00:00:00.000Z" });
+
+    expect(dispatchState(db, "reaffirm-exact")).toBe("revoked");
+    expect(dispatchState(db, "reaffirm-sibling-tenant")).toBe("dispatching");
+  });
+
+  it("does not touch dispatch authority when reaffirmation snapshot validation fails", () => {
+    const db = fixture();
+    const prior = raise(db, { observedAgainst: snapA });
+    insertMissionDispatch(db, "authorized", "reaffirm-snapshot-invalid");
+    const beforeRows = listMissionExceptions(db, "t1", "m1");
+    const beforeEvents = exceptionEventCount(db);
+
+    expect(() => reaffirmMissionException(db, { tenantId: "t1", priorExceptionId: prior.id,
+      blocking: true, observedAgainst: { ...snapB, resolvedSha: "f".repeat(40) },
+      actorPrincipalId: "p1", correlationId: "corr", createdAt: "2026-01-04T00:00:00.000Z" }))
+      .toThrow("mission_exception_snapshot_binding_mismatch");
+
+    expect(dispatchState(db, "reaffirm-snapshot-invalid")).toBe("authorized");
+    expect(listMissionExceptions(db, "t1", "m1")).toEqual(beforeRows);
+    expect(exceptionEventCount(db)).toBe(beforeEvents);
+  });
+
+  it("keeps nonblocking reaffirmation and exact replay independent from dispatch fencing", () => {
+    const db = fixture();
+    const prior = raise(db, { blocking: false, observedAgainst: snapA });
+    insertMissionDispatch(db, "dispatching", "reaffirm-nonblocking");
+    const reaffirmed = reaffirmMissionException(db, { tenantId: "t1", priorExceptionId: prior.id,
+      blocking: false, observedAgainst: snapB, actorPrincipalId: "p1", correlationId: "corr",
+      createdAt: "2026-01-04T00:00:00.000Z" });
+    expect(reaffirmed.blocking).toBe(false);
+    expect(dispatchState(db, "reaffirm-nonblocking")).toBe("dispatching");
+
+    const replayDb = fixture();
+    const replayPrior = raise(replayDb, { observedAgainst: snapA });
+    reaffirmMissionException(replayDb, { tenantId: "t1", priorExceptionId: replayPrior.id,
+      blocking: true, observedAgainst: snapB, actorPrincipalId: "p1", correlationId: "corr",
+      createdAt: "2026-01-04T00:00:00.000Z" });
+    insertMissionDispatch(replayDb, "authorized", "reaffirm-replay");
+    expect(() => reaffirmMissionException(replayDb, { tenantId: "t1", priorExceptionId: replayPrior.id,
+      blocking: true, observedAgainst: snapB, actorPrincipalId: "p1", correlationId: "corr",
+      createdAt: "2026-01-04T00:00:00.000Z" }))
+      .toThrow("mission_exception_already_superseded");
+    expect(dispatchState(replayDb, "reaffirm-replay")).toBe("authorized");
   });
 
   it("withdraws an exception without re-affirmation and it stops blocking", () => {

@@ -10,6 +10,7 @@ import {
   insertArtifactManifest,
   insertEvidenceRecord,
   getLatestCandidateArtifactForSubject,
+  getPrincipalBySubject,
   insertPrincipal,
   insertReviewDecision,
   listArtifactManifests,
@@ -395,5 +396,155 @@ describe("trust records", () => {
       });
     }).not.toThrow();
     expect(resolved?.id).toBe("principal-mtask-raced");
+  });
+
+  it("treats a display-name change with matching authority fields as a rename when opted in", () => {
+    const db = setup();
+    const created = insertPrincipal(db, {
+      id: "principal-rename", tenantId: "tenant-a", kind: "service",
+      subject: "rename-service", displayName: "Old name",
+      audience: "pipeline", createdAt: at,
+    });
+    const renamed = insertPrincipal(db, {
+      id: "principal-rename", tenantId: "tenant-a", kind: "service",
+      subject: "rename-service", displayName: "New name",
+      audience: "pipeline", createdAt: at, onDisplayNameChange: "relabel",
+    });
+    expect(renamed.display_name).toBe("New name");
+    // Persisted, not just returned: re-read from the DB.
+    const reread = getPrincipalBySubject(db, "tenant-a", "service", "rename-service");
+    expect(reread?.display_name).toBe("New name");
+    // Same identity is kept: no second row, same id.
+    expect(renamed.id).toBe(created.id);
+    const count = db.raw
+      .prepare(
+        `SELECT COUNT(*) AS n FROM principals
+         WHERE tenant_id = ? AND kind = ? AND subject = ?`,
+      )
+      .get("tenant-a", "service", "rename-service") as { n: number };
+    expect(count.n).toBe(1);
+  });
+
+  it("throws principal_identity_conflict on a display-name-only change by default and leaves the row unchanged", () => {
+    const db = setup();
+    const created = insertPrincipal(db, {
+      id: "principal-default", tenantId: "tenant-a", kind: "service",
+      subject: "default-service", displayName: "Old name",
+      audience: "pipeline", createdAt: at,
+    });
+    expect(() =>
+      insertPrincipal(db, {
+        id: "principal-default", tenantId: "tenant-a", kind: "service",
+        subject: "default-service", displayName: "New name",
+        audience: "pipeline", createdAt: at,
+      }),
+    ).toThrow("principal_identity_conflict");
+    // The label is untouched: default mode never rewrites in place.
+    expect(getPrincipalBySubject(db, "tenant-a", "service", "default-service"))
+      .toEqual(created);
+  });
+
+  it("still throws principal_identity_conflict in relabel mode when authority fields drift", () => {
+    const db = setup();
+    insertPrincipal(db, {
+      id: "principal-relabel-aud", tenantId: "tenant-a", kind: "service",
+      subject: "relabel-aud", displayName: "Name", audience: "pipeline", createdAt: at,
+    });
+    expect(() =>
+      insertPrincipal(db, {
+        id: "principal-relabel-aud", tenantId: "tenant-a", kind: "service",
+        subject: "relabel-aud", displayName: "New name", audience: "review",
+        createdAt: at, onDisplayNameChange: "relabel",
+      }),
+    ).toThrow("principal_identity_conflict");
+    insertPrincipal(db, {
+      id: "principal-relabel-exp", tenantId: "tenant-a", kind: "api_key",
+      subject: "relabel-exp", displayName: "Name",
+      expiresAt: "2026-09-01T00:00:00.000Z", createdAt: at,
+    });
+    expect(() =>
+      insertPrincipal(db, {
+        id: "principal-relabel-exp", tenantId: "tenant-a", kind: "api_key",
+        subject: "relabel-exp", displayName: "New name",
+        expiresAt: "2026-10-01T00:00:00.000Z", createdAt: at, onDisplayNameChange: "relabel",
+      }),
+    ).toThrow("principal_identity_conflict");
+    insertPrincipal(db, {
+      id: "principal-relabel-rev", tenantId: "tenant-a", kind: "service",
+      subject: "relabel-rev", displayName: "Name", createdAt: at,
+    });
+    expect(() =>
+      insertPrincipal(db, {
+        id: "principal-relabel-rev", tenantId: "tenant-a", kind: "service",
+        subject: "relabel-rev", displayName: "New name",
+        revokedAt: "2026-09-01T00:00:00.000Z", createdAt: at, onDisplayNameChange: "relabel",
+      }),
+    ).toThrow("principal_identity_conflict");
+  });
+
+  it("still throws principal_identity_conflict on audience drift", () => {
+    const db = setup();
+    insertPrincipal(db, {
+      id: "principal-aud", tenantId: "tenant-a", kind: "service",
+      subject: "aud-service", displayName: "Name", audience: "pipeline", createdAt: at,
+    });
+    expect(() =>
+      insertPrincipal(db, {
+        id: "principal-aud", tenantId: "tenant-a", kind: "service",
+        subject: "aud-service", displayName: "Name", audience: "review", createdAt: at,
+      }),
+    ).toThrow("principal_identity_conflict");
+  });
+
+  it("still throws principal_identity_conflict on expires_at drift", () => {
+    const db = setup();
+    insertPrincipal(db, {
+      id: "principal-exp", tenantId: "tenant-a", kind: "api_key",
+      subject: "exp-service", displayName: "Name",
+      expiresAt: "2026-09-01T00:00:00.000Z", createdAt: at,
+    });
+    expect(() =>
+      insertPrincipal(db, {
+        id: "principal-exp", tenantId: "tenant-a", kind: "api_key",
+        subject: "exp-service", displayName: "Name",
+        expiresAt: "2026-10-01T00:00:00.000Z", createdAt: at,
+      }),
+    ).toThrow("principal_identity_conflict");
+  });
+
+  it("still throws principal_identity_conflict on revoked_at drift", () => {
+    const db = setup();
+    insertPrincipal(db, {
+      id: "principal-rev", tenantId: "tenant-a", kind: "service",
+      subject: "rev-service", displayName: "Name", createdAt: at,
+    });
+    expect(() =>
+      insertPrincipal(db, {
+        id: "principal-rev", tenantId: "tenant-a", kind: "service",
+        subject: "rev-service", displayName: "Name",
+        revokedAt: "2026-09-01T00:00:00.000Z", createdAt: at,
+      }),
+    ).toThrow("principal_identity_conflict");
+  });
+
+  it("re-registers the renamed pipeline principal without conflict (production regression)", () => {
+    // Production shape: the deterministic pipeline principal was created on
+    // 2026-08-10 as "Warden pipeline" (audience "pipeline", no expiry/revocation).
+    // Commit 342f4bfd renamed the registration to "Fettler pipeline"; before this
+    // fix every pipeline.fanout job dead-lettered on principal_identity_conflict.
+    const db = setup();
+    insertPrincipal(db, {
+      id: "principal-warden-pipeline", tenantId: "tenant-a", kind: "service",
+      subject: "warden-pipeline", displayName: "Warden pipeline",
+      audience: "pipeline", createdAt: at,
+    });
+    const reregistered = insertPrincipal(db, {
+      id: "principal-warden-pipeline", tenantId: "tenant-a", kind: "service",
+      subject: "warden-pipeline", displayName: "Fettler pipeline",
+      audience: "pipeline", createdAt: at, onDisplayNameChange: "relabel",
+    });
+    expect(reregistered.display_name).toBe("Fettler pipeline");
+    expect(getPrincipalBySubject(db, "tenant-a", "service", "warden-pipeline")?.display_name)
+      .toBe("Fettler pipeline");
   });
 });

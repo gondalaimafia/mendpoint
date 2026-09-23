@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash, createPublicKey, verify } from "node:crypto";
+import { lstatSync, readFileSync } from "node:fs";
 
 export const SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA = "2026-08-18.v1" as const;
 export const SANDBOX_EGRESS_ATTESTATION_SCHEMA = "2026-08-19.v2" as const;
@@ -93,6 +94,12 @@ export type SandboxEgressAttestationPayload = Readonly<{
 
 export type SandboxEgressAuthorityConfig = Readonly<{
   attestationBase64?: string;
+  // Absolute path to a file on the persistent volume holding the same signed
+  // receipt as `attestationBase64` (trimmed base64 text). Optional: when set,
+  // `verifySandboxEgressAuthority` prefers the file so a renewal can deliver a
+  // fresh receipt WITHOUT restarting the app, and falls back to the environment
+  // value. The verifier itself never reads it; only the file-first wrapper does.
+  attestationPath?: string;
   publicKeySpkiBase64?: string;
   expectedKeyId?: string;
   expectedPolicyDigest?: string;
@@ -373,12 +380,122 @@ export function verifySandboxEgressAttestation(input: Readonly<
   return payload;
 }
 
+export type SandboxEgressAuthoritySource = "file" | "env";
+
+// Thrown by verifySandboxEgressAuthority when no candidate verifies. When the
+// resolver degrades to the environment's `expired` error while a file candidate
+// also failed, `fileCandidateError` carries the file candidate's failure code so
+// a boot handler can report the file's unusability alongside the expiry warning.
+export type SandboxEgressAuthorityError = Error & { fileCandidateError?: string };
+
+type SandboxEgressAttestationFileResult =
+  | { kind: "absent" }
+  | { kind: "error"; error: Error }
+  | { kind: "text"; text: string };
+
+/**
+ * Resolve the receipt candidate held at `attestationPath`, refusing to read
+ * anything but a plain regular file no larger than the verifier's envelope
+ * limit. A missing path is `absent` (fall back to the environment); a symlink,
+ * an oversize file, a non-regular file, or an unreadable file is a file `error`
+ * (surfaced only if the environment candidate also fails). The bytes are read
+ * as trimmed base64 text and handed to the same pure verifier the environment
+ * value uses -- the file is never trusted beyond being a byte source.
+ */
+function readSandboxEgressAttestationFile(path: string): SandboxEgressAttestationFileResult {
+  let stats;
+  try {
+    stats = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return { kind: "absent" };
+    return { kind: "error", error: new Error("sandbox_egress_attestation_file_unreadable") };
+  }
+  if (stats.isSymbolicLink()) {
+    return { kind: "error", error: new Error("sandbox_egress_attestation_file_symlink") };
+  }
+  if (!stats.isFile()) {
+    return { kind: "error", error: new Error("sandbox_egress_attestation_file_not_regular") };
+  }
+  if (stats.size > MAX_ENVELOPE_BYTES) {
+    return { kind: "error", error: new Error("sandbox_egress_attestation_file_too_large") };
+  }
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8").trim();
+  } catch {
+    return { kind: "error", error: new Error("sandbox_egress_attestation_file_unreadable") };
+  }
+  return { kind: "text", text };
+}
+
+/**
+ * File-first authority resolver. Candidates are tried in order -- the file at
+ * `attestationPath` (when present) then `attestationBase64` from the
+ * environment -- and the FIRST that verifies is returned together with which
+ * source it came from. Every candidate is checked by the pure
+ * `verifySandboxEgressAttestation`, so the signature, key id, policy digest,
+ * app/image scope, schema floor, and expiry are enforced identically no matter
+ * where the bytes originated. When none verifies it throws the file's error if
+ * a file candidate existed (a present-but-bad file is surfaced, never hidden),
+ * otherwise the environment's error. The file is re-read on every call, so a
+ * renewal that installs a fresh receipt is picked up without a restart.
+ */
+export function verifySandboxEgressAuthority(
+  input: Readonly<
+    SandboxEgressAuthorityConfig & {
+      expectedApp: string;
+      expectedImage: string;
+      observedAt: string;
+    }
+  >,
+): Readonly<{ payload: VerifiedSandboxEgressAttestationPayload; source: SandboxEgressAuthoritySource }> {
+  const attestationPath = input.attestationPath?.trim();
+  let fileError: Error | undefined;
+  if (attestationPath) {
+    const file = readSandboxEgressAttestationFile(attestationPath);
+    if (file.kind === "text") {
+      try {
+        const payload = verifySandboxEgressAttestation({ ...input, attestationBase64: file.text });
+        return Object.freeze({ payload, source: "file" as const });
+      } catch (error) {
+        fileError = error instanceof Error ? error : new Error(String(error));
+      }
+    } else if (file.kind === "error") {
+      fileError = file.error;
+    }
+    // kind === "absent": no file candidate existed; fall back to the environment.
+  }
+  try {
+    const payload = verifySandboxEgressAttestation({ ...input, attestationBase64: input.attestationBase64 });
+    return Object.freeze({ payload, source: "env" as const });
+  } catch (error) {
+    const envError = error instanceof Error ? error : new Error(String(error));
+    if (!fileError) throw envError;
+    // Both candidates failed. When the ENVIRONMENT receipt is authentic but merely
+    // expired, throw THAT so a boot handler can DEGRADE (sandbox launches stay
+    // refused at use time) rather than crash-loop the single production machine on
+    // an unrelated file corruption -- the failure class #661 exists to prevent.
+    // The file candidate's failure code is surfaced on the thrown error so the
+    // file's unusability is still reported. Otherwise the file's error wins.
+    if (envError.message === "sandbox_egress_attestation_expired") {
+      (envError as SandboxEgressAuthorityError).fileCandidateError = fileError.message;
+      throw envError;
+    }
+    throw fileError;
+  }
+}
+
 export function sandboxEgressAuthorityFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): SandboxEgressAuthorityConfig {
   const minimumSchemaVersion = env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA?.trim();
+  const attestationPath = env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PATH?.trim() || undefined;
   return Object.freeze({
     attestationBase64: env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64,
+    // Optional file transport for the receipt (see the field's doc comment). A
+    // blank or unset value is treated as "no file", so the environment value is
+    // used exactly as before.
+    attestationPath,
     publicKeySpkiBase64: env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64,
     expectedKeyId: env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID,
     expectedPolicyDigest: env.MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST,

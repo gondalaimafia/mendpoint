@@ -239,6 +239,20 @@ export interface ProductionClosureMatrixIssue {
 export interface ProductionClosureValidationOptions {
   trustedProductionEvidenceAuthorities?: readonly ProductionEvidenceTrustRoot[];
   requireCurrentPullRequestBootstrap?: boolean;
+  /**
+   * The pull request under judgement, when the caller has a CI-attested number
+   * (MENDPOINT_CLOSURE_PR_NUMBER). Bootstrap-slot exemptions that key on it use
+   * this number and ONLY this number when it is supplied; a bootstrap declaration
+   * naming any other number grants nothing. When absent they fall back to the
+   * declared bootstrap number, exactly as every other bootstrap exemption in this
+   * validator does. Today that is every production run: closure:check has no CI
+   * number, and the quiet-sweep workflow sets MENDPOINT_CLOSURE_PR_NUMBER only on
+   * its github-authority step, not on closure:proposal:check, so the proposal
+   * authority passes undefined here too. Until that wiring lands (a successor
+   * ceremony, since it edits the pinned workflow) the CI-keyed path is exercised
+   * by the suites, not by production.
+   */
+  currentPullRequestNumber?: number;
 }
 
 export function exactLegacyBootstrapMatrixAllowed(
@@ -1008,6 +1022,17 @@ export function validateProductionClosureMatrix(
   }
 
   const currentBootstrap = matrix.releaseTrain?.currentPullRequestBootstrap;
+  // Event-sourced identity, mirroring the proposal authority's self-removal
+  // exemption: the CI-attested number governs whenever a caller supplies it, and a
+  // forged or inherited bootstrap declaration cannot unlock an edge to any other
+  // number. Only an ABSENT option falls back to the declared bootstrap number,
+  // which is what every other bootstrap-slot exemption here keys on and what every
+  // production caller supplies today (see the option's comment). Any other value,
+  // null included, is used as given and can never equal a record number.
+  const bootstrapNumber =
+    options.currentPullRequestNumber !== undefined
+      ? options.currentPullRequestNumber
+      : currentBootstrap?.number;
   if (
     (options.requireCurrentPullRequestBootstrap === true && !currentBootstrap) ||
     (currentBootstrap !== undefined && (
@@ -1503,12 +1528,33 @@ export function validateProductionClosureMatrix(
     for (const dependencyNumber of pullRequest.dependencies.pullRequests) {
       const dependency = releasePrs.get(dependencyNumber);
       if (!dependency) {
-        add(
-          issues,
-          "PR_DEPENDENCY_UNTRACKED",
-          String(pullRequest.number),
-          `dependency ${dependencyNumber} is absent from the release-train integrity manifest`,
-        );
+        // Promotion is not absence. A base-tracked pull request that moved into
+        // currentPullRequestBootstrap (CURRENT_PR_BOOTSTRAP_DUPLICATE forbids it
+        // from staying a static record) is still tracked — by the slot that subjects
+        // it to the strictest live proof — so an edge to exactly that number resolves
+        // against the slot, as requirement bindings do. The slot is an UNMERGED
+        // in-flight pull request, so a dependent that is merged or currently green
+        // is release-ineligible until it merges, exactly as the static predicate
+        // below treats an unmerged tracked dependency. Any other untracked number
+        // still flags: the exemption is one number, never "any missing record".
+        if (dependencyNumber !== bootstrapNumber) {
+          add(
+            issues,
+            "PR_DEPENDENCY_UNTRACKED",
+            String(pullRequest.number),
+            `dependency ${dependencyNumber} is absent from the release-train integrity manifest`,
+          );
+        } else if (
+          pullRequest.state === "merged" ||
+          pullRequest.checkState === "current_checks_green"
+        ) {
+          add(
+            issues,
+            "PR_DEPENDENCY_UNSATISFIED",
+            String(pullRequest.number),
+            `dependency ${dependencyNumber} is the in-flight current pull request and must merge before this pull request can be release eligible`,
+          );
+        }
       } else if (
         (pullRequest.state === "merged" ||
           pullRequest.checkState === "current_checks_green") &&

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppDb } from "@mendpoint/db";
 import {
   WardenCampaignExecutionError,
@@ -13,6 +13,7 @@ import {
 
 const db = {} as unknown as AppDb;
 const dependencies = {} as unknown as WardenCampaignExecutionDependencies;
+afterEach(() => vi.useRealTimers());
 
 function validPayload(): Record<string, unknown> {
   return {
@@ -55,6 +56,28 @@ describe("parseWardenCampaignExecuteJob", () => {
 });
 
 describe("runWardenCampaignExecuteTarget", () => {
+  it("routes the worker clock to authority and the enqueue clock to run records, leaving approvals intact", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-03T00:00:00.000Z"));
+    const payload = validPayload();
+    const queuedJob = job(payload);
+    let received: Parameters<WardenCampaignExecutor>[0] | null = null;
+    const execute: WardenCampaignExecutor = async (input) => {
+      received = input;
+      return { stage: "review" } as Awaited<ReturnType<WardenCampaignExecutor>>;
+    };
+    await runWardenCampaignExecuteTarget({ db, job: queuedJob, resolveDependencies: () => dependencies, execute });
+    // Authority (window/expiry/policy) follows the worker clock; the stable event
+    // clock stays the enqueue time so retries reproduce identical run records.
+    // Both are the actual values the executor received, not a re-parse of the
+    // untouched payload string.
+    expect(received!.now).toBe("2026-01-03T00:00:00.000Z");
+    expect(received!.createdAt).toBe("2026-01-02T00:00:00.000Z");
+    expect(received!.createdAt).toBe(payload.createdAt);
+    expect(received!.rolloutApproval).toEqual(payload.rolloutApproval);
+    expect(received!.ownerApproval).toEqual(payload.ownerApproval);
+  });
+
   it("returns executed with the review stage and passes the parsed authority through", async () => {
     let received: Parameters<WardenCampaignExecutor>[0] | null = null;
     const execute = (async (input) => {

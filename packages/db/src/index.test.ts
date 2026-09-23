@@ -362,10 +362,15 @@ describe("db", () => {
         )
         .get("legacy-job"),
     ).toEqual({
-      tenant_id: "tenant_default",
+      tenant_id: null,
       available_at: "2026-01-01T00:00:00.000Z",
       lease_generation: 0,
     });
+    expect(
+      db.raw
+        .prepare("SELECT id FROM jobs WHERE tenant_id = 'tenant_default'")
+        .all(),
+    ).toEqual([]);
     expect(indexes.map((index) => index.name)).toContain(
       "jobs_tenant_status_idx",
     );

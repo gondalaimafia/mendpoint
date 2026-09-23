@@ -88,6 +88,34 @@ export interface PublicClaimValidationOptions {
   asOf?: Date;
 }
 
+/**
+ * Result of comparing the registry's auditedRevision against the revision being
+ * shipped. The caller (which has Git access) performs the comparison and hands
+ * the outcome to {@link detectStaleClaims}. Keeping this a plain value keeps the
+ * staleness rule pure and testable without a working tree.
+ *
+ * `changedPaths` is the raw path list `git diff` reports between auditedRevision
+ * and HEAD. `auditedSurfacePathsByClaim` maps each claim ID present in the
+ * registry *as it stood at auditedRevision* to the surfacePaths it declared
+ * there; a claim absent from this map did not exist at the audited revision.
+ * Carrying the audited surface set (rather than only the changed files) lets the
+ * rule catch a claim that drops or retargets an audited surface before the
+ * comparison, which changed-file intersection alone cannot see.
+ *
+ * `indeterminate` is a fail-closed signal: a shallow clone, a missing object, a
+ * non-ancestor auditedRevision, a malformed auditedRevision, an unreadable
+ * audited registry, or "not a Git work tree" all land here so the gate reports a
+ * could-not-determine failure rather than silently passing.
+ */
+export type ClaimStalenessComparison =
+  | {
+      readonly status: "comparable";
+      readonly headRevision: string;
+      readonly changedPaths: readonly string[];
+      readonly auditedSurfacePathsByClaim: ReadonlyMap<string, readonly string[]>;
+    }
+  | { readonly status: "indeterminate"; readonly reason: string };
+
 const CLAIM_ID = /^CLM-[0-9]{3}$/;
 const EVIDENCE_ID = /^CLM-[0-9]{3}-EV[0-9]{2}$/;
 const DESTINATION_ID = /^DST-[0-9]{3}$/;
@@ -459,4 +487,122 @@ function liveTimestamp(
     return undefined;
   }
   return parsed;
+}
+
+/**
+ * Canonicalizes a claim surface locator to a repository-relative POSIX path so
+ * it compares equal to the paths Git reports. Strips a trailing `#fragment`
+ * anchor, folds Windows separators to `/`, and resolves `.`/`..` segments the
+ * same way {@link repositoryPath} in the check script does with
+ * `path.resolve`/`path.relative`. A locator that climbs above the repository
+ * root keeps its leading `..`, so it can never accidentally match a
+ * repository-relative change entry. Without this, `apps/x#L1`, `./apps/x`, and
+ * `apps\\x` all fail to match Git's `apps/x`, silently passing a stale surface.
+ */
+export function normalizeSurfacePath(surfacePath: string): string {
+  const withoutFragment = surfacePath.split("#", 1)[0].replace(/\\/g, "/");
+  const segments: string[] = [];
+  for (const segment of withoutFragment.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (
+      segment === ".." &&
+      segments.length > 0 &&
+      segments[segments.length - 1] !== ".."
+    ) {
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return segments.join("/");
+}
+
+/**
+ * Detects claims whose audit is stale relative to the code being shipped.
+ *
+ * Three fail-closed conditions are reported, all anchored to the registry as it
+ * stood at `auditedRevision` (supplied via {@link ClaimStalenessComparison}):
+ *
+ * - `CLAIM_SURFACE_STALE`: a surface the claim *currently* maps changed between
+ *   `auditedRevision` and HEAD, so the audit no longer describes that code.
+ * - `CLAIM_SURFACE_RETARGETED`: a surface the claim mapped *at auditedRevision*
+ *   is no longer mapped now. Comparing only the current surfaces against the
+ *   changed set (as an earlier version did) let an author edit an audited
+ *   surface and drop it from `surfacePaths` in the same commit to slip the gate;
+ *   the dropped path left the current set, so the intersection missed it. This
+ *   fires whether or not the dropped file itself changed, because narrowing what
+ *   a claim covers is itself an unaudited change.
+ * - `CLAIM_ADDED_AFTER_AUDIT`: a claim absent from the registry at
+ *   `auditedRevision` cannot have been audited there. Nothing else guarantees a
+ *   brand-new claim over otherwise-unchanged code is caught, so it fails closed.
+ *
+ * Every path is compared through {@link normalizeSurfacePath} so `#anchor`,
+ * `./`, separator, and non-ASCII spellings line up with Git's own output.
+ *
+ * The check fails closed. When the comparison could not be performed
+ * (`indeterminate`) a single registry-level issue is returned rather than an
+ * empty (passing) result.
+ */
+export function detectStaleClaims(
+  registry: Pick<PublicClaimRegistry, "auditedRevision" | "claims">,
+  comparison: ClaimStalenessComparison,
+): PublicClaimIssue[] {
+  const issues: PublicClaimIssue[] = [];
+  const auditedRevision = nonempty(registry.auditedRevision)
+    ? registry.auditedRevision
+    : "unknown";
+
+  if (comparison.status === "indeterminate") {
+    add(
+      issues,
+      "CLAIM_STALENESS_INDETERMINATE",
+      "registry",
+      `cannot compare auditedRevision ${auditedRevision} against HEAD: ${comparison.reason}`,
+    );
+    return issues;
+  }
+
+  const changed = new Set(comparison.changedPaths.map(normalizeSurfacePath));
+  for (const claim of registry.claims ?? []) {
+    const id = nonempty(claim?.id) ? claim.id : "unknown";
+    const currentSurfaces = new Set(
+      (claim?.surfacePaths ?? []).filter(nonempty).map(normalizeSurfacePath),
+    );
+
+    const auditedSurfaces = comparison.auditedSurfacePathsByClaim.get(id);
+    if (auditedSurfaces === undefined) {
+      add(
+        issues,
+        "CLAIM_ADDED_AFTER_AUDIT",
+        id,
+        `claim is absent from the registry at auditedRevision ${auditedRevision}, so it cannot have been audited there; re-audit the claim and update auditedRevision`,
+      );
+      continue;
+    }
+
+    for (const auditedSurface of auditedSurfaces) {
+      const normalized = normalizeSurfacePath(auditedSurface);
+      if (nonempty(normalized) && !currentSurfaces.has(normalized)) {
+        add(
+          issues,
+          "CLAIM_SURFACE_RETARGETED",
+          id,
+          `surface ${normalized} was mapped at auditedRevision ${auditedRevision} but the claim no longer maps it; a dropped or retargeted audited surface must be re-audited before auditedRevision advances`,
+        );
+      }
+    }
+
+    for (const surfacePath of currentSurfaces) {
+      if (changed.has(surfacePath)) {
+        add(
+          issues,
+          "CLAIM_SURFACE_STALE",
+          id,
+          `surface ${surfacePath} changed between auditedRevision ${auditedRevision} and HEAD ${comparison.headRevision}; re-audit the claim and update auditedRevision`,
+        );
+      }
+    }
+  }
+
+  return issues;
 }

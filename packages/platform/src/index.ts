@@ -61,6 +61,8 @@ export type {
   SandboxEgressAttestationPayload,
   VerifiedSandboxEgressAttestationPayload,
   SandboxEgressAuthorityConfig,
+  SandboxEgressAuthoritySource,
+  SandboxEgressAuthorityError,
 } from "./sandbox-egress-attestation.js";
 export {
   SANDBOX_EGRESS_ATTESTATION_LEGACY_SCHEMA,
@@ -76,6 +78,7 @@ export {
   SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST,
   sandboxEgressAttestationPayloadBytes,
   verifySandboxEgressAttestation,
+  verifySandboxEgressAuthority,
   sandboxEgressAuthorityFromEnv,
 } from "./sandbox-egress-attestation.js";
 
@@ -230,6 +233,7 @@ export {
   EnvelopeKeyLifecycleRegistry,
   DisabledExternalVaultProvider,
   ConfiguredEnvelopeKeyProvider,
+  createExternalKeyEncryptionKeyProvider,
   LocalEnvelopeKeyProvider,
   cryptographicKeyMaterialFingerprint,
   envelopeKeyProvidersFromEnvironment,
@@ -247,9 +251,23 @@ export {
   type EnvelopeSecret,
   type EnvelopeAccessAuditEvent,
   type KeyEncryptionKeyProvider,
+  type ExternalKeyEncryptionKeyBinding,
+  type ExternalKeyEncryptionKeyProviderConfig,
   type DurableEnvelopeSecretVersion,
   type DurableEnvelopeSecretProviderOptions,
 } from "./vault-envelope.js";
+
+export {
+  HttpsExternalKeyTransport,
+  createHttpsExternalKeyTransport,
+  type ExternalKeyAddressResolver,
+  type ExternalKeyDestinationPolicy,
+  type ExternalKeyHttpsRequest,
+  type ExternalKeyHttpsRequester,
+  type ExternalKeyHttpsResponse,
+  type ExternalKeyTransport,
+  type HttpsExternalKeyTransportConfig,
+} from "./external-kek-client.js";
 
 export {
   ExecutorRegistry,

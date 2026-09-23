@@ -1,4 +1,5 @@
 import {
+  existsSync,
   linkSync,
   mkdtempSync,
   mkdirSync,
@@ -6,10 +7,12 @@ import {
   readdirSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, parse } from "node:path";
-import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { dirname, join, parse, resolve } from "node:path";
+import { hostname, tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { createDb, createDependencyOutageQueue } from "@mendpoint/db";
@@ -19,9 +22,12 @@ import {
   customerBackupInputFromEnv,
   CORE_DISASTER_RECOVERY_POLICY,
   createBackupBundle,
+  initializeWithMutationLease,
   inspectMutationFence,
   isBackupFenceActive,
+  mutationMarkerOwnerTermination,
   REGAUGE_CUTOVER_FENCE_NAME,
+  reapOrphanedMutationMarkers,
   recoverStaleMutationMarker,
   resolveMutationFenceRoot,
   restoreBackupAtomically,
@@ -30,12 +36,18 @@ import {
   validateCustomerRestorePathSafety,
   verifyBackupBundle,
   verifyRecoveryDrillReport,
+  waitForMutationFenceRelease,
   type DisasterRecoveryPolicy,
 } from "./disaster-recovery.js";
+import { inspectRegaugeCutoverFence } from "./regauge-cutover.js";
 
 const BACKUP_KEY = Buffer.alloc(32, 0x5a);
 const WRONG_BACKUP_KEY = Buffer.alloc(32, 0x6b);
 const BACKUP_KEY_ID = "customer-backup-key-v1";
+// Repo root: this file lives at packages/ops/src, and a `--import tsx` child must run
+// from the root so `@mendpoint/ops` resolves via the workspace symlink.
+const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..");
+const CUTOVER_TRANSFER_KEY_HEX = "ab".repeat(32);
 const RETAINED_ARTIFACT_ROOTS = [
   "warden-candidates",
   "warden-evidence",
@@ -951,5 +963,334 @@ describe("disaster recovery", () => {
     rmSync(join(fenceRoot, "exclusive.json"));
     expect(isBackupFenceActive(fenceRoot)).toBe(true);
     expect(tryAcquireMutationLease(fenceRoot)).toBeNull();
+  });
+});
+
+describe("orphaned mutation fence recovery at boot", () => {
+  const linuxOnly = process.platform === "linux" ? it : it.skip;
+
+  function fenceFixture(): string {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-dr-reap-"));
+    roots.push(root);
+    return join(root, "fence");
+  }
+
+  function auditLines(fenceRoot: string): Record<string, unknown>[] {
+    return readFileSync(join(fenceRoot, "recovery-audit.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+
+  // A pid that is provably no longer running: spawnSync waits for the child to exit.
+  function deadPid(): number {
+    const dead = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    if (!dead.pid || dead.pid <= 0) throw new Error("failed_to_spawn_dead_pid");
+    return dead.pid;
+  }
+
+  // Build a real persistent ReGauge cutover hold (the authenticated fence file plus
+  // its paired exclusive.json, bound by exclusiveMarkerSha256) by calling the real
+  // acquireRegaugeCutoverFence in a child that exits, so the exclusive marker records
+  // a dead pid on this host exactly as the one-shot `flyctl console` cutover does.
+  function acquireCutoverFenceInChild(fenceRoot: string): { fenceId: string; transferKey: Buffer } {
+    const fenceId = "regauge-cutover-guard";
+    const child = spawnSync(process.execPath, [
+      "--import", "tsx", "--input-type=module", "-e",
+      `const { acquireRegaugeCutoverFence } = await import("@mendpoint/ops");\n` +
+      `acquireRegaugeCutoverFence({\n` +
+      `  fenceRoot: process.env.FENCE_ROOT,\n` +
+      `  fenceId: process.env.FENCE_ID,\n` +
+      `  transferId: "transfer-cutover-guard",\n` +
+      `  createdAt: process.env.CREATED_AT,\n` +
+      `  sourceApp: "mendpoint-transformer-pilot",\n` +
+      `  sourceVolume: "vol_source_guard",\n` +
+      `  transferKeyId: "cutover-key-guard",\n` +
+      `  transferKey: Buffer.from(process.env.TRANSFER_KEY_HEX, "hex"),\n` +
+      `});`,
+    ], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        FENCE_ROOT: fenceRoot,
+        FENCE_ID: fenceId,
+        CREATED_AT: "2026-09-10T00:00:00.000Z",
+        TRANSFER_KEY_HEX: CUTOVER_TRANSFER_KEY_HEX,
+      },
+    });
+    expect(child.status, `cutover child failed: ${child.stderr}`).toBe(0);
+    return { fenceId, transferKey: Buffer.from(CUTOVER_TRANSFER_KEY_HEX, "hex") };
+  }
+
+  it("judges owner termination by boot id and same-host liveness, never host alone", () => {
+    const started = new Date(Date.now() - process.uptime() * 1_000).toISOString();
+    expect(mutationMarkerOwnerTermination(
+      { bootId: "boot-a", hostname: hostname(), pid: process.pid, processStartedAt: started },
+      { currentBootId: "boot-b", currentHostname: hostname() },
+    )).toBe("boot_id_mismatch");
+    // A marker from another hostname with no boot-id mismatch is NOT proof of
+    // termination: it could be a second container sharing the fence volume.
+    expect(mutationMarkerOwnerTermination(
+      { bootId: undefined, hostname: "a-different-machine", pid: process.pid, processStartedAt: started },
+      { currentBootId: undefined, currentHostname: hostname() },
+    )).toBeNull();
+    expect(mutationMarkerOwnerTermination(
+      { bootId: undefined, hostname: hostname(), pid: process.pid, processStartedAt: started },
+      { currentBootId: undefined, currentHostname: hostname() },
+    )).toBeNull();
+  });
+
+  it("reaps an exclusive marker written in a different kernel boot", () => {
+    const fenceRoot = fenceFixture();
+    mkdirSync(join(fenceRoot, "writers"), { recursive: true });
+    const marker = {
+      schemaVersion: 1, kind: "exclusive", id: "orphan-backup",
+      ownerToken: "owner-token-exclusive", hostname: hostname(), pid: process.pid,
+      processStartedAt: new Date(Date.now() - process.uptime() * 1_000).toISOString(),
+      acquiredAt: new Date().toISOString(), bootId: "boot-from-before-the-reboot",
+    };
+    writeFileSync(join(fenceRoot, "exclusive.json"), `${JSON.stringify(marker)}\n`);
+    const reaped = reapOrphanedMutationMarkers(fenceRoot, { currentBootId: "boot-after-the-reboot" });
+    expect(reaped).toEqual([
+      { kind: "exclusive", id: "orphan-backup", reason: "boot_id_mismatch", quarantined: false },
+    ]);
+    expect(existsSync(join(fenceRoot, "exclusive.json"))).toBe(false);
+    expect(isBackupFenceActive(fenceRoot)).toBe(false);
+  });
+
+  it("reaps a writer lease whose recorded pid is no longer running", () => {
+    const fenceRoot = fenceFixture();
+    mkdirSync(join(fenceRoot, "writers"), { recursive: true });
+    const dead = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    expect(dead.pid).toBeGreaterThan(0);
+    const marker = {
+      schemaVersion: 1, kind: "writer", id: "dead-writer",
+      ownerToken: "owner-token-dead-writer", hostname: hostname(), pid: dead.pid,
+      processStartedAt: new Date(Date.now() - process.uptime() * 1_000).toISOString(),
+      acquiredAt: new Date().toISOString(),
+    };
+    writeFileSync(join(fenceRoot, "writers", "dead-writer.json"), `${JSON.stringify(marker)}\n`);
+    const reaped = reapOrphanedMutationMarkers(fenceRoot);
+    expect(reaped).toEqual([
+      { kind: "writer", id: "dead-writer", reason: "process_not_alive", quarantined: false },
+    ]);
+    expect(inspectMutationFence(fenceRoot).writers).toEqual([]);
+  });
+
+  linuxOnly("reaps a live pid whose /proc start time proves the number was reused", () => {
+    const fenceRoot = fenceFixture();
+    mkdirSync(join(fenceRoot, "writers"), { recursive: true });
+    const marker = {
+      schemaVersion: 1, kind: "writer", id: "reused-pid-writer",
+      ownerToken: "owner-token-reused", hostname: hostname(), pid: process.pid,
+      // Years before this process started; /proc says the number is a different process.
+      processStartedAt: "2020-01-01T00:00:00.000Z",
+      acquiredAt: new Date().toISOString(),
+    };
+    writeFileSync(join(fenceRoot, "writers", "reused-pid-writer.json"), `${JSON.stringify(marker)}\n`);
+    const reaped = reapOrphanedMutationMarkers(fenceRoot);
+    expect(reaped).toEqual([
+      { kind: "writer", id: "reused-pid-writer", reason: "pid_reused_start_time_mismatch", quarantined: false },
+    ]);
+    expect(inspectMutationFence(fenceRoot).writers).toEqual([]);
+  });
+
+  it("keeps a live writer lease and never touches the persistent ReGauge cutover hold", () => {
+    const fenceRoot = fenceFixture();
+    const live = tryAcquireMutationLease(fenceRoot);
+    expect(live).not.toBeNull();
+    writeFileSync(join(fenceRoot, REGAUGE_CUTOVER_FENCE_NAME), "authenticated-cutover-hold\n");
+    const reaped = reapOrphanedMutationMarkers(fenceRoot);
+    expect(reaped).toEqual([]);
+    expect(inspectMutationFence(fenceRoot).writers.map((entry) => entry.id)).toEqual([live!.id]);
+    expect(existsSync(join(fenceRoot, REGAUGE_CUTOVER_FENCE_NAME))).toBe(true);
+    live!.release();
+  });
+
+  it("quarantines an unparseable marker older than 30s instead of leaving it to wedge boot", () => {
+    const fenceRoot = fenceFixture();
+    mkdirSync(join(fenceRoot, "writers"), { recursive: true });
+    writeFileSync(join(fenceRoot, "exclusive.json"), "this is not a fence marker\n");
+    // Older than the 30s young-marker guard, so it is a genuine corrupt marker rather
+    // than a writer observed mid-write.
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(join(fenceRoot, "exclusive.json"), past, past);
+    const reaped = reapOrphanedMutationMarkers(fenceRoot);
+    expect(reaped).toEqual([
+      { kind: "exclusive", id: null, reason: "marker_unparseable", quarantined: true },
+    ]);
+    expect(existsSync(join(fenceRoot, "exclusive.json"))).toBe(false);
+    expect(isBackupFenceActive(fenceRoot)).toBe(false);
+    expect(readdirSync(fenceRoot).filter((name) => name.startsWith(".corrupt-exclusive.json-")))
+      .toHaveLength(1);
+    expect(auditLines(fenceRoot).at(-1)).toMatchObject({
+      reason: "marker_unparseable", kind: "exclusive", markerFile: "exclusive.json",
+    });
+  });
+
+  it("leaves a freshly written unparseable marker alone (a writer may be mid-write)", () => {
+    const fenceRoot = fenceFixture();
+    mkdirSync(join(fenceRoot, "writers"), { recursive: true });
+    // A reader can observe a create-then-write marker as an empty or partial file; a
+    // marker younger than 30s must not be quarantined out from under a live writer.
+    writeFileSync(join(fenceRoot, "exclusive.json"), "");
+    const reaped = reapOrphanedMutationMarkers(fenceRoot);
+    expect(reaped).toEqual([]);
+    expect(existsSync(join(fenceRoot, "exclusive.json"))).toBe(true);
+    expect(readdirSync(fenceRoot).filter((name) => name.startsWith(".corrupt-"))).toHaveLength(0);
+  });
+
+  it("records each reaped marker in the recovery audit with its termination reason", () => {
+    const fenceRoot = fenceFixture();
+    mkdirSync(join(fenceRoot, "writers"), { recursive: true });
+    const marker = {
+      schemaVersion: 1, kind: "exclusive", id: "orphan-from-prior-boot",
+      ownerToken: "owner-token-prior-boot", hostname: hostname(), pid: process.pid,
+      processStartedAt: "2026-08-01T00:00:00.000Z", acquiredAt: "2026-08-01T00:00:00.000Z",
+      bootId: "boot-before-the-reboot",
+    };
+    writeFileSync(join(fenceRoot, "exclusive.json"), `${JSON.stringify(marker)}\n`);
+    const reaped = reapOrphanedMutationMarkers(fenceRoot, { currentBootId: "boot-after-the-reboot" });
+    expect(reaped).toEqual([
+      { kind: "exclusive", id: "orphan-from-prior-boot", reason: "boot_id_mismatch", quarantined: false },
+    ]);
+    const audit = auditLines(fenceRoot).at(-1)!;
+    expect(audit).toMatchObject({
+      kind: "exclusive",
+      markerId: "orphan-from-prior-boot",
+      ownerTerminationEvidence: "boot_id_mismatch",
+      ownerBootId: "boot-before-the-reboot",
+      currentBootId: "boot-after-the-reboot",
+    });
+    expect(String(audit.recoveryOwnerToken)).toMatch(/^boot-reaper:/);
+  });
+
+  linuxOnly("recovers a marker from a prior boot even though its pid is now a live process", () => {
+    const fenceRoot = fenceFixture();
+    mkdirSync(join(fenceRoot, "writers"), { recursive: true });
+    const marker = {
+      schemaVersion: 1, kind: "writer", id: "prior-boot-writer",
+      ownerToken: "owner-token-prior-boot", hostname: hostname(), pid: process.pid,
+      processStartedAt: new Date(Date.now() - process.uptime() * 1_000).toISOString(),
+      acquiredAt: new Date().toISOString(), bootId: "a-previous-boot-id",
+    };
+    writeFileSync(join(fenceRoot, "writers", "prior-boot-writer.json"), `${JSON.stringify(marker)}\n`);
+    const inspected = inspectMutationFence(fenceRoot).writers[0]!;
+    expect(recoverStaleMutationMarker({
+      fenceRoot, kind: "writer", markerId: "prior-boot-writer",
+      expectedMarkerSha256: inspected.markerSha256,
+      ownerTerminationEvidence: "machine-rebooted",
+    })).toMatchObject({ recovered: true, kind: "writer", markerId: "prior-boot-writer" });
+    expect(inspectMutationFence(fenceRoot).writers).toEqual([]);
+  });
+
+  it("still refuses to recover a live owner running in the current boot", () => {
+    const fenceRoot = fenceFixture();
+    const live = tryAcquireMutationLease(fenceRoot);
+    expect(live).not.toBeNull();
+    const inspected = inspectMutationFence(fenceRoot).writers[0]!;
+    expect(() => recoverStaleMutationMarker({
+      fenceRoot, kind: "writer", markerId: live!.id,
+      expectedMarkerSha256: inspected.markerSha256,
+      ownerTerminationEvidence: "incorrect-live-owner-claim",
+    })).toThrow("backup_fence_recovery_owner_still_alive");
+    live!.release();
+  });
+
+  it("waits out an orphaned hold and rejects when a live hold never clears", async () => {
+    const fenceRoot = fenceFixture();
+    mkdirSync(join(fenceRoot, "writers"), { recursive: true });
+    const orphan = {
+      schemaVersion: 1, kind: "exclusive", id: "orphan-exclusive",
+      ownerToken: "owner-token-orphan", hostname: hostname(), pid: deadPid(),
+      processStartedAt: new Date(Date.now() - process.uptime() * 1_000).toISOString(),
+      acquiredAt: new Date().toISOString(),
+    };
+    writeFileSync(join(fenceRoot, "exclusive.json"), `${JSON.stringify(orphan)}\n`);
+    await expect(waitForMutationFenceRelease(fenceRoot, { timeoutMs: 2_000, pollMs: 10 }))
+      .resolves.toBeUndefined();
+    expect(existsSync(join(fenceRoot, "exclusive.json"))).toBe(false);
+
+    const live = {
+      schemaVersion: 1, kind: "exclusive", id: "live-exclusive",
+      ownerToken: "owner-token-live", hostname: hostname(), pid: process.pid,
+      processStartedAt: new Date(Date.now() - process.uptime() * 1_000).toISOString(),
+      acquiredAt: new Date().toISOString(),
+    };
+    writeFileSync(join(fenceRoot, "exclusive.json"), `${JSON.stringify(live)}\n`);
+    await expect(waitForMutationFenceRelease(fenceRoot, { timeoutMs: 40, pollMs: 10 }))
+      .rejects.toThrow("backup_fence_wait_timeout");
+    rmSync(join(fenceRoot, "exclusive.json"), { force: true });
+  });
+
+  it("drains past an orphaned writer lease and completes the backup", async () => {
+    const { root, source, backup } = fixture();
+    const fenceRoot = join(root, "backup-fence");
+    mkdirSync(join(fenceRoot, "writers"), { recursive: true });
+    const orphanWriter = {
+      schemaVersion: 1, kind: "writer", id: "orphan-writer",
+      ownerToken: "owner-token-orphan-writer", hostname: hostname(), pid: deadPid(),
+      processStartedAt: new Date(Date.now() - process.uptime() * 1_000).toISOString(),
+      acquiredAt: new Date().toISOString(),
+    };
+    writeFileSync(join(fenceRoot, "writers", "orphan-writer.json"), `${JSON.stringify(orphanWriter)}\n`);
+    const manifest = await createApplicationConsistentBackup({
+      policy: POLICY, backupId: "backup-orphan-writer", createdAt: "2026-08-02T01:00:00.000Z",
+      sourceRoot: source, backupRoot: backup, fenceRoot, waitTimeoutMs: 1_000, pollIntervalMs: 5,
+      resources: TEST_RESOURCES, key: BACKUP_KEY, keyId: BACKUP_KEY_ID,
+    });
+    expect(manifest.backupId).toBe("backup-orphan-writer");
+    expect(inspectMutationFence(fenceRoot).writers).toEqual([]);
+    expect(isBackupFenceActive(fenceRoot)).toBe(false);
+  });
+
+  // Mutation control: initializeWithMutationLease reaps before admission. Removing
+  // the reapOrphanedMutationMarkers call from initializeWithMutationLease makes this
+  // test fail (tryAcquireMutationLease then sees the orphaned exclusive marker and
+  // throws customer_startup_blocked_by_backup).
+  it("boots past an orphaned exclusive backup marker left by a crashed process", () => {
+    const fenceRoot = fenceFixture();
+    mkdirSync(join(fenceRoot, "writers"), { recursive: true });
+    const orphan = {
+      schemaVersion: 1, kind: "exclusive", id: "orphan-backup",
+      ownerToken: "owner-token-orphan", hostname: hostname(), pid: deadPid(),
+      processStartedAt: new Date(Date.now() - process.uptime() * 1_000).toISOString(),
+      acquiredAt: new Date().toISOString(),
+    };
+    writeFileSync(join(fenceRoot, "exclusive.json"), `${JSON.stringify(orphan)}\n`);
+    const result = initializeWithMutationLease(() => "initialized", {
+      MENDPOINT_BACKUP_FENCE_ROOT: fenceRoot,
+    });
+    expect(result).toBe("initialized");
+    expect(existsSync(join(fenceRoot, "exclusive.json"))).toBe(false);
+  });
+
+  // Mutation control: the pairing guard in reapOrphanedMutationMarkers protects the
+  // cutover's exclusive marker. Removing that guard makes this test fail: the reaper
+  // then judges the paired marker's dead pid as process_not_alive, reaps it, and
+  // inspectRegaugeCutoverFence throws because exclusive.json is gone. (B2)
+  it("never reaps or quarantines the exclusive marker paired with a persistent ReGauge cutover hold", () => {
+    const fenceRoot = fenceFixture();
+    const { fenceId, transferKey } = acquireCutoverFenceInChild(fenceRoot);
+    expect(existsSync(join(fenceRoot, "exclusive.json"))).toBe(true);
+    expect(existsSync(join(fenceRoot, REGAUGE_CUTOVER_FENCE_NAME))).toBe(true);
+
+    const reaped = reapOrphanedMutationMarkers(fenceRoot);
+    expect(reaped).toEqual([]);
+    expect(existsSync(join(fenceRoot, "exclusive.json"))).toBe(true);
+    expect(existsSync(join(fenceRoot, REGAUGE_CUTOVER_FENCE_NAME))).toBe(true);
+    // The cutover fence still validates against its paired, untouched marker.
+    expect(inspectRegaugeCutoverFence({ fenceRoot, fenceId, transferKey }).fence.fenceId)
+      .toBe(fenceId);
+  });
+
+  it("fails fast with a distinct error when the only hold is the persistent cutover fence", async () => {
+    const fenceRoot = fenceFixture();
+    acquireCutoverFenceInChild(fenceRoot);
+    // The cutover hold never clears on its own; consuming the full startup timeout
+    // (600s in production) would be wrong. It must fail fast and name the hold.
+    await expect(waitForMutationFenceRelease(fenceRoot, { timeoutMs: 2_000, pollMs: 25 }))
+      .rejects.toThrow("backup_fence_blocked_by_regauge_cutover");
   });
 });

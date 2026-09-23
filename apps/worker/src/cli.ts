@@ -25,7 +25,7 @@ import {
   resolveFanoutSettlementMcuMicros,
   SANDBOX_EGRESS_ATTESTATION_SCHEMA,
   sandboxEgressAuthorityFromEnv,
-  verifySandboxEgressAttestation,
+  verifySandboxEgressAuthority,
   type FanoutRunMeterSignals,
 } from "@mendpoint/platform";
 import {
@@ -54,6 +54,7 @@ import {
   insertAgentRun,
   recordAgentRunMeter,
   releaseRunUsage,
+  replayPendingWardenCandidateDeliveryMergedOutcomes,
   settleRunUsage,
   RUN_USAGE_RESERVATION_KEY,
   RUN_USAGE_RESERVED_MCU_KEY,
@@ -73,6 +74,7 @@ import {
   settleWardenCiRepairWithoutCandidate,
   type AppDb,
   type FeedScheduleRow,
+  type MissionMutationAuthorityV1,
 } from "@mendpoint/db";
 import {
   listCatalogFeeds,
@@ -216,6 +218,7 @@ import {
 } from "./learning-corpus-cli.js";
 import {
   bridgeClaimedJobToMissionTask,
+  handoffCompletedJobToMissionReview,
   reconcilePriorPaidWardenAttempts,
   recordBoundMissionExecutionCost,
   resolveBoundMissionForJob,
@@ -257,7 +260,10 @@ import {
   createInstallationAccountFetcher,
   reconcileNullInstallationAccounts,
 } from "./installation-account-reconcile.js";
-import { runWardenCandidateUpdate } from "./warden-candidate-update.js";
+import {
+  runWardenCandidateUpdate,
+  type WardenCandidateUpdateInput,
+} from "./warden-candidate-update.js";
 import { createWardenCiEvidenceStore } from "./warden-ci-evidence.js";
 import { materializeWardenCiHead } from "./warden-ci-materializer.js";
 import {
@@ -1071,20 +1077,36 @@ export function classifyJobFailure(error: unknown): {
   message: string;
   errorCode: string;
   retryable: boolean;
+  retryPastMaxAttempts: boolean;
 } {
   const message = error instanceof Error ? error.message : String(error);
   const normalized = message.toLowerCase();
   const explicitCode = /^[a-z][a-z0-9_]{2,63}$/.test(message) ? message : null;
+  const remoteSideEffectUncertain =
+    (error as { remoteSideEffectUncertain?: unknown } | null)?.remoteSideEffectUncertain === true;
   const authorizationFailure =
     /auth|permission|forbidden|unauthorized|bad credentials/.test(normalized) ||
     /github_app_(?:credentials|token_(?:installation|invalid)|installation|repository|permissions|connection|delivery_mode|selected_repositories)/.test(
       normalized,
     );
+  // An uncertain remote side effect outlives the ordinary attempt budget so
+  // reconciliation still runs. It never overrides the authorization exclusion:
+  // a credential refused now is refused on every retry, so letting uncertainty
+  // win there would spin a permanently failing job past max_attempts.
+  // A Mission/CI mutation fence collision is TRANSIENT - another writer holds the
+  // Mission mid-flight, exactly the shape of sqlite_busy above. Classified
+  // terminal it dead-lettered the job under a misleading code AND lost the work
+  // the job was doing (a policy deny went unrecorded). Retryable within the
+  // ORDINARY attempt budget only: retryPastMaxAttempts stays false, so a fence
+  // that never clears still terminates instead of spinning forever. The sibling
+  // warden_ci_mutation_in_flight follows for the identical reason.
+  const retryPastMaxAttempts = remoteSideEffectUncertain && !authorizationFailure;
   const retryable =
     !authorizationFailure &&
-    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|verifier_advisory_provider_retryable|mcu_(?:accounting|settlement)_persistence_failed/.test(
+    (remoteSideEffectUncertain ||
+    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|verifier_advisory_provider_retryable|mcu_(?:accounting|settlement)_persistence_failed|(?:mission_mutation_dispatch|warden_ci_mutation)_in_flight/.test(
         normalized,
-      );
+      ));
   const errorCode = explicitCode ?? (retryable
     ? /rate.?limit|429/.test(normalized)
       ? "rate_limited"
@@ -1098,7 +1120,7 @@ export function classifyJobFailure(error: unknown): {
       : /verify|repair|warden|gate/.test(normalized)
         ? "verification_failed"
         : "job_failed");
-  return { message, errorCode, retryable };
+  return { message, errorCode, retryable, retryPastMaxAttempts };
 }
 
 // The agent planner reports a non-ok model status as the stop reason
@@ -1217,6 +1239,7 @@ type WardenJobPayload = Readonly<{
   // a separate gap), so this stays undefined and the mission-scoped sections
   // honestly report `no_mission_bound`.
   missionId?: string;
+  missionAuthority?: MissionMutationAuthorityV1;
   /**
    * Live Fettler endpoint key (canonicalKey) when the enqueueing surface already
    * has one. Never invented here; absent keeps MissionGraphProjection
@@ -1878,12 +1901,36 @@ export function maintainWardenArtifactsOnce(
       wardenMaintenanceTenantOffset + tenants.length < tenantCount
     ? wardenMaintenanceTenantOffset + tenants.length
     : 0;
-  const dataRoot = privateWardenDirectory(
-    resolve(env.MENDPOINT_DATA_DIR ?? join(process.cwd(), "data")),
-  );
   const total = { tenants: tenants.length, expired: 0, cleaned: 0, cleanupPending: 0 };
   for (const row of tenants) {
     try {
+      const outcomeReplay = replayPendingWardenCandidateDeliveryMergedOutcomes(db, {
+        tenantId: row.tenant_id,
+        observedAt,
+        limit: 100,
+      });
+      if (outcomeReplay.failed > 0) {
+        console.error(
+          `  Fettler merged-outcome replay failed tenant=${row.tenant_id} ` +
+          `count=${outcomeReplay.failed} malformed=${outcomeReplay.malformed}`,
+        );
+      }
+    } catch (error) {
+      total.cleanupPending++;
+      console.error(
+        `  Fettler merged-outcome replay deferred tenant=${row.tenant_id} error=${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    try {
+      // Durable outcome reconciliation is DB-only and intentionally precedes
+      // every artifact filesystem operation. A missing or damaged artifact
+      // mount may defer cleanup, but cannot block an already-observed merge from
+      // settling its exact Mission authority.
+      const dataRoot = privateWardenDirectory(
+        resolve(env.MENDPOINT_DATA_DIR ?? join(process.cwd(), "data")),
+      );
       const key = safeTenantId(row.tenant_id);
       const candidateRoot = privateWardenChildDirectory(
         dataRoot,
@@ -2284,6 +2331,7 @@ function releaseFanoutRunUsage(
 
 export function validateWorkerProductionEnv(
   env: NodeJS.ProcessEnv = process.env,
+  onWarning?: (warning: string) => void,
 ): string[] {
   if (env.NODE_ENV !== "production") return [];
   const errors: string[] = [];
@@ -2417,16 +2465,42 @@ export function validateWorkerProductionEnv(
   }
   if (env.MENDPOINT_SANDBOX_KIND?.trim() === "fly_machines") {
     try {
-      verifySandboxEgressAttestation({
+      verifySandboxEgressAuthority({
         ...sandboxEgressAuthorityFromEnv(env),
         expectedApp: env.MENDPOINT_SANDBOX_FLY_APP?.trim() ?? "",
         expectedImage: env.MENDPOINT_SANDBOX_FLY_IMAGE?.trim() ?? "",
         observedAt: new Date().toISOString(),
       });
     } catch (error) {
-      errors.push(
-        `Sandbox egress authority invalid: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      // `expired` is the LAST check in verifySandboxEgressAttestation (see
+      // packages/platform/src/sandbox-egress-attestation.ts, ~line 372): reaching it
+      // means the signature, key, scope, schema, and time-window checks all passed,
+      // so the receipt is authentic and merely past its expiry. A boot-fatal error
+      // here makes any outage longer than the ~23h receipt lifetime unrecoverable,
+      // because the egress renewal workflow only rotates a fresh attestation onto a
+      // machine that is already started. Sandbox launches stay refused at use time
+      // (fly-sandbox.ts validateEgressAuthority) and /ready still reports it
+      // (customer-readiness.ts), so degrade to a boot warning rather than crash-loop.
+      // Every other failure code stays fatal exactly as before.
+      if (message === "sandbox_egress_attestation_expired") {
+        const warning =
+          "worker_boot_degraded sandbox_egress_attestation_expired: sandbox launches are refused until the renewal delivers a fresh receipt";
+        process.stderr.write(`${warning}\n`);
+        onWarning?.(warning);
+        // The resolver degrades to the authentic-but-expired environment receipt
+        // when the volume FILE candidate also failed; surface that file failure so
+        // an operator sees the file is unusable (e.g. corrupt or truncated), not
+        // merely that the environment copy expired.
+        const fileCandidateError = (error as { fileCandidateError?: unknown }).fileCandidateError;
+        if (typeof fileCandidateError === "string" && fileCandidateError) {
+          const fileWarning = `worker_boot_degraded sandbox_egress_attestation_file_unusable: ${fileCandidateError}`;
+          process.stderr.write(`${fileWarning}\n`);
+          onWarning?.(fileWarning);
+        }
+      } else {
+        errors.push(`Sandbox egress authority invalid: ${message}`);
+      }
     }
   }
   errors.push(...validateDelegatedPrVerificationEnvironment(env));
@@ -3243,6 +3317,7 @@ async function processJobsOnceUnfenced(
     transformerAdaptiveRepositoryResolver?: ResolveTransformerAdaptiveRepository;
     wardenCandidateGithub?: GitHubDelivery;
     wardenCandidateRepositoryResolver?: ResolveWardenCandidateRepository;
+    wardenCandidateUpdateRuntime?: Omit<WardenCandidateUpdateInput, "db" | "job">;
     // Fettler campaign per-target execution (review-first). Present only when a
     // deployment has configured the production dependencies (generation
     // planEdits/applyEdits + sandbox verify + draft delivery); absent workers do
@@ -3618,6 +3693,11 @@ if (job.type === "warden.candidate.cleanup") {
       if (job.type === "warden.candidate.update") {
         const cycle = wardenCiCycleForJob(db, job);
         assertWardenCiCycleConfiguration(cycle, workerEnv);
+        if (opts.wardenCandidateUpdateRuntime) {
+          await runWardenCandidateUpdate({ db, job, ...opts.wardenCandidateUpdateRuntime });
+          result.succeeded++;
+          continue;
+        }
         const runtime = createWardenCiGitHubRuntime({ db, tenantId: cycle.tenantId,
           repositoryId: cycle.repositoryId, remoteRepositoryId: cycle.remoteRepositoryId,
           installationId: cycle.installationId, env: workerEnv });
@@ -4364,14 +4444,19 @@ if (job.type === "warden.candidate.cleanup") {
             runWrite,
             pendingWardenRoutingFinalizer,
             attempt.status === "succeeded" ? attempt.finalizeTerminal : undefined,
-            attempt.status === "succeeded" && delegatedPrVerification
-              ? () => requestDelegatedPrVerificationJob(db, {
-                  tenantId: job.tenant_id,
-                  runId: sessionId,
-                  correlationId: job.id,
-                  createdAt: nowIso(),
-                  authority: delegatedPrVerification.verificationDependencies,
-                })
+            attempt.status === "succeeded"
+              ? () => {
+                  if (payload.missionAuthority) {
+                    handoffCompletedJobToMissionReview(db, job, nowIso());
+                  }
+                  if (delegatedPrVerification) requestDelegatedPrVerificationJob(db, {
+                    tenantId: job.tenant_id,
+                    runId: sessionId,
+                    correlationId: job.id,
+                    createdAt: nowIso(),
+                    authority: delegatedPrVerification.verificationDependencies,
+                  });
+                }
               : noAction && payload.ciFailure
               ? () => settleWardenCiRepairWithoutCandidate(db, { tenantId: job.tenant_id,
                   cycleId: payload.ciFailure!.cycleId, repairRunId: sessionId,
@@ -4660,6 +4745,7 @@ if (job.type === "warden.candidate.cleanup") {
         try {
           const failure = failJob(db, job.id, classified.message, nowIso(), {
             ...fence, errorCode: classified.errorCode, retryable: classified.retryable,
+            retryPastMaxAttempts: classified.retryPastMaxAttempts,
             baseDelayMs: 5_000, maxDelayMs: 300_000,
           });
           if (failure.applied && failure.status === "dead_letter") {

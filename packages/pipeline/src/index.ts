@@ -743,6 +743,11 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     displayName: "Fettler pipeline",
     audience: "pipeline",
     createdAt: nowIso(),
+    // System-owned deterministic principal, renamed "Warden pipeline" ->
+    // "Fettler pipeline". Audience "pipeline" is unreachable from the tenant
+    // manager route (it only issues "mendpoint-api"/"mendpoint-scim"), so this
+    // is the only path allowed to relabel a pre-existing row in place.
+    onDisplayNameChange: "relabel",
   });
 
   const provider = getProviderBySlug(db, input.providerSlug);

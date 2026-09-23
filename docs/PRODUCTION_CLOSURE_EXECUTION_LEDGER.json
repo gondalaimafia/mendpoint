@@ -4426,7 +4426,7 @@
       "smallestUnmetGap": "Partial on current main. Smallest gap is a production caller that traces the acceptance assertion end-to-end, plus a mutation test on that caller, then exact-revision evidence.",
       "owningWave": 10,
       "owner": "customer-operations",
-      "issue": 433,
+      "issue": 642,
       "pullRequests": [
         284,
         333,

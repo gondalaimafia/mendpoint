@@ -1,20 +1,39 @@
 import { createHash } from "node:crypto";
 import {
-  bindWardenCiUpdateIntent,
+  authorizeWardenCiUpdateIntent,
+  beginMissionMutationRemoteCall,
   completeJob,
   completeWardenCiUpdate,
+  assertMissionMutationAuthority,
   getAgentRun,
+  getJob,
   getWardenCiCycle,
   getWardenCiUpdate,
   markWardenCiUpdateUncertain,
+  markWardenCiUpdateTakeoverUncertain,
+  markMissionMutationDispatchUncertain,
+  parseMissionMutationAuthority,
+  reconcileWardenCiUpdateNotApplied,
+  refreshMissionMutationAuthority,
+  settleMissionMutationDispatch,
   type AppDb,
   type JobRow,
+  type MissionMutationAuthorityV1,
 } from "@mendpoint/db";
 import type { ExactDraftObservation, ExactDraftObservationInput, ExactDraftUpdateInput,
   ExactDraftUpdateReconciliation, ExactDraftUpdateResult } from "@mendpoint/github";
 import { wardenReviewFeedbackDigest } from "./warden-candidate-observation.js";
 
 const JOB_TYPE = "warden.candidate.update";
+
+class WardenCandidateUpdateOutcomeUncertainError extends Error {
+  readonly remoteSideEffectUncertain = true;
+
+  constructor(readonly cause: unknown, message?: string) {
+    super(message ?? (cause instanceof Error ? cause.message : String(cause)));
+    this.name = "WardenCandidateUpdateOutcomeUncertainError";
+  }
+}
 
 export type WardenCandidateUpdateInput = Readonly<{
   db: AppDb;
@@ -27,15 +46,36 @@ export type WardenCandidateUpdateInput = Readonly<{
     remoteRepositoryId: number }>) => Readonly<{ owner: string; repo: string }> |
       Promise<Readonly<{ owner: string; repo: string }>>;
   now?: () => string;
+  beforeRemoteDispatch?: () => void;
 }>;
 
-function payload(job: JobRow): Readonly<{ cycleId: string; updateId: string }> {
+function payload(job: JobRow): Readonly<{
+  cycleId: string; updateId: string; missionId: string | null;
+  missionAuthority: MissionMutationAuthorityV1 | null;
+}> {
   let value: unknown;
   try { value = JSON.parse(job.payload_json); } catch { throw new Error("warden_ci_update_payload_invalid"); }
   if (!value || typeof value !== "object" || typeof (value as Record<string, unknown>).cycleId !== "string" ||
       typeof (value as Record<string, unknown>).updateId !== "string") throw new Error("warden_ci_update_payload_invalid");
   return Object.freeze({ cycleId: String((value as Record<string, unknown>).cycleId),
-    updateId: String((value as Record<string, unknown>).updateId) });
+    updateId: String((value as Record<string, unknown>).updateId),
+    missionId: typeof (value as Record<string, unknown>).missionId === "string" &&
+        String((value as Record<string, unknown>).missionId).trim()
+      ? String((value as Record<string, unknown>).missionId)
+      : null,
+    missionAuthority: (value as Record<string, unknown>).missionAuthority === undefined ? null
+      : parseMissionMutationAuthority((value as Record<string, unknown>).missionAuthority) });
+}
+
+function sourceMissionId(db: AppDb, tenantId: string, jobId: string | null): string | null {
+  const sourceJob = jobId ? getJob(db, jobId, tenantId) : undefined;
+  if (!sourceJob) return null;
+  let value: unknown;
+  try { value = JSON.parse(sourceJob.payload_json); } catch { throw new Error("warden_ci_update_source_invalid"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("warden_ci_update_source_invalid");
+  return typeof (value as Record<string, unknown>).missionId === "string"
+    ? String((value as Record<string, unknown>).missionId)
+    : null;
 }
 
 function files(artifact: Record<string, unknown>): ExactDraftUpdateInput["files"] {
@@ -115,6 +155,23 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
       source?.revision !== cycle.currentHeadSha || typeof source.snapshotId !== "string") {
     throw new Error("warden_ci_update_run_invalid");
   }
+  const claimedMissionId = sourceMissionId(input.db, cycle.tenantId, run.job_id);
+  const authorityBindings = [parsed.missionId, claimedMissionId, update.missionAuthority?.missionId,
+    cycle.missionAuthority?.missionId].filter((value): value is string => value !== null && value !== undefined);
+  if (authorityBindings.length > 0 && !parsed.missionAuthority) {
+    throw new Error("warden_ci_update_mission_authority_upgrade_required");
+  }
+  if (parsed.missionAuthority && (!parsed.missionId ||
+      authorityBindings.some((missionId) => missionId !== parsed.missionAuthority!.missionId) ||
+      (update.missionAuthority && JSON.stringify(update.missionAuthority) !== JSON.stringify(parsed.missionAuthority)) ||
+      (cycle.missionAuthority && JSON.stringify(cycle.missionAuthority) !== JSON.stringify(parsed.missionAuthority)))) {
+    throw new Error("warden_ci_update_mission_authority_required");
+  }
+  const assertMutationAuthority = () => {
+    if (parsed.missionAuthority) assertMissionMutationAuthority(input.db, cycle.tenantId,
+      parsed.missionAuthority, { allowClaimedTask: true, requireNoBlocking: true });
+  };
+  assertMutationAuthority();
   const artifact = input.readApprovalArtifact({ tenantId: cycle.tenantId, path: update.sealedPath,
     sha256: update.sealedSha256 });
   assertArtifact(artifact, { tenantId: cycle.tenantId, repositoryId: cycle.repositoryId,
@@ -122,13 +179,14 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
     reviewerPrincipalId: update.reviewerPrincipalId, rationale: update.rationale });
   const repository = await input.resolveRepository({ tenantId: cycle.tenantId, repositoryId: cycle.repositoryId,
     installationId: cycle.installationId, remoteRepositoryId: cycle.remoteRepositoryId });
+  assertMutationAuthority();
   const intent = Object.freeze({ owner: repository.owner, repo: repository.repo,
     expectedRepositoryId: cycle.remoteRepositoryId, pullRequestNumber: cycle.pullRequestNumber,
     baseBranch: cycle.baseBranch, branch: cycle.branchName, expectedHeadSha: cycle.currentHeadSha,
     commitMessage: `Apply approved Fettler CI repair ${update.repairRunId}`,
     commitDate: update.requestedAt, files: files(artifact) }) satisfies ExactDraftUpdateInput;
   const now = input.now ?? (() => new Date().toISOString());
-  const dispatchAt = now();
+  const preflightAt = now();
   const currentCycle = getWardenCiCycle(input.db, cycle.tenantId, cycle.id);
   const fence = input.db.raw.prepare(`SELECT status, lease_owner, lease_generation, lease_expires_at FROM jobs
     WHERE id = ? AND tenant_id = ?`).get(input.job.id, cycle.tenantId) as Record<string, unknown> | undefined;
@@ -136,8 +194,31 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
       currentCycle.currentHeadSha !== update.expectedHeadSha ||
       fence?.status !== "running" || fence.lease_owner !== input.job.lease_owner ||
       fence.lease_generation !== input.job.lease_generation || typeof fence.lease_expires_at !== "string" ||
-      fence.lease_expires_at <= dispatchAt) throw new Error("warden_ci_update_not_authorized");
+      fence.lease_expires_at <= preflightAt) throw new Error("warden_ci_update_not_authorized");
   const digest = intentDigest(intent, update.expectedFeedbackDigest);
+  const markRemoteOutcomeUncertain = (error: unknown, message?: string) => {
+    const owns = !input.db.raw.isTransaction;
+    if (owns) input.db.raw.exec("BEGIN IMMEDIATE");
+    try {
+      const observedAt = now();
+      if (parsed.missionAuthority) {
+        const mutation = input.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+          WHERE tenant_id = ? AND job_id = ?`).get(cycle.tenantId, input.job.id) as { state: string } | undefined;
+        if (mutation?.state === "dispatching") markMissionMutationDispatchUncertain(input.db, {
+          tenantId: cycle.tenantId, jobId: input.job.id, intentDigest: digest, observedAt,
+        });
+      }
+      const current = getWardenCiUpdate(input.db, cycle.tenantId, update.id);
+      if (current?.status === "intent_bound") markWardenCiUpdateUncertain(input.db, {
+        tenantId: cycle.tenantId, updateId: update.id, intentDigest: digest, observedAt,
+      });
+      if (owns) input.db.raw.exec("COMMIT");
+      return new WardenCandidateUpdateOutcomeUncertainError(error, message);
+    } catch (markError) {
+      if (owns && input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
+      return new WardenCandidateUpdateOutcomeUncertainError(markError, message);
+    }
+  };
   const assertCurrentFeedback = async () => {
     if (!update.expectedFeedbackDigest) return;
     if (!input.observeExactDraft) throw new Error("warden_ci_review_observer_required");
@@ -151,66 +232,107 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
       throw new Error("warden_ci_review_feedback_drift");
     }
   };
+  const dispatchFreshUpdate = async (): Promise<ExactDraftUpdateResult> => {
+    await assertCurrentFeedback();
+    assertMutationAuthority();
+    const authorizationAt = now();
+    authorizeWardenCiUpdateIntent(input.db, {
+      tenantId: cycle.tenantId,
+      updateId: update.id,
+      intentDigest: digest,
+      workerId: input.job.lease_owner!,
+      leaseGeneration: input.job.lease_generation,
+      observedAt: authorizationAt,
+      missionAuthority: parsed.missionAuthority,
+    });
+    input.beforeRemoteDispatch?.();
+    if (parsed.missionAuthority) beginMissionMutationRemoteCall(input.db, {
+      tenantId: cycle.tenantId,
+      jobId: input.job.id,
+      authority: parsed.missionAuthority,
+      intentDigest: digest,
+      workerId: input.job.lease_owner!,
+      leaseGeneration: input.job.lease_generation,
+      observedAt: now(),
+    });
+    try { return await input.updateExactDraft(intent); }
+    catch (error) { throw markRemoteOutcomeUncertain(error); }
+  };
   let remote: ExactDraftUpdateResult;
   if (reconciliationRequired) {
-    if (update.status === "intent_bound") {
-      markWardenCiUpdateUncertain(input.db, { tenantId: cycle.tenantId, updateId: update.id,
-        intentDigest: digest, observedAt: dispatchAt });
-    }
-    const reconciliation = await input.reconcileExactDraftUpdate(intent);
-    if (reconciliation.status === "unknown") throw new Error("warden_ci_update_outcome_uncertain");
-    if (reconciliation.status === "applied") {
-      remote = reconciliation.result;
+    const dispatch = parsed.missionAuthority
+      ? input.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+          WHERE tenant_id = ? AND job_id = ?`).get(cycle.tenantId, input.job.id) as { state: string } | undefined
+      : undefined;
+    // `intent_bound` is written before the durable remote-begin marker. When a
+    // Mission-bound retry still has an authorized dispatch, the prior worker
+    // provably crashed before GitHub could be called. Re-arm and dispatch the
+    // same exact intent; do not manufacture uncertainty or perform a needless
+    // remote reconciliation for work that never began.
+    if (update.status === "intent_bound" && dispatch?.state === "authorized") {
+      remote = await dispatchFreshUpdate();
     } else {
-      await assertCurrentFeedback();
-      bindWardenCiUpdateIntent(input.db, { tenantId: cycle.tenantId, updateId: update.id,
-        intentDigest: digest, workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation,
-        observedAt: dispatchAt });
-      try { remote = await input.updateExactDraft(intent); }
-      catch (error) {
+      if (parsed.missionAuthority &&
+          (update.status === "intent_bound" || dispatch?.state === "dispatching")) {
+        markWardenCiUpdateTakeoverUncertain(input.db, {
+          tenantId: cycle.tenantId,
+          updateId: update.id,
+          jobId: input.job.id,
+          intentDigest: digest,
+          observedAt: preflightAt,
+        });
+      } else if (update.status === "intent_bound") {
         markWardenCiUpdateUncertain(input.db, { tenantId: cycle.tenantId, updateId: update.id,
-          intentDigest: digest, observedAt: now() });
-        throw error;
+          intentDigest: digest, observedAt: preflightAt });
+      }
+      let reconciliation: ExactDraftUpdateReconciliation;
+      try { reconciliation = await input.reconcileExactDraftUpdate(intent); }
+      catch (error) { throw markRemoteOutcomeUncertain(error); }
+      if (reconciliation.status === "unknown") {
+        throw markRemoteOutcomeUncertain(null, "warden_ci_update_outcome_uncertain");
+      }
+      if (reconciliation.status === "applied") {
+        remote = reconciliation.result;
+      } else {
+        reconcileWardenCiUpdateNotApplied(input.db, {
+          tenantId: cycle.tenantId,
+          updateId: update.id,
+          jobId: input.job.id,
+          intentDigest: digest,
+          observedAt: now(),
+        });
+        remote = await dispatchFreshUpdate();
       }
     }
   } else {
-    await assertCurrentFeedback();
-    bindWardenCiUpdateIntent(input.db, { tenantId: cycle.tenantId, updateId: update.id,
-      intentDigest: digest, workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation,
-      observedAt: dispatchAt });
-    try { remote = await input.updateExactDraft(intent); }
-    catch (error) {
-      markWardenCiUpdateUncertain(input.db, { tenantId: cycle.tenantId, updateId: update.id,
-        intentDigest: digest, observedAt: now() });
-      throw error;
-    }
+    remote = await dispatchFreshUpdate();
   }
   if (!remote.draft || remote.number !== cycle.pullRequestNumber || remote.branch !== cycle.branchName ||
       remote.previousHeadSha !== cycle.currentHeadSha || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(remote.commitSha)) {
-    const current = getWardenCiUpdate(input.db, cycle.tenantId, update.id);
-    if (current?.status === "intent_bound") markWardenCiUpdateUncertain(input.db, {
-      tenantId: cycle.tenantId, updateId: update.id, intentDigest: digest, observedAt: now(),
-    });
-    throw new Error("warden_ci_update_result_invalid");
+    throw markRemoteOutcomeUncertain(null, "warden_ci_update_result_invalid");
   }
   const completedAt = now();
   input.db.raw.exec("BEGIN IMMEDIATE");
   try {
+    const freshMissionAuthority = parsed.missionAuthority
+      ? refreshMissionMutationAuthority(input.db, cycle.tenantId, parsed.missionAuthority,
+        { allowClaimedTask: true, requireNoBlocking: true })
+      : null;
     completeWardenCiUpdate(input.db, { tenantId: cycle.tenantId, updateId: update.id,
-      expectedHeadSha: cycle.currentHeadSha, commitSha: remote.commitSha, observedAt: completedAt });
+      expectedHeadSha: cycle.currentHeadSha, commitSha: remote.commitSha, observedAt: completedAt,
+      ...(freshMissionAuthority ? { missionAuthority: freshMissionAuthority } : {}) });
     if (!completeJob(input.db, input.job.id, { updateId: update.id, cycleId: cycle.id, commitSha: remote.commitSha,
       pullRequestNumber: remote.number, pullRequestUrl: remote.url }, completedAt,
     { workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation })) {
       throw new Error("warden_ci_update_lease_lost");
     }
+    if (parsed.missionAuthority) settleMissionMutationDispatch(input.db, {
+      tenantId: cycle.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: completedAt,
+    });
     input.db.raw.exec("COMMIT");
   } catch (error) {
     if (input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
-    const current = getWardenCiUpdate(input.db, cycle.tenantId, update.id);
-    if (current?.status === "intent_bound") markWardenCiUpdateUncertain(input.db, {
-      tenantId: cycle.tenantId, updateId: update.id, intentDigest: digest, observedAt: now(),
-    });
-    throw error;
+    throw markRemoteOutcomeUncertain(error);
   }
   return Object.freeze({ status: "updated" as const, updateId: update.id, cycleId: cycle.id,
     commitSha: remote.commitSha, pullRequestNumber: remote.number, pullRequestUrl: remote.url });

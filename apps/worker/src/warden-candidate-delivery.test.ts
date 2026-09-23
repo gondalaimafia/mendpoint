@@ -5,17 +5,31 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   claimNextJob,
+  bindMissionScope,
   createDb,
+  createMission,
+  createMissionMutationAuthority,
+  createMissionTask,
+  enqueueJob,
   enqueueWardenCandidateDelivery,
   getJob,
   getWardenCandidateDeliveryByRun,
   getWardenCiCycle,
   insertAgentRun,
+  insertPrincipal,
+  getMission,
+  getMissionTask,
+  openTaskHandoff,
+  raiseMissionException,
+  resolveTaskHandoff,
+  transitionMission,
+  transitionMissionTask,
   recoverExpiredJobs,
   type AppDb,
 } from "@mendpoint/db";
 import type { ExactDraftDeliveryInput, GitHubDelivery } from "@mendpoint/github";
 import { runWardenCandidateDelivery } from "./warden-candidate-delivery.js";
+import { processJobsOnce } from "./cli.js";
 
 const NOW = "2026-08-06T12:00:00.000Z";
 const SNAPSHOT_EXPIRES_AT = "2035-08-06T12:00:00.000Z";
@@ -144,6 +158,58 @@ function fixture(preciseEvidence = false, deleted = false, providerChange = fals
   return { db, dataRoot, delivery, job };
 }
 
+function bindMissionAuthority(value: ReturnType<typeof fixture>) {
+  const { db } = value;
+  insertPrincipal(db, { id: "principal-owner", tenantId: "tenant-a", kind: "human",
+    subject: "owner@example.com", displayName: "Owner", createdAt: NOW });
+  db.raw.prepare(`INSERT INTO scm_connections
+    (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+    VALUES ('scm-mission', 'tenant-a', 'github', 'app://1', '1', 'GitHub', ?, ?)`).run(NOW, NOW);
+  db.raw.prepare(`INSERT INTO connected_repositories
+    (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch,
+     environment, retention_days, status, created_at, updated_at)
+    VALUES ('repo-1', 'tenant-a', 'scm-mission', '1', 'acme', 'sdk', 'main', 'main',
+     'production', 30, 'ready', ?, ?)`).run(NOW, NOW);
+  db.raw.prepare(`INSERT INTO repository_snapshots
+    (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+     submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+    VALUES ('snapshot-1', 'tenant-a', 'repo-1', 'main', ?, ?, 'C:\\snapshot',
+     'reject', 'reject', '[]', 1, ?, '2099-01-01T00:00:00.000Z')`)
+    .run("a".repeat(40), `sha256:${"b".repeat(64)}`, NOW);
+  createMission(db, { id: "mission-1", tenantId: "tenant-a", product: "fettler",
+    triggerKind: "provider_change", objective: "Repair SDK", ownerPrincipalId: "principal-owner",
+    eventId: "e-mission", idempotencyKey: "c-mission", correlationId: "corr", createdAt: NOW });
+  bindMissionScope(db, { tenantId: "tenant-a", missionId: "mission-1", repositoryId: "repo-1",
+    snapshotId: "snapshot-1", actorPrincipalId: "principal-owner", eventId: "e-scope",
+    idempotencyKey: "c-scope", correlationId: "corr", createdAt: NOW });
+  let task = createMissionTask(db, { id: "task-1", tenantId: "tenant-a", missionId: "mission-1",
+    taskType: "code_migration", acceptanceCriteria: "Tests pass", risk: "medium",
+    actorPrincipalId: "principal-owner", eventId: "e-task", idempotencyKey: "c-task",
+    correlationId: "corr", createdAt: NOW });
+  task = transitionMissionTask(db, { tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision,
+    to: "agent_assigned", actorPrincipalId: "principal-owner", eventId: "e-assign",
+    idempotencyKey: "c-assign", correlationId: "corr", createdAt: NOW });
+  task = transitionMissionTask(db, { tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision,
+    to: "agent_working", actorPrincipalId: "principal-owner", eventId: "e-work",
+    idempotencyKey: "c-work", correlationId: "corr", createdAt: NOW });
+  const blocker = openTaskHandoff(db, { tenantId: "tenant-a", missionId: "mission-1", taskId: task.id,
+    reason: "architecture_decision_required", question: "Deliver?", context: "Candidate passed.",
+    ownerPrincipalId: "principal-owner", correlationId: "corr", createdAt: NOW });
+  resolveTaskHandoff(db, { tenantId: "tenant-a", priorExceptionId: blocker.id, taskId: task.id,
+    resolutionNote: "Approve", decision: "Approve", scope: "handoff_resolution:delivery",
+    authorPrincipalId: "principal-owner", correlationId: "corr", createdAt: NOW });
+  enqueueJob(db, { id: "source-job-1", tenantId: "tenant-a", type: "agent.run", createdAt: NOW,
+    payload: { missionId: "mission-1", consumerId: "consumer-1", sessionId: "warden-run-1" } });
+  const authority = createMissionMutationAuthority({ mission: getMission(db, "tenant-a", "mission-1")!,
+    task: getMissionTask(db, "tenant-a", "task-1")!, repositoryId: "repo-1", snapshotId: "snapshot-1",
+    resolvedSha: "a".repeat(40) });
+  db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?")
+    .run(JSON.stringify({ deliveryId: value.delivery.id, runId: "warden-run-1",
+      missionId: "mission-1", missionAuthority: authority }),
+      value.job.id, "tenant-a");
+  return { ...value, authority, job: getJob(db, value.job.id, "tenant-a")! };
+}
+
 afterEach(() => {
   while (opened.length) {
     const entry = opened.pop()!;
@@ -153,6 +219,275 @@ afterEach(() => {
 });
 
 describe("Warden exact candidate draft delivery", () => {
+  // S4 ORDERING: the snapshot-expiry gate must run BEFORE
+  // authorizeMissionMutationDispatch. Authorizing first leaves a `dispatching`
+  // row behind for a remote call that never happens, and that row then fences
+  // every other Mission writer with mission_mutation_dispatch_in_flight.
+  // GATE 1 ALONE. A malformed expiry is caught only by the pre-bind gate's
+  // !Number.isFinite arm. The second gate compares with Date.parse(...) <= x,
+  // and NaN <= x is false, so it lets a malformed expiry straight through:
+  // delete gate 1 and this delivers to GitHub.
+  it("refuses a malformed snapshot expiry that only the pre-bind gate can catch", async () => {
+    const value = bindMissionAuthority(fixture());
+    const deliverExactDraft = vi.fn();
+
+    await expect(runWardenCandidateDelivery({ db: value.db,
+      job: getJob(value.db, value.job.id, "tenant-a")!,
+      github: { deliverExactDraft } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main",
+        snapshotExpiresAt: "not-a-timestamp" }),
+      now: () => "2026-08-06T12:00:01.000Z" })).resolves.toMatchObject({ status: "delivery_failed" });
+
+    expect(deliverExactDraft).not.toHaveBeenCalled();
+    expect(getJob(value.db, value.job.id, "tenant-a")?.error)
+      .toContain("warden_candidate_delivery_snapshot_expired");
+    expect(value.db.raw.prepare(`SELECT COUNT(*) AS n FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ n: 0 });
+  });
+
+  // GATE 2 ALONE. The snapshot is still live when the first gate runs and has
+  // expired by the time the remote call is about to happen. Only the second gate
+  // sees that, so deleting it delivers an expired snapshot to GitHub. The clock
+  // advances between the two reads, which is exactly the window gate 2 exists for.
+  it("refuses a snapshot that expires between the pre-bind gate and the remote call", async () => {
+    const value = bindMissionAuthority(fixture());
+    const deliverExactDraft = vi.fn();
+    let reads = 0;
+    // 1st read = deliveryAttemptAt (before expiry); every later read = remoteAttemptAt (after).
+    const now = () => (reads++ === 0 ? "2026-08-06T12:00:00.000Z" : "2026-08-06T12:00:02.000Z");
+
+    await expect(runWardenCandidateDelivery({ db: value.db,
+      job: getJob(value.db, value.job.id, "tenant-a")!,
+      github: { deliverExactDraft } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main",
+        snapshotExpiresAt: "2026-08-06T12:00:01.000Z" }),
+      now })).resolves.toMatchObject({ status: "delivery_failed" });
+
+    expect(reads).toBeGreaterThan(1);
+    expect(deliverExactDraft).not.toHaveBeenCalled();
+    expect(getJob(value.db, value.job.id, "tenant-a")?.error)
+      .toContain("warden_candidate_delivery_snapshot_expired");
+    expect(value.db.raw.prepare(`SELECT COUNT(*) AS n FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ n: 0 });
+  });
+
+  it("refuses an expired snapshot before arming any Mission dispatch row", async () => {
+    const value = bindMissionAuthority(fixture());
+    const deliverExactDraft = vi.fn();
+
+    await expect(runWardenCandidateDelivery({ db: value.db,
+      job: getJob(value.db, value.job.id, "tenant-a")!,
+      github: { deliverExactDraft } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
+      // Already expired relative to the delivery attempt below.
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main",
+        snapshotExpiresAt: "2026-08-06T11:59:59.000Z" }),
+      now: () => "2026-08-06T12:00:01.000Z" })).resolves.toMatchObject({ status: "delivery_failed" });
+
+    expect(deliverExactDraft).not.toHaveBeenCalled();
+    expect(getJob(value.db, value.job.id, "tenant-a")?.error)
+      .toContain("warden_candidate_delivery_snapshot_expired");
+    // Move the expiry gate after authorize() and this is 1, not 0.
+    expect(value.db.raw.prepare(`SELECT COUNT(*) AS n FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ n: 0 });
+  });
+
+  // sourceMissionId() is new in this PR and both of its guards were unfalsified:
+  // mutating them to `return null` (an unparseable source payload read as
+  // unbound) left the whole worker suite green. An UNKNOWN binding must never be
+  // read as "not Mission-bound" on the path that decides whether the dispatch
+  // fence runs. The db twin asserts the same thing at enqueue.
+  it("fails closed when the source job payload does not parse", async () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1' AND tenant_id = 'tenant-a'")
+      .run("{not json");
+    const deliverExactDraft = vi.fn();
+
+    await expect(runWardenCandidateDelivery({ db: value.db,
+      job: getJob(value.db, value.job.id, "tenant-a")!,
+      github: { deliverExactDraft } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
+      now: () => NOW })).resolves.toMatchObject({ status: "delivery_failed" });
+
+    expect(getJob(value.db, value.job.id, "tenant-a")?.error)
+      .toContain("warden_candidate_delivery_source_invalid");
+    expect(deliverExactDraft).not.toHaveBeenCalled();
+  });
+
+  // The same guard's second arm: valid JSON that is not a plain object.
+  it("fails closed when the source job payload is not a plain object", async () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1' AND tenant_id = 'tenant-a'")
+      .run("[]");
+    const deliverExactDraft = vi.fn();
+
+    await expect(runWardenCandidateDelivery({ db: value.db,
+      job: getJob(value.db, value.job.id, "tenant-a")!,
+      github: { deliverExactDraft } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
+      now: () => NOW })).resolves.toMatchObject({ status: "delivery_failed" });
+
+    expect(getJob(value.db, value.job.id, "tenant-a")?.error)
+      .toContain("warden_candidate_delivery_source_invalid");
+    expect(deliverExactDraft).not.toHaveBeenCalled();
+  });
+
+  // §12 UPGRADE PATH. A delivery enqueued BEFORE the authority contract existed:
+  // the source run carries `payload.missionId` (POST /agent/runs has always
+  // written it), the delivery payload carries no authority, and the delivery row
+  // is NULL. Nothing can mint authority for it retroactively. It must deliver
+  // exactly as it does on main. Collapse the gate back to two-state and this
+  // dies: the job dead-letters on
+  // warden_candidate_delivery_mission_authority_upgrade_required and the draft
+  // is never opened.
+  it("delivers a pre-change Mission-bound row whose authority was never minted", async () => {
+    const value = bindMissionAuthority(fixture());
+    // Strip the authority from BOTH sides, leaving the source job's missionId.
+    value.db.raw.prepare(`UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?`)
+      .run(JSON.stringify({ deliveryId: value.delivery.id, runId: "warden-run-1" }),
+        value.job.id, "tenant-a");
+    value.db.raw.prepare("UPDATE fettler_candidate_deliveries SET mission_authority_json = NULL WHERE id = ?")
+      .run(value.delivery.id);
+    const deliverExactDraft = vi.fn(async (input: ExactDraftDeliveryInput) => ({
+      branch: input.branch, title: input.title, baseBranch: input.baseBranch,
+      baseSha: input.expectedBaseSha, commitSha: "b".repeat(40),
+      draft: true as const, number: 17, url: "https://github.com/acme/sdk/pull/17",
+    }));
+
+    const result = await runWardenCandidateDelivery({ db: value.db,
+      job: getJob(value.db, value.job.id, "tenant-a")!,
+      github: { deliverExactDraft } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
+      now: () => "2026-08-06T12:00:01.000Z" });
+
+    expect(result.status).toBe("delivered");
+    expect(deliverExactDraft).toHaveBeenCalledTimes(1);
+    // Unbound means unbound: no dispatch row is armed for a run with no authority.
+    expect(value.db.raw.prepare(`SELECT COUNT(*) AS n FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ n: 0 });
+    // ...and proceeding unbound is RECORDED, never silent. Delete the record and
+    // this dies, which is the whole point of calling it a third state.
+    expect(value.db.raw.prepare(`SELECT resource_id FROM audit_events
+      WHERE action = 'fettler.candidate_delivery.mission_authority_absent'`).get())
+      .toEqual({ resource_id: value.delivery.id });
+  });
+
+  // The other two states still behave: a MISMATCHED authority is refused.
+  it("still refuses a delivery whose retained authority names a different Mission", async () => {
+    const value = bindMissionAuthority(fixture());
+    const wrong = { ...value.authority, missionId: "mission-other" };
+    value.db.raw.prepare(`UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?`)
+      .run(JSON.stringify({ deliveryId: value.delivery.id, runId: "warden-run-1",
+        missionId: "mission-other", missionAuthority: wrong }), value.job.id, "tenant-a");
+    const deliverExactDraft = vi.fn();
+
+    await expect(runWardenCandidateDelivery({ db: value.db,
+      job: getJob(value.db, value.job.id, "tenant-a")!,
+      github: { deliverExactDraft } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
+      now: () => NOW })).resolves.toMatchObject({ status: "delivery_failed" });
+    expect(deliverExactDraft).not.toHaveBeenCalled();
+    // classifyFailure surfaces this exact code rather than the generic terminal
+    // one. The branch used to name `..._upgrade_required`, which nothing throws.
+    expect(getJob(value.db, value.job.id, "tenant-a")?.error_code)
+      .toBe("warden_candidate_delivery_mission_authority_required");
+  });
+
+  it("claims an approved delivery through the real job loop and resumes the exact reviewed Mission task", async () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`UPDATE jobs SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL
+      WHERE id = ? AND tenant_id = ?`).run(value.job.id, "tenant-a");
+    const deliver = vi.fn(async (input: ExactDraftDeliveryInput) => ({
+      branch: input.branch, title: input.title, baseBranch: input.baseBranch,
+      baseSha: input.expectedBaseSha, commitSha: "b".repeat(40), draft: true as const,
+      number: 17, url: "https://github.com/acme/sdk/pull/17",
+    }));
+
+    const outcome = await processJobsOnce(value.db, {
+      tenantId: "tenant-a", workerId: "worker-real-delivery", leaseMs: 60_000,
+      maxJobs: 1, jobTypes: ["warden.candidate.deliver"], runWardenMaintenance: false,
+      wardenEnv: {
+        MENDPOINT_DATA_DIR: value.dataRoot,
+        MENDPOINT_FETTLER_CI_REENTRY_ENABLED: "1",
+        MENDPOINT_FETTLER_CI_REENTRY_CONFIG_JSON: JSON.stringify({
+          "repo-1": { requiredChecks: ["check:77:unit"], maxCycles: 2, maxModelCalls: 4, maximumCostUsd: 2 },
+        }),
+      },
+      wardenCandidateGithub: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      wardenCandidateRepositoryResolver: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT,
+        remoteRepositoryId: 101, installationId: 202 }),
+    });
+
+    const settledJob = getJob(value.db, value.job.id, "tenant-a")!;
+    expect(settledJob).toMatchObject({ status: "done", error_code: null });
+    expect(outcome).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
+    expect(getMissionTask(value.db, "tenant-a", "task-1")).toMatchObject({
+      status: "agent_working", revision: value.authority.taskRevision! + 1,
+    });
+    expect(getWardenCandidateDeliveryByRun(value.db, "tenant-a", "warden-run-1")?.missionAuthority)
+      .toMatchObject({ taskId: "task-1", taskStatus: "agent_working" });
+    const cycle = value.db.raw.prepare(`SELECT id FROM fettler_ci_cycles
+      WHERE tenant_id = 'tenant-a'`).get() as { id: string };
+    const retainedCycle = getWardenCiCycle(value.db, "tenant-a", cycle.id)!;
+    expect(retainedCycle.missionAuthority)
+      .toMatchObject({ missionId: "mission-1", taskId: "task-1", taskStatus: "agent_working" });
+    expect(JSON.parse(getJob(value.db, retainedCycle.observationJobId, "tenant-a")!.payload_json))
+      .toMatchObject({ missionId: "mission-1", missionAuthority: {
+        missionId: "mission-1", taskId: "task-1", taskStatus: "agent_working",
+      } });
+    expect(deliver).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays an uncertain approved delivery under a new lease without losing Mission authority", async () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`UPDATE jobs SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL
+      WHERE id = ? AND tenant_id = ?`).run(value.job.id, "tenant-a");
+    const deliver = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("response lost"), { remoteSideEffectUncertain: true }))
+      .mockImplementationOnce(async (input: ExactDraftDeliveryInput) => ({
+        branch: input.branch, title: input.title, baseBranch: input.baseBranch,
+        baseSha: input.expectedBaseSha, commitSha: "b".repeat(40), draft: true as const,
+        number: 17, url: "https://github.com/acme/sdk/pull/17",
+      }));
+    const options = {
+      tenantId: "tenant-a", leaseMs: 60_000, maxJobs: 1,
+      jobTypes: ["warden.candidate.deliver"], runWardenMaintenance: false,
+      wardenEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
+      wardenCandidateGithub: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      wardenCandidateRepositoryResolver: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
+    } as const;
+
+    const first = await processJobsOnce(value.db, { ...options, workerId: "worker-delivery-one" });
+    expect(first).toMatchObject({ claimed: 1, failed: 1, retried: 1 });
+    expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ state: "uncertain" });
+    const mission = getMission(value.db, "tenant-a", "mission-1")!;
+    expect(() => transitionMission(value.db, { tenantId: "tenant-a", missionId: mission.id,
+      expectedRevision: mission.revision, to: "cancelled", actorPrincipalId: "principal-owner",
+      eventId: "e-cancel-uncertain-delivery", idempotencyKey: "c-cancel-uncertain-delivery",
+      correlationId: "corr", createdAt: "2026-08-26T18:00:01.000Z" }))
+      .toThrow("mission_mutation_dispatch_in_flight");
+    value.db.raw.prepare(`UPDATE jobs SET available_at = ? WHERE id = ? AND tenant_id = ?`)
+      .run("2026-01-01T00:00:00.000Z", value.job.id, "tenant-a");
+
+    const second = await processJobsOnce(value.db, { ...options, workerId: "worker-delivery-two" });
+    expect(second).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
+    expect(deliver).toHaveBeenCalledTimes(2);
+    expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ state: "settled" });
+    expect(getMissionTask(value.db, "tenant-a", "task-1")).toMatchObject({
+      status: "agent_working", revision: value.authority.taskRevision! + 1,
+    });
+    expect(getWardenCandidateDeliveryByRun(value.db, "tenant-a", "warden-run-1")?.missionAuthority)
+      .toMatchObject({ missionId: "mission-1", taskId: "task-1", taskStatus: "agent_working" });
+  });
+
   it("reverifies the seal and creates a draft from the exact approved bytes", async () => {
     const { db, dataRoot, job } = fixture();
     const deliver = vi.fn(async (input: ExactDraftDeliveryInput) => ({
@@ -325,6 +660,71 @@ describe("Warden exact candidate draft delivery", () => {
       now: () => "2026-08-06T12:00:01.000Z",
       resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }) });
     expect(result.status).toBe("delivery_failed");
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("does not call GitHub when the exact Mission is cancelled after the delivery is claimed", async () => {
+    const value = bindMissionAuthority(fixture());
+    const mission = getMission(value.db, "tenant-a", "mission-1")!;
+    transitionMission(value.db, { tenantId: "tenant-a", missionId: mission.id,
+      expectedRevision: mission.revision, to: "cancelled", actorPrincipalId: "principal-owner",
+      eventId: "e-cancel-delivery", idempotencyKey: "c-cancel-delivery", correlationId: "corr", createdAt: NOW });
+    const deliver = vi.fn();
+    const result = await runWardenCandidateDelivery({ db: value.db, job: value.job,
+      github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }) });
+    expect(result.status).toBe("delivery_failed");
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("does not call GitHub when a blocker is raised after claim but before dispatch", async () => {
+    const value = bindMissionAuthority(fixture());
+    const deliver = vi.fn();
+    const result = await runWardenCandidateDelivery({ db: value.db, job: value.job,
+      github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
+      resolveRepository: () => {
+        raiseMissionException(value.db, { tenantId: "tenant-a", missionId: "mission-1",
+          reason: "policy_exception", impact: "A current policy blocker forbids remote mutation.",
+          resolutionPath: "Resolve the policy exception before delivery.", blocking: true,
+          ownerPrincipalId: "principal-owner", correlationId: "corr", createdAt: NOW });
+        return { owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT };
+      } });
+    expect(result.status).toBe("delivery_failed");
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("revokes an armed delivery when cancellation lands after intent binding but before remote dispatch", async () => {
+    const value = bindMissionAuthority(fixture());
+    const deliver = vi.fn();
+    const result = await runWardenCandidateDelivery({ db: value.db, job: value.job,
+      github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
+      beforeRemoteDispatch: () => {
+        const mission = getMission(value.db, "tenant-a", "mission-1")!;
+        transitionMission(value.db, { tenantId: "tenant-a", missionId: mission.id,
+          expectedRevision: mission.revision, to: "cancelled", actorPrincipalId: "principal-owner",
+          eventId: "e-cancel-armed-delivery", idempotencyKey: "c-cancel-armed-delivery",
+          correlationId: "corr", createdAt: "2026-08-06T12:00:00.500Z" });
+      } });
+    expect(result.status).not.toBe("delivered");
+    expect(deliver).not.toHaveBeenCalled();
+    expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ state: "revoked" });
+  });
+
+  it("does not call GitHub when the delivery lease transfers after intent binding", async () => {
+    const value = bindMissionAuthority(fixture());
+    const deliver = vi.fn();
+    await expect(runWardenCandidateDelivery({ db: value.db, job: value.job,
+      github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
+      beforeRemoteDispatch: () => value.db.raw.prepare(`UPDATE jobs SET lease_owner = 'worker-b',
+        lease_generation = lease_generation + 1 WHERE id = ? AND tenant_id = ?`).run(value.job.id, "tenant-a") }))
+      .rejects.toThrow("warden_candidate_delivery_lease_lost");
     expect(deliver).not.toHaveBeenCalled();
   });
 
