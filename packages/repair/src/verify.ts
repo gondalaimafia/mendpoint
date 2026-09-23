@@ -439,6 +439,7 @@ export async function runVerificationCommand(
   // npm fallback. Do NOT wrap this in try/catch — swallowing the throw would
   // silently disable that fallback.
   return await new Promise<VerificationExecution>((resolveExecution) => {
+    let started = false;
     execFile(invocation.executable, args, {
       cwd: repoRoot,
       encoding: "utf8",
@@ -461,16 +462,19 @@ export async function runVerificationCommand(
         return;
       }
       const failure = error as Error & { code?: number | string };
-      // The command ran on the host and exited non-zero: a real test failure.
+      // execFile also reports launch errors here (for example ENOENT). Only a
+      // successful spawn establishes that the local backend ran the command.
       resolveExecution({
         ok: false,
         stdout: String(stdout),
         stderr: String(stderr),
         exitCode: Number.isInteger(failure.code) ? Number(failure.code) : 1,
         error: failure.message,
-        outcome: "failed",
-        sandboxBackend: "local",
+        outcome: started ? "failed" : "not_verified",
+        sandboxBackend: started ? "local" : null,
       });
+    }).once("spawn", () => {
+      started = true;
     });
   });
 }

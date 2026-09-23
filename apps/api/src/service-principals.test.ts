@@ -25,6 +25,7 @@ import {
   createServicePrincipalRoutes,
   SERVICE_PRINCIPAL_ALLOWED_SCOPES,
 } from "./service-principals.js";
+import { bootstrapScimAuthorities } from "./scim-bootstrap.js";
 
 const NOW = "2026-08-30T12:00:00.000Z";
 const EXPIRES = "2026-09-29T12:00:00.000Z";
@@ -587,6 +588,54 @@ describe("service principal administration", () => {
     expect(response.status).toBe(401);
     expect(getPrincipal(prepared.db, "tenant-a", created.payload.data.id)).toEqual(targetBefore);
     expect(listAudit(prepared.db, "tenant-a")).toEqual(auditBefore);
+  });
+
+  it("refuses a manager rename of the protected SCIM bootstrap principal and keeps a clean reboot (reviewer regression)", async () => {
+    const { app, db } = fixture();
+    const scimEnv = {
+      OIDC_ISSUER: ISSUER,
+      MENDPOINT_SCIM_BINDINGS_JSON: JSON.stringify({
+        schemaVersion: 1,
+        bindings: [{ tenantId: "tenant-a", principalId: "principal-scim-tenant-a", issuer: ISSUER }],
+      }),
+      MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON: JSON.stringify({
+        schemaVersion: 1,
+        authorities: [{
+          tenantId: "tenant-a",
+          principalId: "principal-scim-tenant-a",
+          keyId: "key-scim-tenant-a",
+          subject: "scim-directory",
+          displayName: "SCIM directory",
+          expiresAt: EXPIRES,
+          token: `me_${"a".repeat(48)}`,
+        }],
+      }),
+    };
+    // Boot materializes the exact protected SCIM authority.
+    bootstrapScimAuthorities(db, scimEnv, NOW);
+    const before = getPrincipal(db, "tenant-a", "principal-scim-tenant-a");
+    expect(before?.display_name).toBe("SCIM directory");
+
+    // A tenant manager targets that principal's identity through the public
+    // route: same subject/audience/expiry, a new display name. Before the fix
+    // this relabelled the row and the next boot's exact-match check threw
+    // scim_bootstrap_principal_conflict, so the API could not start.
+    const renamed = await app.request("/tenants/service-principals", {
+      method: "POST",
+      headers: mutationHeaders("scim-rename"),
+      body: JSON.stringify({
+        subject: "scim-directory",
+        displayName: "Attacker relabel",
+        scopes: ["identity:provision"],
+        audience: "mendpoint-scim",
+        expiresAt: EXPIRES,
+      }),
+    });
+    expect(renamed.status).toBe(409);
+    expect(await renamed.json()).toEqual({ error: "principal_identity_conflict" });
+    // The protected row is untouched and boot bootstrap still succeeds.
+    expect(getPrincipal(db, "tenant-a", "principal-scim-tenant-a")).toEqual(before);
+    expect(() => bootstrapScimAuthorities(db, scimEnv, NOW)).not.toThrow();
   });
 
   it("revokes the service and every credential while remaining tenant scoped and idempotent", async () => {
