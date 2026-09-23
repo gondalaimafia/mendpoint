@@ -75,6 +75,7 @@ describe("run-lifecycle usage helpers", () => {
       tenantId: "tenant-a",
       reservationId: reservation.id,
       actualMcuMicros: 2_000_000,
+      consumption: { kind: "measured" },
       reason: "run completed",
       createdAt: "2026-08-01T00:05:00.000Z",
     });
@@ -84,6 +85,7 @@ describe("run-lifecycle usage helpers", () => {
         tenantId: "tenant-a",
         reservationId: reservation.id,
         actualMcuMicros: 2_000_000,
+        consumption: { kind: "measured" },
         reason: "run completed",
         createdAt: "2026-08-01T00:05:00.000Z",
       }),

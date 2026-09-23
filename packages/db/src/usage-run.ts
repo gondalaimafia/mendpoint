@@ -1,6 +1,6 @@
 import { newId } from "@mendpoint/shared";
 import type { AppDb } from "./index.js";
-import type { UsageLedgerEntry } from "./usage.js";
+import type { SettlementConsumption, UsageLedgerEntry } from "./usage.js";
 import {
   releaseUsageReservation,
   reserveUsage,
@@ -92,7 +92,14 @@ export function reserveRunUsage(
   });
 }
 
-/** Settle a run's reservation to its measured (or reserved-estimate) actual. */
+/**
+ * Settle a run's reservation to its measured (or reserved-estimate) actual.
+ *
+ * `consumption` is required and must state honestly whether `actualMcuMicros` was
+ * observed. A run that settled to its reserved estimate because no per-run meter
+ * exists passes `{ kind: "not_measured", reason }` so the ledger never records the
+ * hold as measured consumption. There is no default.
+ */
 export function settleRunUsage(
   db: AppDb,
   input: {
@@ -102,6 +109,7 @@ export function settleRunUsage(
     reason: string;
     invoiceReference?: string | null;
     actorPrincipalId?: string | null;
+    consumption: SettlementConsumption;
     createdAt: string;
   },
 ): UsageLedgerEntry {
@@ -114,6 +122,7 @@ export function settleRunUsage(
     invoiceReference: input.invoiceReference ?? null,
     reason: input.reason,
     actorPrincipalId: input.actorPrincipalId ?? null,
+    consumption: input.consumption,
     createdAt: input.createdAt,
   });
 }

@@ -810,6 +810,14 @@ CREATE TABLE IF NOT EXISTS usage_ledger_entries (
   invoice_reference TEXT,
   reason TEXT NOT NULL,
   actor_principal_id TEXT,
+  finance_authorization_id TEXT,
+  finance_authorization_digest TEXT,
+  -- Measurement provenance for a settlement's consumed MCU: 'measured' or
+  -- 'not_measured:<reason>'. Only settlements carry it; other entry types read NULL.
+  -- Nullable with no default so a settlement written before this column existed reads
+  -- NULL (a legacy, not-silently-measured row surfaced via usage_legacy_measurement_evidence),
+  -- and so the additive ADD COLUMN below converges an upgraded volume without divergence.
+  consumption_provenance TEXT,
   entry_sequence INTEGER NOT NULL,
   prev_hash TEXT,
   entry_hash TEXT NOT NULL,
@@ -823,6 +831,93 @@ CREATE INDEX IF NOT EXISTS usage_ledger_task_idx
   ON usage_ledger_entries(tenant_id, task_id, campaign_id);
 CREATE INDEX IF NOT EXISTS usage_ledger_reservation_idx
   ON usage_ledger_entries(tenant_id, reservation_id);
+
+CREATE TABLE IF NOT EXISTS usage_finance_authorizations (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  approved_by_principal_id TEXT NOT NULL REFERENCES principals(id),
+  approved_by_role TEXT NOT NULL CHECK (approved_by_role = 'finance_owner'),
+  actor_principal_id TEXT NOT NULL REFERENCES principals(id),
+  entry_type TEXT NOT NULL CHECK (entry_type IN ('adjustment', 'credit')),
+  invoice_reference TEXT NOT NULL,
+  entry_idempotency_key TEXT NOT NULL,
+  mcu_micros_delta INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  allocation_entitlement_id TEXT,
+  allocation_price_version TEXT,
+  intent_digest TEXT NOT NULL,
+  authorization_digest TEXT NOT NULL,
+  approved_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  consumed_entry_id TEXT REFERENCES usage_ledger_entries(id),
+  UNIQUE (tenant_id, entry_idempotency_key),
+  UNIQUE (tenant_id, authorization_digest)
+);
+CREATE INDEX IF NOT EXISTS usage_finance_authorizations_invoice_idx
+  ON usage_finance_authorizations(tenant_id, invoice_reference, approved_at, id);
+CREATE TRIGGER IF NOT EXISTS usage_finance_authorizations_guard_update
+BEFORE UPDATE ON usage_finance_authorizations
+WHEN OLD.id <> NEW.id
+  OR OLD.tenant_id <> NEW.tenant_id
+  OR OLD.approved_by_principal_id <> NEW.approved_by_principal_id
+  OR OLD.approved_by_role <> NEW.approved_by_role
+  OR OLD.actor_principal_id <> NEW.actor_principal_id
+  OR OLD.entry_type <> NEW.entry_type
+  OR OLD.invoice_reference <> NEW.invoice_reference
+  OR OLD.entry_idempotency_key <> NEW.entry_idempotency_key
+  OR OLD.mcu_micros_delta <> NEW.mcu_micros_delta
+  OR OLD.reason <> NEW.reason
+  OR OLD.intent_digest <> NEW.intent_digest
+  OR OLD.authorization_digest <> NEW.authorization_digest
+  OR OLD.approved_at <> NEW.approved_at
+  OR OLD.expires_at <> NEW.expires_at
+  OR OLD.consumed_at IS NOT NULL
+  OR NEW.consumed_at IS NULL
+  OR NEW.consumed_entry_id IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'usage_finance_authorizations_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_finance_authorizations_guard_delete
+BEFORE DELETE ON usage_finance_authorizations BEGIN
+  SELECT RAISE(ABORT, 'usage_finance_authorizations_append_only');
+END;
+CREATE TABLE IF NOT EXISTS usage_legacy_finance_evidence (
+  entry_id TEXT PRIMARY KEY REFERENCES usage_ledger_entries(id),
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  entry_hash TEXT NOT NULL,
+  authority_status TEXT NOT NULL CHECK (authority_status = 'legacy_unverified'),
+  migration_version TEXT NOT NULL CHECK (migration_version = 'usage-finance-authority/1'),
+  UNIQUE (tenant_id, entry_id)
+);
+CREATE TRIGGER IF NOT EXISTS usage_legacy_finance_evidence_guard_update
+BEFORE UPDATE ON usage_legacy_finance_evidence BEGIN
+  SELECT RAISE(ABORT, 'usage_legacy_finance_evidence_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_legacy_finance_evidence_guard_delete
+BEFORE DELETE ON usage_legacy_finance_evidence BEGIN
+  SELECT RAISE(ABORT, 'usage_legacy_finance_evidence_append_only');
+END;
+-- Pre-migration settlements carried no measurement provenance. This table binds each
+-- such settlement to its exact entry hash so reconcile can surface it as
+-- 'legacy_unverified' (not silently measured) while a tampered null-provenance row
+-- fails the hash check and finds no evidence.
+CREATE TABLE IF NOT EXISTS usage_legacy_measurement_evidence (
+  entry_id TEXT PRIMARY KEY REFERENCES usage_ledger_entries(id),
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  entry_hash TEXT NOT NULL,
+  measurement_status TEXT NOT NULL CHECK (measurement_status = 'legacy_unverified'),
+  migration_version TEXT NOT NULL CHECK (migration_version = 'usage-consumption-measurement/1'),
+  UNIQUE (tenant_id, entry_id)
+);
+CREATE TRIGGER IF NOT EXISTS usage_legacy_measurement_evidence_guard_update
+BEFORE UPDATE ON usage_legacy_measurement_evidence BEGIN
+  SELECT RAISE(ABORT, 'usage_legacy_measurement_evidence_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_legacy_measurement_evidence_guard_delete
+BEFORE DELETE ON usage_legacy_measurement_evidence BEGIN
+  SELECT RAISE(ABORT, 'usage_legacy_measurement_evidence_append_only');
+END;
 CREATE TRIGGER IF NOT EXISTS usage_entitlements_append_only_update
 BEFORE UPDATE ON usage_entitlements BEGIN
   SELECT RAISE(ABORT, 'usage_entitlements_append_only');
@@ -3249,6 +3344,15 @@ function migrateProvidersFeedColumns(db: AppDb) {
     // upgraded volume.
     { table: "jobs", name: "tenant_id", sql: "TEXT" },
     { table: "api_keys", name: "principal_id", sql: "TEXT" },
+    { table: "usage_ledger_entries", name: "finance_authorization_id", sql: "TEXT" },
+    { table: "usage_ledger_entries", name: "finance_authorization_digest", sql: "TEXT" },
+    // Settlement measurement provenance. Nullable, no default: a settlement written
+    // before this column reads NULL and is surfaced as legacy_unverified by the
+    // backfill below, never silently treated as measured. Matches the fresh CREATE
+    // TABLE column exactly (nullable TEXT), so an upgraded volume does not diverge.
+    { table: "usage_ledger_entries", name: "consumption_provenance", sql: "TEXT" },
+    { table: "usage_finance_authorizations", name: "allocation_entitlement_id", sql: "TEXT" },
+    { table: "usage_finance_authorizations", name: "allocation_price_version", sql: "TEXT" },
     { table: "jobs", name: "lease_owner", sql: "TEXT" },
     { table: "jobs", name: "lease_expires_at", sql: "TEXT" },
     { table: "jobs", name: "available_at", sql: "TEXT" },
@@ -3483,6 +3587,42 @@ function migrateProvidersFeedColumns(db: AppDb) {
     db,
     nullableLegacyTenantTables,
     releasedFallbackTenantTables,
+  );
+  run(
+    db,
+    `CREATE TRIGGER IF NOT EXISTS usage_finance_authorizations_allocation_guard_update
+     BEFORE UPDATE OF allocation_entitlement_id, allocation_price_version
+     ON usage_finance_authorizations BEGIN
+       SELECT RAISE(ABORT, 'usage_finance_authorizations_append_only');
+     END`,
+  );
+  run(
+    db,
+    `INSERT INTO usage_legacy_finance_evidence
+       (entry_id, tenant_id, entry_hash, authority_status, migration_version)
+     SELECT id, tenant_id, entry_hash, 'legacy_unverified', 'usage-finance-authority/1'
+       FROM usage_ledger_entries
+      WHERE entry_type IN ('adjustment', 'credit')
+        AND finance_authorization_id IS NULL
+        AND finance_authorization_digest IS NULL
+        AND tenant_id IN (SELECT id FROM tenants)
+     ON CONFLICT(entry_id) DO NOTHING`,
+  );
+  run(
+    db,
+    // Guard the evidence table's tenant_id foreign key: a settlement whose tenant row
+    // no longer exists (an orphaned row) is SKIPPED here rather than throwing a
+    // FOREIGN KEY constraint that would block every boot. Such a row keeps a NULL
+    // provenance and no evidence, so reconcile surfaces it as unattested — it is never
+    // silently treated as measured, and boot is never blocked.
+    `INSERT INTO usage_legacy_measurement_evidence
+       (entry_id, tenant_id, entry_hash, measurement_status, migration_version)
+     SELECT id, tenant_id, entry_hash, 'legacy_unverified', 'usage-consumption-measurement/1'
+       FROM usage_ledger_entries
+      WHERE entry_type = 'settlement'
+        AND consumption_provenance IS NULL
+        AND tenant_id IN (SELECT id FROM tenants)
+     ON CONFLICT(entry_id) DO NOTHING`,
   );
   run(
     db,
@@ -5226,8 +5366,10 @@ export {
 export type {
   UsagePriceVersion,
   UsageEntitlement,
+  UsageFinanceAuthorization,
   UsageLedgerEntry,
   UsageSummary,
+  SettlementConsumption,
 } from "./usage.js";
 export * from "./invoice-export.js";
 
@@ -5485,6 +5627,7 @@ export {
   createUsagePriceVersion,
   getUsagePriceVersion,
   createUsageEntitlement,
+  createUsageFinanceAuthorization,
   getActiveUsageEntitlement,
   reserveUsage,
   settleUsageReservation,
@@ -5494,6 +5637,9 @@ export {
   getUsageSummary,
   listUsageLedger,
   reconcileUsageLedger,
+  USAGE_CONSUMPTION_MEASURED,
+  USAGE_CONSUMPTION_NOT_MEASURED_PREFIX,
+  USAGE_CONSUMPTION_LEGACY_MIGRATION_VERSION,
 } from "./usage.js";
 export {
   MCU_MICROS,

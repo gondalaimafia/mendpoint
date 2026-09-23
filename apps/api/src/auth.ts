@@ -59,6 +59,19 @@ export type ApiVariables = {
 };
 export type ApiEnv = { Variables: ApiVariables };
 
+/**
+ * The authenticated tenant for a request, failing closed. A blank tenantId (e.g. an
+ * empty x-tenant-id header parsed into a principal) must never reach a tenant-scoped
+ * query, where a fail-open branch would drop the filter and read across tenants.
+ * Shared by every tenant-scoped route so the guard has exactly one definition.
+ */
+export function requestTenantId(c: Context<ApiEnv>): string {
+  const principal = c.get("principal");
+  if (!principal) throw new Error("authenticated_principal_required");
+  if (principal.tenantId.trim() === "") throw new Error("tenant_scope_required");
+  return principal.tenantId;
+}
+
 export type OidcIdentity = {
   issuer: string;
   subject: string;
