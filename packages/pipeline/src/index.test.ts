@@ -1,4 +1,5 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -384,6 +385,170 @@ describe("pipeline", () => {
 
     expect(report.consumers[0]?.prStatus, JSON.stringify(report.consumers[0])).toBe("draft");
     expect(github.sourceBranches).toEqual(["trunk"]);
+  });
+
+  it("delivers a no-history (content-manifest) repo through main's legacy path, not exact-draft", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    // A clone with no git history resolves a content-manifest revision (a
+    // digest, not a commit). Copy the fixture into a tmp dir outside any git
+    // repository so `git rev-parse HEAD` fails and revisionKind is content_manifest.
+    const cmRepo = join(tmpdir(), `mendpoint-cm-repo-${Date.now()}-${Math.random()}`);
+    dirs.push(cmRepo);
+    cpSync(shop, cmRepo, { recursive: true });
+    rmSync(join(cmRepo, ".git"), { recursive: true, force: true });
+    addMonitoredConsumer(db, provider.id, { name: "No-git Shop", repo: "nogit-shop", localPath: cmRepo });
+
+    class LegacyRecordingDelivery extends MockGitHubDelivery {
+      readonly calls: string[] = [];
+      override async deliverExactDraft(): Promise<never> {
+        throw new Error("exact_draft_used_for_content_manifest_repo");
+      }
+      override async createBranch(...args: Parameters<MockGitHubDelivery["createBranch"]>): Promise<void> {
+        this.calls.push("createBranch");
+        return super.createBranch(...args);
+      }
+      override async commitFiles(...args: Parameters<MockGitHubDelivery["commitFiles"]>): Promise<void> {
+        this.calls.push("commitFiles");
+        return super.commitFiles(...args);
+      }
+      override async openPullRequest(
+        ...args: Parameters<MockGitHubDelivery["openPullRequest"]>
+      ): ReturnType<MockGitHubDelivery["openPullRequest"]> {
+        this.calls.push("openPullRequest");
+        return super.openPullRequest(...args);
+      }
+    }
+
+    const deliveryRoot = join(tmpdir(), `mendpoint-cm-delivery-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    const github = new LegacyRecordingDelivery(deliveryRoot);
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github,
+      persistIndex: false,
+      contractCases: [
+        { id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } },
+      ],
+      securityScanAttested: true,
+    });
+
+    const consumer = report.consumers.find((c) => c.name === "No-git Shop");
+    expect(consumer?.prStatus, JSON.stringify(consumer)).toBe("draft");
+    // Delivered exactly as on main: legacy branch/commit/PR, never exact-draft.
+    expect(github.calls).toEqual(["createBranch", "commitFiles", "openPullRequest"]);
+  });
+
+  it("refreshes the git-backed base before generation and delivers", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop });
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-refresh-ok-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    const refreshCalls: Array<Record<string, unknown>> = [];
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github: new MockGitHubDelivery(deliveryRoot),
+      persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+      refreshRepositoryBase: async (input) => {
+        refreshCalls.push({ ...input });
+        return { status: "refreshed", headSha: "c".repeat(40) };
+      },
+    });
+    expect(report.consumers[0]?.prStatus, JSON.stringify(report.consumers[0])).toBe("draft");
+    // Called once, before generation, with the clone root and repository identity.
+    expect(refreshCalls).toHaveLength(1);
+    expect(refreshCalls[0]).toMatchObject({
+      tenantId: "tenant_default",
+      repoRoot: shop,
+      owner: "org",
+      repo: "shop",
+      defaultBranch: "main",
+      installationId: null,
+    });
+  });
+
+  it("treats a base-refresh failure as a retryable delivery outcome and delivers nothing", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop });
+
+    class NoDeliveryAllowed extends MockGitHubDelivery {
+      override async deliverExactDraft(): Promise<never> {
+        throw new Error("delivery_attempted_after_refresh_failure");
+      }
+      override async createBranch(): Promise<never> {
+        throw new Error("delivery_attempted_after_refresh_failure");
+      }
+    }
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-refresh-fail-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github: new NoDeliveryAllowed(deliveryRoot),
+      persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+      refreshRepositoryBase: async () => ({ status: "failed", code: "github_repository_base_refresh_fetch_failed" }),
+    });
+    const consumer = report.consumers[0];
+    expect(consumer?.prStatus).toBe("delivery_failed");
+    expect(consumer?.deliveryError).toBe("github_repository_base_refresh_fetch_failed");
+    expect(consumer?.prUrl).toBeUndefined();
+    // Nothing was delivered: no migration_pr row exists, so the next run retries.
+    expect(listPrs(db)).toHaveLength(0);
+  });
+
+  it("drifts (retryable) when the branch moved since connect, then delivers after the base is current", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop });
+    const cloneHead = execFileSync("git", ["-C", shop, "rev-parse", "HEAD"], { encoding: "utf8" })
+      .trim().toLowerCase();
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-drift-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    const github = new MockGitHubDelivery(deliveryRoot);
+    const common = {
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github,
+      persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+    };
+
+    // Attempt 1: the remote default head moved past the clone head → drift.
+    github.setRemoteBranchHead("org", "shop", "main", "f".repeat(40));
+    const first = await runChangePipeline(common);
+    expect(first.consumers[0]?.prStatus).toBe("delivery_failed");
+    expect(first.consumers[0]?.prUrl).toBeUndefined();
+
+    // Attempt 2: the base is now current (as if the clone was refreshed), so the
+    // retryable pr re-delivers successfully.
+    github.setRemoteBranchHead("org", "shop", "main", cloneHead);
+    const second = await runChangePipeline(common);
+    expect(second.consumers[0]?.prStatus, JSON.stringify(second.consumers[0])).toBe("draft");
   });
 
   it("emits and persists a capability-adoption opportunity for an unused new capability", async () => {

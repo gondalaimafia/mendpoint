@@ -372,6 +372,22 @@ function persistJsonArtifact(
 }
 
 
+export type RepositoryBaseRefreshResult =
+  | Readonly<{ status: "refreshed"; headSha: string }>
+  | Readonly<{ status: "not_applicable" }>
+  | Readonly<{ status: "failed"; code: string }>;
+
+export type RepositoryBaseRefresher = (
+  input: Readonly<{
+    tenantId: string;
+    repoRoot: string;
+    owner: string;
+    repo: string;
+    defaultBranch: string;
+    installationId: string | null;
+  }>,
+) => Promise<RepositoryBaseRefreshResult>;
+
 export type PipelineInput = {
   /** Authenticated tenant boundary for all consumer reads and writes. */
   tenantId: string;
@@ -394,6 +410,17 @@ export type PipelineInput = {
   github?: GitHubDelivery;
   /** Required decision authority when real GitHub App delivery is active. */
   dependencyOutagePolicy?: GitHubDependencyOutagePolicy;
+  /**
+   * Refresh a git-backed clone's default branch to the current remote head
+   * before draft generation, so exact-draft delivery anchors to a live base.
+   * Injected by the worker using the same GitHub App installation credentials
+   * it already uses for delivery; the pipeline package stays free of the git
+   * transport and credential handling. A `failed` result is a retryable
+   * delivery outcome (nothing is generated or delivered this attempt); a
+   * `not_applicable` result (no git history) proceeds to the content-manifest
+   * delivery path. Never falls back to a stale base on failure.
+   */
+  refreshRepositoryBase?: RepositoryBaseRefresher;
   persistIndex?: boolean;
   /** Override the Mendpoint-owned persisted-index root (primarily for tests). */
   indexStorageRoot?: string;
@@ -1142,6 +1169,45 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       });
       continue;
     }
+
+    // Refresh the git-backed clone to the current remote default head before
+    // generating any edits, so the draft is produced against a live base and
+    // exact-draft delivery anchors to it. A fetch failure is retryable: nothing
+    // is generated or delivered this attempt, and the next run retries from a
+    // fresh base. A repository with no git history is not applicable and
+    // proceeds to the content-manifest delivery path. There is no stale-base
+    // fallback.
+    if (input.refreshRepositoryBase) {
+      const refreshed = await input.refreshRepositoryBase({
+        tenantId: input.tenantId,
+        repoRoot: repo.local_path,
+        owner: consumer.github_owner,
+        repo: consumer.github_repo,
+        defaultBranch: repo.default_branch,
+        installationId: consumer.installation_id,
+      });
+      if (refreshed.status === "failed") {
+        recordAudit(db, {
+          tenantId: input.tenantId,
+          actor: "pipeline",
+          action: "repository.base_refresh_failed",
+          resourceType: "consumer",
+          resourceId: consumer.id,
+          metadata: { code: refreshed.code },
+        });
+        report.consumers.push({
+          consumerId: consumer.id,
+          name: consumer.name,
+          findings: 0,
+          candidates: 0,
+          confirmed: 0,
+          prStatus: "delivery_failed",
+          deliveryError: refreshed.code,
+        });
+        continue;
+      }
+    }
+    assertActive();
 
     // Stages 2–6: Index → Candidates → Expand → Confirm → ImpactReport.
     // When an endpoint surface exists and a graph handle is present, the same
@@ -2190,6 +2256,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     let structuredPackageArtifactId: string | null = null;
     let deliveryExpectedBaseSha: string | null = null;
     let deliveryCommitDate: string | null = null;
+    let deliveryRevisionKind: "git_commit" | "content_manifest" | null = null;
     if (shouldDeliver) {
       try {
         const packageCreatedAt = retryablePr?.created_at ?? nowIso();
@@ -2205,6 +2272,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         const { resolvedSha, revisionKind } = repositoryRevision;
         deliveryExpectedBaseSha = resolvedSha;
         deliveryCommitDate = packageCreatedAt;
+        deliveryRevisionKind = revisionKind;
         const snapshotManifest = {
           schemaVersion: 1,
           repositoryId: `${consumer.github_owner}/${consumer.github_repo}`,
@@ -2521,22 +2589,56 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
             ? { githubAccountId: resolution.githubAccountId }
             : {}),
         });
-        const pr = await resolution.delivery.deliverExactDraft({
-          owner: consumer.github_owner,
-          repo: consumer.github_repo,
-          baseBranch: repo.default_branch,
-          expectedBaseSha: deliveryExpectedBaseSha,
-          branch: draft.branchName,
-          commitMessage: draft.title,
-          commitDate: deliveryCommitDate,
-          title: draft.title,
-          body: prBodyFinal,
-          files: decision.allowedEdits.map((edit) => ({
-            path: edit.path,
-            content: edit.updated,
-            mode: "100644" as const,
-          })),
-        });
+        // Exact-draft lost-response reconciliation anchors delivery to a real
+        // base commit, so it applies to git-backed repositories only. A
+        // repository with no git history resolves a content-manifest revision
+        // (a digest, not a commit); for those we keep main's pre-exact-draft
+        // delivery path (create branch, commit files, open pull request) with no
+        // git base-equality check, so their delivery behaviour never regresses.
+        let pr: { url: string; number: number };
+        if (deliveryRevisionKind === "content_manifest") {
+          const github = resolution.delivery;
+          await github.createBranch(
+            consumer.github_owner,
+            consumer.github_repo,
+            draft.branchName,
+            repo.default_branch,
+          );
+          assertActive();
+          await github.commitFiles(
+            consumer.github_owner,
+            consumer.github_repo,
+            draft.branchName,
+            draft.title,
+            decision.allowedEdits.map((e) => ({ path: e.path, content: e.updated })),
+          );
+          assertActive();
+          pr = await github.openPullRequest(
+            consumer.github_owner,
+            consumer.github_repo,
+            draft.branchName,
+            draft.title,
+            prBodyFinal,
+            repo.default_branch,
+          );
+        } else {
+          pr = await resolution.delivery.deliverExactDraft({
+            owner: consumer.github_owner,
+            repo: consumer.github_repo,
+            baseBranch: repo.default_branch,
+            expectedBaseSha: deliveryExpectedBaseSha,
+            branch: draft.branchName,
+            commitMessage: draft.title,
+            commitDate: deliveryCommitDate,
+            title: draft.title,
+            body: prBodyFinal,
+            files: decision.allowedEdits.map((edit) => ({
+              path: edit.path,
+              content: edit.updated,
+              mode: "100644" as const,
+            })),
+          });
+        }
         assertActive();
         prUrl = pr.url;
         prNumber = pr.number;

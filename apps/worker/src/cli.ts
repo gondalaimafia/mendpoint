@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRepositoryBaseRefresher } from "./repository-base-refresh.js";
 import {
   runChangePipeline,
   VERIFIER_ADVISORY_JOB_TYPE,
@@ -2807,6 +2808,7 @@ async function demo() {
     const report = await runChangePipeline({
       tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
       dependencyOutagePolicy: classifyDependencyOutage,
+      refreshRepositoryBase: createRepositoryBaseRefresher(process.env),
       providerSlug: "acme-payments",
     });
     console.log(JSON.stringify(report, null, 2));
@@ -2849,6 +2851,7 @@ async function watch(intervalMs = 30_000) {
           runChangePipeline({
             tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
             dependencyOutagePolicy: classifyDependencyOutage,
+            refreshRepositoryBase: createRepositoryBaseRefresher(process.env),
             providerSlug: provider.slug,
             db,
           }),
@@ -2899,6 +2902,7 @@ async function runFeedPollUnfenced(opts: {
           const report = await runChangePipeline({
             tenantId,
             dependencyOutagePolicy: classifyDependencyOutage,
+            refreshRepositoryBase: createRepositoryBaseRefresher(process.env),
             providerSlug: slug,
             db: database,
           });
@@ -4631,6 +4635,7 @@ if (job.type === "warden.candidate.cleanup") {
         tenantId: job.tenant_id,
         providerSlug: payload.providerSlug,
         db,
+        refreshRepositoryBase: createRepositoryBaseRefresher(process.env),
         consumerIds: payload.consumerIds,
         ...(fettlerProductionIntent ? {
           fromVersionId: fettlerProductionSource.fromVersionId,

@@ -83,6 +83,18 @@ export interface GitHubDelivery {
 export class MockGitHubDelivery implements GitHubDelivery {
   constructor(private rootDir = join(process.cwd(), ".mendpoint/mock-github")) {}
 
+  private readonly remoteBranchHeads = new Map<string, string>();
+
+  /**
+   * Set the current remote head of a branch so exact-draft delivery enforces the
+   * base like the real transport: on first creation the expected base sha must
+   * equal this head, otherwise delivery drifts. Tests use it to simulate a
+   * branch that moved since the clone was connected.
+   */
+  setRemoteBranchHead(owner: string, repo: string, branch: string, sha: string): void {
+    this.remoteBranchHeads.set(`${owner}\u0000${repo}\u0000${branch}`, sha);
+  }
+
   private containedPathFrom(baseDir: string, ...segments: string[]) {
     const root = resolve(this.rootDir);
     const base = resolve(baseDir);
@@ -158,6 +170,15 @@ export class MockGitHubDelivery implements GitHubDelivery {
         throw new Error("github_exact_draft_base_revision_drift");
       }
     } else {
+      // First creation must anchor to the current remote head, exactly as the
+      // real transport does (exact-draft.ts base-equality check). When a test
+      // has set the remote head, enforce it; otherwise record the expected base.
+      const remoteHead = this.remoteBranchHeads.get(
+        `${input.owner}\u0000${input.repo}\u0000${input.baseBranch}`,
+      );
+      if (remoteHead !== undefined && remoteHead !== input.expectedBaseSha) {
+        throw new Error("github_exact_draft_base_revision_drift");
+      }
       writeFileSync(basePath, JSON.stringify({ branch: input.baseBranch, sha: input.expectedBaseSha }), "utf8");
     }
 

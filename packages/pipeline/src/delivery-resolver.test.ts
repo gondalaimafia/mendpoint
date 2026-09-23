@@ -2,16 +2,24 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
+  DependencyOutageQueue,
   insertConnectedRepository,
   upsertGitHubInstallation,
   upsertScmConnection,
   type AppDb,
 } from "@mendpoint/db";
-import { GitHubAppDelivery, OctokitGitHubDelivery } from "@mendpoint/github";
+import { createAppDelivery, GitHubAppDelivery, OctokitGitHubDelivery } from "@mendpoint/github";
 import { createPipelineDeliveryResolver } from "./index.js";
+
+// Wrap createAppDelivery with a spy that preserves its real behaviour, so tests
+// can assert what the pipeline composition passes into it without changing it.
+vi.mock("@mendpoint/github", async (importActual) => {
+  const actual = await importActual<typeof import("@mendpoint/github")>();
+  return { ...actual, createAppDelivery: vi.fn(actual.createAppDelivery) };
+});
 
 const dependencyOutagePolicy = () => { throw new Error("decision_not_expected"); };
 
@@ -184,6 +192,51 @@ describe("pipeline GitHub delivery resolver", () => {
     expect(() => resolver({ ...consumer, installation_id: "99999" }, repository)).toThrow(
       "github_app_installation_tenant_mismatch",
     );
+    db.raw.close();
+  });
+
+  it("wires the durable outage queue and the injected decision policy into app delivery", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-delivery-outage-wiring-"));
+    directories.push(directory);
+    const db = createDb(join(directory, "db.sqlite"));
+    process.env.GITHUB_MODE = "real";
+    process.env.GITHUB_APP_ID = "99";
+    process.env.GITHUB_APP_PRIVATE_KEY = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+    }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    process.env.GITHUB_APP_ACCOUNT_TENANT_BINDINGS = '{"7123456":"tenant_default"}';
+    delete process.env.GITHUB_TOKEN;
+    upsertGitHubInstallation(db, {
+      id: "install-a",
+      installationId: "12345",
+      accountId: "7123456",
+      accountLogin: "gondalaimafia",
+      tenantId: "tenant_default",
+      repositorySelection: "selected",
+      permissions: { metadata: "read", contents: "write", pull_requests: "write", checks: "read" },
+      repositories: [{ id: 77, owner: "gondalaimafia", name: "private-repo" }],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const repository = bindRepository(db);
+    const decide = () => { throw new Error("decision_not_expected"); };
+    vi.mocked(createAppDelivery).mockClear();
+    const resolver = createPipelineDeliveryResolver(
+      { tenantId: "tenant_default", providerSlug: "provider", dependencyOutagePolicy: decide },
+      db,
+    );
+    resolver(
+      { installation_id: "12345", github_delivery_mode: "app", github_owner: "gondalaimafia", github_repo: "private-repo" },
+      repository,
+    );
+    const options = vi.mocked(createAppDelivery).mock.calls.at(-1)?.[3] as
+      | { tenantId?: string; outage?: unknown; decide?: unknown }
+      | undefined;
+    // Removing either the durable queue or the decision policy from the app
+    // delivery construction (pipeline/src/index.ts:703) fails this test.
+    expect(options?.tenantId).toBe("tenant_default");
+    expect(options?.decide).toBe(decide);
+    expect(options?.outage).toBeInstanceOf(DependencyOutageQueue);
     db.raw.close();
   });
 
