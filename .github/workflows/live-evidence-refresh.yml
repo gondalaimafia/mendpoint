@@ -16,9 +16,21 @@ name: Live evidence refresh
 # audited surface moved. A refusal opens ONE tracking issue for a human; it never
 # forces a stale or dishonest edit through.
 #
-# It never merges and never approves. On a successful refresh it pushes a branch
-# and opens a pull request (label release-owner:codex) for the usual independent
-# review and attestation; a maintainer merges it before the earliest freshUntil.
+# It never merges and never approves. On a successful refresh it pushes the fixed
+# branch bot/live-evidence-refresh and tries to open a pull request (label
+# release-owner:codex) for the usual independent review and attestation.
+#
+# PR-creation setting: creating a PR with GITHUB_TOKEN requires the repository
+# setting "Allow GitHub Actions to create and approve pull requests"
+# (can_approve_pull_request_reviews). That setting is currently OFF, and the
+# owner has been handed the command to enable it. Until it is enabled, EVERY run
+# takes the tracking-issue path: it pushes the branch and opens ONE "ready for
+# review" issue with a compare link for a maintainer to open the PR by hand. That
+# issue path is a fully supported mode, not a degraded fallback — the branch is
+# always pushed and the evidence is never lost. Once the setting is enabled, the
+# same runs open the PR directly and no issue is needed. `gh pr create` is
+# attempted first on every run, so no configuration change to this workflow is
+# needed when the setting flips.
 
 permissions:
   contents: read
@@ -51,8 +63,11 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
-      # PRs opened with GITHUB_TOKEN require pull-requests: write, and the owner
-      # has enabled "Allow GitHub Actions to create and approve pull requests".
+      # PRs opened with GITHUB_TOKEN require pull-requests: write AND the repo
+      # setting "Allow GitHub Actions to create and approve pull requests", which
+      # is currently OFF. This scope is harmless while it is off (gh pr create
+      # 403s and the run takes the issue path) and lets PR creation work the
+      # moment the owner enables the setting, with no change here.
       pull-requests: write
       issues: write
       # workflow_dispatch is exempt from the rule that GITHUB_TOKEN events create
@@ -103,16 +118,21 @@ jobs:
       # scripts/live-evidence-refresh-workflow.test.ts). It reads the outcome from
       # the summary file, never from a GitHub `if:` expression.
       #
-      #   not_due   -> nothing; close any open FAILED issue (the concern is gone).
-      #   refused   -> open/update ONE "Live evidence refresh FAILED" issue with
-      #                the reason, then fail the job.
-      #   refreshed -> commit as github-actions[bot], push the branch, open (or
-      #                update) a PR labelled release-owner:codex, then dispatch CI
-      #                and the closure sweep. If PR creation is refused (the repo
-      #                setting is off: 403 "GitHub Actions is not permitted to
-      #                create or approve pull requests"), fall back to a tracking
-      #                issue carrying the compare link. Either way, close any open
-      #                FAILED issue.
+      #   not_due   -> nothing to push; close the FAILED issue, and close the
+      #                READY issue when no open refresh PR remains (the PR merged).
+      #   refused   -> open/update ONE "Live evidence refresh FAILED" issue
+      #                (dedup: comment an existing one, never open a second), then
+      #                fail the job.
+      #   refreshed -> commit as github-actions[bot] onto the FIXED branch
+      #                bot/live-evidence-refresh (update an open PR's branch in
+      #                place with a new commit; reset it from main only when its
+      #                PR is gone), then try `gh pr create` (label
+      #                release-owner:codex). Only the specific 403 "not permitted
+      #                to create or approve pull requests" falls back to the READY
+      #                tracking issue (a supported mode while the repo setting is
+      #                off); ANY other gh pr create failure fails the job via the
+      #                FAILED issue. Then dispatch CI and the closure sweep and
+      #                close the FAILED issue.
       - name: Open a review PR, or a tracking issue, for the refresh
         id: act
         shell: bash
@@ -126,6 +146,8 @@ jobs:
           set -euo pipefail
           FAILED_LABEL="live-evidence-refresh-failed"
           READY_LABEL="live-evidence-refresh-ready"
+          BRANCH="bot/live-evidence-refresh"
+          BOT_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
 
           upsert_issue() { # label title body
             gh label create "$1" --repo "$GH_REPO" --color b60205 \
@@ -145,6 +167,10 @@ jobs:
                 --comment "Resolved automatically by $RUN_URL."
             done
           }
+          open_refresh_pr() { # prints the open PR number for BRANCH, or empty
+            gh pr list --repo "$GH_REPO" --head "$BRANCH" --state open \
+              --json number --jq '.[0].number // empty' 2>/dev/null || true
+          }
 
           OUTCOME="$(jq -r '.outcome // "refused"' "$SUMMARY")"
           echo "outcome=$OUTCOME" >> "$GITHUB_OUTPUT"
@@ -153,6 +179,9 @@ jobs:
             not_due)
               echo "Live evidence is fresh; nothing to refresh." | tee -a "$GITHUB_STEP_SUMMARY"
               close_issues "$FAILED_LABEL"
+              # If the refresh PR has merged, no open refresh PR remains and the
+              # READY tracking issue is done too.
+              if [ -z "$(open_refresh_pr)" ]; then close_issues "$READY_LABEL"; fi
               exit 0
               ;;
             refused)
@@ -162,23 +191,17 @@ jobs:
               echo "refused: $reason" | tee -a "$GITHUB_STEP_SUMMARY"
               exit 1
               ;;
-            refreshed)
-              : # handled below
-              ;;
-            *)
-              echo "unexpected outcome: $OUTCOME" >&2
-              exit 1
-              ;;
+            refreshed) : ;;
+            *) echo "unexpected outcome: $OUTCOME" >&2; exit 1 ;;
           esac
 
           old_rev="$(jq -r '.oldRevision' "$SUMMARY")"
           new_rev="$(jq -r '.newRevision' "$SUMMARY")"
           earliest="$(jq -r '.earliestFreshUntil // "unknown"' "$SUMMARY")"
-          branch="bot/live-evidence-refresh-$(date -u +%Y%m%d)"
           title="Refresh production live evidence ($(date -u +%Y-%m-%d))"
-          compare="${SERVER_URL}/${GH_REPO}/compare/main...${branch}?expand=1"
+          compare="${SERVER_URL}/${GH_REPO}/compare/main...${BRANCH}?expand=1"
 
-          # Observation table, shared by the PR body and the issue fallback.
+          # Observation table, shared by the PR body and the READY issue.
           {
             echo "Automated refresh of docs/PUBLIC_CLAIMS.json live evidence."
             echo
@@ -197,38 +220,91 @@ jobs:
             echo "Run: ${RUN_URL}"
           } > pr-body.md
 
+          # The refresh script wrote the new evidence into the working tree on
+          # main. Stash it, restore main's version so the branch checkout is
+          # clean, then re-apply it on the branch.
+          refreshed="$RUNNER_TEMP/refreshed-claims.json"
+          cp docs/PUBLIC_CLAIMS.json "$refreshed"
+          git checkout -- docs/PUBLIC_CLAIMS.json
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$branch" 2>/dev/null || git switch "$branch"
-          git add docs/PUBLIC_CLAIMS.json
-          git commit -m "$(printf 'Refresh production live evidence\n\nauditedRevision %s -> %s; re-observed the three live endpoints against production.' "$old_rev" "$new_rev")"
-          git push --force-with-lease -u origin "HEAD:$branch"
+          git config user.email "$BOT_EMAIL"
 
-          # Open or update the PR. A PR opened with GITHUB_TOKEN does NOT trigger
-          # pull_request / pull_request_target workflows, which is why the two
-          # dispatches below are still required after the PR exists.
-          pr_path=""
-          existing_pr="$(gh pr list --repo "$GH_REPO" --head "$branch" --state open \
-            --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          commit_new_evidence() {
+            cp "$refreshed" docs/PUBLIC_CLAIMS.json
+            git add docs/PUBLIC_CLAIMS.json
+            git commit -m "$(printf 'Refresh production live evidence\n\nauditedRevision %s -> %s; re-observed the three live endpoints against production.' "$old_rev" "$new_rev")"
+          }
+
+          existing_pr="$(open_refresh_pr)"
+          remote_branch="$(git ls-remote --heads origin "$BRANCH" || true)"
+
           if [ -n "$existing_pr" ]; then
-            gh pr edit "$existing_pr" --repo "$GH_REPO" --title "$title" --body-file pr-body.md \
-              --add-label release-owner:codex || true
+            # An open PR depends on this branch. Update it in place with a NEW
+            # commit on top, never a force-push over commits someone else added.
+            git fetch --no-tags origin "$BRANCH"
+            # -F: the bot email contains [ ] + which would otherwise be read as a
+            # regex ([bot] as a character class), so the bot's own commits would
+            # look foreign and every update would wrongly refuse.
+            foreign="$(git log --format='%ae' "origin/main..origin/${BRANCH}" \
+              | grep -vxF "$BOT_EMAIL" || true)"
+            if [ -n "$foreign" ]; then
+              body="$(printf 'The refresh branch %s carries commits by a non-bot author:\n%s\n\nRefusing to update it, because a push on top or a reset would risk those commits. A human must reconcile the branch or close PR #%s.\n\nRun: %s' "$BRANCH" "$foreign" "$existing_pr" "$RUN_URL")"
+              upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" "$body"
+              echo "refused: ${BRANCH} has non-bot commits; not pushing" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            git checkout -B "$BRANCH" "origin/${BRANCH}"
+            cp "$refreshed" docs/PUBLIC_CLAIMS.json
+            git add docs/PUBLIC_CLAIMS.json
+            if git diff --cached --quiet; then
+              echo "Branch ${BRANCH} already carries this evidence; nothing to push." | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              git commit -m "$(printf 'Refresh production live evidence\n\nauditedRevision %s -> %s; re-observed the three live endpoints against production.' "$old_rev" "$new_rev")"
+              # Non-force: adds a commit on top of the reviewer's branch.
+              git push origin "HEAD:${BRANCH}"
+            fi
             pr_path="pr_updated"
-            echo "Updated PR #${existing_pr}." | tee -a "$GITHUB_STEP_SUMMARY"
-          elif gh pr create --repo "$GH_REPO" --base main --head "$branch" \
-              --label release-owner:codex --title "$title" --body-file pr-body.md; then
-            pr_path="pr_created"
-            echo "Opened a review PR for ${branch}." | tee -a "$GITHUB_STEP_SUMMARY"
+            close_issues "$READY_LABEL"
+            echo "Updated the branch behind open PR #${existing_pr}." | tee -a "$GITHUB_STEP_SUMMARY"
           else
-            # gh pr create failed — most likely the repo setting "Allow GitHub
-            # Actions to create and approve pull requests" is off (403). Fall back
-            # to a tracking issue with the compare link so a maintainer opens the
-            # PR by hand. No data is lost: the branch is already pushed.
-            pr_path="issue_fallback"
-            body="$(cat pr-body.md)"
-            body="$(printf '%s\n\nGitHub Actions could not open the PR automatically (the repository setting may be off). Open it from the compare link and add the release-owner:codex label:\n%s' "$body" "$compare")"
-            upsert_issue "$READY_LABEL" "Live evidence refresh ready for review" "$body"
-            echo "PR creation refused; opened a tracking issue with the compare link." | tee -a "$GITHUB_STEP_SUMMARY"
+            # No open PR. Build the branch from current main. Force-reset is safe
+            # ONLY here: a remote branch with no open PR had its PR merged/closed,
+            # so nothing open depends on it.
+            git checkout -B "$BRANCH"
+            commit_new_evidence
+            if [ -n "$remote_branch" ]; then
+              git push --force-with-lease origin "HEAD:${BRANCH}"
+            else
+              git push -u origin "HEAD:${BRANCH}"
+            fi
+
+            # Try to open the PR. A PR opened with GITHUB_TOKEN does NOT trigger
+            # pull_request / pull_request_target workflows, which is why the two
+            # dispatches below are still required after the PR exists.
+            create_err="$RUNNER_TEMP/pr-create-stderr.log"
+            if gh pr create --repo "$GH_REPO" --base main --head "$BRANCH" \
+                --label release-owner:codex --title "$title" --body-file pr-body.md 2>"$create_err"; then
+              pr_path="pr_created"
+              close_issues "$READY_LABEL"
+              echo "Opened a review PR for ${BRANCH}." | tee -a "$GITHUB_STEP_SUMMARY"
+            elif grep -qi "not permitted to create or approve pull requests" "$create_err"; then
+              # The specific 403: the repo PR-creation setting is off. Supported
+              # mode — open the READY tracking issue with the compare link. Any
+              # OTHER failure is a real error, handled below, never silently
+              # treated as this one.
+              pr_path="issue_fallback"
+              body="$(cat pr-body.md)"
+              body="$(printf '%s\n\nGitHub Actions cannot open the PR until the owner enables "Allow GitHub Actions to create and approve pull requests". Until then this is the supported path: open the PR from the compare link and add the release-owner:codex label.\n%s' "$body" "$compare")"
+              upsert_issue "$READY_LABEL" "Live evidence refresh ready for review" "$body"
+              echo "PR creation is disabled (403); opened the ready-for-review tracking issue." | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              detail="$(head -c 500 "$create_err" || true)"
+              cat "$create_err" >&2 || true
+              body="$(printf 'The live evidence refresh pushed %s but gh pr create FAILED for a reason other than the PR-creation setting:\n%s\n\nRun: %s' "$BRANCH" "$detail" "$RUN_URL")"
+              upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" "$body"
+              echo "refused: gh pr create failed unexpectedly" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
           fi
           echo "pr_path=$pr_path" >> "$GITHUB_OUTPUT"
 
@@ -236,8 +312,8 @@ jobs:
           # refs/heads/main, so this is safe on a bot branch) and the closure sweep
           # (its sweep evaluates every open PR). Non-fatal: a dispatch hiccup must
           # not fail an otherwise-good refresh.
-          gh workflow run ci.yml --repo "$GH_REPO" --ref "$branch" \
-            || echo "::warning::could not dispatch ci.yml for $branch"
+          gh workflow run ci.yml --repo "$GH_REPO" --ref "$BRANCH" \
+            || echo "::warning::could not dispatch ci.yml for $BRANCH"
           gh workflow run closure-authority-systemic-escalation.yml --repo "$GH_REPO" \
             || echo "::warning::could not dispatch the closure sweep"
 

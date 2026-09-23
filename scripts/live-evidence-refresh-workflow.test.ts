@@ -41,12 +41,16 @@ describe("live-evidence-refresh workflow shape", () => {
 
   it("pins every external action by full SHA and checks out full history", () => {
     const uses = steps.filter((s) => s.uses).map((s) => s.uses as string);
-    for (const reference of uses) {
-      expect(reference).toMatch(/@[0-9a-f]{40}$/);
-    }
     expect(uses.length).toBeGreaterThanOrEqual(3);
+    for (const reference of uses) expect(reference).toMatch(/@[0-9a-f]{40}$/);
     const checkout = steps.find((s) => String(s.uses).includes("actions/checkout"))!;
     expect(checkout.with["fetch-depth"]).toBe(0);
+  });
+
+  it("uses one fixed branch name, not a dated one", () => {
+    const act = step("Open a review PR, or a tracking issue, for the refresh");
+    expect(act.run).toContain('BRANCH="bot/live-evidence-refresh"');
+    expect(act.run).not.toMatch(/bot\/live-evidence-refresh-\$\(date/);
   });
 
   it("never approves or merges", () => {
@@ -61,19 +65,45 @@ describe("live-evidence-refresh workflow shape", () => {
     expect(act.run).toContain("gh workflow run closure-authority-systemic-escalation.yml");
     expect(act.run).toContain("--label release-owner:codex");
   });
+
+  it("falls back to the issue path only on the specific 403, not any pr-create failure", () => {
+    const act = step("Open a review PR, or a tracking issue, for the refresh");
+    expect(act.run).toContain('grep -qi "not permitted to create or approve pull requests"');
+  });
 });
 
 // The Act step's branch/PR/issue logic, run under the exact shell GitHub uses,
-// with stubbed gh/git so no network or repository is touched. jq is real.
+// with stubbed gh/git so no network or repository is touched. jq is real. The
+// stubs are stateful: env vars make gh return an existing open issue / open PR
+// and make git report a foreign committer, so the dedup, branch-safety, and
+// close paths are exercised.
 const GITHUB_BASH_FLAGS = ["--noprofile", "--norc", "-e", "-o", "pipefail"];
 
 const GH_STUB = [
   "#!/bin/sh",
   'printf "%s\\n" "$*" >> "$GH_CALL_LOG"',
+  'label=""',
+  "prev=''",
+  'for a in "$@"; do',
+  '  if [ "$prev" = "--label" ]; then label="$a"; fi',
+  '  prev="$a"',
+  "done",
   'case "$1 $2" in',
-  '  "pr list") echo "" ;;',
-  '  "issue list") echo "" ;;',
-  '  "pr create") exit "${GH_PR_CREATE_EXIT:-0}" ;;',
+  '  "issue list")',
+  '    case "$label" in',
+  '      live-evidence-refresh-failed) [ -n "${STUB_FAILED_ISSUE:-}" ] && echo "$STUB_FAILED_ISSUE" ;;',
+  '      live-evidence-refresh-ready) [ -n "${STUB_READY_ISSUE:-}" ] && echo "$STUB_READY_ISSUE" ;;',
+  "    esac ;;",
+  '  "pr list") [ -n "${STUB_OPEN_PR:-}" ] && echo "$STUB_OPEN_PR" ;;',
+  '  "pr create")',
+  '    if [ "${STUB_PR_CREATE_EXIT:-0}" != "0" ]; then',
+  '      if [ -n "${STUB_PR_CREATE_403:-}" ]; then',
+  '        echo "pull request create failed: GraphQL: GitHub Actions is not permitted to create or approve pull requests (createPullRequest)" >&2',
+  "      else",
+  '        echo "pull request create failed: could not resolve to a Repository" >&2',
+  "      fi",
+  '      exit "$STUB_PR_CREATE_EXIT"',
+  "    fi ;;",
   "esac",
   "exit 0",
   "",
@@ -82,6 +112,11 @@ const GH_STUB = [
 const GIT_STUB = [
   "#!/bin/sh",
   'printf "%s\\n" "$*" >> "$GIT_CALL_LOG"',
+  'case "$1" in',
+  '  ls-remote) [ -n "${STUB_REMOTE_BRANCH:-}" ] && echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef refs/heads/bot/live-evidence-refresh"; exit 0 ;;',
+  '  log) if [ -n "${STUB_FOREIGN:-}" ]; then echo "$STUB_FOREIGN"; else echo "41898282+github-actions[bot]@users.noreply.github.com"; fi; exit 0 ;;',
+  '  diff) exit "${STUB_DIFF_EMPTY:-1}" ;;',
+  "esac",
   "exit 0",
   "",
 ].join("\n");
@@ -111,6 +146,10 @@ function runActStep(summaryJson: string, extraEnv: Record<string, string> = {}):
   const dir = mkdtempSync(join(tmpdir(), "live-evidence-refresh-"));
   const bin = join(dir, "bin");
   mkdirSync(bin, { recursive: true });
+  mkdirSync(join(dir, "docs"), { recursive: true });
+  writeFileSync(join(dir, "docs", "PUBLIC_CLAIMS.json"), "{}\n", "utf8");
+  const runnerTemp = join(dir, "runner-temp");
+  mkdirSync(runnerTemp, { recursive: true });
   const ghLog = join(dir, "gh-calls.log");
   const gitLog = join(dir, "git-calls.log");
   writeFileSync(ghLog, "", "utf8");
@@ -136,6 +175,7 @@ function runActStep(summaryJson: string, extraEnv: Record<string, string> = {}):
       SUMMARY: summaryPath,
       RUN_URL: "https://example.invalid/run/1",
       SERVER_URL: "https://github.com",
+      RUNNER_TEMP: runnerTemp,
       GITHUB_OUTPUT: join(dir, "output.txt"),
       GITHUB_STEP_SUMMARY: join(dir, "step-summary.md"),
       ...extraEnv,
@@ -149,37 +189,99 @@ function runActStep(summaryJson: string, extraEnv: Record<string, string> = {}):
 }
 
 describe("live-evidence-refresh Act step under GitHub's shell", () => {
-  it("refreshed + PR created: pushes, opens the PR, dispatches CI and the sweep, opens no issue", () => {
+  it("refreshed + PR created: pushes a new branch, opens the PR, dispatches, no issue", () => {
     const result = runActStep(REFRESHED_SUMMARY);
     expect(result.status).toBe(0);
-    expect(result.git).toContain("push");
+    expect(result.git).toContain("push -u origin HEAD:bot/live-evidence-refresh");
     expect(result.gh).toContain("pr create");
     expect(result.gh).toContain("workflow run ci.yml");
     expect(result.gh).toContain("workflow run closure-authority-systemic-escalation.yml");
     expect(result.gh).not.toContain("issue create");
   });
 
-  it("refreshed + PR creation refused: falls back to the tracking issue, still pushes and dispatches", () => {
-    const result = runActStep(REFRESHED_SUMMARY, { GH_PR_CREATE_EXIT: "1" });
+  it("refreshed + closes an open FAILED issue on success", () => {
+    const result = runActStep(REFRESHED_SUMMARY, { STUB_FAILED_ISSUE: "7" });
     expect(result.status).toBe(0);
-    expect(result.git).toContain("push");
+    expect(result.gh).toContain("issue close 7");
+  });
+
+  it("refreshed + PR creation refused with the exact 403: opens the READY issue, still pushes and dispatches", () => {
+    const result = runActStep(REFRESHED_SUMMARY, { STUB_PR_CREATE_EXIT: "1", STUB_PR_CREATE_403: "1" });
+    expect(result.status).toBe(0);
+    expect(result.git).toContain("push -u origin HEAD:bot/live-evidence-refresh");
     expect(result.gh).toContain("issue create");
+    expect(result.gh).toContain("live-evidence-refresh-ready");
     expect(result.gh).toContain("workflow run ci.yml");
   });
 
-  it("refused: opens the FAILED issue and fails the job, without pushing", () => {
-    const result = runActStep(
-      JSON.stringify({ outcome: "refused", refusalReason: "deployed revision is not an ancestor of origin/main" }),
-    );
+  it("refreshed + a NON-403 pr-create failure fails the job via the FAILED issue, no dispatch", () => {
+    const result = runActStep(REFRESHED_SUMMARY, { STUB_PR_CREATE_EXIT: "1" });
     expect(result.status).toBe(1);
     expect(result.gh).toContain("issue create");
+    expect(result.gh).toContain("live-evidence-refresh-failed");
+    expect(result.gh).not.toContain("live-evidence-refresh-ready");
+    expect(result.gh).not.toContain("workflow run");
+  });
+
+  it("refreshed + an existing open PR: updates the branch in place, opens no second PR", () => {
+    const result = runActStep(REFRESHED_SUMMARY, { STUB_OPEN_PR: "42", STUB_REMOTE_BRANCH: "1" });
+    expect(result.status).toBe(0);
+    expect(result.gh).not.toContain("pr create");
+    // Non-force push of a new commit on top of the reviewer's branch.
+    expect(result.git).toContain("push origin HEAD:bot/live-evidence-refresh");
+    expect(result.git).not.toContain("force");
+    expect(result.gh).toContain("workflow run ci.yml");
+  });
+
+  it("refreshed + an open PR whose branch has non-bot commits: refuses, no push", () => {
+    const result = runActStep(REFRESHED_SUMMARY, {
+      STUB_OPEN_PR: "42",
+      STUB_REMOTE_BRANCH: "1",
+      STUB_FOREIGN: "someone-else@example.com",
+    });
+    expect(result.status).toBe(1);
+    expect(result.gh).toContain("issue create");
+    expect(result.gh).toContain("live-evidence-refresh-failed");
     expect(result.git).not.toContain("push");
   });
 
-  it("not due: does nothing — no push, no issue opened", () => {
-    const result = runActStep(JSON.stringify({ outcome: "not_due" }));
-    expect(result.status).toBe(0);
-    expect(result.git).not.toContain("push");
+  it("refused + an existing FAILED issue: comments (dedup), never a second issue", () => {
+    const result = runActStep(
+      JSON.stringify({ outcome: "refused", refusalReason: "deployed revision is not an ancestor of origin/main" }),
+      { STUB_FAILED_ISSUE: "9" },
+    );
+    expect(result.status).toBe(1);
+    expect(result.gh).toContain("issue comment 9");
     expect(result.gh).not.toContain("issue create");
+    expect(result.git).not.toContain("push");
+  });
+
+  it("refused + no existing issue: opens the FAILED issue and fails", () => {
+    const result = runActStep(JSON.stringify({ outcome: "refused", refusalReason: "healthz not ok" }));
+    expect(result.status).toBe(1);
+    expect(result.gh).toContain("issue create");
+    expect(result.gh).not.toContain("issue comment");
+  });
+
+  it("not due + an open FAILED issue, PR still open: closes FAILED, keeps READY, no push", () => {
+    const result = runActStep(JSON.stringify({ outcome: "not_due" }), {
+      STUB_FAILED_ISSUE: "5",
+      STUB_READY_ISSUE: "8",
+      STUB_OPEN_PR: "42",
+    });
+    expect(result.status).toBe(0);
+    expect(result.gh).toContain("issue close 5");
+    // A refresh PR is still open, so the READY issue must NOT be closed.
+    expect(result.gh).not.toContain("issue close 8");
+    expect(result.git).not.toContain("push");
+  });
+
+  it("not due + the refresh PR has merged: closes the READY issue too", () => {
+    const result = runActStep(JSON.stringify({ outcome: "not_due" }), {
+      STUB_READY_ISSUE: "8",
+    });
+    expect(result.status).toBe(0);
+    // No open refresh PR remains, so the READY tracking issue is resolved.
+    expect(result.gh).toContain("issue close 8");
   });
 });

@@ -80,6 +80,7 @@ function baseInput(overrides: Partial<RefreshInput> = {}): RefreshInput {
     versionBefore: DEPLOYED,
     versionAfter: DEPLOYED,
     deployedRevisionIsAncestorOfMain: true,
+    auditedRevisionIsAncestorOfDeployed: true,
     now: NOW,
     comparison: cleanComparison(FIXTURE),
     requirements: REQUIREMENTS,
@@ -116,6 +117,13 @@ describe("refreshDueness", () => {
   it("is due when forced even if nothing is close to expiring", () => {
     const now = new Date("2026-09-24T00:00:00.000Z");
     expect(refreshDueness(FIXTURE, now, { withinHours: 72, force: true }).due).toBe(true);
+  });
+
+  it("treats an unparseable freshUntil as due, never as not-expiring", () => {
+    const now = new Date("2026-09-24T00:00:00.000Z"); // far from the real 09-30 expiry
+    const broken = FIXTURE.replace('"freshUntil": "2026-09-30T17:34:44.551Z"', '"freshUntil": "not-a-date"');
+    expect(broken).not.toBe(FIXTURE);
+    expect(refreshDueness(broken, now, { withinHours: 72, force: false }).due).toBe(true);
   });
 });
 
@@ -208,6 +216,15 @@ describe("refreshLiveEvidence — refusals", () => {
     const outcome = refreshLiveEvidence(baseInput({ deployedRevisionIsAncestorOfMain: false }));
     expect(outcome.status).toBe("refused");
     if (outcome.status === "refused") expect(outcome.reason).toContain("not an ancestor");
+  });
+
+  it("refuses when the move would take auditedRevision backward", () => {
+    const outcome = refreshLiveEvidence({
+      ...baseInput(),
+      auditedRevisionIsAncestorOfDeployed: false,
+    });
+    expect(outcome.status).toBe("refused");
+    if (outcome.status === "refused") expect(outcome.reason).toContain("would move auditedRevision backward");
   });
 
   it("refuses when a claim is surface-stale between the audited and deployed revisions", () => {

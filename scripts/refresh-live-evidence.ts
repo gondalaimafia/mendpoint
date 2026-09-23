@@ -81,6 +81,13 @@ export interface RefreshInput {
   readonly versionAfter: string;
   /** `git merge-base --is-ancestor <deployedRevision> origin/main` succeeded. */
   readonly deployedRevisionIsAncestorOfMain: boolean;
+  /**
+   * `git merge-base --is-ancestor <currentAuditedRevision> <deployedRevision>`
+   * succeeded. auditedRevision must only ever move forward: if the current
+   * audited revision is not an ancestor of the deployed one, advancing it would
+   * move the audit backward (or sideways), so this refuses.
+   */
+  readonly auditedRevisionIsAncestorOfDeployed: boolean;
   /** Now, for the future-observation and contract-validation checks. */
   readonly now: Date;
   /**
@@ -236,6 +243,14 @@ export function refreshLiveEvidence(input: RefreshInput): RefreshOutcome {
       `deployed revision ${input.deployedRevision} is not an ancestor of origin/main`,
     );
   }
+  // auditedRevision must only ever move forward. If the deployed revision equals
+  // the current auditedRevision there is nothing to move; otherwise the current
+  // one must be a strict ancestor of the deployed one.
+  if (input.deployedRevision !== oldRevision && !input.auditedRevisionIsAncestorOfDeployed) {
+    return refuse(
+      `would move auditedRevision backward: ${oldRevision} is not an ancestor of the deployed revision ${input.deployedRevision}`,
+    );
+  }
 
   // Truthfulness: moving auditedRevision to the deployed revision only holds if
   // no claim's audited surface changed between the current auditedRevision and
@@ -388,13 +403,21 @@ export function refreshDueness(
   let earliestMs = Number.POSITIVE_INFINITY;
   let earliestEvidenceId: string | null = null;
   let earliestFreshUntil: string | null = null;
+  let hasUnparseableFreshUntil = false;
   try {
     const registry = JSON.parse(registryText) as PublicClaimRegistry;
     for (const claim of registry.claims ?? []) {
       for (const evidence of claim.evidence ?? []) {
         if (evidence.type !== "live") continue;
         const ms = Date.parse(evidence.freshUntil);
-        if (!Number.isFinite(ms)) continue;
+        if (!Number.isFinite(ms)) {
+          // An unparseable freshUntil is treated as DUE, never as "not
+          // expiring": the refresh then rewrites it to a well-formed instant or
+          // refuses. Skipping it here would let a malformed entry pin the gate
+          // red while the scheduler reports "not due" forever.
+          hasUnparseableFreshUntil = true;
+          continue;
+        }
         if (ms < earliestMs) {
           earliestMs = ms;
           earliestEvidenceId = evidence.id;
@@ -422,7 +445,7 @@ export function refreshDueness(
     earliestMs !== Number.POSITIVE_INFINITY &&
     earliestMs - nowMs <= options.withinHours * 60 * 60 * 1000;
   return {
-    due: options.force || withinWindow,
+    due: options.force || hasUnparseableFreshUntil || withinWindow,
     force: options.force,
     withinHours: options.withinHours,
     earliestEvidenceId,
@@ -444,7 +467,7 @@ function git(repoRoot: string, args: readonly string[]): string {
   }).trim();
 }
 
-function isAncestor(repoRoot: string, ancestor: string, descendant: string): boolean {
+export function isAncestor(repoRoot: string, ancestor: string, descendant: string): boolean {
   try {
     execFileSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
       cwd: repoRoot,
@@ -464,7 +487,7 @@ function isAncestor(repoRoot: string, ancestor: string, descendant: string): boo
  * trustworthy comparison returns `indeterminate`, which the pure core turns into
  * a refusal rather than a silent pass.
  */
-function buildComparison(
+export function buildComparison(
   repoRoot: string,
   oldAuditedRevision: string,
   deployedRevision: string,
@@ -550,8 +573,15 @@ function parseArgs(argv: readonly string[]): CliOptions {
   return options;
 }
 
-async function readVersionRevision(origin: string): Promise<string> {
-  const response = await fetch(`${origin}/version`, { redirect: "manual" });
+type FetchLike = (input: string, init?: { redirect?: "manual" }) => Promise<{
+  ok: boolean;
+  status: number;
+  json: () => Promise<unknown>;
+  clone: () => { json: () => Promise<unknown> };
+}>;
+
+async function readVersionRevision(doFetch: FetchLike, origin: string): Promise<string> {
+  const response = await doFetch(`${origin}/version`, { redirect: "manual" });
   if (!response.ok) throw new Error(`GET ${origin}/version returned HTTP ${response.status}`);
   const body = (await response.json()) as { revision?: unknown };
   if (typeof body.revision !== "string" || !REVISION.test(body.revision)) {
@@ -565,9 +595,36 @@ function writeSummary(summaryPath: string | null, summary: Record<string, unknow
   writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
 }
 
-async function main(): Promise<void> {
-  const repoRoot = resolve(process.cwd());
-  const options = parseArgs(process.argv.slice(2));
+export interface RunRefreshOptions {
+  /** Repository root; buildComparison, isAncestor, and file paths resolve here. */
+  readonly cwd: string;
+  /** CLI arguments (without node/script). */
+  readonly argv: readonly string[];
+  /** Injectable fetch, so the IO wiring is testable without a network. */
+  readonly fetchImpl?: FetchLike;
+  /**
+   * Injectable post-edit verification (the claims check). Defaults to spawning
+   * `node --import tsx scripts/public-claims-check.ts`. Throwing means the check
+   * failed, which triggers the restore-and-refuse path.
+   */
+  readonly verifyClaims?: (repoRoot: string) => void;
+}
+
+export interface RunRefreshResult {
+  readonly exitCode: number;
+  readonly summary: Record<string, unknown>;
+}
+
+/**
+ * The full IO run: due check, per-surface observation, git comparison, the pure
+ * core, and (for a real run) write plus post-edit claims check. Returns the exit
+ * code and the summary object rather than touching `process.exitCode`, so it is
+ * driven both by the CLI wrapper and by in-process tests with a stub fetch.
+ */
+export async function runRefresh(opts: RunRefreshOptions): Promise<RunRefreshResult> {
+  const doFetch = opts.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
+  const repoRoot = resolve(opts.cwd);
+  const options = parseArgs(opts.argv);
   const registryPath = resolve(repoRoot, options.registryPath);
   const requirementsPath = resolve(repoRoot, "docs", "PRODUCT_REQUIREMENTS.json");
   if (!existsSync(registryPath)) throw new Error(`${options.registryPath} is missing`);
@@ -584,7 +641,7 @@ async function main(): Promise<void> {
   });
 
   if (!dueness.due) {
-    writeSummary(options.summaryPath, {
+    const summary = {
       checkedAt,
       outcome: "not_due",
       due: false,
@@ -595,12 +652,13 @@ async function main(): Promise<void> {
       earliestFreshUntil: dueness.earliestFreshUntil,
       hoursUntilEarliest: dueness.hoursUntilEarliest,
       wrote: false,
-    });
+    };
+    writeSummary(options.summaryPath, summary);
     console.log(
       `not due: earliest live evidence ${dueness.earliestEvidenceId ?? "<none>"} expires ${dueness.earliestFreshUntil ?? "<none>"} (` +
         `${dueness.hoursUntilEarliest === null ? "unknown" : dueness.hoursUntilEarliest.toFixed(1)}h away, threshold ${options.withinHours}h)`,
     );
-    return;
+    return { exitCode: 0, summary };
   }
 
   const registry = JSON.parse(registryText) as PublicClaimRegistry;
@@ -621,7 +679,7 @@ async function main(): Promise<void> {
   }
   const origin = [...origins][0];
 
-  const versionBefore = await readVersionRevision(origin);
+  const versionBefore = await readVersionRevision(doFetch, origin);
 
   // One observation per live surface, each with its own instant read from the
   // clock immediately before the request.
@@ -629,7 +687,7 @@ async function main(): Promise<void> {
   for (const evidenceId of liveIds) {
     const locator = liveLocators.get(evidenceId)!;
     const observedAt = new Date().toISOString();
-    const response = await fetch(locator, { redirect: "manual" });
+    const response = await doFetch(locator, { redirect: "manual" });
     let healthzOk: boolean | undefined;
     if (/\/healthz(?:$|[?#])/.test(locator)) {
       try {
@@ -642,7 +700,7 @@ async function main(): Promise<void> {
     observations.push({ evidenceId, locator, httpStatus: response.status, observedAt, healthzOk });
   }
 
-  const versionAfter = await readVersionRevision(origin);
+  const versionAfter = await readVersionRevision(doFetch, origin);
   // Captured AFTER the observations so a legitimately-later observedAt is not
   // read as "in the future"; observations naturally carry instants after the
   // run started.
@@ -650,6 +708,9 @@ async function main(): Promise<void> {
   const deployedRevision = versionBefore;
   const comparison = buildComparison(repoRoot, registry.auditedRevision, deployedRevision);
   const deployedRevisionIsAncestorOfMain = isAncestor(repoRoot, deployedRevision, "origin/main");
+  const auditedRevisionIsAncestorOfDeployed =
+    deployedRevision === registry.auditedRevision ||
+    isAncestor(repoRoot, registry.auditedRevision, deployedRevision);
 
   const outcome = refreshLiveEvidence({
     registryText,
@@ -658,6 +719,7 @@ async function main(): Promise<void> {
     versionBefore,
     versionAfter,
     deployedRevisionIsAncestorOfMain,
+    auditedRevisionIsAncestorOfDeployed,
     now,
     comparison,
     requirements,
@@ -672,7 +734,7 @@ async function main(): Promise<void> {
   }));
 
   if (outcome.status === "refused") {
-    writeSummary(options.summaryPath, {
+    const summary = {
       checkedAt,
       outcome: "refused",
       due: true,
@@ -686,13 +748,13 @@ async function main(): Promise<void> {
       versionAfter,
       observations: observationSummary,
       wrote: false,
-    });
+    };
+    writeSummary(options.summaryPath, summary);
     console.error(`refused: ${outcome.reason}`);
-    process.exitCode = 1;
-    return;
+    return { exitCode: 1, summary };
   }
 
-  const summary = {
+  const summary: Record<string, unknown> = {
     checkedAt,
     outcome: options.dryRun ? "dry_run" : "refreshed",
     due: true,
@@ -708,7 +770,7 @@ async function main(): Promise<void> {
     earliestFreshUntil: dueness.earliestFreshUntil,
     observations: observationSummary,
     changes: outcome.changes,
-    wrote: false as boolean,
+    wrote: false,
   };
 
   if (options.dryRun) {
@@ -716,39 +778,49 @@ async function main(): Promise<void> {
     console.log(
       `dry run: would refresh ${outcome.changes.length} live entries and move auditedRevision ${outcome.oldRevision} -> ${outcome.newRevision}; writing nothing`,
     );
-    return;
+    return { exitCode: 0, summary };
   }
 
   writeFileSync(registryPath, outcome.text, "utf8");
   // After editing, the full claims check must pass; else refuse and restore the
   // original bytes so a refusal writes nothing net.
+  const verify =
+    opts.verifyClaims ??
+    ((root: string) =>
+      execFileSync(process.execPath, ["--import", "tsx", "scripts/public-claims-check.ts"], {
+        cwd: root,
+        stdio: "inherit",
+      }));
   try {
-    execFileSync(process.execPath, ["--import", "tsx", "scripts/public-claims-check.ts"], {
-      cwd: repoRoot,
-      stdio: "inherit",
-    });
+    verify(repoRoot);
   } catch (error) {
     writeFileSync(registryPath, registryText, "utf8");
-    writeSummary(options.summaryPath, {
+    const refused = {
       ...summary,
       outcome: "refused",
       refusalReason: `claims check failed after editing: ${(error as Error).message}`,
       wrote: false,
-    });
+    };
+    writeSummary(options.summaryPath, refused);
     console.error("refused: claims check failed after editing; restored the original registry");
-    process.exitCode = 1;
-    return;
+    return { exitCode: 1, summary: refused };
   }
 
-  writeSummary(options.summaryPath, { ...summary, wrote: true });
+  const wrote = { ...summary, wrote: true };
+  writeSummary(options.summaryPath, wrote);
   console.log(
     `refreshed ${outcome.changes.length} live entries; auditedRevision ${outcome.oldRevision} -> ${outcome.newRevision}`,
   );
+  return { exitCode: 0, summary: wrote };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  });
+  runRefresh({ cwd: process.cwd(), argv: process.argv.slice(2) })
+    .then((result) => {
+      process.exitCode = result.exitCode;
+    })
+    .catch((error) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    });
 }
