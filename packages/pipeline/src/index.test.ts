@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
+  getPrincipalBySubject,
+  insertPrincipal,
   insertProvider,
   insertApiVersion,
   insertConsumer,
@@ -177,6 +179,41 @@ describe("pipeline", () => {
         graphDb: testGraphDb(),
       }),
     ).rejects.toThrow("Unknown from version missing");
+  });
+
+  it("relabels a pre-existing 'Warden pipeline' principal to 'Fettler pipeline' via the real pipeline path (production regression)", async () => {
+    const db = seedProviderVersions();
+    // Production shape: the deterministic pipeline principal was created before
+    // the Warden -> Fettler product rename. The identity is (tenant, kind,
+    // subject), so runChangePipeline finds it by subject and must relabel it in
+    // place instead of dead-lettering every fan-out job on identity conflict.
+    insertPrincipal(db, {
+      id: "principal-warden-pipeline-seed",
+      tenantId: "tenant_default",
+      kind: "service",
+      subject: "warden-pipeline",
+      displayName: "Warden pipeline",
+      audience: "pipeline",
+      createdAt: nowIso(),
+    });
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop });
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-relabel-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+
+    await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github: new MockGitHubDelivery(deliveryRoot),
+      persistIndex: false,
+    });
+
+    expect(getPrincipalBySubject(db, "tenant_default", "service", "warden-pipeline")?.display_name)
+      .toBe("Fettler pipeline");
   });
 
   it("reconstructs complete notification evidence when a worker crashes before handoff", async () => {
