@@ -177,7 +177,6 @@ describe("field-rename recipe end to end through the campaign executor", () => {
         renames: [{ from: "amount_cents", to: "amount" }],
       }),
     };
-    const originalPayload = queuedJob.payload_json;
     const outcome = await runWardenCampaignExecuteTarget({
       db: value.db, job: queuedJob, now: () => executionTime,
       resolveDependencies: (renames) => ({
@@ -194,7 +193,78 @@ describe("field-rename recipe end to end through the campaign executor", () => {
     expect(outcome).toEqual(expected);
     expect(listWardenCampaignTargets(value.db, "tenant-a", "campaign-a")[0]).toMatchObject({ stage });
     expect(verificationCalls).toBe(stage === "review" ? 2 : 0);
-    expect(queuedJob.payload_json).toBe(originalPayload);
+    // Observe the two clocks, not that the input object was left alone: on a landed
+    // run the immutable run events carry the STABLE enqueue clock, never the later
+    // authority (execution) time. The refusal cases already prove authority follows
+    // execution time through their outcome (they only refuse because the window/
+    // expiry is judged at executionTime, not enqueuedAt).
+    if (stage === "review") {
+      const runEventTimes = value.db.raw.prepare(
+        "SELECT created_at FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'warden_run' AND aggregate_id = ?",
+      ).all("tenant-a", "run-a") as { created_at: string }[];
+      expect(runEventTimes.length).toBeGreaterThan(0);
+      expect(runEventTimes.every((row) => row.created_at === enqueuedAt)).toBe(true);
+      expect(runEventTimes.some((row) => row.created_at === executionTime)).toBe(false);
+    }
+  });
+
+  it("retries the same job at a later worker time after a failure between run_started and the analyzing transition", async () => {
+    const value = fixture(); // window 13:00-16:00; snapshot valid through 2026-08-03
+    const enqueuedAt = createdAt; // 14:00, inside the window
+    const passingVerify: WardenCampaignExecutionDependencies["verify"] = async (input) =>
+      input.commands.map((command) => ({
+        command, status: "passed" as const, failureFingerprints: [],
+        outputSha256: digest(`${command}:passed`), durationMs: 1, sandboxBackend: "fly_machines" as const,
+      }));
+    const queuedJob = {
+      id: "job-retry", tenant_id: "tenant-a", type: "warden.campaign.execute-target",
+      payload_json: JSON.stringify({
+        campaignId: "campaign-a", targetId: "target-a", rolloutDecisionId: "rollout-a",
+        source: source(), actorPrincipalId: "worker", runId: "run-a", createdAt: enqueuedAt,
+        rolloutApproval: { decisionSha256: value.decision.decisionSha256, approvedByPrincipalId: "reviewer", approvedAt: createdAt },
+        ownerApproval: { ownerPrincipalId: "owner", ownerHandle: "@payments", approvedAt: createdAt },
+        renames: [{ from: "amount_cents", to: "amount" }],
+      }),
+    };
+    const resolveDependencies = (renames: readonly { from: string; to: string }[]) => ({
+      ...fieldRenameRecipeDependencies({ deriveRename: () => renames[0]!, graphDb: value.graph }),
+      verify: passingVerify,
+    });
+
+    // Reproduce the crash between run_started and the queued->analyzing transition:
+    // a trigger that aborts the transition into 'analyzing'. run_started has already
+    // committed by then, so the run's first event is on disk.
+    value.db.raw.exec(
+      `CREATE TEMP TRIGGER fail_analyzing BEFORE UPDATE OF stage ON fettler_campaign_targets
+       WHEN NEW.stage = 'analyzing' BEGIN SELECT RAISE(ABORT, 'injected_transition_failure'); END;`,
+    );
+
+    // Attempt 1 at 15:00 (in window): the transition aborts, the executor maps the
+    // storage fault to a retryable failure, and the target stays queued.
+    const first = await runWardenCampaignExecuteTarget({
+      db: value.db, job: queuedJob, now: () => "2026-08-02T15:00:00.000Z", resolveDependencies,
+    });
+    expect(first).toEqual({ status: "retry_scheduled", code: "warden_execution_failed" });
+    expect(listWardenCampaignTargets(value.db, "tenant-a", "campaign-a")[0]).toMatchObject({ stage: "queued" });
+
+    value.db.raw.exec("DROP TRIGGER fail_analyzing");
+
+    // Attempt 2 at a LATER worker time (15:30, still in window): run_started is
+    // re-appended. Its occurredAt is the STABLE enqueue clock, so it matches the
+    // first attempt and appends idempotently instead of throwing
+    // domain_event_idempotency_conflict. The target advances to review.
+    const second = await runWardenCampaignExecuteTarget({
+      db: value.db, job: queuedJob, now: () => "2026-08-02T15:30:00.000Z", resolveDependencies,
+    });
+    expect(second).toEqual({ status: "executed", stage: "review" });
+    expect(listWardenCampaignTargets(value.db, "tenant-a", "campaign-a")[0]).toMatchObject({ stage: "review" });
+
+    // The re-appended run events carry the stable enqueue clock, not either worker time.
+    const runEventTimes = value.db.raw.prepare(
+      "SELECT created_at FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'warden_run' AND aggregate_id = ?",
+    ).all("tenant-a", "run-a") as { created_at: string }[];
+    expect(runEventTimes.length).toBeGreaterThan(0);
+    expect(runEventTimes.every((row) => row.created_at === enqueuedAt)).toBe(true);
   });
 
   it("plans and applies the rename, verifies, and lands a review package with typed edits", async () => {
@@ -214,7 +284,7 @@ describe("field-rename recipe end to end through the campaign executor", () => {
 
     const result = await executeWardenCampaignTarget({
       db: value.db, tenantId: "tenant-a", campaignId: "campaign-a", targetId: "target-a",
-      rolloutDecisionId: "rollout-a", source: source(), actorPrincipalId: "worker", runId: "run-a", createdAt,
+      rolloutDecisionId: "rollout-a", source: source(), actorPrincipalId: "worker", runId: "run-a", createdAt, now: createdAt,
       rolloutApproval: { decisionSha256: value.decision.decisionSha256, approvedByPrincipalId: "reviewer", approvedAt: createdAt },
       ownerApproval: { ownerPrincipalId: "owner", ownerHandle: "@payments", approvedAt: createdAt },
       dependencies,

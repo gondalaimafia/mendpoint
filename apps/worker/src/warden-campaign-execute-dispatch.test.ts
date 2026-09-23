@@ -56,7 +56,7 @@ describe("parseWardenCampaignExecuteJob", () => {
 });
 
 describe("runWardenCampaignExecuteTarget", () => {
-  it("defaults to the worker clock without changing queued provenance or approvals", async () => {
+  it("routes the worker clock to authority and the enqueue clock to run records, leaving approvals intact", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-01-03T00:00:00.000Z"));
     const payload = validPayload();
@@ -67,10 +67,15 @@ describe("runWardenCampaignExecuteTarget", () => {
       return { stage: "review" } as Awaited<ReturnType<WardenCampaignExecutor>>;
     };
     await runWardenCampaignExecuteTarget({ db, job: queuedJob, resolveDependencies: () => dependencies, execute });
-    expect(received!.createdAt).toBe("2026-01-03T00:00:00.000Z");
+    // Authority (window/expiry/policy) follows the worker clock; the stable event
+    // clock stays the enqueue time so retries reproduce identical run records.
+    // Both are the actual values the executor received, not a re-parse of the
+    // untouched payload string.
+    expect(received!.now).toBe("2026-01-03T00:00:00.000Z");
+    expect(received!.createdAt).toBe("2026-01-02T00:00:00.000Z");
+    expect(received!.createdAt).toBe(payload.createdAt);
     expect(received!.rolloutApproval).toEqual(payload.rolloutApproval);
     expect(received!.ownerApproval).toEqual(payload.ownerApproval);
-    expect(parseWardenCampaignExecuteJob(queuedJob).createdAt).toBe(payload.createdAt);
   });
 
   it("returns executed with the review stage and passes the parsed authority through", async () => {

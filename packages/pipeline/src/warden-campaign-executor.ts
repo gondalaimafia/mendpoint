@@ -819,10 +819,24 @@ export async function executeWardenCampaignTarget(input: {
   ownerApproval: Readonly<{ ownerPrincipalId: string; ownerHandle: string; approvedAt: string }>;
   actorPrincipalId: string;
   runId: string;
+  /**
+   * Stable event clock: the queued job's enqueue time. It stamps every immutable
+   * run record (domain events, target transitions, artifacts) so retries of the
+   * same run reproduce byte-identical, idempotently-appended events. It is NOT
+   * authority to execute later.
+   */
   createdAt: string;
+  /**
+   * Authority clock: the worker's current time. It drives the time-sensitive
+   * authority decisions only — maintenance window, snapshot freshness, and the
+   * policy `observedAt` — so a job that waited in the queue is judged against
+   * when it actually runs, not when it was enqueued.
+   */
+  now: string;
   dependencies: WardenCampaignExecutionDependencies;
 }): Promise<WardenCampaignExecutionResult> {
   canonicalTimestamp(input.createdAt, "warden_execution_created_at_invalid");
+  canonicalTimestamp(input.now, "warden_execution_now_invalid");
   assertRunning(input.db, input.tenantId, input.campaignId);
   const actor = getPrincipal(input.db, input.tenantId, input.actorPrincipalId);
   if (!actor || actor.revoked_at) throw new WardenCampaignExecutionError("warden_execution_actor_invalid", false);
@@ -855,7 +869,7 @@ export async function executeWardenCampaignTarget(input: {
   if (!activeCohort || !activeCohort.targetIds.includes(input.targetId)) {
     throw new WardenCampaignExecutionError("warden_rollout_cohort_blocked", true);
   }
-  if (input.createdAt < activeCohort.notBefore || input.createdAt > activeCohort.notAfter) {
+  if (input.now < activeCohort.notBefore || input.now > activeCohort.notAfter) {
     throw new WardenCampaignExecutionError("warden_maintenance_window_closed", true);
   }
   if (!claimReadyWardenTargets(input.db, input.tenantId, input.campaignId).some((candidate) => candidate.id === input.targetId)) {
@@ -870,7 +884,7 @@ export async function executeWardenCampaignTarget(input: {
     !SHA256.test(snapshot.manifest_sha256)) {
     throw new WardenCampaignExecutionError("warden_exact_snapshot_invalid", false);
   }
-  if (input.createdAt >= snapshot.expires_at) throw new WardenCampaignExecutionError("warden_snapshot_expired", false);
+  if (input.now >= snapshot.expires_at) throw new WardenCampaignExecutionError("warden_snapshot_expired", false);
   assertCampaignExecutePolicy(input.db, {
     tenantId: input.tenantId,
     campaignId: input.campaignId,
@@ -880,7 +894,7 @@ export async function executeWardenCampaignTarget(input: {
       targetPaths: [],
       risk: rolloutRiskForTarget(decision, input.targetId),
     }),
-    observedAt: input.createdAt,
+    observedAt: input.now,
   });
   const snapshotPolicy = getRepositorySnapshotPolicy(input.db, input.tenantId, snapshot.id);
   if (!snapshotPolicy) throw new WardenCampaignExecutionError("warden_snapshot_policy_required", false);
@@ -987,7 +1001,7 @@ export async function executeWardenCampaignTarget(input: {
         targetPaths: policyEdits.map((edit) => edit.targetPath),
         risk: rolloutRiskForTarget(decision, input.targetId),
       }),
-      observedAt: input.createdAt,
+      observedAt: input.now,
     });
     appendRun("analysis_completed", policyEdits, [artifactReference(sourceArtifact), artifactReference(baselineArtifact)]);
     assertRunning(input.db, input.tenantId, input.campaignId);

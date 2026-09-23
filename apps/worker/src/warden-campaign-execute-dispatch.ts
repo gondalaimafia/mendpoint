@@ -26,6 +26,7 @@ import {
   executeWardenCampaignTarget,
   type WardenCampaignExecutionDependencies,
 } from "@mendpoint/pipeline";
+import { nowIso } from "@mendpoint/shared";
 import type { FieldRename } from "./warden-campaign-recipe.js";
 
 export const WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE = "warden.campaign.execute-target";
@@ -172,9 +173,14 @@ export async function runWardenCampaignExecuteTarget(input: {
       ownerApproval: payload.ownerApproval,
       actorPrincipalId: payload.actorPrincipalId,
       runId: payload.runId,
-      // The queued timestamp remains provenance, not authority to execute later.
-      // Maintenance windows and snapshot freshness must use the worker clock.
-      createdAt: input.now?.() ?? new Date().toISOString(),
+      // Two clocks, deliberately separated. The queued timestamp is the STABLE
+      // event clock: it stamps the run's immutable events so a retry of the same
+      // job reproduces byte-identical, idempotently-appended records instead of
+      // conflicting. The worker clock is the AUTHORITY clock: maintenance windows
+      // and snapshot freshness judge the job by when it actually runs, not when it
+      // was enqueued.
+      createdAt: payload.createdAt,
+      now: input.now?.() ?? nowIso(),
       dependencies: input.resolveDependencies(payload.renames, input.job.tenant_id),
     });
     return { status: "executed", stage: result.stage };
