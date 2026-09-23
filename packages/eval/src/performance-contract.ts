@@ -39,6 +39,14 @@ export type PerformanceTier = {
     minimumSourceLines?: number;
     sourceLines?: number;
     minimumBytes?: number;
+    /**
+     * Total on-disk size of the repository working tree the run scans: every
+     * committed file (source, generated and vendored code, lockfiles, JSON and
+     * configuration, docs, binary fixtures), NOT the size of source-line text alone.
+     * It counts a different population from `sourceLines` (code lines only), so the
+     * floors' ~500 bytes per source line is a whole-tree ratio, not a per-code-line
+     * character width. See docs/PERFORMANCE_CONTRACT.md.
+     */
     bytes: number;
     maxFileBytes?: number;
     languages: string[];
@@ -642,9 +650,12 @@ export function evaluatePerformanceRun(
     observationTimes.push(observedAtMs);
   }
   if (observationTimes.length === 0) fail("performance_observations_required");
-  const evaluatedAtValue = evaluatedAt ?? (
-    new Date(endedAtMs).toISOString()
-  );
+  // The freshness bound is a wall-clock bound: `evaluatedAt` defaults to the real
+  // current time, never to `endedAt`. Defaulting to `endedAt` made the staleness
+  // gate below unreachable (ageMs could never exceed the run duration), so a
+  // self-declared past run evaluated `ok`. The production runner passes its own
+  // injected clock's now; callers inject `evaluatedAt` for deterministic tests.
+  const evaluatedAtValue = evaluatedAt ?? new Date().toISOString();
   const evaluatedAtMs = isoTime(evaluatedAtValue, "performance_evaluated_at");
   if (evaluatedAtMs < endedAtMs) fail("performance_evaluated_before_run_end");
   const runDurationMs = endedAtMs - startedAtMs;

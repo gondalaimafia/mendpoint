@@ -315,6 +315,38 @@ describe("Fettler performance contract", () => {
       .toThrow("performance_observation_stale");
   });
 
+  it("defaults evaluation to the wall clock so a self-declared past run is stale", () => {
+    // No evaluatedAt is passed: the evaluator must fall back to the real current
+    // time (2026+), not the run's declared 2019 end. A self-declared 2019 run is
+    // then far older than any freshness window and must be rejected. If the
+    // default reverts to endedAt, ageMs never exceeds the run duration and this
+    // run evaluates ok, so this expectation dies.
+    const past = completeObservations().map((observation) => ({
+      ...observation,
+      observedAt: observation.observedAt.replace("2026-09-02", "2019-01-01"),
+    }));
+    expect(() => evaluatePerformanceRun(
+      contract(),
+      past,
+      binding({
+        startedAt: "2019-01-01T00:00:00.000Z",
+        endedAt: "2019-01-01T00:01:00.000Z",
+      }),
+      "load",
+    )).toThrow("performance_observation_stale");
+  });
+
+  it("rejects an observation that was not bound to a probe observation (fence 1)", () => {
+    // B2 fence 1: an observation whose bindingSource is not "probe_observed" is a
+    // request-context (unobserved-failure) record and must never qualify a report.
+    // Deleting the `bindingSource !== "probe_observed"` guard in the evaluator
+    // makes this run evaluate instead of throw, so this expectation dies.
+    const unobserved = completeObservations();
+    unobserved[0] = { ...unobserved[0]!, bindingSource: "request_context" };
+    expect(() => evaluatePerformanceRun(contract(), unobserved, binding(), "load", EVALUATED_AT))
+      .toThrow("performance_observation_binding_unobserved");
+  });
+
   it("requires the persisted producer invocation proof for production evidence", () => {
     const missingNonce = completeObservations();
     delete (missingNonce[0] as Partial<PerformanceObservation>).invocationNonce;

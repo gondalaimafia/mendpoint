@@ -333,4 +333,40 @@ describe("billing usage finance routes", () => {
       "billing.usage_credit",
     ]));
   });
+
+  it("rejects an unknown entry kind and scopes minting to the caller's tenant", async () => {
+    const { app, db } = fixture();
+
+    // Only 'adjustments' and 'credits' are valid entry kinds.
+    const unknownKind = request("owner.a.jwt", "/billing/usage/refunds", {
+      idempotencyKey: "unknown-kind",
+      taskId: "task-a",
+      mcuMicrosDelta: -1,
+      invoiceReference: "invoice-a",
+      reason: "unknown kind",
+    });
+    const unknownResponse = await app.request(unknownKind.path, unknownKind.init);
+    expect(unknownResponse.status).toBe(404);
+    expect(await unknownResponse.json()).toEqual({ error: "usage_entry_kind_invalid" });
+
+    // An owner minting an authorization binds it to their own tenant, never a tenant
+    // named in the request. tenant-b's owner mints only under tenant-b.
+    const mintForB = request("owner.b.jwt", "/billing/usage/finance-authorizations", {
+      entryType: "credit",
+      invoiceReference: "invoice-b",
+      idempotencyKey: "credit-tenant-b",
+      mcuMicrosDelta: -5,
+      reason: "tenant-b credit authorization",
+    });
+    const mintResponse = await app.request(mintForB.path, mintForB.init);
+    expect(mintResponse.status).toBe(201);
+    expect(await mintResponse.json()).toMatchObject({ tenantId: "tenant-b" });
+    expect(db.raw.prepare(
+      "SELECT tenant_id FROM usage_finance_authorizations WHERE entry_idempotency_key = ?",
+    ).get("credit-tenant-b")).toEqual({ tenant_id: "tenant-b" });
+    // tenant-a sees none of tenant-b's authorizations.
+    expect(db.raw.prepare(
+      "SELECT COUNT(*) AS count FROM usage_finance_authorizations WHERE tenant_id = 'tenant-a'",
+    ).get()).toEqual({ count: 0 });
+  });
 });

@@ -25,6 +25,7 @@ import {
   resolveFanoutSettlementMcuMicros,
   SANDBOX_EGRESS_ATTESTATION_SCHEMA,
   sandboxEgressAuthorityFromEnv,
+  selfServeBillingEnabled,
   verifySandboxEgressAuthority,
   type FanoutRunMeterSignals,
 } from "@mendpoint/platform";
@@ -2280,12 +2281,19 @@ function settleFanoutRunUsage(
     signals: fanoutRunMeterSignalsFromReport(report),
     env,
   });
+  // The fanout meter derives MCU from real work only when self-serve billing is on.
+  // When it is off, settlement falls back to the reserved estimate (a hold, not a
+  // measurement), so the ledger must record it as not-measured rather than conflate
+  // the estimate with observed consumption.
+  const measured = selfServeBillingEnabled(env);
   try {
     settleRunUsage(db, {
       tenantId,
       reservationId,
       actualMcuMicros,
       reason: "run completed: pipeline.fanout",
+      consumptionMeasured: measured,
+      ...(measured ? {} : { measurementProvenance: "not_measured:fanout_estimate_hold" }),
       createdAt: nowIso(),
     });
   } catch (error) {

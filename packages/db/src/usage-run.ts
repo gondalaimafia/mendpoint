@@ -92,7 +92,15 @@ export function reserveRunUsage(
   });
 }
 
-/** Settle a run's reservation to its measured (or reserved-estimate) actual. */
+/**
+ * Settle a run's reservation to its measured (or reserved-estimate) actual.
+ *
+ * `consumptionMeasured` must state honestly whether `actualMcuMicros` was observed.
+ * A run that settled to its reserved estimate because no per-run meter exists passes
+ * `false` with a `not_measured:<reason>` marker so the ledger never records the hold
+ * as measured consumption. Omitting it defaults to measured, matching the ledger
+ * primitive.
+ */
 export function settleRunUsage(
   db: AppDb,
   input: {
@@ -102,6 +110,8 @@ export function settleRunUsage(
     reason: string;
     invoiceReference?: string | null;
     actorPrincipalId?: string | null;
+    consumptionMeasured?: boolean;
+    measurementProvenance?: string;
     createdAt: string;
   },
 ): UsageLedgerEntry {
@@ -114,6 +124,8 @@ export function settleRunUsage(
     invoiceReference: input.invoiceReference ?? null,
     reason: input.reason,
     actorPrincipalId: input.actorPrincipalId ?? null,
+    ...(input.consumptionMeasured === undefined ? {} : { consumptionMeasured: input.consumptionMeasured }),
+    ...(input.measurementProvenance === undefined ? {} : { measurementProvenance: input.measurementProvenance }),
     createdAt: input.createdAt,
   });
 }

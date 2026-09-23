@@ -7,6 +7,7 @@ import { MCU_SCHEDULE_V1 } from "../packages/platform/src/index.js";
 import {
   buildFettlerProductionClosure,
   checkFettlerProductionClosureArtifact,
+  FETTLER_PRODUCTION_CLOSURE_ARTIFACT_PATH,
   serializeFettlerProductionClosure,
   writeFettlerProductionClosureArtifact,
 } from "./fettler-production-closure.js";
@@ -85,6 +86,32 @@ describe("Fettler production closure operating contracts", () => {
     expect(serializeFettlerProductionClosure()).toBe(
       `${JSON.stringify(closure, null, 2)}\n`,
     );
+  });
+
+  it("verifies the committed artifact and rejects it when stale or falsified to observed/qualified", () => {
+    // Read the COMMITTED artifact on disk (not ga-check.ts source): the default-path
+    // check must pass, which fails whenever the checked-in artifact drifts from the
+    // executable authority. This is what catches a stale artifact that breaks `ga:check`.
+    const committed = readFileSync(FETTLER_PRODUCTION_CLOSURE_ARTIFACT_PATH, "utf8");
+    expect(committed).toBe(serializeFettlerProductionClosure());
+    expect(() => checkFettlerProductionClosureArtifact()).not.toThrow();
+
+    const directory = mkdtempSync(join(tmpdir(), "fettler-closure-committed-"));
+    try {
+      // Falsifying the committed evidence from not_observed to a claimed measurement
+      // must make the check fail — the artifact cannot self-promote to observed/qualified.
+      for (const claimed of ["observed", "qualified"]) {
+        const falsified = committed
+          .replaceAll('"status": "not_observed"', `"status": "${claimed}"`);
+        expect(falsified).not.toBe(committed);
+        const falsifiedPath = join(directory, `${claimed}.json`);
+        writeFileSync(falsifiedPath, falsified, "utf8");
+        expect(() => checkFettlerProductionClosureArtifact(falsifiedPath))
+          .toThrow("fettler_production_closure_artifact_stale");
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("rejects missing and stale bytes and reproduces the validated artifact exactly", () => {

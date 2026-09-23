@@ -812,6 +812,12 @@ CREATE TABLE IF NOT EXISTS usage_ledger_entries (
   actor_principal_id TEXT,
   finance_authorization_id TEXT,
   finance_authorization_digest TEXT,
+  -- Measurement provenance for a settlement's consumed MCU: 'measured' or
+  -- 'not_measured:<reason>'. Only settlements carry it; other entry types read NULL.
+  -- Nullable with no default so a settlement written before this column existed reads
+  -- NULL (a legacy, not-silently-measured row surfaced via usage_legacy_measurement_evidence),
+  -- and so the additive ADD COLUMN below converges an upgraded volume without divergence.
+  consumption_provenance TEXT,
   entry_sequence INTEGER NOT NULL,
   prev_hash TEXT,
   entry_hash TEXT NOT NULL,
@@ -891,6 +897,26 @@ END;
 CREATE TRIGGER IF NOT EXISTS usage_legacy_finance_evidence_guard_delete
 BEFORE DELETE ON usage_legacy_finance_evidence BEGIN
   SELECT RAISE(ABORT, 'usage_legacy_finance_evidence_append_only');
+END;
+-- Pre-migration settlements carried no measurement provenance. This table binds each
+-- such settlement to its exact entry hash so reconcile can surface it as
+-- 'legacy_unverified' (not silently measured) while a tampered null-provenance row
+-- fails the hash check and finds no evidence.
+CREATE TABLE IF NOT EXISTS usage_legacy_measurement_evidence (
+  entry_id TEXT PRIMARY KEY REFERENCES usage_ledger_entries(id),
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  entry_hash TEXT NOT NULL,
+  measurement_status TEXT NOT NULL CHECK (measurement_status = 'legacy_unverified'),
+  migration_version TEXT NOT NULL CHECK (migration_version = 'usage-consumption-measurement/1'),
+  UNIQUE (tenant_id, entry_id)
+);
+CREATE TRIGGER IF NOT EXISTS usage_legacy_measurement_evidence_guard_update
+BEFORE UPDATE ON usage_legacy_measurement_evidence BEGIN
+  SELECT RAISE(ABORT, 'usage_legacy_measurement_evidence_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_legacy_measurement_evidence_guard_delete
+BEFORE DELETE ON usage_legacy_measurement_evidence BEGIN
+  SELECT RAISE(ABORT, 'usage_legacy_measurement_evidence_append_only');
 END;
 CREATE TRIGGER IF NOT EXISTS usage_entitlements_append_only_update
 BEFORE UPDATE ON usage_entitlements BEGIN
@@ -3320,6 +3346,11 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "api_keys", name: "principal_id", sql: "TEXT" },
     { table: "usage_ledger_entries", name: "finance_authorization_id", sql: "TEXT" },
     { table: "usage_ledger_entries", name: "finance_authorization_digest", sql: "TEXT" },
+    // Settlement measurement provenance. Nullable, no default: a settlement written
+    // before this column reads NULL and is surfaced as legacy_unverified by the
+    // backfill below, never silently treated as measured. Matches the fresh CREATE
+    // TABLE column exactly (nullable TEXT), so an upgraded volume does not diverge.
+    { table: "usage_ledger_entries", name: "consumption_provenance", sql: "TEXT" },
     { table: "usage_finance_authorizations", name: "allocation_entitlement_id", sql: "TEXT" },
     { table: "usage_finance_authorizations", name: "allocation_price_version", sql: "TEXT" },
     { table: "jobs", name: "lease_owner", sql: "TEXT" },
@@ -3574,6 +3605,16 @@ function migrateProvidersFeedColumns(db: AppDb) {
       WHERE entry_type IN ('adjustment', 'credit')
         AND finance_authorization_id IS NULL
         AND finance_authorization_digest IS NULL
+     ON CONFLICT(entry_id) DO NOTHING`,
+  );
+  run(
+    db,
+    `INSERT INTO usage_legacy_measurement_evidence
+       (entry_id, tenant_id, entry_hash, measurement_status, migration_version)
+     SELECT id, tenant_id, entry_hash, 'legacy_unverified', 'usage-consumption-measurement/1'
+       FROM usage_ledger_entries
+      WHERE entry_type = 'settlement'
+        AND consumption_provenance IS NULL
      ON CONFLICT(entry_id) DO NOTHING`,
   );
   run(
@@ -5588,6 +5629,9 @@ export {
   getUsageSummary,
   listUsageLedger,
   reconcileUsageLedger,
+  USAGE_CONSUMPTION_MEASURED,
+  USAGE_CONSUMPTION_NOT_MEASURED_PREFIX,
+  USAGE_CONSUMPTION_LEGACY_MIGRATION_VERSION,
 } from "./usage.js";
 export {
   MCU_MICROS,

@@ -51,6 +51,16 @@ export type UsageLedgerEntry = Readonly<{
   actorPrincipalId: string | null;
   financeAuthorizationId: string | null;
   financeAuthorizationDigest: string | null;
+  /**
+   * Measurement provenance for a settlement's consumed MCU. A settlement is the
+   * only entry type that records observed consumption, so provenance is the sole
+   * carrier of "measured zero" vs "never measured" (FAILURE_MODES §1). Every
+   * settlement written by this code carries `"measured"` or `"not_measured:<reason>"`;
+   * a settlement that predates this column reads `null` and is treated as a legacy,
+   * not-silently-measured row (see `usage_legacy_measurement_evidence`). Reservation,
+   * release, credit and adjustment entries carry `null` (not applicable).
+   */
+  consumptionProvenance: string | null;
   entrySequence: number;
   previousHash: string | null;
   entryHash: string;
@@ -131,6 +141,7 @@ type EntryRow = {
   actor_principal_id: string | null;
   finance_authorization_id: string | null;
   finance_authorization_digest: string | null;
+  consumption_provenance: string | null;
   entry_sequence: number;
   prev_hash: string | null;
   entry_hash: string;
@@ -186,6 +197,36 @@ function micros(name: string, value: number, allowNegative = false): number {
   return value;
 }
 
+/** A settlement whose consumed MCU was actually observed. */
+export const USAGE_CONSUMPTION_MEASURED = "measured" as const;
+/** Prefix for a settlement whose consumed MCU was NOT measured (a reason follows). */
+export const USAGE_CONSUMPTION_NOT_MEASURED_PREFIX = "not_measured:";
+export const USAGE_CONSUMPTION_LEGACY_MIGRATION_VERSION = "usage-consumption-measurement/1";
+const NOT_MEASURED_REASON = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
+
+/**
+ * Normalize a settlement's measurement provenance. `measured === true` (or omitted)
+ * yields `"measured"`. `measured === false` requires an honest `not_measured:<reason>`
+ * marker: the reason must be present and well-formed so an unmeasured settlement can
+ * never masquerade as a bare, reasonless value.
+ */
+function settlementProvenance(measured: boolean | undefined, provenance: string | undefined): string {
+  if (measured === false) {
+    if (typeof provenance !== "string" || !provenance.startsWith(USAGE_CONSUMPTION_NOT_MEASURED_PREFIX)) {
+      throw new Error("usage_consumption_provenance_invalid");
+    }
+    const reason = provenance.slice(USAGE_CONSUMPTION_NOT_MEASURED_PREFIX.length);
+    if (!NOT_MEASURED_REASON.test(reason) || reason.length > 128) {
+      throw new Error("usage_consumption_provenance_invalid");
+    }
+    return provenance;
+  }
+  if (provenance !== undefined && provenance !== USAGE_CONSUMPTION_MEASURED) {
+    throw new Error("usage_consumption_provenance_invalid");
+  }
+  return USAGE_CONSUMPTION_MEASURED;
+}
+
 function priceFromRow(row: PriceRow): UsagePriceVersion {
   return Object.freeze({
     id: row.id,
@@ -237,6 +278,7 @@ function entryFromRow(row: EntryRow): UsageLedgerEntry {
     actorPrincipalId: row.actor_principal_id,
     financeAuthorizationId: row.finance_authorization_id,
     financeAuthorizationDigest: row.finance_authorization_digest,
+    consumptionProvenance: row.consumption_provenance,
     entrySequence: row.entry_sequence,
     previousHash: row.prev_hash,
     entryHash: row.entry_hash,
@@ -795,6 +837,7 @@ type EntryInput = {
   actorPrincipalId?: string | null;
   financeAuthorizationId?: string | null;
   financeAuthorizationDigest?: string | null;
+  consumptionProvenance?: string | null;
   createdAt: string;
 };
 
@@ -816,10 +859,11 @@ function usageEntryHash(input: {
   actorPrincipalId: string | null;
   financeAuthorizationId?: string | null;
   financeAuthorizationDigest?: string | null;
+  consumptionProvenance?: string | null;
   previousHash: string | null;
   createdAt: string;
 }) {
-  const content = input.financeAuthorizationId === null ||
+  const base = input.financeAuthorizationId === null ||
     input.financeAuthorizationId === undefined
     ? {
         id: input.id,
@@ -840,7 +884,38 @@ function usageEntryHash(input: {
         previousHash: input.previousHash,
         createdAt: input.createdAt,
       }
-    : input;
+    : {
+        id: input.id,
+        tenantId: input.tenantId,
+        entrySequence: input.entrySequence,
+        entryType: input.entryType,
+        entitlementId: input.entitlementId,
+        idempotencyKey: input.idempotencyKey,
+        taskId: input.taskId,
+        campaignId: input.campaignId,
+        reservationId: input.reservationId,
+        priceVersion: input.priceVersion,
+        reservedDelta: input.reservedDelta,
+        consumedDelta: input.consumedDelta,
+        invoiceReference: input.invoiceReference,
+        reason: input.reason,
+        actorPrincipalId: input.actorPrincipalId,
+        financeAuthorizationId: input.financeAuthorizationId,
+        financeAuthorizationDigest: input.financeAuthorizationDigest,
+        previousHash: input.previousHash,
+        createdAt: input.createdAt,
+      };
+  // "measured" is the hash-neutral baseline: a measured settlement hashes over the
+  // original field set, identical to a settlement written before this column existed
+  // (provenance null), so a pre-migration volume still verifies. Only a
+  // "not_measured:<reason>" marker is folded into the hash, which makes the
+  // measured/not-measured boundary tamper-evident (flipping either way changes the
+  // recomputed hash) while the column value alone distinguishes measured from a
+  // legacy null (both immutable after insert via the append-only trigger).
+  const content = input.consumptionProvenance == null ||
+    input.consumptionProvenance === USAGE_CONSUMPTION_MEASURED
+    ? base
+    : { ...base, consumptionProvenance: input.consumptionProvenance };
   return createHash("sha256").update(JSON.stringify(content)).digest("hex");
 }
 
@@ -866,7 +941,8 @@ function insertEntry(db: AppDb, input: EntryInput): UsageLedgerEntry {
       row.reason === input.reason &&
       row.actorPrincipalId === (input.actorPrincipalId ?? null) &&
       row.financeAuthorizationId === (input.financeAuthorizationId ?? null) &&
-      row.financeAuthorizationDigest === (input.financeAuthorizationDigest ?? null);
+      row.financeAuthorizationDigest === (input.financeAuthorizationDigest ?? null) &&
+      row.consumptionProvenance === (input.consumptionProvenance ?? null);
     if (!same) throw new Error("usage_idempotency_conflict");
     return row;
   }
@@ -896,6 +972,7 @@ function insertEntry(db: AppDb, input: EntryInput): UsageLedgerEntry {
     actorPrincipalId: input.actorPrincipalId ?? null,
     financeAuthorizationId: input.financeAuthorizationId ?? null,
     financeAuthorizationDigest: input.financeAuthorizationDigest ?? null,
+    consumptionProvenance: input.consumptionProvenance ?? null,
     previousHash,
     createdAt: input.createdAt,
   });
@@ -904,8 +981,8 @@ function insertEntry(db: AppDb, input: EntryInput): UsageLedgerEntry {
      (id, tenant_id, entry_type, entitlement_id, idempotency_key, task_id, campaign_id, reservation_id,
       price_version, reserved_mcu_micros_delta, consumed_mcu_micros_delta,
       invoice_reference, reason, actor_principal_id, finance_authorization_id,
-      finance_authorization_digest, entry_sequence, prev_hash, entry_hash, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      finance_authorization_digest, consumption_provenance, entry_sequence, prev_hash, entry_hash, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.id,
     input.tenantId,
@@ -923,6 +1000,7 @@ function insertEntry(db: AppDb, input: EntryInput): UsageLedgerEntry {
     input.actorPrincipalId ?? null,
     input.financeAuthorizationId ?? null,
     input.financeAuthorizationDigest ?? null,
+    input.consumptionProvenance ?? null,
     entrySequence,
     previousHash,
     entryHash,
@@ -951,6 +1029,21 @@ function prepareEntry(db: AppDb, input: EntryInput) {
   }
   if (Boolean(input.financeAuthorizationId) !== Boolean(input.financeAuthorizationDigest)) {
     throw new Error("usage_finance_authorization_binding_invalid");
+  }
+  // Measurement provenance is meaningful only for a settlement, the sole entry type
+  // that records observed consumption. Every settlement written by this code carries
+  // one; no other entry type may. A settlement missing provenance (a would-be
+  // silently-measured row) is rejected here, not coerced.
+  if (input.entryType === "settlement") {
+    if (input.consumptionProvenance == null) {
+      throw new Error("usage_consumption_provenance_required");
+    }
+    settlementProvenance(
+      input.consumptionProvenance === USAGE_CONSUMPTION_MEASURED ? true : false,
+      input.consumptionProvenance,
+    );
+  } else if (input.consumptionProvenance != null) {
+    throw new Error("usage_consumption_provenance_not_applicable");
   }
   time("usage_created_at", input.createdAt);
   micros("usage_reserved_delta", input.reservedDelta, true);
@@ -1091,12 +1184,25 @@ function outstandingReservation(db: AppDb, tenantId: string, reservationId: stri
 
 export function settleUsageReservation(
   db: AppDb,
-  input: Omit<EntryInput, "entryType" | "entitlementId" | "priceVersion" | "reservedDelta" | "consumedDelta" | "taskId" | "campaignId"> & {
+  input: Omit<EntryInput, "entryType" | "entitlementId" | "priceVersion" | "reservedDelta" | "consumedDelta" | "taskId" | "campaignId" | "consumptionProvenance"> & {
     reservationId: string;
     actualMcuMicros: number;
+    /**
+     * Whether the settled MCU was actually observed. Defaults to `true` (measured)
+     * so a caller that omits it records an explicit `"measured"` provenance. A
+     * caller that settled to an estimate because no per-run meter exists must pass
+     * `false` with a `not_measured:<reason>` marker, so the ledger never conflates a
+     * measured zero with "never measured".
+     */
+    consumptionMeasured?: boolean;
+    measurementProvenance?: string;
   },
 ): UsageLedgerEntry {
   const actual = micros("usage_settlement_mcu_micros", input.actualMcuMicros);
+  const consumptionProvenance = settlementProvenance(
+    input.consumptionMeasured,
+    input.measurementProvenance,
+  );
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
@@ -1121,6 +1227,7 @@ export function settleUsageReservation(
       priceVersion: state.reservation.priceVersion,
       reservedDelta: existing ? existing.reserved_mcu_micros_delta : -state.outstanding,
       consumedDelta: actual,
+      consumptionProvenance,
     };
     prepareEntry(db, entry);
     const result = insertEntry(db, entry);
@@ -1426,6 +1533,32 @@ function isLegacyUnverifiedFinanceEntry(db: AppDb, entry: UsageLedgerEntry): boo
     evidence.migration_version === "usage-finance-authority/1";
 }
 
+/**
+ * A settlement that predates the measurement-provenance column reads
+ * `consumptionProvenance === null`. Such a row is legitimate only when the additive
+ * migration recorded it as `legacy_unverified` against its exact entry hash. This
+ * keeps a genuine pre-migration settlement distinguishable from a tampered one and,
+ * per the upgrade contract, means legacy rows are surfaced as unverified rather than
+ * silently treated as measured.
+ */
+function isLegacyUnverifiedMeasurementEntry(db: AppDb, entry: UsageLedgerEntry): boolean {
+  if (entry.entryType !== "settlement" || entry.consumptionProvenance !== null) return false;
+  const evidence = one<{
+    entry_hash: string;
+    measurement_status: string;
+    migration_version: string;
+  }>(
+    db,
+    `SELECT entry_hash, measurement_status, migration_version
+       FROM usage_legacy_measurement_evidence
+      WHERE tenant_id = ? AND entry_id = ?`,
+    [entry.tenantId, entry.id],
+  );
+  return evidence?.entry_hash === entry.entryHash &&
+    evidence.measurement_status === "legacy_unverified" &&
+    evidence.migration_version === USAGE_CONSUMPTION_LEGACY_MIGRATION_VERSION;
+}
+
 function financeAuthorizationMatchesEntry(db: AppDb, entry: UsageLedgerEntry): boolean {
   if (entry.entryType !== "adjustment" && entry.entryType !== "credit") {
     return entry.financeAuthorizationId === null && entry.financeAuthorizationDigest === null;
@@ -1583,6 +1716,8 @@ export function reconcileUsageLedger(db: AppDb, tenantId: string) {
   const invoices: Record<string, number> = {};
   let previousHash: string | null = null;
   const legacyUnverifiedFinanceEntryIds: string[] = [];
+  const legacyUnverifiedMeasurementEntryIds: string[] = [];
+  const unmeasuredSettlementEntryIds: string[] = [];
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!;
     const expectedHash = usageEntryHash({
@@ -1603,6 +1738,7 @@ export function reconcileUsageLedger(db: AppDb, tenantId: string) {
       actorPrincipalId: entry.actorPrincipalId,
       financeAuthorizationId: entry.financeAuthorizationId,
       financeAuthorizationDigest: entry.financeAuthorizationDigest,
+      consumptionProvenance: entry.consumptionProvenance,
       previousHash,
       createdAt: entry.createdAt,
     });
@@ -1617,6 +1753,9 @@ export function reconcileUsageLedger(db: AppDb, tenantId: string) {
         error: `usage_integrity:${entry.id}`,
         financeAuthorityStatus: "invalid" as const,
         legacyUnverifiedFinanceEntryIds,
+        measurementStatus: "invalid" as const,
+        legacyUnverifiedMeasurementEntryIds,
+        unmeasuredSettlementEntryIds,
       };
     }
     if (!financeAuthorizationMatchesEntry(db, entry)) {
@@ -1626,10 +1765,34 @@ export function reconcileUsageLedger(db: AppDb, tenantId: string) {
         error: `usage_finance_authorization_invalid:${entry.id}`,
         financeAuthorityStatus: "invalid" as const,
         legacyUnverifiedFinanceEntryIds,
+        measurementStatus: "invalid" as const,
+        legacyUnverifiedMeasurementEntryIds,
+        unmeasuredSettlementEntryIds,
       };
     }
     if (isLegacyUnverifiedFinanceEntry(db, entry)) {
       legacyUnverifiedFinanceEntryIds.push(entry.id);
+    }
+    if (entry.entryType === "settlement") {
+      if (entry.consumptionProvenance === null) {
+        // A null-provenance settlement is legitimate only as a migrated legacy row.
+        // Without matching legacy evidence it is an unattested (or tampered) row.
+        if (!isLegacyUnverifiedMeasurementEntry(db, entry)) {
+          return {
+            ok: false,
+            checked: index,
+            error: `usage_consumption_unattested:${entry.id}`,
+            financeAuthorityStatus: "invalid" as const,
+            legacyUnverifiedFinanceEntryIds,
+            measurementStatus: "invalid" as const,
+            legacyUnverifiedMeasurementEntryIds,
+            unmeasuredSettlementEntryIds,
+          };
+        }
+        legacyUnverifiedMeasurementEntryIds.push(entry.id);
+      } else if (entry.consumptionProvenance.startsWith(USAGE_CONSUMPTION_NOT_MEASURED_PREFIX)) {
+        unmeasuredSettlementEntryIds.push(entry.id);
+      }
     }
     reserved += entry.reservedMcuMicrosDelta;
     consumed += entry.consumedMcuMicrosDelta;
@@ -1666,6 +1829,9 @@ export function reconcileUsageLedger(db: AppDb, tenantId: string) {
         error: `usage_balance_negative:${entry.id}`,
         financeAuthorityStatus: "invalid" as const,
         legacyUnverifiedFinanceEntryIds,
+        measurementStatus: "invalid" as const,
+        legacyUnverifiedMeasurementEntryIds,
+        unmeasuredSettlementEntryIds,
       };
     }
     if (entry.invoiceReference) {
@@ -1678,6 +1844,9 @@ export function reconcileUsageLedger(db: AppDb, tenantId: string) {
           error: `usage_invoice_negative:${entry.id}`,
           financeAuthorityStatus: "invalid" as const,
           legacyUnverifiedFinanceEntryIds,
+          measurementStatus: "invalid" as const,
+          legacyUnverifiedMeasurementEntryIds,
+          unmeasuredSettlementEntryIds,
         };
       }
     }
@@ -1697,19 +1866,43 @@ export function reconcileUsageLedger(db: AppDb, tenantId: string) {
     : legacyUnverifiedFinanceEntryIds.length > 0
       ? "legacy_unverified" as const
       : "verified" as const;
-  const ok = totalsMatch && financeAuthorityStatus === "verified";
+  // Measurement authority is a peer of finance authority. A settlement whose consumed
+  // MCU was never measured (not_measured:<reason>) or whose provenance predates this
+  // column (legacy_unverified) must not reconcile clean: it would otherwise be
+  // indistinguishable from a measured zero and could feed a definitive invoice line.
+  const measurementStatus = !totalsMatch
+    ? "invalid" as const
+    : unmeasuredSettlementEntryIds.length > 0
+      ? "unmeasured" as const
+      : legacyUnverifiedMeasurementEntryIds.length > 0
+        ? "legacy_unverified" as const
+        : "verified" as const;
+  const ok = totalsMatch &&
+    financeAuthorityStatus === "verified" &&
+    measurementStatus === "verified";
   return {
     ok,
     checked: entries.length,
+    // A single headline error; every dimension is still reported in full via the
+    // status fields and entry-id arrays below. An active unmeasured settlement is the
+    // most severe, then the pre-existing finance-authority dimension, then the
+    // measurement legacy dimension.
     error: !totalsMatch
       ? "usage_totals_mismatch"
-      : financeAuthorityStatus === "legacy_unverified"
-        ? "usage_finance_authority_legacy_unverified"
-        : undefined,
+      : measurementStatus === "unmeasured"
+        ? "usage_consumption_unmeasured"
+        : financeAuthorityStatus === "legacy_unverified"
+          ? "usage_finance_authority_legacy_unverified"
+          : measurementStatus === "legacy_unverified"
+            ? "usage_consumption_measurement_legacy_unverified"
+            : undefined,
     reservedMcuMicros: reserved,
     consumedMcuMicros: consumed,
     invoices,
     financeAuthorityStatus,
     legacyUnverifiedFinanceEntryIds,
+    measurementStatus,
+    unmeasuredSettlementEntryIds,
+    legacyUnverifiedMeasurementEntryIds,
   };
 }

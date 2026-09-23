@@ -1,3 +1,24 @@
+/**
+ * MCU schedule and a non-authoritative in-memory ledger MODEL.
+ *
+ * The single source of truth for tenant MCU accounting is the persisted
+ * `usage_ledger_entries` table in `@mendpoint/db` (packages/db/src/usage.ts):
+ * reserve/settle/release/credit/adjust, hash-chain integrity, quota enforcement,
+ * finance authority and measurement provenance all live there and are the only path
+ * any product surface (the billing routes, the worker, the self-serve dashboard)
+ * touches.
+ *
+ * The MCU-schedule constants and calculators below (`MCU_SCHEDULE_V1`,
+ * `calculateMcuV1`, `formatMcu`, the digest helpers) ARE authoritative and are
+ * re-exported from the package barrel. The ledger primitives further down
+ * (`createMcuLedgerEntry`, `reconcileMcuLedgerLifecycle`, `createMcuFinanceAuthorization`,
+ * `assertMcuScheduleChange`) are a self-contained reference MODEL of the lifecycle:
+ * they are intentionally NOT exported from `packages/platform/src/index.ts` and have
+ * no product caller. They are kept as executable documentation of the intended
+ * lifecycle and the schedule's shape, exercised only by `mcu.test.ts`. Do not
+ * re-export them and do not wire them to a product path: `usage_ledger_entries` is
+ * the one authority, and a second live ledger would fork it.
+ */
 import { createHash } from "node:crypto";
 
 export const MCU_VERSION = "mcu-v1" as const;

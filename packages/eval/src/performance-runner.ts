@@ -648,13 +648,28 @@ export async function runPerformanceProbe(
   const performanceEvidence: PerformanceEvidenceBinding = {
     tierId: tier.id,
     ...evidenceIdentity,
+    // `observedRepository` is the shape the probe RETURNED, which validateMeasurement
+    // requires to equal the operator-declared `options.repository` exactly. The runner
+    // cannot prove the probe measured rather than echoed it, so tier-floor grading here
+    // is against an operator-declared, probe-confirmed shape, not an independently
+    // audited one. The closure artifact records evidence.status: not_observed
+    // accordingly. See docs/PERFORMANCE_CONTRACT.md ("Declared versus observed").
     repository: observedRepository ?? options.repository,
     measuredConcurrency,
     startedAt: new Date(Math.max(0, startedMs)).toISOString(),
     endedAt: new Date(Math.max(0, endedMs)).toISOString(),
   };
   const evaluation = !externallyAborted && !unobservedFailure && observedRepository && completeSamples
-    ? evaluatePerformanceRun(selectedTierContract, observations, performanceEvidence, options.mode)
+    ? evaluatePerformanceRun(
+        selectedTierContract,
+        observations,
+        performanceEvidence,
+        options.mode,
+        // Evaluate at the runner's real (injectable) clock, not the run's declared
+        // end, so the freshness gate is reachable in production and deterministic
+        // under an injected clock in tests.
+        new Date(Math.max(0, now())).toISOString(),
+      )
     : null;
   const status = externallyAborted
     ? "aborted"

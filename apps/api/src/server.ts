@@ -246,6 +246,7 @@ import {
   createRbacMiddleware,
   attenuateApiKeyScopes,
   effectiveAuthMode,
+  requestTenantId,
   type ApiEnv,
 } from "./auth.js";
 import {
@@ -591,16 +592,6 @@ function requestAudit(
     apiKeyId: c.get("apiKeyId") ?? null,
     requestId: c.get("requestId") ?? null,
   });
-}
-
-function requestTenantId(c: Context<ApiEnv>): string {
-  const principal = c.get("principal");
-  if (!principal) throw new Error("authenticated_principal_required");
-  // A blank tenantId (e.g. an empty x-tenant-id header parsed into a principal) must
-  // never reach a tenant-scoped query, where the fail-open branch would drop the filter
-  // and read across tenants. Fail closed instead.
-  if (principal.tenantId.trim() === "") throw new Error("tenant_scope_required");
-  return principal.tenantId;
 }
 
 function requestListLimit(c: Context<ApiEnv>, fallback = 100, maximum = 200): number {

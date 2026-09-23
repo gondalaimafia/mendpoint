@@ -6,7 +6,7 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import { newId, nowIso } from "@mendpoint/shared";
-import type { ApiEnv } from "./auth.js";
+import { requestTenantId, type ApiEnv } from "./auth.js";
 import { parseUsageFinanceEntryType } from "./billing-usage-input.js";
 import { mappedErrorResponse, type PublicErrorRule } from "./error-boundary.js";
 
@@ -25,13 +25,6 @@ export type BillingUsageRouteOptions = Readonly<{
   id?: () => string;
   now?: () => string;
 }>;
-
-function tenantId(context: Context<ApiEnv>): string {
-  const principal = context.get("principal");
-  if (!principal) throw new Error("authenticated_principal_required");
-  if (principal.tenantId.trim() === "") throw new Error("tenant_scope_required");
-  return principal.tenantId;
-}
 
 function commitWithAudit<T>(db: AppDb, operation: () => T): T {
   const ownsTransaction = !db.raw.isTransaction;
@@ -91,7 +84,7 @@ export function createBillingUsageFinanceRoutes(
       const authorization = commitWithAudit(options.db, () => {
         const created = createUsageFinanceAuthorization(options.db, {
           id: makeId(),
-          tenantId: tenantId(context),
+          tenantId: requestTenantId(context),
           approvedByPrincipalId: actorPrincipalId,
           actorPrincipalId,
           entryType,
@@ -152,7 +145,7 @@ export function createBillingUsageFinanceRoutes(
       const entry = commitWithAudit(options.db, () => {
         const committed = operation(options.db, {
           id: makeId(),
-          tenantId: tenantId(context),
+          tenantId: requestTenantId(context),
           idempotencyKey: body.idempotencyKey ?? "",
           taskId: body.taskId ?? "",
           campaignId: body.campaignId,

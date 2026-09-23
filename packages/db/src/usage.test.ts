@@ -1220,4 +1220,128 @@ describe("usage ledger", () => {
       error: `usage_finance_authorization_invalid:${consumed.id}`,
     });
   });
+
+  it("distinguishes a measured zero settlement from an unmeasured settlement", () => {
+    // A measured settlement of 0 MCU is an honest observed zero and reconciles clean.
+    const dbMeasured = setup();
+    const measuredReservation = reserveUsage(dbMeasured, {
+      id: "reservation-measured",
+      tenantId: "tenant_default",
+      idempotencyKey: "reserve-measured",
+      taskId: "task-measured",
+      mcuMicros: 1_000_000,
+      reason: "planned",
+      createdAt: at,
+    });
+    const measured = settleUsageReservation(dbMeasured, {
+      id: "settlement-measured",
+      tenantId: "tenant_default",
+      idempotencyKey: "settle-measured",
+      reservationId: measuredReservation.id,
+      actualMcuMicros: 0,
+      reason: "measured zero consumption",
+      createdAt: "2026-08-01T12:01:00.000Z",
+    });
+    expect(measured.consumptionProvenance).toBe("measured");
+    expect(reconcileUsageLedger(dbMeasured, "tenant_default")).toMatchObject({
+      ok: true,
+      measurementStatus: "verified",
+      unmeasuredSettlementEntryIds: [],
+    });
+
+    // The identical 0-MCU settlement declared not-measured must NOT reconcile clean:
+    // it is surfaced as unmeasured, so it can never feed a definitive invoice line.
+    // Deleting the provenance distinction (recording/checking it) collapses these two
+    // cases and this expectation dies.
+    const dbUnmeasured = setup();
+    const unmeasuredReservation = reserveUsage(dbUnmeasured, {
+      id: "reservation-unmeasured",
+      tenantId: "tenant_default",
+      idempotencyKey: "reserve-unmeasured",
+      taskId: "task-unmeasured",
+      mcuMicros: 1_000_000,
+      reason: "planned",
+      createdAt: at,
+    });
+    const unmeasured = settleUsageReservation(dbUnmeasured, {
+      id: "settlement-unmeasured",
+      tenantId: "tenant_default",
+      idempotencyKey: "settle-unmeasured",
+      reservationId: unmeasuredReservation.id,
+      actualMcuMicros: 0,
+      reason: "no per-run meter",
+      consumptionMeasured: false,
+      measurementProvenance: "not_measured:no_per_run_mcu_meter",
+      createdAt: "2026-08-01T12:01:00.000Z",
+    });
+    expect(unmeasured.consumptionProvenance).toBe("not_measured:no_per_run_mcu_meter");
+    expect(reconcileUsageLedger(dbUnmeasured, "tenant_default")).toMatchObject({
+      ok: false,
+      error: "usage_consumption_unmeasured",
+      measurementStatus: "unmeasured",
+      unmeasuredSettlementEntryIds: ["settlement-unmeasured"],
+    });
+
+    // A not-measured settlement must carry an honest reason marker.
+    expect(() => settleUsageReservation(dbMeasured, {
+      id: "settlement-bad-provenance",
+      tenantId: "tenant_default",
+      idempotencyKey: "settle-bad-provenance",
+      reservationId: measuredReservation.id,
+      actualMcuMicros: 0,
+      reason: "missing reason",
+      consumptionMeasured: false,
+      createdAt: "2026-08-01T12:02:00.000Z",
+    })).toThrow("usage_consumption_provenance_invalid");
+  });
+
+  it("surfaces a legacy pre-provenance settlement as legacy_unverified, not measured", () => {
+    // Model an upgraded volume: a settlement written before the provenance column,
+    // so its stored hash is provenance-neutral and its column is NULL after the
+    // additive ADD COLUMN. The migration must record it as legacy_unverified so it is
+    // never silently treated as measured.
+    const db = setup();
+    const reservation = reserveUsage(db, {
+      id: "reservation-legacy",
+      tenantId: "tenant_default",
+      idempotencyKey: "reserve-legacy",
+      taskId: "task-legacy",
+      mcuMicros: 1_000_000,
+      reason: "planned",
+      createdAt: at,
+    });
+    const settlement = settleUsageReservation(db, {
+      id: "settlement-legacy",
+      tenantId: "tenant_default",
+      idempotencyKey: "settle-legacy",
+      reservationId: reservation.id,
+      actualMcuMicros: 1_000_000,
+      invoiceReference: "invoice-legacy",
+      reason: "accepted work",
+      createdAt: "2026-08-01T12:01:00.000Z",
+    });
+    // A measured settlement hashes provenance-neutrally, so clearing the column to
+    // NULL (what an upgraded pre-provenance row looks like) keeps the hash valid.
+    db.raw.exec("DROP TRIGGER usage_ledger_entries_append_only_update");
+    db.raw.prepare(
+      "UPDATE usage_ledger_entries SET consumption_provenance = NULL WHERE id = ?",
+    ).run(settlement.id);
+    // Without legacy evidence, a NULL-provenance settlement is unattested.
+    expect(reconcileUsageLedger(db, "tenant_default")).toMatchObject({
+      ok: false,
+      error: `usage_consumption_unattested:${settlement.id}`,
+    });
+    // The migration's evidence marks it a genuine legacy row: surfaced, not measured.
+    db.raw.prepare(
+      `INSERT INTO usage_legacy_measurement_evidence
+         (entry_id, tenant_id, entry_hash, measurement_status, migration_version)
+       VALUES (?, 'tenant_default', ?, 'legacy_unverified', 'usage-consumption-measurement/1')`,
+    ).run(settlement.id, settlement.entryHash);
+    expect(reconcileUsageLedger(db, "tenant_default")).toMatchObject({
+      ok: false,
+      error: "usage_consumption_measurement_legacy_unverified",
+      measurementStatus: "legacy_unverified",
+      legacyUnverifiedMeasurementEntryIds: ["settlement-legacy"],
+    });
+  });
 });
