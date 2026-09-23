@@ -1,0 +1,253 @@
+name: Live evidence refresh
+
+# Keeps docs/PUBLIC_CLAIMS.json's three `type: "live"` entries fresh so the
+# required `test` CI job does not go red on a calendar.
+#
+# Each live entry pins observedAt/freshUntil (observedAt + 7 days) and the
+# revision production served. Once freshUntil passes, `npm run claims:check`
+# fails with LIVE_EVIDENCE_STALE and takes main and every open PR down until a
+# human re-observes the endpoints. That refresh used to be manual (PR #687). This
+# workflow does it automatically AND truthfully: scripts/refresh-live-evidence.ts
+# re-observes each endpoint one at a time, confirms /version is unchanged across
+# the run, confirms the deployed revision is an ancestor of origin/main, and
+# refuses (writing nothing) if any claim's audited surface changed between the
+# current auditedRevision and the deployed revision — because moving
+# auditedRevision asserts the claims were audited there, which only holds when no
+# audited surface moved. A refusal opens ONE tracking issue for a human; it never
+# forces a stale or dishonest edit through.
+#
+# It never merges and never approves. On a successful refresh it pushes a branch
+# and opens a pull request (label release-owner:codex) for the usual independent
+# review and attestation; a maintainer merges it before the earliest freshUntil.
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    # Daily, off the top of the hour to dodge cron congestion. With a 72h "due"
+    # threshold and a 7-day window this gives ~4 attempts before any entry
+    # expires, so a single dropped run cannot let the registry go stale.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Refresh even if no live entry is close to expiring"
+        type: boolean
+        default: false
+
+# Own group, never cancelled: a cancelled run could interrupt the push/PR work
+# with nothing left to report it. Serialize rather than collapse.
+concurrency:
+  group: live-evidence-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    # Default branch only. Schedule always runs there; a manual dispatch from a
+    # side branch must not observe production or push with an unreviewed script.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      # PRs opened with GITHUB_TOKEN require pull-requests: write, and the owner
+      # has enabled "Allow GitHub Actions to create and approve pull requests".
+      pull-requests: write
+      issues: write
+      # workflow_dispatch is exempt from the rule that GITHUB_TOKEN events create
+      # no new run, so `gh workflow run` below really starts the CI and sweep runs.
+      actions: write
+    steps:
+      # fetch-depth: 0 so the script can read docs/PUBLIC_CLAIMS.json at the
+      # current auditedRevision and diff it against the deployed revision, and so
+      # `git merge-base --is-ancestor` has full history. A shallow clone makes the
+      # comparison indeterminate, which the script treats as a refusal.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install
+        run: npm ci
+
+      # Runs the refresh (due check unless force). The script exits non-zero on a
+      # refusal; capture that with `|| true` so the Act step below can open the
+      # tracking issue before the job fails. It always writes the summary JSON
+      # first, so the Act step reads the outcome from disk regardless of exit code.
+      - name: Refresh live evidence
+        id: refresh
+        shell: bash
+        env:
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force == true }}
+        run: |
+          set -uo pipefail
+          # origin/main must exist for the script's ancestor check; checkout with
+          # fetch-depth: 0 provides it, and this keeps it current.
+          git fetch --no-tags origin main >/dev/null 2>&1 || true
+          force_flag=""
+          if [ "$FORCE" = "true" ]; then force_flag="--force"; fi
+          node --import tsx scripts/refresh-live-evidence.ts \
+            --if-expiring-within-hours=72 \
+            --summary="$GITHUB_WORKSPACE/refresh-summary.json" \
+            $force_flag || true
+          if [ ! -s "$GITHUB_WORKSPACE/refresh-summary.json" ]; then
+            printf '{"outcome":"refused","refusalReason":"the refresh script produced no summary"}\n' \
+              >"$GITHUB_WORKSPACE/refresh-summary.json"
+          fi
+
+      # One self-contained step so the whole branch/PR/issue decision is testable
+      # under `bash --noprofile --norc -e -o pipefail` with stubbed gh/git (see
+      # scripts/live-evidence-refresh-workflow.test.ts). It reads the outcome from
+      # the summary file, never from a GitHub `if:` expression.
+      #
+      #   not_due   -> nothing; close any open FAILED issue (the concern is gone).
+      #   refused   -> open/update ONE "Live evidence refresh FAILED" issue with
+      #                the reason, then fail the job.
+      #   refreshed -> commit as github-actions[bot], push the branch, open (or
+      #                update) a PR labelled release-owner:codex, then dispatch CI
+      #                and the closure sweep. If PR creation is refused (the repo
+      #                setting is off: 403 "GitHub Actions is not permitted to
+      #                create or approve pull requests"), fall back to a tracking
+      #                issue carrying the compare link. Either way, close any open
+      #                FAILED issue.
+      - name: Open a review PR, or a tracking issue, for the refresh
+        id: act
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SUMMARY: ${{ github.workspace }}/refresh-summary.json
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          FAILED_LABEL="live-evidence-refresh-failed"
+          READY_LABEL="live-evidence-refresh-ready"
+
+          upsert_issue() { # label title body
+            gh label create "$1" --repo "$GH_REPO" --color b60205 \
+              --description "Automated: live evidence refresh" >/dev/null 2>&1 || true
+            existing="$(gh issue list --repo "$GH_REPO" --state open --label "$1" \
+              --json number --jq '.[0].number // empty')"
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$GH_REPO" --body "$3"
+            else
+              gh issue create --repo "$GH_REPO" --label "$1" --title "$2" --body "$3"
+            fi
+          }
+          close_issues() { # label
+            for number in $(gh issue list --repo "$GH_REPO" --state open --label "$1" \
+              --json number --jq '.[].number'); do
+              gh issue close "$number" --repo "$GH_REPO" --reason completed \
+                --comment "Resolved automatically by $RUN_URL."
+            done
+          }
+
+          OUTCOME="$(jq -r '.outcome // "refused"' "$SUMMARY")"
+          echo "outcome=$OUTCOME" >> "$GITHUB_OUTPUT"
+
+          case "$OUTCOME" in
+            not_due)
+              echo "Live evidence is fresh; nothing to refresh." | tee -a "$GITHUB_STEP_SUMMARY"
+              close_issues "$FAILED_LABEL"
+              exit 0
+              ;;
+            refused)
+              reason="$(jq -r '.refusalReason // "unknown"' "$SUMMARY")"
+              body="$(printf 'The scheduled live evidence refresh REFUSED and wrote nothing.\n\nReason: %s\n\nRun: %s\n\nA human must investigate (re-audit the affected claims if a surface changed, or confirm production health) before live evidence can advance.' "$reason" "$RUN_URL")"
+              upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" "$body"
+              echo "refused: $reason" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+            refreshed)
+              : # handled below
+              ;;
+            *)
+              echo "unexpected outcome: $OUTCOME" >&2
+              exit 1
+              ;;
+          esac
+
+          old_rev="$(jq -r '.oldRevision' "$SUMMARY")"
+          new_rev="$(jq -r '.newRevision' "$SUMMARY")"
+          earliest="$(jq -r '.earliestFreshUntil // "unknown"' "$SUMMARY")"
+          branch="bot/live-evidence-refresh-$(date -u +%Y%m%d)"
+          title="Refresh production live evidence ($(date -u +%Y-%m-%d))"
+          compare="${SERVER_URL}/${GH_REPO}/compare/main...${branch}?expand=1"
+
+          # Observation table, shared by the PR body and the issue fallback.
+          {
+            echo "Automated refresh of docs/PUBLIC_CLAIMS.json live evidence."
+            echo
+            echo "auditedRevision \`${old_rev}\` -> \`${new_rev}\` (the revision production served, an ancestor of origin/main)."
+            echo
+            echo "| evidence | locator | HTTP | observedAt | freshUntil |"
+            echo "| --- | --- | --- | --- | --- |"
+            jq -r '(.observations | map({key: .evidenceId, value: .}) | from_entries) as $o
+              | .changes[]
+              | "| \(.evidenceId) | \($o[.evidenceId].locator) | \($o[.evidenceId].httpStatus) | \(.observedAt) | \(.freshUntil) |"' "$SUMMARY"
+            echo
+            echo "Earliest freshUntil before this refresh: ${earliest}."
+            echo
+            echo "Reviewer: this is machine-generated. Review it independently, keep the release-owner:codex label, attest, and merge before the earliest new freshUntil. This workflow never approves or merges."
+            echo
+            echo "Run: ${RUN_URL}"
+          } > pr-body.md
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch" 2>/dev/null || git switch "$branch"
+          git add docs/PUBLIC_CLAIMS.json
+          git commit -m "$(printf 'Refresh production live evidence\n\nauditedRevision %s -> %s; re-observed the three live endpoints against production.' "$old_rev" "$new_rev")"
+          git push --force-with-lease -u origin "HEAD:$branch"
+
+          # Open or update the PR. A PR opened with GITHUB_TOKEN does NOT trigger
+          # pull_request / pull_request_target workflows, which is why the two
+          # dispatches below are still required after the PR exists.
+          pr_path=""
+          existing_pr="$(gh pr list --repo "$GH_REPO" --head "$branch" --state open \
+            --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          if [ -n "$existing_pr" ]; then
+            gh pr edit "$existing_pr" --repo "$GH_REPO" --title "$title" --body-file pr-body.md \
+              --add-label release-owner:codex || true
+            pr_path="pr_updated"
+            echo "Updated PR #${existing_pr}." | tee -a "$GITHUB_STEP_SUMMARY"
+          elif gh pr create --repo "$GH_REPO" --base main --head "$branch" \
+              --label release-owner:codex --title "$title" --body-file pr-body.md; then
+            pr_path="pr_created"
+            echo "Opened a review PR for ${branch}." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            # gh pr create failed — most likely the repo setting "Allow GitHub
+            # Actions to create and approve pull requests" is off (403). Fall back
+            # to a tracking issue with the compare link so a maintainer opens the
+            # PR by hand. No data is lost: the branch is already pushed.
+            pr_path="issue_fallback"
+            body="$(cat pr-body.md)"
+            body="$(printf '%s\n\nGitHub Actions could not open the PR automatically (the repository setting may be off). Open it from the compare link and add the release-owner:codex label:\n%s' "$body" "$compare")"
+            upsert_issue "$READY_LABEL" "Live evidence refresh ready for review" "$body"
+            echo "PR creation refused; opened a tracking issue with the compare link." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "pr_path=$pr_path" >> "$GITHUB_OUTPUT"
+
+          # Dispatch CI on the branch (ci.yml's deploy job is gated to
+          # refs/heads/main, so this is safe on a bot branch) and the closure sweep
+          # (its sweep evaluates every open PR). Non-fatal: a dispatch hiccup must
+          # not fail an otherwise-good refresh.
+          gh workflow run ci.yml --repo "$GH_REPO" --ref "$branch" \
+            || echo "::warning::could not dispatch ci.yml for $branch"
+          gh workflow run closure-authority-systemic-escalation.yml --repo "$GH_REPO" \
+            || echo "::warning::could not dispatch the closure sweep"
+
+          close_issues "$FAILED_LABEL"
+
+      - name: Upload the refresh summary
+        if: ${{ always() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: live-evidence-refresh-${{ github.run_id }}-${{ github.run_attempt }}
+          path: refresh-summary.json
+          if-no-files-found: warn
+          retention-days: 30
