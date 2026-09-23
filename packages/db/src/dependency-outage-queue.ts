@@ -461,6 +461,33 @@ function expiredDecision(
   });
 }
 
+// A terminal decision used only when the injected decision policy itself throws
+// while classifying a failure. Without it, a throwing policy would leave the row
+// claimed with its lease held and no history event. This settles the operation
+// with a valid `fail` decision so the lease is released and the failure recorded.
+function policyUnavailableDecision(
+  claim: DependencyOutageClaim,
+  observedAt: string,
+): DependencyOutageFailureDecision {
+  return Object.freeze({
+    schemaVersion: 1,
+    action: "fail",
+    failureKind: "permanent",
+    retryable: false,
+    reason: "permanent_failure",
+    nextAttemptAt: null,
+    attemptsRemaining: Math.max(0, claim.retryBudget - claim.attemptsConsumed),
+    circuitState: "open",
+    circuit: Object.freeze({
+      state: "open" as const,
+      openedAt: observedAt,
+      cooldownMs: claim.circuitCooldownMs,
+      consecutiveFailures: claim.consecutiveFailures + 1,
+    }),
+    standing: "degraded_failed",
+  });
+}
+
 function validateCircuit(circuit: DependencyOutageCircuitSnapshot): void {
   if (!Number.isSafeInteger(circuit.cooldownMs) || circuit.cooldownMs < 1 ||
       circuit.cooldownMs > 24 * 60 * 60 * 1_000 ||
@@ -978,27 +1005,7 @@ export class DependencyOutageQueue {
     try {
       reconciliation = await operation.reconcile();
     } catch (error) {
-      const failedAt = this.now();
-      const decision = operation.classify(error, {
-        attempt: claim.attemptsConsumed,
-        retryBudget: claim.retryBudget,
-        expiresAt: claim.expiresAt,
-        now: failedAt,
-        circuit: Object.freeze({
-          state: claim.circuitState,
-          ...(claim.circuitOpenedAt === null ? {} : { openedAt: claim.circuitOpenedAt }),
-          cooldownMs: claim.circuitCooldownMs,
-          consecutiveFailures: claim.consecutiveFailures,
-        }),
-      });
-      const record = this.fail(claim, decision, failedAt);
-      return Object.freeze({
-        status: record.status === "blocked" ? "blocked" :
-          record.status === "failed" ? "failed" : "deferred",
-        record,
-        decision,
-        error,
-      });
+      return this.failThroughPolicy<T>(claim, error, operation.classify);
     }
     const observed = validateReconciliation<T>(reconciliation);
     if (observed.status === "completed") {
@@ -1025,8 +1032,24 @@ export class DependencyOutageQueue {
       if (!completed.applied) throw new Error("dependency_outage_completion_fence_lost");
       return Object.freeze({ status: "completed", value: executed.value, record: completed.record });
     } catch (error) {
-      const failedAt = this.now();
-      const decision = operation.classify(error, {
+      return this.failThroughPolicy<T>(claim, error, operation.classify);
+    }
+  }
+
+  // Settle a claimed operation after a failure by asking the injected decision
+  // policy how to classify it, then failing the lease and recording the event.
+  // If the policy itself throws, a synthetic terminal decision is used so the
+  // lease is always released and the failure recorded — the row never stays
+  // claimed on a thrown policy.
+  private failThroughPolicy<T>(
+    claim: DependencyOutageClaim,
+    error: unknown,
+    classify: DependencyOutageRunOperation<T>["classify"],
+  ): DependencyOutageRunResult<T> {
+    const failedAt = this.now();
+    let decision: DependencyOutageFailureDecision;
+    try {
+      decision = classify(error, {
         attempt: claim.attemptsConsumed,
         retryBudget: claim.retryBudget,
         expiresAt: claim.expiresAt,
@@ -1038,15 +1061,17 @@ export class DependencyOutageQueue {
           consecutiveFailures: claim.consecutiveFailures,
         }),
       });
-      const record = this.fail(claim, decision, failedAt);
-      return Object.freeze({
-        status: record.status === "blocked" ? "blocked" :
-          record.status === "failed" ? "failed" : "deferred",
-        record,
-        decision,
-        error,
-      });
+    } catch {
+      decision = policyUnavailableDecision(claim, failedAt);
     }
+    const record = this.fail(claim, decision, failedAt);
+    return Object.freeze({
+      status: record.status === "blocked" ? "blocked" :
+        record.status === "failed" ? "failed" : "deferred",
+      record,
+      decision,
+      error,
+    });
   }
 }
 
@@ -1055,4 +1080,14 @@ export function createDependencyOutageQueue(
   options: Readonly<{ now?: () => string }> = {},
 ): DependencyOutageQueue {
   return new DependencyOutageQueue(db, options.now);
+}
+
+/**
+ * Create the dependency-outage tables and triggers. This is idempotent
+ * (`CREATE ... IF NOT EXISTS` plus additive `ALTER TABLE`) and is invoked from
+ * the shared `createDb` migration path so the schema is provisioned once at
+ * database open, alongside every other table, rather than lazily at API import.
+ */
+export function ensureDependencyOutageSchema(db: DatabaseSync): void {
+  ensureSchema(db);
 }

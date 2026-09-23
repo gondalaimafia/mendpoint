@@ -131,4 +131,27 @@ describe("dependency outage routes", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("keeps the API alive and reports unavailable when outage schema setup fails", async () => {
+    // A raw handle whose DDL fails at queue construction, e.g. a broken schema
+    // or a lock timeout. Construction must not throw out of route assembly.
+    const failingRaw = {
+      exec: () => { throw new Error("no such column: circuit_state"); },
+      prepare: () => { throw new Error("no such column: circuit_state"); },
+    } as unknown as AppDb["raw"];
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("principal", { id: "human:owner", tenantId: "tenant-a", role: "owner" });
+      c.set("requestId", "request-boot");
+      await next();
+    });
+    app.get("/livez", (c) => c.json({ ok: true }));
+    // Route assembly must not throw even though the schema setup fails.
+    app.route("/dependency-outages", createDependencyOutageRoutes({ db: { raw: failingRaw } as AppDb }));
+
+    expect((await app.request("/livez")).status).toBe(200);
+    const response = await app.request("/dependency-outages");
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "dependency_outage_unavailable" });
+  });
 });

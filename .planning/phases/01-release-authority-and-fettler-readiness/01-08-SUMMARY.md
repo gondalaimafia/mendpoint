@@ -98,9 +98,10 @@ coverage:
     requirement: ME-ENT-008
     verification:
       - kind: integration
-        ref: packages/agent/src/agent.test.ts, apps/worker/src/cli.ts, packages/pipeline/src/index.test.ts, and packages/ops/src/disaster-recovery.test.ts
+        ref: packages/agent/src/agent.test.ts, packages/pipeline/src/index.test.ts, and packages/ops/src/disaster-recovery.test.ts
         status: pass
     human_judgment: true
+    caveat: The agent model path is pinned by a removal-sensitive test (agent.test.ts). The pipeline and worker GitHub composition wiring is exercised but not yet pinned by a test that fails when the queue or policy injection is removed; that hardening is tracked as a follow-up.
     rationale: The real checkpointed Fettler model effect and exact-draft GitHub delivery both use the shared durable queue. Worker composition binds tenant, effect request digest, model authority, retry budget, expiry, and lease identity. Queue state can reopen only a proven safe retry; ambiguous, claimed, blocked, failed, or uncheckpointed completed outcomes never repeat automatically.
 
 duration: 1h 20m
@@ -110,7 +111,7 @@ status: complete
 
 # Phase 01 Plan 08: Model and SCM Outage Controls Summary
 
-**The outage policy and durable queue now protect the real API and worker GitHub App delivery path through the primary application database, retain exact authority identity, and survive restart, backup, and restore.**
+**The outage policy and durable queue now protect the pipeline's exact-draft GitHub delivery and the checkpointed agent model path through the primary application database, retain exact authority identity, and survive restart, backup, and restore. The worker's own GitHub App deliveries (`apps/worker/src/cli.ts`, `apps/worker/src/warden-ci-runtime.ts`, `apps/worker/src/transformer-service-cli.ts`) construct `createAppDelivery` without the outage options and therefore do not route through the durable queue.**
 
 ## Performance
 
@@ -250,7 +251,7 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 ---
 
 **Total deviations:** 7: one architectural correction, one ownership-preserving deferral, and five independently reviewed reliability repairs.
-**Impact on plan:** The engineering behavior and both live production call paths are implemented and tested. Requirement promotion still needs exact deployed-revision outage and rollback proof.
+**Impact on plan:** The engineering behavior is implemented, and the live call paths are wired. The agent model path is pinned by a removal-sensitive test; the pipeline and worker GitHub composition wiring is exercised but not yet independently pinned. Requirement promotion still needs exact deployed-revision outage and rollback proof.
 
 ## Issues Encountered
 

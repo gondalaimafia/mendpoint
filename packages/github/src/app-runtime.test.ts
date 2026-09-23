@@ -933,6 +933,126 @@ describe("github app runtime", () => {
       .rejects.toThrow("github_exact_draft_pull_request_diverged");
   });
 
+  it("rejects a diverged commit parent sha during exact-draft reconciliation", async () => {
+    const base = baselineReconcileOctokit();
+    const octokit = {
+      ...base,
+      git: {
+        ...base.git,
+        getCommit: vi.fn(async ({ commit_sha }: { commit_sha: string }) => ({
+          data: commit_sha === EXACT_BASE_SHA
+            ? { sha: EXACT_BASE_SHA, tree: { sha: "b".repeat(40) }, parents: [] }
+            : {
+              sha: EXACT_COMMIT_SHA,
+              tree: { sha: "d".repeat(40) },
+              parents: [{ sha: "f".repeat(40) }],
+              message: "Open approved Fettler candidate",
+              author: { name: "Mendpoint", email: "delivery@mendpoint.ai", date: "2026-09-01T12:00:00.000Z" },
+              committer: { name: "Mendpoint", email: "delivery@mendpoint.ai", date: "2026-09-01T12:00:00.000Z" },
+            },
+        })),
+      },
+    };
+    await expect(reconcileOnlyDelivery(octokit).deliverExactDraft({ ...RECONCILE_INPUT }))
+      .rejects.toThrow("github_exact_draft_branch_diverged");
+  });
+
+  it("rejects a diverged commit author/committer date during exact-draft reconciliation", async () => {
+    const base = baselineReconcileOctokit();
+    const octokit = {
+      ...base,
+      git: {
+        ...base.git,
+        getCommit: vi.fn(async ({ commit_sha }: { commit_sha: string }) => ({
+          data: commit_sha === EXACT_BASE_SHA
+            ? { sha: EXACT_BASE_SHA, tree: { sha: "b".repeat(40) }, parents: [] }
+            : {
+              sha: EXACT_COMMIT_SHA,
+              tree: { sha: "d".repeat(40) },
+              parents: [{ sha: EXACT_BASE_SHA }],
+              message: "Open approved Fettler candidate",
+              author: { name: "Mendpoint", email: "delivery@mendpoint.ai", date: "2026-09-01T13:30:00.000Z" },
+              committer: { name: "Mendpoint", email: "delivery@mendpoint.ai", date: "2026-09-01T13:30:00.000Z" },
+            },
+        })),
+      },
+    };
+    await expect(reconcileOnlyDelivery(octokit).deliverExactDraft({ ...RECONCILE_INPUT }))
+      .rejects.toThrow("github_exact_draft_branch_diverged");
+  });
+
+  it("rejects a truncated tree during exact-draft reconciliation", async () => {
+    const base = baselineReconcileOctokit();
+    const octokit = {
+      ...base,
+      git: {
+        ...base.git,
+        getTree: vi.fn(async () => ({
+          data: {
+            truncated: true,
+            tree: [{ path: "src/a.ts", type: "blob", mode: "100644", sha: "blob-a" }],
+          },
+        })),
+      },
+    };
+    await expect(reconcileOnlyDelivery(octokit).deliverExactDraft({ ...RECONCILE_INPUT }))
+      .rejects.toThrow("github_exact_draft_branch_diverged");
+  });
+
+  it("rejects a non-blob tree entry type during exact-draft reconciliation", async () => {
+    const base = baselineReconcileOctokit();
+    const octokit = {
+      ...base,
+      git: {
+        ...base.git,
+        getTree: vi.fn(async () => ({
+          data: {
+            truncated: false,
+            // Type "tree" but a matching mode, so only the blob-type check rejects it.
+            tree: [{ path: "src/a.ts", type: "tree", mode: "100644", sha: "tree-a" }],
+          },
+        })),
+      },
+    };
+    await expect(reconcileOnlyDelivery(octokit).deliverExactDraft({ ...RECONCILE_INPUT }))
+      .rejects.toThrow("github_exact_draft_branch_diverged");
+  });
+
+  it("rejects a resurrected deleted file during exact-draft reconciliation", async () => {
+    const base = baselineReconcileOctokit();
+    const octokit = {
+      ...base,
+      git: {
+        ...base.git,
+        getTree: vi.fn(async () => ({
+          data: {
+            truncated: false,
+            // The file the input asks to delete is still present in the head tree.
+            tree: [{ path: "src/gone.ts", type: "blob", mode: "100644", sha: "blob-gone" }],
+          },
+        })),
+      },
+    };
+    await expect(reconcileOnlyDelivery(octokit).deliverExactDraft({
+      ...RECONCILE_INPUT,
+      files: [{ path: "src/gone.ts", delete: true }],
+    })).rejects.toThrow("github_exact_draft_branch_diverged");
+  });
+
+  it("rejects a diverged pull request state during exact-draft reconciliation", async () => {
+    const base = baselineReconcileOctokit();
+    const octokit = {
+      ...base,
+      pulls: {
+        ...base.pulls,
+        // Single matching branch/commit, but the pull is no longer a draft.
+        list: vi.fn(async () => ({ data: [{ ...makeExactPull(), draft: false }] })),
+      },
+    };
+    await expect(reconcileOnlyDelivery(octokit).deliverExactDraft({ ...RECONCILE_INPUT }))
+      .rejects.toThrow("github_exact_draft_pull_request_diverged");
+  });
+
   it("resumes a commit-ready exact draft at pull request creation without repeating Git object writes", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();

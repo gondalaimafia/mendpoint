@@ -9,6 +9,7 @@ import { assertTenantScope } from "./tenant-scope.js";
 import { createTenantMembership, getTenantMembership } from "./identity.js";
 import { insertPrincipal } from "./trust.js";
 import { ensureAuditGovernanceSchema } from "./audit-governance-store.js";
+import { ensureDependencyOutageSchema } from "./dependency-outage-queue.js";
 import type {
   ApiChange,
   ApiKeyRow,
@@ -2588,6 +2589,7 @@ export function createDb(urlOrPath?: string): AppDb {
     installFettlerCandidateDeliveryPrecursorIndex({ raw });
     migrateWardenCiAwaitingReview({ raw });
     installTrustImmutability({ raw });
+    ensureDependencyOutageSchema(raw);
     return { raw };
   } catch (error) {
     raw.close();
@@ -9184,6 +9186,7 @@ export function listRoutingLedgerForRun(
 
 export {
   createDependencyOutageQueue,
+  ensureDependencyOutageSchema,
   DependencyOutageQueue,
   type DependencyOutageCircuitSnapshot,
   type DependencyOutageCircuitState,

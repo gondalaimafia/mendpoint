@@ -1110,12 +1110,201 @@ describe("durable dependency outage queue", () => {
     db.close();
   });
 
+  it("scopes every operation mutation to the caller's tenant under a shared branch operation id", () => {
+    const db = new DatabaseSync(":memory:");
+    let now = "2026-09-02T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    // GitHub operation ids are branch-scoped, not tenant-scoped, so two tenants
+    // can legitimately share one. Every UPDATE (claim, expiry-on-claim, complete,
+    // fail, authority reactivation) must still be tenant-scoped: tenant A driving
+    // its own row must never mutate tenant B's identically-keyed row.
+    const enqueuePair = (operationId: string, expiresAt = "2026-09-02T14:00:00.000Z", nextAttemptAt = "2026-09-02T12:00:00.000Z") => {
+      for (const tenantId of ["tenant-a", "tenant-b"]) {
+        queue.enqueue({
+          tenantId,
+          dependencyKind: "scm",
+          providerId: "github",
+          operationId,
+          operationDigest: DIGEST,
+          retryBudget: 3,
+          expiresAt,
+          nextAttemptAt,
+          standing: "degraded_retrying",
+          authorityVersion: "authority-v1",
+        });
+      }
+    };
+    const foreign = (operationId: string) => queue.get({
+      tenantId: "tenant-b", dependencyKind: "scm", providerId: "github", operationId, operationDigest: DIGEST,
+    });
+    const claimA = (operationId: string) => queue.claim({
+      tenantId: "tenant-a", dependencyKind: "scm", providerId: "github", operationId, operationDigest: DIGEST,
+      workerId: "w1", now, leaseMs: 30_000, authorityVersion: "authority-v1",
+    });
+
+    // Fresh claim UPDATE.
+    enqueuePair("github-draft:claim");
+    const beforeClaim = foreign("github-draft:claim");
+    expect(claimA("github-draft:claim")).not.toBeNull();
+    expect(foreign("github-draft:claim")).toEqual(beforeClaim);
+
+    // Complete UPDATE.
+    enqueuePair("github-draft:complete");
+    const beforeComplete = foreign("github-draft:complete");
+    const completeClaim = claimA("github-draft:complete")!;
+    queue.complete(completeClaim, COMPLETION, now);
+    expect(foreign("github-draft:complete")).toEqual(beforeComplete);
+
+    // Fail UPDATE.
+    enqueuePair("github-draft:fail");
+    const beforeFail = foreign("github-draft:fail");
+    const failClaim = claimA("github-draft:fail")!;
+    queue.fail(failClaim, decisionForAction("fail"), now);
+    expect(foreign("github-draft:fail")).toEqual(beforeFail);
+
+    // Authority reactivation UPDATE: drive A to blocked/authority_change_required.
+    enqueuePair("github-draft:reactivate");
+    const authClaim = claimA("github-draft:reactivate")!;
+    queue.fail(authClaim, decisionForAction("await_authority"), now);
+    const beforeReactivate = foreign("github-draft:reactivate");
+    queue.reactivateAuthority(
+      { tenantId: "tenant-a", dependencyKind: "scm", providerId: "github", operationId: "github-draft:reactivate", operationDigest: DIGEST },
+      { previousAuthorityVersion: "authority-v1", nextAuthorityVersion: "authority-v2", now },
+    );
+    expect(foreign("github-draft:reactivate")).toEqual(beforeReactivate);
+
+    // Expiry-on-claim UPDATE: a queued but expired row is settled on claim.
+    enqueuePair("github-draft:expire", "2026-09-02T12:00:30.000Z");
+    now = "2026-09-02T13:00:00.000Z";
+    const beforeExpire = foreign("github-draft:expire");
+    expect(claimA("github-draft:expire")).toBeNull();
+    expect(foreign("github-draft:expire")).toEqual(beforeExpire);
+    db.close();
+  });
+
+  it("scopes the history projection and stale count to the caller's tenant", () => {
+    const db = new DatabaseSync(":memory:");
+    let now = "2026-09-02T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    const scopeFor = (tenantId: string) => ({
+      tenantId, dependencyKind: "scm" as const, providerId: "github",
+      operationId: "github-draft:shared", operationDigest: DIGEST,
+    });
+    for (const tenantId of ["tenant-a", "tenant-b"]) {
+      queue.enqueue({
+        ...scopeFor(tenantId),
+        retryBudget: 3,
+        expiresAt: "2026-09-02T14:00:00.000Z",
+        nextAttemptAt: "2026-09-02T12:00:00.000Z",
+        standing: "degraded_retrying",
+        authorityVersion: "authority-v1",
+      });
+    }
+    // Both tenants share an operation id, and each has its own event chain. A
+    // history query that dropped its tenant clause would interleave the two
+    // chains and break hash-chain verification; it must return only A's events.
+    queue.claim({ ...scopeFor("tenant-a"), workerId: "w1", now, leaseMs: 30_000, authorityVersion: "authority-v1" });
+    queue.claim({ ...scopeFor("tenant-b"), workerId: "w2", now, leaseMs: 30_000, authorityVersion: "authority-v1" });
+    expect(queue.history(scopeFor("tenant-a")).map((event) => event.kind)).toEqual(["enqueued", "claimed"]);
+    db.close();
+  });
+
+  it("scopes the stale count to the caller's tenant", () => {
+    const db = new DatabaseSync(":memory:");
+    let now = "2026-09-02T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    // B is enqueued in the distant past (stale); A is enqueued fresh. A's stale
+    // count must reflect only A's own rows, never borrow B's aged row.
+    queue.enqueue({
+      tenantId: "tenant-b", dependencyKind: "scm", providerId: "github",
+      operationId: "github-draft:stale-b", operationDigest: DIGEST,
+      retryBudget: 3, expiresAt: "2026-09-10T00:00:00.000Z",
+      nextAttemptAt: "2026-09-02T12:00:00.000Z", standing: "degraded_retrying",
+      authorityVersion: "authority-v1",
+    });
+    now = "2026-09-05T12:04:30.000Z";
+    queue.enqueue({
+      tenantId: "tenant-a", dependencyKind: "scm", providerId: "github",
+      operationId: "github-draft:fresh-a", operationDigest: DIGEST,
+      retryBudget: 3, expiresAt: "2026-09-10T00:00:00.000Z",
+      nextAttemptAt: "2026-09-05T12:04:30.000Z", standing: "degraded_retrying",
+      authorityVersion: "authority-v1",
+    });
+    const health = queue.tenantHealth({ tenantId: "tenant-a", now: "2026-09-05T12:05:00.000Z", staleAfterMs: 60_000 });
+    expect(health.total).toBe(1);
+    expect(health.stale).toBe(0);
+    db.close();
+  });
+
+  it("rejects a forged completed event even with a correct previous hash", () => {
+    const db = new DatabaseSync(":memory:");
+    const queue = createDependencyOutageQueue(db);
+    queue.enqueue({
+      ...SCOPE,
+      retryBudget: 3,
+      expiresAt: "2026-09-01T13:00:00.000Z",
+      nextAttemptAt: "2026-09-01T12:00:00.000Z",
+      standing: "degraded_retrying",
+    }, "2026-09-01T12:00:00.000Z");
+
+    // A forger who links correctly to the last real event (correct previous_hash)
+    // but cannot recompute the event hash: only the event-hash check rejects this,
+    // so it pins that check independently of the chain-linkage check.
+    const last = db.prepare(`SELECT event_hash FROM dependency_outage_history
+      WHERE tenant_id = ? AND dependency_kind = ? AND provider_id = ? AND operation_id = ?
+      ORDER BY sequence DESC LIMIT 1`)
+      .get(SCOPE.tenantId, SCOPE.dependencyKind, SCOPE.providerId, SCOPE.operationId) as { event_hash: string };
+    db.prepare(`INSERT INTO dependency_outage_history (
+      tenant_id, dependency_kind, provider_id, operation_id, event_kind,
+      observed_at, details_json, previous_hash, event_hash
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      SCOPE.tenantId, SCOPE.dependencyKind, SCOPE.providerId, SCOPE.operationId,
+      "completed", "2026-09-01T12:00:05.000Z", "{}", last.event_hash, "forged-but-well-linked-hash",
+    );
+
+    expect(() => queue.history(SCOPE)).toThrow("dependency_outage_history_chain_invalid");
+    db.close();
+  });
+
+  it("fails the lease with an event when the injected decision policy throws", async () => {
+    const db = new DatabaseSync(":memory:");
+    const queue = createDependencyOutageQueue(db, {
+      now: () => "2026-09-02T12:00:00.000Z",
+    });
+    const operation = {
+      ...SCOPE,
+      workerId: "w1",
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+      reconcile: async () => ({ status: "missing" as const }),
+      execute: async () => { throw new Error("provider exploded"); },
+      classify: () => { throw new Error("decision policy backend unavailable"); },
+    };
+
+    const result = await queue.run(operation);
+    // A throwing policy must still settle the lease with a terminal decision and
+    // a recorded failure event, never leave the row claimed with the lease held.
+    expect(result.status).toBe("failed");
+    expect(queue.get(SCOPE)?.status).toBe("failed");
+    expect(queue.history(SCOPE).map((event) => event.kind)).toEqual([
+      "enqueued",
+      "claimed",
+      "failed",
+    ]);
+    db.close();
+  });
+
   it("upgrades a pre-circuit-breaker operations table in place and preserves existing rows", () => {
     const db = new DatabaseSync(":memory:");
     // The pre-change production shape: the operations table before the circuit
     // breaker persistence columns (circuit_opened_at / circuit_cooldown_ms /
-    // consecutive_failures) were added. Fresh-install coverage never reaches the
-    // ALTER TABLE upgrade branch because the current CREATE already has them.
+    // consecutive_failures) were added. Every fresh database (the queue
+    // constructor and createDb both run the same CREATE, which already declares
+    // those columns) skips the additive ALTER TABLE branch, so only a database
+    // created by an older build reaches it. This test builds that older shape
+    // directly to exercise the upgrade path that fresh-install coverage cannot.
     db.exec(`
       CREATE TABLE dependency_outage_operations (
         tenant_id TEXT NOT NULL,
