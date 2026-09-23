@@ -1432,7 +1432,19 @@ exit 0
     const outputPath = join(dir, "github-output");
     writeFileSync(outputPath, "", "utf8");
     writeFileSync(join(dir, "step.sh"), shippedStep(ENSURE).run, "utf8");
-    const result = spawnSync("bash", [...GITHUB_BASH_FLAGS, "step.sh"], {
+    // Git Bash prepends its real curl during startup. Restore the fixture PATH
+    // afterward and fail before the step if either external tool is not mocked.
+    const result = spawnSync("bash", [...GITHUB_BASH_FLAGS, "-c", `
+      fixture_bin="$(cd "$1" && pwd)"
+      export PATH="$fixture_bin:$PATH"
+      hash -r
+      for tool in flyctl curl; do
+        [[ "$(command -v "$tool")" == "$fixture_bin/$tool" ]] || {
+          echo "fixture_tool_selection_failed:$tool" >&2; exit 127;
+        }
+      done
+      source "$2"
+    `, "workflow-fixture", bin.replace(/\\/g, "/"), "./step.sh"], {
       cwd: dir,
       encoding: "utf8",
       env: {
