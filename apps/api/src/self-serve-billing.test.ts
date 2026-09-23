@@ -155,6 +155,7 @@ describe("server-computed MCU metered against the entitlement (not client-declar
       tenantId: "tenant-a",
       reservationId: reservation.id,
       actualMcuMicros: settlementAmount,
+      consumption: { kind: "measured" },
       reason: "run completed",
       createdAt: NOW,
     });
@@ -185,6 +186,7 @@ describe("server-computed MCU metered against the entitlement (not client-declar
       tenantId: "tenant-a",
       reservationId: reservation.id,
       actualMcuMicros: settlementAmount,
+      consumption: { kind: "measured" },
       reason: "run completed",
       createdAt: NOW,
     });

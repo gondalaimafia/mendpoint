@@ -63,9 +63,6 @@ import {
   getUsageSummary,
   listUsageLedger,
   reconcileUsageLedger,
-  releaseUsageReservation,
-  reserveUsage,
-  settleUsageReservation,
   provisionEntitlementForPlan,
   releaseRunUsage,
   RUN_USAGE_RESERVATION_KEY,
@@ -104,7 +101,10 @@ import {
   registrySummaryMarkdown,
 } from "@mendpoint/db";
 import { parseAuditExportLimit } from "./audit-export.js";
-import { createBillingUsageFinanceRoutes } from "./billing-usage-routes.js";
+import {
+  createBillingUsageFinanceRoutes,
+  createBillingUsageReservationRoutes,
+} from "./billing-usage-routes.js";
 import { changeDetailBody } from "./change-detail.js";
 import {
   detectVendors,
@@ -3544,107 +3544,14 @@ app.post("/billing/entitlements", async (c) => {
   }
 });
 
-app.post("/billing/usage/reservations", async (c) => {
-  const body = await c.req.json<{
-    idempotencyKey?: string;
-    taskId?: string;
-    campaignId?: string | null;
-    mcuMicros?: number;
-    reason?: string;
-  }>().catch(() => ({} as {
-    idempotencyKey?: string;
-    taskId?: string;
-    campaignId?: string | null;
-    mcuMicros?: number;
-    reason?: string;
-  }));
-  try {
-    const entry = reserveUsage(db, {
-      id: newId(),
-      tenantId: requestTenantId(c),
-      idempotencyKey: body.idempotencyKey ?? "",
-      taskId: body.taskId ?? "",
-      campaignId: body.campaignId,
-      mcuMicros: body.mcuMicros ?? -1,
-      reason: body.reason ?? "",
-      actorPrincipalId: c.get("trustPrincipalId"),
-      createdAt: nowIso(),
-    });
-    requestAudit(c, {
-      actor: c.get("principal")!.id,
-      action: "billing.usage_reserved",
-      resourceType: "usage_ledger_entry",
-      resourceId: entry.id,
-      metadata: { taskId: entry.taskId, mcuMicros: entry.reservedMcuMicrosDelta },
-    });
-    return c.json(entry, 201);
-  } catch (error) {
-    return mappedErrorResponse(c, error, USAGE_ERRORS);
-  }
-});
-
-app.post("/billing/usage/reservations/:id/settle", async (c) => {
-  const body = await c.req.json<{
-    idempotencyKey?: string;
-    actualMcuMicros?: number;
-    invoiceReference?: string | null;
-    reason?: string;
-  }>().catch(() => ({} as {
-    idempotencyKey?: string;
-    actualMcuMicros?: number;
-    invoiceReference?: string | null;
-    reason?: string;
-  }));
-  try {
-    const entry = settleUsageReservation(db, {
-      id: newId(),
-      tenantId: requestTenantId(c),
-      idempotencyKey: body.idempotencyKey ?? "",
-      reservationId: c.req.param("id"),
-      actualMcuMicros: body.actualMcuMicros ?? -1,
-      invoiceReference: body.invoiceReference,
-      reason: body.reason ?? "",
-      actorPrincipalId: c.get("trustPrincipalId"),
-      createdAt: nowIso(),
-    });
-    requestAudit(c, {
-      actor: c.get("principal")!.id,
-      action: "billing.usage_settled",
-      resourceType: "usage_ledger_entry",
-      resourceId: entry.id,
-      metadata: { reservationId: entry.reservationId, mcuMicros: entry.consumedMcuMicrosDelta },
-    });
-    return c.json(entry, 201);
-  } catch (error) {
-    return mappedErrorResponse(c, error, USAGE_ERRORS);
-  }
-});
-
-app.post("/billing/usage/reservations/:id/release", async (c) => {
-  const body = await c.req.json<{ idempotencyKey?: string; reason?: string }>()
-    .catch(() => ({} as { idempotencyKey?: string; reason?: string }));
-  try {
-    const entry = releaseUsageReservation(db, {
-      id: newId(),
-      tenantId: requestTenantId(c),
-      idempotencyKey: body.idempotencyKey ?? "",
-      reservationId: c.req.param("id"),
-      reason: body.reason ?? "",
-      actorPrincipalId: c.get("trustPrincipalId"),
-      createdAt: nowIso(),
-    });
-    requestAudit(c, {
-      actor: c.get("principal")!.id,
-      action: "billing.usage_released",
-      resourceType: "usage_ledger_entry",
-      resourceId: entry.id,
-      metadata: { reservationId: entry.reservationId },
-    });
-    return c.json(entry, 201);
-  } catch (error) {
-    return mappedErrorResponse(c, error, USAGE_ERRORS);
-  }
-});
+// Reserve/settle/release routes are extracted into a factory so the money path has
+// an isolated HTTP harness. Mounted before the finance routes so the static
+// `/reservations` path is not shadowed by the finance sub-app's `/:kind` param.
+app.route("/billing/usage", createBillingUsageReservationRoutes({
+  db,
+  errors: USAGE_ERRORS,
+  audit: requestAudit,
+}));
 
 app.route("/billing/usage", createBillingUsageFinanceRoutes({
   db,

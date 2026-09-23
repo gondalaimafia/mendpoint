@@ -2265,7 +2265,7 @@ function recordJobMissionExecutionCost(
   }
 }
 
-function settleFanoutRunUsage(
+export function settleFanoutRunUsage(
   db: AppDb,
   tenantId: string,
   payload: Record<string, unknown>,
@@ -2292,8 +2292,9 @@ function settleFanoutRunUsage(
       reservationId,
       actualMcuMicros,
       reason: "run completed: pipeline.fanout",
-      consumptionMeasured: measured,
-      ...(measured ? {} : { measurementProvenance: "not_measured:fanout_estimate_hold" }),
+      consumption: measured
+        ? { kind: "measured" }
+        : { kind: "not_measured", reason: "fanout_estimate_hold" },
       createdAt: nowIso(),
     });
   } catch (error) {

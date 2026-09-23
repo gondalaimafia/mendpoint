@@ -205,26 +205,36 @@ export const USAGE_CONSUMPTION_LEGACY_MIGRATION_VERSION = "usage-consumption-mea
 const NOT_MEASURED_REASON = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
 
 /**
- * Normalize a settlement's measurement provenance. `measured === true` (or omitted)
- * yields `"measured"`. `measured === false` requires an honest `not_measured:<reason>`
- * marker: the reason must be present and well-formed so an unmeasured settlement can
- * never masquerade as a bare, reasonless value.
+ * Every settlement must declare its measurement provenance. There is no default:
+ * a caller that does not know whether the consumed MCU was measured cannot settle.
+ * This is a discriminated union so `{ kind: "measured" }` and
+ * `{ kind: "not_measured", reason }` are the only shapes the type system accepts,
+ * and it is a REQUIRED field on the settle input — a call that omits it is a
+ * compile error and (for untyped JS callers) a runtime rejection.
  */
-function settlementProvenance(measured: boolean | undefined, provenance: string | undefined): string {
-  if (measured === false) {
-    if (typeof provenance !== "string" || !provenance.startsWith(USAGE_CONSUMPTION_NOT_MEASURED_PREFIX)) {
+export type SettlementConsumption =
+  | { readonly kind: "measured" }
+  | { readonly kind: "not_measured"; readonly reason: string };
+
+/**
+ * Resolve a settlement's declared consumption into the stored provenance string.
+ * A missing declaration is rejected outright (no silent "measured" default); a
+ * `not_measured` declaration must carry an honest, well-formed reason so an
+ * unmeasured settlement can never masquerade as a bare, reasonless value.
+ */
+function settlementProvenance(consumption: SettlementConsumption | undefined): string {
+  if (!consumption || typeof consumption !== "object") {
+    throw new Error("usage_consumption_provenance_required");
+  }
+  if (consumption.kind === "measured") return USAGE_CONSUMPTION_MEASURED;
+  if (consumption.kind === "not_measured") {
+    const reason = consumption.reason;
+    if (typeof reason !== "string" || !NOT_MEASURED_REASON.test(reason) || reason.length > 128) {
       throw new Error("usage_consumption_provenance_invalid");
     }
-    const reason = provenance.slice(USAGE_CONSUMPTION_NOT_MEASURED_PREFIX.length);
-    if (!NOT_MEASURED_REASON.test(reason) || reason.length > 128) {
-      throw new Error("usage_consumption_provenance_invalid");
-    }
-    return provenance;
+    return `${USAGE_CONSUMPTION_NOT_MEASURED_PREFIX}${reason}`;
   }
-  if (provenance !== undefined && provenance !== USAGE_CONSUMPTION_MEASURED) {
-    throw new Error("usage_consumption_provenance_invalid");
-  }
-  return USAGE_CONSUMPTION_MEASURED;
+  throw new Error("usage_consumption_provenance_invalid");
 }
 
 function priceFromRow(row: PriceRow): UsagePriceVersion {
@@ -1038,10 +1048,15 @@ function prepareEntry(db: AppDb, input: EntryInput) {
     if (input.consumptionProvenance == null) {
       throw new Error("usage_consumption_provenance_required");
     }
-    settlementProvenance(
-      input.consumptionProvenance === USAGE_CONSUMPTION_MEASURED ? true : false,
-      input.consumptionProvenance,
-    );
+    if (input.consumptionProvenance !== USAGE_CONSUMPTION_MEASURED) {
+      if (!input.consumptionProvenance.startsWith(USAGE_CONSUMPTION_NOT_MEASURED_PREFIX)) {
+        throw new Error("usage_consumption_provenance_invalid");
+      }
+      const reason = input.consumptionProvenance.slice(USAGE_CONSUMPTION_NOT_MEASURED_PREFIX.length);
+      if (!NOT_MEASURED_REASON.test(reason) || reason.length > 128) {
+        throw new Error("usage_consumption_provenance_invalid");
+      }
+    }
   } else if (input.consumptionProvenance != null) {
     throw new Error("usage_consumption_provenance_not_applicable");
   }
@@ -1188,21 +1203,16 @@ export function settleUsageReservation(
     reservationId: string;
     actualMcuMicros: number;
     /**
-     * Whether the settled MCU was actually observed. Defaults to `true` (measured)
-     * so a caller that omits it records an explicit `"measured"` provenance. A
-     * caller that settled to an estimate because no per-run meter exists must pass
-     * `false` with a `not_measured:<reason>` marker, so the ledger never conflates a
-     * measured zero with "never measured".
+     * Required. Whether the settled MCU was actually observed. There is no default:
+     * a caller that settled to an estimate because no per-run meter exists must pass
+     * `{ kind: "not_measured", reason }`, so the ledger never conflates a measured
+     * zero with "never measured".
      */
-    consumptionMeasured?: boolean;
-    measurementProvenance?: string;
+    consumption: SettlementConsumption;
   },
 ): UsageLedgerEntry {
   const actual = micros("usage_settlement_mcu_micros", input.actualMcuMicros);
-  const consumptionProvenance = settlementProvenance(
-    input.consumptionMeasured,
-    input.measurementProvenance,
-  );
+  const consumptionProvenance = settlementProvenance(input.consumption);
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {

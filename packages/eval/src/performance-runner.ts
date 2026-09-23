@@ -665,9 +665,14 @@ export async function runPerformanceProbe(
         observations,
         performanceEvidence,
         options.mode,
-        // Evaluate at the runner's real (injectable) clock, not the run's declared
-        // end, so the freshness gate is reachable in production and deterministic
-        // under an injected clock in tests.
+        // Evaluate at the runner's real (injectable) clock, sampled AFTER the run
+        // window, not the declared `endedAt`. On this path the runner evaluates
+        // observations it just produced, so they are fresh by construction and the
+        // contract's staleness gate does not fire here — the gate protects the
+        // exported evaluatePerformanceRun against stale SUPPLIED evidence (pinned by
+        // the contract-level test). Sourcing evaluatedAt from `now()` rather than
+        // `endedAt` is still pinned: a test asserts evaluatedAt is strictly after
+        // endedAt under an advancing clock, so reverting to endedAt is caught.
         new Date(Math.max(0, now())).toISOString(),
       )
     : null;

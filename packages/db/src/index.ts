@@ -3605,16 +3605,23 @@ function migrateProvidersFeedColumns(db: AppDb) {
       WHERE entry_type IN ('adjustment', 'credit')
         AND finance_authorization_id IS NULL
         AND finance_authorization_digest IS NULL
+        AND tenant_id IN (SELECT id FROM tenants)
      ON CONFLICT(entry_id) DO NOTHING`,
   );
   run(
     db,
+    // Guard the evidence table's tenant_id foreign key: a settlement whose tenant row
+    // no longer exists (an orphaned row) is SKIPPED here rather than throwing a
+    // FOREIGN KEY constraint that would block every boot. Such a row keeps a NULL
+    // provenance and no evidence, so reconcile surfaces it as unattested — it is never
+    // silently treated as measured, and boot is never blocked.
     `INSERT INTO usage_legacy_measurement_evidence
        (entry_id, tenant_id, entry_hash, measurement_status, migration_version)
      SELECT id, tenant_id, entry_hash, 'legacy_unverified', 'usage-consumption-measurement/1'
        FROM usage_ledger_entries
       WHERE entry_type = 'settlement'
         AND consumption_provenance IS NULL
+        AND tenant_id IN (SELECT id FROM tenants)
      ON CONFLICT(entry_id) DO NOTHING`,
   );
   run(
@@ -5362,6 +5369,7 @@ export type {
   UsageFinanceAuthorization,
   UsageLedgerEntry,
   UsageSummary,
+  SettlementConsumption,
 } from "./usage.js";
 export * from "./invoice-export.js";
 

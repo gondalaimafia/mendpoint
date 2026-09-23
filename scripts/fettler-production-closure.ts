@@ -98,6 +98,7 @@ function validateMigrationComputeAuthority() {
       actualMcuMicros: MCU_MICROS,
       invoiceReference: "invoice-fettler-closure",
       reason: "operating-contract-self-check",
+      consumption: { kind: "measured" },
       createdAt: "2026-09-01T00:00:01.000Z",
     });
     const financeAuthorization = createUsageFinanceAuthorization(db, {

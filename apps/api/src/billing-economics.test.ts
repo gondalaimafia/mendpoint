@@ -188,6 +188,7 @@ function seedInvoiceUsage(db: AppDb) {
     idempotencyKey: "invoice-settle-a",
     reservationId: reservation.id,
     actualMcuMicros: 4_000_000,
+    consumption: { kind: "measured" },
     reason: "accepted invoice work",
     createdAt: "2026-08-10T00:01:00.000Z",
   });
@@ -317,6 +318,7 @@ function settleRevenue(
     idempotencyKey: "billing-settle-a",
     reservationId: reservation.id,
     actualMcuMicros: 4_000_000,
+    consumption: { kind: "measured" },
     invoiceReference: "invoice-a",
     reason: "verified outcome",
     actorPrincipalId,

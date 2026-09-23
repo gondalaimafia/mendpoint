@@ -170,6 +170,7 @@ function settle(
     idempotencyKey: `settle-${suffix}`,
     reservationId: reservation.id,
     actualMcuMicros: input.actualMcuMicros ?? 4_000_000,
+    consumption: { kind: "measured" },
     invoiceReference: `invoice-${suffix}`,
     reason: "actual accepted work",
     actorPrincipalId: input.actorPrincipalId ?? `principal-${suffix}`,

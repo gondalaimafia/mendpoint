@@ -107,6 +107,7 @@ function fixture() {
     idempotencyKey: "settlement-a",
     reservationId: reservation.id,
     actualMcuMicros: 100,
+    consumption: { kind: "measured" },
     invoiceReference: "invoice-a",
     reason: "route integration settlement",
     createdAt: "2026-09-02T11:31:00.000Z",
@@ -249,7 +250,13 @@ describe("billing usage finance routes", () => {
     const unauthenticated = request(null, "/billing/usage/finance-authorizations", authorizationInput);
     expect((await app.request(unauthenticated.path, unauthenticated.init)).status).toBe(401);
     const nonOwner = request("admin.a.jwt", "/billing/usage/finance-authorizations", authorizationInput);
-    expect((await app.request(nonOwner.path, nonOwner.init)).status).toBe(403);
+    const nonOwnerResponse = await app.request(nonOwner.path, nonOwner.init);
+    expect(nonOwnerResponse.status).toBe(403);
+    // Pin the ROUTE-level owner check distinctly from the DB finance-owner guard:
+    // the route returns its own `{error:"forbidden"}` body before touching the DB.
+    // Removing the route check lets the request reach the DB, which fails with a
+    // different body (usage_finance_owner_required), so this assertion dies.
+    expect(await nonOwnerResponse.json()).toEqual({ error: "forbidden" });
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM usage_finance_authorizations").get())
       .toEqual({ count: 0 });
     expect(listUsageLedger(db, "tenant-a")).toHaveLength(initialLedgerCount);

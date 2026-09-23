@@ -36,9 +36,9 @@ key-files:
 
 key-decisions:
   - "Canonical output uses small, medium, and large while documented pilot tier identifiers remain input-only compatibility aliases."
-  - "Performance evidence is valid only when exact tenant, repository, deployment, fixture, source, correlation, measured concurrency, repository shape, and nonzero run interval bindings agree."
+  - "Performance evidence is valid only when exact tenant, repository, deployment, fixture, source, correlation, measured concurrency, repository shape, and nonzero run interval bindings agree. The repository shape a report binds is operator-declared and probe-confirmed, not independently measured by the evaluator, so a report is a declared-and-probe-confirmed binding pending observed production evidence."
   - "Every observation must be fresh and carry a runtime-validated boolean outcome; reports publish immutably and authenticated probes never follow redirects or use plaintext transport."
-  - "Observation freshness is evaluated against the authenticated run window plus the metric freshness allowance, and a fixed evidence budget makes high-throughput overflow explicitly incomplete."
+  - "Observation freshness is bounded against the wall clock: the evaluator defaults its evaluation time to the real current time (injectable), so a self-declared past run is rejected as stale; the runner evaluates its own fresh evidence with its injected clock. A fixed evidence budget makes high-throughput overflow explicitly incomplete."
   - "Credits and every negative economic correction require independently verified finance authority bound to tenant, invoice, actor, amount, reason, entry time, approval time, and immutable digest."
   - "Performance runs enforce the declared maximum file size and a one-megabyte response ceiling at the producer boundary while retaining explicit incomplete abort reasons."
   - "The existing protected ga-check executable invokes closure validation so package authority bytes and rotation digests remain unchanged."
@@ -47,7 +47,11 @@ patterns-established:
   - "Authority contracts publish canonical definitions separately from measured production evidence."
   - "Ledger entries derive deterministic identifiers and hashes from complete schedule, identity, actor, reason, time, and predecessor bindings."
 
-requirements-completed: [ME-FND-006, ME-FND-007, ME-FND-008]
+# ME-FND-006/007/008 remain documented/not_observed: the closure artifact records
+# evidence.status: not_observed for both operating contracts and no requirement is
+# promoted. The coverage below is the executable authority and self-check that was
+# built, not a production observation.
+requirements-completed: []
 
 coverage:
   - id: D1
@@ -98,7 +102,7 @@ status: complete
 ## Accomplishments
 
 - Replaced contradictory pilot-sized thresholds with canonical small, medium, and large Fettler tiers, tier-specific objectives, and documented compatibility input aliases.
-- Made performance proof fail closed unless producer-observed repository shape, representative tier floors and language distribution, measured concurrency, run interval, metric event source, and all exact execution identities are present and consistent.
+- Made performance proof fail closed unless the operator-declared, probe-confirmed repository shape, representative tier floors and language distribution, measured concurrency, run interval, metric event source, and all exact execution identities are present and consistent. The evaluator cannot prove the probe measured rather than echoed the declared shape, so tier qualification is a declared-and-probe-confirmed binding and the closure artifact records evidence.status: not_observed until independently observed evidence exists.
 - Retained same-tick pre-observation probe failures as nonzero failed samples while preventing them from qualifying a report.
 - Prevented settlement beyond released reservation and retained a contiguous, deterministic, tamper-evident ledger through invoice entry identifiers.
 - Made the existing append-only `usage_ledger_entries` path the sole production storage authority; the protected closure check now exercises the same reservation, settlement, reconciliation, and invoice data used by the API and invoice export.
@@ -129,7 +133,7 @@ status: complete
 ## Decisions Made
 
 - Legacy `pilot-small`, `pilot-medium`, and `pilot-large` identifiers are accepted only at the input boundary and always normalize to canonical Fettler tier identifiers.
-- A declared revision string is not performance evidence. The evaluator requires the producer to return every execution identity and measured repository shape, while the runner measures concurrency and run duration.
+- A declared revision string is not performance evidence. The evaluator requires the producer to return every execution identity and the repository shape it observed, and the runner requires that returned shape to equal the operator declaration exactly; the runner measures concurrency and run duration. Because the evaluator cannot prove the probe measured rather than echoed the declaration, the shape is treated as declared-and-probe-confirmed (not independently audited) and evidence.status stays not_observed.
 - Metric dictionary event sources and probe implementation sources are separate, validated authorities.
 - The migration compute smoke lifecycle is deterministic and synthetic. It proves the authority is executable but deliberately leaves production evidence as `not_observed`.
 

@@ -305,6 +305,29 @@ describe("performance runner", () => {
     });
   });
 
+  it("sources the evaluation timestamp from the runner clock after the run, not the declared end", async () => {
+    // An advancing clock: every read moves the clock forward a fixed step. The runner
+    // captures endedAt from one read and evaluatedAt from a later read, so evaluatedAt
+    // is strictly after endedAt. Reverting the runner to pass `endedAt` (or its own
+    // captured endedMs) makes them equal and this dies. The freshness gate itself does
+    // not fire on this path — the run's own fresh evidence is well within the window —
+    // which is why this pins the SOURCE of evaluatedAt rather than a staleness rejection.
+    let clock = 0;
+    const now = () => (clock += 3);
+    const report = await runPerformanceProbe({
+      contract: contract(),
+      tierId: "test-tier",
+      mode: "load",
+      ...metadata(),
+      now,
+      probe: async (context) => measurementFor(context),
+    });
+
+    expect(report.status).toBe("completed");
+    expect(report.evaluation).not.toBeNull();
+    expect(Date.parse(report.evaluation!.evaluatedAt)).toBeGreaterThan(Date.parse(report.endedAt));
+  });
+
   it("honors tier concurrency and the load duration while recording every metric", async () => {
     let now = 0;
     let active = 0;

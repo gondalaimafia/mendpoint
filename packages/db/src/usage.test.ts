@@ -164,6 +164,7 @@ describe("usage ledger", () => {
       idempotencyKey: "settle-task-a",
       reservationId: "reservation-a",
       actualMcuMicros: 4_000_000,
+      consumption: { kind: "measured" },
       invoiceReference: "invoice-2026-08",
       reason: "verified actual work",
       createdAt: "2026-08-01T12:01:00.000Z",
@@ -175,6 +176,7 @@ describe("usage ledger", () => {
         idempotencyKey: "settle-task-a",
         reservationId: "reservation-a",
         actualMcuMicros: 4_000_000,
+        consumption: { kind: "measured" },
         invoiceReference: "invoice-2026-08",
         reason: "verified actual work",
         createdAt: "2026-08-01T12:01:00.000Z",
@@ -336,6 +338,7 @@ describe("usage ledger", () => {
       idempotencyKey: "settle-invoice",
       reservationId: reservation.id,
       actualMcuMicros: 1_000_000,
+      consumption: { kind: "measured" },
       invoiceReference: "invoice-a",
       reason: "invoice usage",
       createdAt: "2026-08-01T12:01:00.000Z",
@@ -465,6 +468,7 @@ describe("usage ledger", () => {
       idempotencyKey: "settle-replay",
       reservationId: reservation.id,
       actualMcuMicros: 100,
+      consumption: { kind: "measured" },
       invoiceReference: "invoice-replay",
       reason: "replay settlement",
       createdAt: "2026-08-01T12:01:00.000Z",
@@ -526,6 +530,7 @@ describe("usage ledger", () => {
       idempotencyKey: "settle-august",
       reservationId: reservation.id,
       actualMcuMicros: 1_000,
+      consumption: { kind: "measured" },
       invoiceReference: "invoice-august",
       reason: "august settlement",
       createdAt: "2026-08-15T00:00:00.000Z",
@@ -653,6 +658,7 @@ describe("usage ledger", () => {
       idempotencyKey: "settle-september",
       reservationId: septemberReservation.id,
       actualMcuMicros: 500,
+      consumption: { kind: "measured" },
       invoiceReference: "invoice-september",
       reason: "september settlement",
       createdAt: "2026-09-02T12:03:20.000Z",
@@ -706,6 +712,7 @@ describe("usage ledger", () => {
       idempotencyKey: "settle-adjustment-august",
       reservationId: august.id,
       actualMcuMicros: 60,
+      consumption: { kind: "measured" },
       invoiceReference: "invoice-adjustment-history",
       reason: "august settlement",
       createdAt: "2026-08-01T12:01:00.000Z",
@@ -783,6 +790,7 @@ describe("usage ledger", () => {
       idempotencyKey: "settle-adjustment-september",
       reservationId: september.id,
       actualMcuMicros: 40,
+      consumption: { kind: "measured" },
       invoiceReference: "invoice-adjustment-history",
       reason: "september settlement",
       createdAt: "2026-09-02T12:02:10.000Z",
@@ -859,6 +867,7 @@ describe("usage ledger", () => {
       idempotencyKey: "settle-split-august",
       reservationId: august.id,
       actualMcuMicros: 60,
+      consumption: { kind: "measured" },
       invoiceReference: "invoice-split",
       reason: "first invoice allocation",
       createdAt: "2026-08-01T12:01:00.000Z",
@@ -900,6 +909,7 @@ describe("usage ledger", () => {
       idempotencyKey: "settle-split-september",
       reservationId: september.id,
       actualMcuMicros: 40,
+      consumption: { kind: "measured" },
       invoiceReference: "invoice-split",
       reason: "second invoice allocation",
       createdAt: "2026-09-02T12:01:00.000Z",
@@ -1160,6 +1170,7 @@ describe("usage ledger", () => {
       idempotencyKey: "finance-lifecycle-settlement",
       reservationId: reservation.id,
       actualMcuMicros: 10,
+      consumption: { kind: "measured" },
       invoiceReference: "invoice-a",
       reason: "finance lifecycle",
       createdAt: "2026-08-01T12:01:00.000Z",
@@ -1239,6 +1250,7 @@ describe("usage ledger", () => {
       idempotencyKey: "settle-measured",
       reservationId: measuredReservation.id,
       actualMcuMicros: 0,
+      consumption: { kind: "measured" },
       reason: "measured zero consumption",
       createdAt: "2026-08-01T12:01:00.000Z",
     });
@@ -1270,8 +1282,7 @@ describe("usage ledger", () => {
       reservationId: unmeasuredReservation.id,
       actualMcuMicros: 0,
       reason: "no per-run meter",
-      consumptionMeasured: false,
-      measurementProvenance: "not_measured:no_per_run_mcu_meter",
+      consumption: { kind: "not_measured", reason: "no_per_run_mcu_meter" },
       createdAt: "2026-08-01T12:01:00.000Z",
     });
     expect(unmeasured.consumptionProvenance).toBe("not_measured:no_per_run_mcu_meter");
@@ -1282,17 +1293,31 @@ describe("usage ledger", () => {
       unmeasuredSettlementEntryIds: ["settlement-unmeasured"],
     });
 
-    // A not-measured settlement must carry an honest reason marker.
+    // A not-measured settlement must carry an honest, well-formed reason marker.
     expect(() => settleUsageReservation(dbMeasured, {
       id: "settlement-bad-provenance",
       tenantId: "tenant_default",
       idempotencyKey: "settle-bad-provenance",
       reservationId: measuredReservation.id,
       actualMcuMicros: 0,
-      reason: "missing reason",
-      consumptionMeasured: false,
+      reason: "malformed reason",
+      consumption: { kind: "not_measured", reason: "BAD REASON!" },
       createdAt: "2026-08-01T12:02:00.000Z",
     })).toThrow("usage_consumption_provenance_invalid");
+
+    // Settling with no consumption declaration at all is rejected outright: there
+    // is no silent "measured" default. (Cast past the required-field type to reach
+    // the runtime guard a JS caller would hit.)
+    expect(() => settleUsageReservation(dbMeasured, {
+      id: "settlement-no-provenance",
+      tenantId: "tenant_default",
+      idempotencyKey: "settle-no-provenance",
+      reservationId: measuredReservation.id,
+      actualMcuMicros: 0,
+      reason: "no declaration",
+      createdAt: "2026-08-01T12:02:30.000Z",
+    } as unknown as Parameters<typeof settleUsageReservation>[1]))
+      .toThrow("usage_consumption_provenance_required");
   });
 
   it("surfaces a legacy pre-provenance settlement as legacy_unverified, not measured", () => {
@@ -1316,6 +1341,7 @@ describe("usage ledger", () => {
       idempotencyKey: "settle-legacy",
       reservationId: reservation.id,
       actualMcuMicros: 1_000_000,
+      consumption: { kind: "measured" },
       invoiceReference: "invoice-legacy",
       reason: "accepted work",
       createdAt: "2026-08-01T12:01:00.000Z",
@@ -1343,5 +1369,72 @@ describe("usage ledger", () => {
       measurementStatus: "legacy_unverified",
       legacyUnverifiedMeasurementEntryIds: ["settlement-legacy"],
     });
+  });
+
+  it("never blocks boot when a legacy settlement's tenant no longer exists", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-usage-orphan-"));
+    dirs.push(dir);
+    const path = join(dir, "usage.sqlite");
+    const db = createDb(path);
+    createUsagePriceVersion(db, {
+      id: "price-orphan",
+      tenantId: "tenant_default",
+      formulaVersion: "mcu-v1",
+      currency: "USD",
+      pricePerMcuMoneyMicros: 20_000,
+      effectiveAt: "2026-08-01T00:00:00.000Z",
+      expiresAt: "2026-09-01T00:00:00.000Z",
+      contractReference: "contract-orphan",
+      createdAt: at,
+    });
+    createUsageEntitlement(db, {
+      id: "entitlement-orphan",
+      tenantId: "tenant_default",
+      priceVersionId: "price-orphan",
+      quotaMcuMicros: 10_000_000,
+      features: ["fettler"],
+      contractReference: "contract-orphan",
+      periodStart: "2026-08-01T00:00:00.000Z",
+      periodEnd: "2026-09-01T00:00:00.000Z",
+      createdAt: at,
+    });
+    const reservation = reserveUsage(db, {
+      id: "reservation-orphan",
+      tenantId: "tenant_default",
+      idempotencyKey: "reserve-orphan",
+      taskId: "task-orphan",
+      mcuMicros: 1_000_000,
+      reason: "planned",
+      createdAt: at,
+    });
+    const settlement = settleUsageReservation(db, {
+      id: "settlement-orphan",
+      tenantId: "tenant_default",
+      idempotencyKey: "settle-orphan",
+      reservationId: reservation.id,
+      actualMcuMicros: 1_000_000,
+      consumption: { kind: "measured" },
+      reason: "accepted work",
+      createdAt: "2026-08-01T12:01:00.000Z",
+    });
+    // Model a genuine pre-provenance row whose tenant was later removed (FK off):
+    // NULL provenance + a dangling tenant reference.
+    db.raw.exec("DROP TRIGGER usage_ledger_entries_append_only_update");
+    db.raw.prepare("UPDATE usage_ledger_entries SET consumption_provenance = NULL WHERE id = ?")
+      .run(settlement.id);
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+    db.raw.prepare("DELETE FROM tenants WHERE id = 'tenant_default'").run();
+    db.raw.close();
+    dbs.pop();
+
+    // The boot backfill must SKIP the orphaned row rather than throw a FOREIGN KEY
+    // constraint that would block every boot. Reverting the backfill's tenant guard
+    // reintroduces the throw and fails this expectation.
+    let reopened: ReturnType<typeof createDb> | undefined;
+    expect(() => { reopened = createDb(path); }).not.toThrow();
+    dbs.push(reopened!);
+    expect(reopened!.raw.prepare(
+      "SELECT COUNT(*) AS count FROM usage_legacy_measurement_evidence WHERE entry_id = ?",
+    ).get(settlement.id)).toEqual({ count: 0 });
   });
 });

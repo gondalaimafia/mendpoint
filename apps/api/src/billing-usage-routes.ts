@@ -3,6 +3,9 @@ import {
   adjustUsage,
   createUsageFinanceAuthorization,
   creditUsage,
+  releaseUsageReservation,
+  reserveUsage,
+  settleUsageReservation,
   type AppDb,
 } from "@mendpoint/db";
 import { newId, nowIso } from "@mendpoint/shared";
@@ -168,6 +171,135 @@ export function createBillingUsageFinanceRoutes(
           },
         });
         return committed;
+      });
+      return context.json(entry, 201);
+    } catch (error) {
+      return mappedErrorResponse(context, error, options.errors);
+    }
+  });
+
+  return routes;
+}
+
+export type BillingUsageReservationRouteOptions = Readonly<{
+  db: AppDb;
+  errors: readonly PublicErrorRule[];
+  audit: (context: Context<ApiEnv>, input: BillingUsageAuditInput) => void;
+  id?: () => string;
+  now?: () => string;
+}>;
+
+/**
+ * Reserve / settle / release routes for the tenant MCU ledger, extracted from the
+ * server so the money path has an isolated HTTP harness. The settle route records
+ * `not_measured:client_declared`: a figure a client declares over the API is not a
+ * measurement, so reconcile treats it as unmeasured and invoice export refuses it
+ * until a measured settlement exists.
+ */
+export function createBillingUsageReservationRoutes(
+  options: BillingUsageReservationRouteOptions,
+): Hono<ApiEnv> {
+  const routes = new Hono<ApiEnv>();
+  const makeId = options.id ?? newId;
+  const clock = options.now ?? nowIso;
+
+  routes.post("/reservations", async (context) => {
+    const body = await context.req.json<{
+      idempotencyKey?: string;
+      taskId?: string;
+      campaignId?: string | null;
+      mcuMicros?: number;
+      reason?: string;
+    }>().catch(() => ({} as {
+      idempotencyKey?: string;
+      taskId?: string;
+      campaignId?: string | null;
+      mcuMicros?: number;
+      reason?: string;
+    }));
+    try {
+      const entry = reserveUsage(options.db, {
+        id: makeId(),
+        tenantId: requestTenantId(context),
+        idempotencyKey: body.idempotencyKey ?? "",
+        taskId: body.taskId ?? "",
+        campaignId: body.campaignId,
+        mcuMicros: body.mcuMicros ?? -1,
+        reason: body.reason ?? "",
+        actorPrincipalId: context.get("trustPrincipalId"),
+        createdAt: clock(),
+      });
+      options.audit(context, {
+        actor: context.get("principal")!.id,
+        action: "billing.usage_reserved",
+        resourceType: "usage_ledger_entry",
+        resourceId: entry.id,
+        metadata: { taskId: entry.taskId, mcuMicros: entry.reservedMcuMicrosDelta },
+      });
+      return context.json(entry, 201);
+    } catch (error) {
+      return mappedErrorResponse(context, error, options.errors);
+    }
+  });
+
+  routes.post("/reservations/:id/settle", async (context) => {
+    const body = await context.req.json<{
+      idempotencyKey?: string;
+      actualMcuMicros?: number;
+      invoiceReference?: string | null;
+      reason?: string;
+    }>().catch(() => ({} as {
+      idempotencyKey?: string;
+      actualMcuMicros?: number;
+      invoiceReference?: string | null;
+      reason?: string;
+    }));
+    try {
+      const entry = settleUsageReservation(options.db, {
+        id: makeId(),
+        tenantId: requestTenantId(context),
+        idempotencyKey: body.idempotencyKey ?? "",
+        reservationId: context.req.param("id"),
+        actualMcuMicros: body.actualMcuMicros ?? -1,
+        invoiceReference: body.invoiceReference,
+        reason: body.reason ?? "",
+        actorPrincipalId: context.get("trustPrincipalId"),
+        // A figure a client declares over the API is not a measurement.
+        consumption: { kind: "not_measured", reason: "client_declared" },
+        createdAt: clock(),
+      });
+      options.audit(context, {
+        actor: context.get("principal")!.id,
+        action: "billing.usage_settled",
+        resourceType: "usage_ledger_entry",
+        resourceId: entry.id,
+        metadata: { reservationId: entry.reservationId, mcuMicros: entry.consumedMcuMicrosDelta },
+      });
+      return context.json(entry, 201);
+    } catch (error) {
+      return mappedErrorResponse(context, error, options.errors);
+    }
+  });
+
+  routes.post("/reservations/:id/release", async (context) => {
+    const body = await context.req.json<{ idempotencyKey?: string; reason?: string }>()
+      .catch(() => ({} as { idempotencyKey?: string; reason?: string }));
+    try {
+      const entry = releaseUsageReservation(options.db, {
+        id: makeId(),
+        tenantId: requestTenantId(context),
+        idempotencyKey: body.idempotencyKey ?? "",
+        reservationId: context.req.param("id"),
+        reason: body.reason ?? "",
+        actorPrincipalId: context.get("trustPrincipalId"),
+        createdAt: clock(),
+      });
+      options.audit(context, {
+        actor: context.get("principal")!.id,
+        action: "billing.usage_released",
+        resourceType: "usage_ledger_entry",
+        resourceId: entry.id,
+        metadata: { reservationId: entry.reservationId },
       });
       return context.json(entry, 201);
     } catch (error) {
