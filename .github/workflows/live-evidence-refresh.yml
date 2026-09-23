@@ -193,9 +193,21 @@ jobs:
           # commits look foreign.
           assert_bot_only_branch() {
             git fetch --no-tags origin "$BRANCH"
-            local foreign
-            foreign="$(git log --format='%ae' "origin/main..origin/${BRANCH}" \
-              | grep -vxF "$BOT_EMAIL" || true)"
+            # Read the authors as its own statement so a FAILED git log is a
+            # distinct third state, not folded into "" (which would read as
+            # bot-only and permit a force-push). Empty output from a SUCCESSFUL
+            # log means no commits beyond main = bot-only.
+            local authors status foreign
+            authors="$(git log --format='%ae' "origin/main..origin/${BRANCH}")" && status=0 || status=$?
+            if [ "${status:-0}" -ne 0 ]; then
+              upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" \
+                "$(printf 'Could not read the commit authors of %s (git log failed, exit %s). Refusing to touch the branch.\n\nRun: %s' "$BRANCH" "${status:-?}" "$RUN_URL")"
+              echo "refused: git log failed on ${BRANCH}; not pushing" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            # -F: the bot email contains [ ] +, which a regex would read as a
+            # character class, making the bot's own commits look foreign.
+            foreign="$(printf '%s\n' "$authors" | grep -vxF "$BOT_EMAIL" || true)"
             if [ -n "$foreign" ]; then
               upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" \
                 "$(printf 'The refresh branch %s carries commits by a non-bot author:\n%s\n\nRefusing to touch it: a push on top, or a reset, would risk those commits. A human must reconcile the branch.\n\nRun: %s' "$BRANCH" "$foreign" "$RUN_URL")"
@@ -311,16 +323,26 @@ jobs:
               echo "refused: git ls-remote failed" | tee -a "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
+            # A remote branch with no open PR had its PR merged/closed, so a
+            # reset is safe — but only if it is bot-only. Assert that BEFORE
+            # building or committing, so a non-bot branch (or a failed git log)
+            # refuses with nothing done locally.
+            if [ "${remote_state%% *}" = "exists" ]; then assert_bot_only_branch; fi
             git checkout -B "$BRANCH" main
             commit_new_evidence
             if [ "${remote_state%% *}" = "exists" ]; then
-              # A remote branch with no open PR had its PR merged/closed, so a
-              # reset is safe — but only if it is bot-only, and only against the
-              # exact sha we observed (the lease is pinned so a concurrent push
-              # cannot be clobbered).
-              assert_bot_only_branch
+              # Reset only against the exact sha we observed (the lease is pinned
+              # so a concurrent push cannot be clobbered).
               remote_sha="${remote_state#exists }"
-              git push --force-with-lease="${BRANCH}:${remote_sha}" origin "HEAD:${BRANCH}"
+              # A rejected lease means the remote moved since we observed it (a
+              # concurrent push). Route that to the FAILED issue rather than a
+              # bare set -e exit, so it is visible and never retried blindly.
+              if ! git push --force-with-lease="${BRANCH}:${remote_sha}" origin "HEAD:${BRANCH}"; then
+                upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" \
+                  "$(printf 'Refusing to force-reset %s: the --force-with-lease push was rejected, so the remote branch moved from %s since it was observed (a concurrent push). A human must reconcile the branch.\n\nRun: %s' "$BRANCH" "$remote_sha" "$RUN_URL")"
+                echo "refused: force-with-lease rejected on ${BRANCH}" | tee -a "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
             else
               git push -u origin "HEAD:${BRANCH}"
             fi

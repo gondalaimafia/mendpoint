@@ -119,6 +119,7 @@ const GIT_STUB = [
   '    if [ -n "${STUB_LS_REMOTE_FAIL:-}" ]; then exit 2; fi',
   '    [ -n "${STUB_REMOTE_BRANCH:-}" ] && echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef refs/heads/bot/live-evidence-refresh"; exit 0 ;;',
   '  log)',
+  '    if [ -n "${STUB_LOG_FAIL:-}" ]; then exit 3; fi',
   // Honour the commit range: only report a foreign author when the real
   // main..origin/branch range is asked for, so an emptied/altered range in the
   // source (a mutation) makes the non-bot branch look bot-only and its test die.
@@ -128,6 +129,9 @@ const GIT_STUB = [
   '      echo "41898282+github-actions[bot]@users.noreply.github.com";',
   '    fi; exit 0 ;;',
   '  diff) exit "${STUB_DIFF_EMPTY:-1}" ;;',
+  '  push)',
+  '    if [ -n "${STUB_PUSH_LEASE_FAIL:-}" ] && printf "%s" "$*" | grep -q "force-with-lease"; then exit 1; fi',
+  '    exit 0 ;;',
   "esac",
   "exit 0",
   "",
@@ -294,6 +298,57 @@ describe("live-evidence-refresh Act step under GitHub's shell", () => {
     expect(result.gh).toContain("live-evidence-refresh-failed");
     expect(result.git).not.toContain("push");
     expect(result.gh).not.toContain("pr create");
+  });
+
+  it("refreshed + git log fails on the open-PR path: fails the job, no push", () => {
+    const result = runActStep(REFRESHED_SUMMARY, {
+      STUB_OPEN_PR: "42",
+      STUB_REMOTE_BRANCH: "1",
+      STUB_LOG_FAIL: "1",
+    });
+    expect(result.status).toBe(1);
+    expect(result.gh).toContain("issue create");
+    expect(result.gh).toContain("live-evidence-refresh-failed");
+    expect(result.git).not.toContain("push");
+  });
+
+  it("refreshed + git log fails on the no-PR reset path: fails the job, no push", () => {
+    const result = runActStep(REFRESHED_SUMMARY, { STUB_REMOTE_BRANCH: "1", STUB_LOG_FAIL: "1" });
+    expect(result.status).toBe(1);
+    expect(result.gh).toContain("issue create");
+    expect(result.gh).toContain("live-evidence-refresh-failed");
+    expect(result.git).not.toContain("push");
+  });
+
+  it("refreshed + git ls-remote fails (no open PR): fails the job, no push", () => {
+    const result = runActStep(REFRESHED_SUMMARY, { STUB_LS_REMOTE_FAIL: "1" });
+    expect(result.status).toBe(1);
+    expect(result.gh).toContain("issue create");
+    expect(result.gh).toContain("live-evidence-refresh-failed");
+    expect(result.git).not.toContain("push");
+    expect(result.gh).not.toContain("pr create");
+  });
+
+  it("refreshed + a rejected force-with-lease push: routes to the FAILED issue", () => {
+    const result = runActStep(REFRESHED_SUMMARY, {
+      STUB_REMOTE_BRANCH: "1",
+      STUB_PUSH_LEASE_FAIL: "1",
+    });
+    expect(result.status).toBe(1);
+    expect(result.gh).toContain("issue create");
+    expect(result.gh).toContain("live-evidence-refresh-failed");
+    // It attempted the lease push, then failed the job via the issue.
+    expect(result.git).toContain("push --force-with-lease=bot/live-evidence-refresh:");
+    expect(result.gh).not.toContain("pr create");
+  });
+
+  it("not due + PR lookup fails: does NOT close the READY issue (no resolution on uncertainty)", () => {
+    const result = runActStep(JSON.stringify({ outcome: "not_due" }), {
+      STUB_PR_LIST_EXIT: "1",
+      STUB_READY_ISSUE: "8",
+    });
+    expect(result.status).toBe(0);
+    expect(result.gh).not.toContain("issue close 8");
   });
 
   it("refused + an existing FAILED issue: comments (dedup), never a second issue", () => {
