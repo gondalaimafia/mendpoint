@@ -58,6 +58,22 @@ function move(db: AppDb, current: MissionTask, to: MissionTaskStatus, extra: { a
     correlationId: "corr", createdAt: at });
 }
 
+function insertDispatch(
+  db: AppDb,
+  state: "authorized" | "dispatching" | "uncertain",
+  suffix: string,
+  taskId: string | null,
+) {
+  db.raw.prepare(`INSERT INTO mission_mutation_dispatches
+    (id, tenant_id, mission_id, job_id, mutation_kind, aggregate_id, authority_json,
+     intent_digest, state, lease_owner, lease_generation, authorized_at, dispatching_at,
+     uncertain_at, updated_at)
+    VALUES (?, 't1', 'm1', ?, 'fettler_candidate_delivery', ?, ?, ?, ?, 'worker-1', 1, ?, ?, ?, ?)`)
+    .run(`dispatch-${suffix}`, `job-${suffix}`, `aggregate-${suffix}`, JSON.stringify({ taskId }),
+      `sha256:${suffix.padEnd(64, "a")}`,
+      state, at, state === "dispatching" ? at : null, state === "uncertain" ? at : null, at);
+}
+
 describe("mission task engine", () => {
   it("derives a stable ReGauge launch task id from mission and optional repository", () => {
     expect(regaugeLaunchMissionTaskId("mission-a")).toBe(regaugeLaunchMissionTaskId("mission-a"));
@@ -134,6 +150,128 @@ describe("mission task engine", () => {
     expect(t.retryCount).toBe(0);
     t = move(db, t, "agent_working");
     expect(t.retryCount).toBe(1); // replan counted
+  });
+
+  it.each(["dispatching", "uncertain"] as const)(
+    "atomically blocks task cancellation, blocking, handoff, and completion while a mutation is %s",
+    (state) => {
+      for (const target of ["cancelled", "blocked", "human_review_required", "complete"] as const) {
+        const db = fixture();
+        let current = task(db, `task-${state}-${target}`);
+        current = move(db, current, "agent_assigned");
+        current = move(db, current, "agent_working");
+        insertDispatch(db, state, `${state}-${target}`, current.id);
+        expect(() => move(db, current, target)).toThrow("mission_mutation_dispatch_in_flight");
+        expect(getMissionTask(db, "t1", current.id)).toMatchObject({
+          status: "agent_working",
+          revision: current.revision,
+        });
+      }
+    },
+  );
+
+  it("revokes authorized mutation intent with a task transition but preserves same-status replay", () => {
+    const db = fixture();
+    let current = task(db, "task-fence-replay");
+    current = move(db, current, "agent_assigned");
+    current = move(db, current, "agent_working");
+    insertDispatch(db, "authorized", "authorized-task", current.id);
+    const cancelled = move(db, current, "cancelled");
+    expect(cancelled.status).toBe("cancelled");
+    expect((db.raw.prepare(`SELECT state FROM mission_mutation_dispatches WHERE id = ?`)
+      .get("dispatch-authorized-task") as { state: string }).state).toBe("revoked");
+
+    const replayDb = fixture();
+    let replay = task(replayDb, "task-same-replay");
+    replay = move(replayDb, replay, "agent_assigned");
+    replay = move(replayDb, replay, "agent_working");
+    insertDispatch(replayDb, "dispatching", "same-replay", replay.id);
+    const unchanged = move(replayDb, replay, "agent_working");
+    expect(unchanged.revision).toBe(replay.revision);
+    expect((replayDb.raw.prepare(`SELECT state FROM mission_mutation_dispatches WHERE id = ?`)
+      .get("dispatch-same-replay") as { state: string }).state).toBe("dispatching");
+  });
+
+  it.each(["dispatching", "uncertain"] as const)(
+    "blocks authoritative task creation while taskless Mission authority is %s",
+    (state) => {
+      const db = fixture();
+      insertDispatch(db, state, `create-${state}`, null);
+      expect(() => task(db, `new-${state}`)).toThrow("mission_mutation_dispatch_in_flight");
+      expect(getMissionTask(db, "t1", `new-${state}`)).toBeUndefined();
+    },
+  );
+
+  it("revokes authorized taskless authority before task creation and keeps replay idempotent", () => {
+    const db = fixture();
+    insertDispatch(db, "authorized", "create-authorized", null);
+    const created = task(db, "new-authorized");
+    expect(created.revision).toBe(1);
+    expect((db.raw.prepare(`SELECT state FROM mission_mutation_dispatches WHERE id = ?`)
+      .get("dispatch-create-authorized") as { state: string }).state).toBe("revoked");
+    insertDispatch(db, "dispatching", "create-replay", null);
+    expect(task(db, "new-authorized").revision).toBe(1);
+  });
+
+  it("keeps an existing task dispatch isolated from later task enrollment", () => {
+    const db = fixture();
+    const existing = task(db, "existing-task");
+    insertDispatch(db, "dispatching", "create-sibling", existing.id);
+    expect(task(db, "later-task").status).toBe("unassigned");
+    expect((db.raw.prepare(`SELECT state FROM mission_mutation_dispatches WHERE id = ?`)
+      .get("dispatch-create-sibling") as { state: string }).state).toBe("dispatching");
+  });
+
+  it.each(["authorized", "dispatching", "uncertain"] as const)(
+    "keeps a sibling task %s dispatch isolated from another task transition",
+    (state) => {
+      const db = fixture();
+      let a = task(db, `task-a-${state}`);
+      let b = task(db, `task-b-${state}`);
+      a = move(db, a, "agent_assigned");
+      a = move(db, a, "agent_working");
+      b = move(db, b, "agent_assigned");
+      b = move(db, b, "agent_working");
+      insertDispatch(db, state, `sibling-${state}`, a.id);
+      expect(move(db, b, "cancelled").status).toBe("cancelled");
+      expect((db.raw.prepare(`SELECT state FROM mission_mutation_dispatches WHERE id = ?`)
+        .get(`dispatch-sibling-${state}`) as { state: string }).state).toBe(state);
+    },
+  );
+
+  it.each(["dispatching", "uncertain"] as const)(
+    "blocks dependency readiness changes while the dependent task dispatch is %s",
+    (state) => {
+      const db = fixture();
+      task(db, `dep-source-${state}`);
+      const target = task(db, `dep-target-${state}`);
+      insertDispatch(db, state, `dependency-${state}`, target.id);
+      expect(() => addMissionTaskDependency(db, { id: `edge-${state}`, tenantId: "t1", missionId: "m1",
+        taskId: target.id, dependsOnTaskId: `dep-source-${state}`, createdAt: at }))
+        .toThrow("mission_mutation_dispatch_in_flight");
+      expect(getMissionTask(db, "t1", target.id)?.revision).toBe(target.revision);
+      expect(missionTaskReady(db, "t1", target.id)).toBe(true);
+    },
+  );
+
+  it("revokes dependent-task authority and revision-invalidates readiness without touching a sibling", () => {
+    const db = fixture();
+    const source = task(db, "dependency-source");
+    const target = task(db, "dependency-target");
+    const sibling = task(db, "dependency-sibling");
+    insertDispatch(db, "authorized", "dependency-target", target.id);
+    insertDispatch(db, "dispatching", "dependency-sibling", sibling.id);
+    addMissionTaskDependency(db, { id: "dependency-edge", tenantId: "t1", missionId: "m1",
+      taskId: target.id, dependsOnTaskId: source.id, createdAt: at });
+    expect(getMissionTask(db, "t1", target.id)?.revision).toBe(target.revision + 1);
+    expect(missionTaskReady(db, "t1", target.id)).toBe(false);
+    expect((db.raw.prepare(`SELECT state FROM mission_mutation_dispatches WHERE id = ?`)
+      .get("dispatch-dependency-target") as { state: string }).state).toBe("revoked");
+    expect((db.raw.prepare(`SELECT state FROM mission_mutation_dispatches WHERE id = ?`)
+      .get("dispatch-dependency-sibling") as { state: string }).state).toBe("dispatching");
+    addMissionTaskDependency(db, { id: "dependency-edge-replay", tenantId: "t1", missionId: "m1",
+      taskId: target.id, dependsOnTaskId: source.id, createdAt: at });
+    expect(getMissionTask(db, "t1", target.id)?.revision).toBe(target.revision + 1);
   });
 
   it("orders by dependency: a task is not ready until every prerequisite completes", () => {

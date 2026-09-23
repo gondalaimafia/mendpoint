@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   addWardenCampaignTarget,
   createDb,
@@ -14,6 +14,7 @@ import {
   insertRepositorySnapshotPolicy,
   linkFettlerCampaignToMission,
   listJobs,
+  listMissionPolicyEvaluations,
   listWardenCampaignTargets,
   planWardenRollout,
   transitionWardenCampaign,
@@ -42,6 +43,7 @@ const manifestSha256 = "b".repeat(64);
 const digest = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const item of opened.splice(0)) {
     item.db.raw.close();
     item.graph.raw.close();
@@ -151,6 +153,11 @@ const passingVerify: WardenCampaignExecutionDependencies["verify"] = async (inpu
   }));
 
 describe("field-rename activation end to end through the worker loop", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(createdAt));
+  });
+
   it("routes the payload rename through resolveDependencies and lands the target in review", async () => {
     const value = fixture();
     enqueueJob(value.db, {
@@ -169,6 +176,12 @@ describe("field-rename activation end to end through the worker loop", () => {
       },
     });
 
+    // Advance the worker clock after enqueue so processing time differs from
+    // enqueue time. Both sit inside the 13:00-16:00 window, so the run still lands
+    // in review, but the two clocks are now distinguishable in the record.
+    const executionTime = "2026-08-02T15:00:00.000Z";
+    vi.setSystemTime(new Date(executionTime));
+
     const result = await processJobsOnce(value.db, {
       allTenants: true,
       runWardenMaintenance: false,
@@ -185,6 +198,18 @@ describe("field-rename activation end to end through the worker loop", () => {
     expect(listWardenCampaignTargets(value.db, "tenant-a", "campaign-a")[0]).toMatchObject({ stage: "review" });
     // The rename lived only in the candidate copy; the snapshot on disk is untouched.
     expect(readFileSync(join(value.snapshotRoot, "src", "payments.ts"), "utf8")).toContain("amount_cents");
+
+    // The two clocks are distinguishable: the authority decision (the policy
+    // evaluation fact) follows the later processing time, while the immutable run
+    // events are stamped with the enqueue time.
+    const policyFacts = listMissionPolicyEvaluations(value.db, "tenant-a", "mission-a");
+    expect(policyFacts.length).toBeGreaterThan(0);
+    expect(policyFacts.every((fact) => fact.createdAt === executionTime)).toBe(true);
+    const runEventTimes = value.db.raw.prepare(
+      "SELECT created_at FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'warden_run' AND aggregate_id = ?",
+    ).all("tenant-a", "run-a") as { created_at: string }[];
+    expect(runEventTimes.length).toBeGreaterThan(0);
+    expect(runEventTimes.every((row) => row.created_at === createdAt)).toBe(true);
   });
 
   it("fails closed (no edit) when the payload carries no rename", async () => {

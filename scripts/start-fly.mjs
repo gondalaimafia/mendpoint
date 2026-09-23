@@ -8,10 +8,12 @@ import {
   mkdirSync,
   readdirSync,
 } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import {
   initializeWithMutationLease,
+  resolveMutationFenceRoot,
   validateCustomerBackupPathSafety,
+  waitForMutationFenceRelease,
 } from "@mendpoint/ops";
 import {
   customerWardenChildEnvironment,
@@ -29,6 +31,15 @@ const reposRoot = resolve(process.env.MENDPOINT_REPOS_DIR ?? `${dataRoot}/repos`
 const tenantRepos = resolve(reposRoot, tenantId);
 const appRoot = resolve(process.env.MENDPOINT_APP_ROOT ?? "/app");
 const deploymentProfile = process.env.MENDPOINT_DEPLOYMENT_PROFILE;
+// Directory that holds the file-delivered sandbox egress receipt. Created at
+// boot (like the other customer-owned paths) so the protected-app renewal can
+// install the receipt over ssh without a restart; the app re-reads it on every
+// egress verification. Absent for non-customer profiles, which do not set the
+// path and never verify a sandbox egress receipt.
+const sandboxEgressAttestationDir =
+  deploymentProfile === "customer" && process.env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PATH?.trim()
+    ? dirname(resolve(process.env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PATH.trim()))
+    : null;
 const childIdentity =
   process.platform !== "win32" && process.getuid?.() === 0
     ? { uid: 1000, gid: 1000 }
@@ -188,6 +199,34 @@ if (preflight.status !== 0) {
   throw new Error("Runtime environment validation failed before startup");
 }
 
+function resolveStartupFenceWaitMs(env) {
+  const raw = env.MENDPOINT_STARTUP_FENCE_WAIT_MS?.trim();
+  if (!raw) return 600_000;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    console.error(
+      `MENDPOINT_STARTUP_FENCE_WAIT_MS must be a non-negative integer (got "${raw}"); using default 600000`,
+    );
+    return 600_000;
+  }
+  return parsed;
+}
+
+// An outage longer than a backup marker's lifetime used to be unrecoverable: a
+// marker left by the process a restart killed refused every subsequent boot. Wait
+// for the fence to clear instead of racing straight into admission; the reaper
+// inside clears a provably dead owner on the first poll, while a genuine live
+// backup on this machine becomes a bounded wait.
+if (
+  deploymentProfile === "customer" ||
+  process.env.MENDPOINT_BACKUP_FENCE_ROOT?.trim()
+) {
+  await waitForMutationFenceRelease(resolveMutationFenceRoot(process.env), {
+    timeoutMs: resolveStartupFenceWaitMs(process.env),
+    pollMs: 5000,
+  });
+}
+
 initializeWithMutationLease(() => {
 const customerOwnedPaths = customerBackupPaths
   ? [
@@ -212,6 +251,10 @@ for (const path of [
   resolve(dataRoot, "runs"),
   resolve(dataRoot, "state"),
   resolve(dataRoot, "state", "mendpoint"),
+  // The signed egress receipt is a public artifact, so this directory stays
+  // world-readable (0755, owned by the app uid) rather than 0700 like the
+  // private backup and candidate paths below.
+  ...(sandboxEgressAttestationDir ? [sandboxEgressAttestationDir] : []),
   ...customerOwnedPaths,
 ]) {
   mkdirSync(path, { recursive: true });

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { CORE_DISASTER_RECOVERY_POLICY } from "@mendpoint/ops";
@@ -419,8 +419,12 @@ describe("customer backup watchdog workflow", () => {
 
   it("never uploads or echoes the raw capture, which carries key material", () => {
     const retain = step("Retain the redacted freshness verdict");
-    expect(retain.with.path).toBe("test-results/customer-backup-watchdog/verdict.json");
+    // The redacted verdict plus the machine-state record (ids and states only).
+    expect(retain.with.path).toContain("test-results/customer-backup-watchdog/verdict.json");
+    expect(retain.with.path).toContain("test-results/customer-backup-watchdog/machine-state.json");
+    // Never the raw evidence capture (key material) nor the raw machine list.
     expect(retain.with.path).not.toContain("evidence-capture");
+    expect(retain.with.path).not.toContain("machine-list.json");
     const read = step("Read backup evidence from the customer machine");
     expect(read.run).not.toContain('cat "$capture"');
   });
@@ -733,7 +737,13 @@ describe("customer backup watchdog — the watchdog's own failure has a name", (
     // rather than `always()`: a cancelled watchdog must not alert, which is the
     // reason the workflow's concurrency group avoids cancelling in the first
     // place.
-    expect(step("Judge backup freshness against the policy RPO").if).toBe("${{ !cancelled() }}");
+    // Still !cancelled() so a failed read is judged rather than skipped; the
+    // added clause only skips the judge when the machine was proven down and a
+    // production_machine_down verdict already exists, which the judge must not
+    // overwrite with an indeterminate read.
+    expect(step("Judge backup freshness against the policy RPO").if).toBe(
+      "${{ !cancelled() && steps.ensure.outputs.outcome != 'production_machine_down' }}",
+    );
     expect(step("Record the meta verdict when the watchdog produced none").if).toBe(
       "${{ !cancelled() }}",
     );
@@ -776,10 +786,13 @@ describe("customer backup watchdog — the watchdog's own failure has a name", (
   it("keeps the artifact upload strict, now that a verdict always exists", () => {
     // `error` stays meaningful precisely because the meta step guarantees a
     // file: a missing verdict now means the runner itself is broken, not that
-    // an earlier step failed.
+    // an earlier step failed. That guarantee is only real if verdict.json is
+    // actually in the upload path list, so assert it is — otherwise `error`
+    // would fire on every run and the guard would be meaningless.
     const retain = step("Retain the redacted freshness verdict");
     expect(retain.with["if-no-files-found"]).toBe("error");
     expect(retain.if).toBe("${{ always() }}");
+    expect(retain.with.path).toContain("test-results/customer-backup-watchdog/verdict.json");
   });
 });
 /**
@@ -819,18 +832,48 @@ describe("customer backup watchdog — a stale backup is remediated once, before
   const DECIDE = "Fail unless the final verdict is provably fresh";
   const ALERT = "Alert on stale or undetermined backup freshness";
 
+  // The runner-provided identity of THIS watchdog run, echoed into the dispatch
+  // as `backup-watchdog-<run>-<attempt>` and into the run title the stub lists.
+  const WATCHDOG_RUN_ID = "555";
+  const WATCHDOG_RUN_ATTEMPT = "1";
+  const WATCHDOG_DELIVERY_ID = `backup-watchdog-${WATCHDOG_RUN_ID}-${WATCHDOG_RUN_ATTEMPT}`;
+  const WATCHDOG_TITLE = `Customer production backup [${WATCHDOG_DELIVERY_ID}]`;
+
   /**
    * A `gh` that cannot reach GitHub, and that LOGS every invocation, so "how
    * many backups were dispatched" is a counted fact rather than an inference
    * from the script's shape. The env knobs let one stub cover the dispatch
    * refused / run never observed / run failed branches without a second stub
    * that might diverge from this one.
+   *
+   * `run list` returns the real `gh run list --json ...` array shape (the step
+   * pipes it through the real `jq` to bind by display title), and the title it
+   * lists is built from the `delivery_id` the dispatch actually carried — so
+   * the whole chain dispatch identity -> run title -> title binding is exercised
+   * end to end. Drop the `-f delivery_id` from the step and the listed title no
+   * longer matches the title the step waits for. `GH_STUB_DECOY_TITLE`, when
+   * set, prepends a differently titled run so a step that picked "the first
+   * workflow_dispatch run" instead of the exact title would bind to the wrong id.
    */
   const GH_STUB = `#!/bin/sh
 echo "$1 $2" >> "$GH_STUB_LOG"
 case "$1 $2" in
-  'workflow run') exit \${GH_STUB_DISPATCH_STATUS:-0} ;;
-  'run list') echo "\${GH_STUB_RUN_ID-4242}" ;;
+  'workflow run')
+    for arg in "$@"; do
+      case "$arg" in
+        delivery_id=*) printf '%s' "\${arg#delivery_id=}" > "$GH_STUB_DISPATCHED_ID" ;;
+      esac
+    done
+    exit \${GH_STUB_DISPATCH_STATUS:-0} ;;
+  'run list')
+    dispatched=""
+    [ -f "$GH_STUB_DISPATCHED_ID" ] && dispatched="$(cat "$GH_STUB_DISPATCHED_ID")"
+    if [ -n "\${GH_STUB_DECOY_TITLE:-}" ]; then
+      printf '[{"databaseId":9999,"createdAt":"2026-01-01T00:00:00Z","displayTitle":"%s"},{"databaseId":4242,"createdAt":"2026-09-13T13:40:00Z","displayTitle":"Customer production backup [%s]"}]\\n' "$GH_STUB_DECOY_TITLE" "$dispatched"
+    else
+      printf '[{"databaseId":4242,"createdAt":"2026-09-13T13:40:00Z","displayTitle":"Customer production backup [%s]"}]\\n' "$dispatched"
+    fi
+    ;;
   'run view') echo "\${GH_STUB_RUN_STATE:-completed success}" ;;
 esac
 exit 0
@@ -882,6 +925,8 @@ exit 0
     machine?: Record<string, unknown>;
     /** The verdict the judge step already wrote, before remediation runs. */
     verdict?: Record<string, unknown>;
+    /** A differently titled run the stub lists FIRST, ahead of the real one. */
+    decoyTitle?: string;
     gh?: Record<string, string>;
   }) {
     const dir = workspace();
@@ -894,6 +939,7 @@ exit 0
     const report = join(dir, "verdict.json");
     const capture = join(dir, "evidence-capture.json");
     const machinePath = join(dir, "last-verified.json");
+    const dispatchedIdPath = join(dir, "dispatched-delivery-id");
     const ghLog = join(dir, "gh-invocations.log");
     writeFileSync(ghLog, "", "utf8");
     writeFileSync(
@@ -924,8 +970,16 @@ exit 0
         MENDPOINT_BACKUP_EVIDENCE_PATH: machinePath,
         MENDPOINT_BACKUP_EVIDENCE_CAPTURE_PATH: capture,
         MENDPOINT_BACKUP_FRESHNESS_REPORT_PATH: report,
+        // The runner-provided identity the dispatch stamps into `delivery_id`.
+        GITHUB_RUN_ID: WATCHDOG_RUN_ID,
+        GITHUB_RUN_ATTEMPT: WATCHDOG_RUN_ATTEMPT,
         GH_STUB_LOG: ghLog,
+        GH_STUB_DISPATCHED_ID: dispatchedIdPath,
+        ...(options.decoyTitle ? { GH_STUB_DECOY_TITLE: options.decoyTitle } : {}),
         ...options.gh,
+      },
+      dispatchedId(): string {
+        return existsSync(dispatchedIdPath) ? readFileSync(dispatchedIdPath, "utf8") : "";
       },
       calls(): string[] {
         return readFileSync(ghLog, "utf8").split("\n").filter(Boolean);
@@ -983,6 +1037,8 @@ exit 0
       dispatched: true,
       runId: "4242",
       outcome: "backup_run_completed",
+      // The exact identity carried on the dispatch, retained in the verdict.
+      deliveryId: WATCHDOG_DELIVERY_ID,
     });
 
     // The staleness stays visible even though remediation worked. Without both
@@ -993,6 +1049,42 @@ exit 0
     expect(decided.status).toBe(0);
     expect(decided.stdout).toContain("::warning title=Backup freshness required remediation::");
     expect(decided.stdout).toContain("customer_backup_final state=fresh remediated=true");
+  });
+
+  it("dispatches with an exact backup-watchdog identity the delivery controller accepts", () => {
+    // The whole fix: the dispatch must carry `delivery_id=backup-watchdog-<run>-
+    // <attempt>` so the backup run's title is one the controller's active-run
+    // filter recognises. The step text names the identity, and the stub records
+    // the flag it was actually invoked with, so removing `-f delivery_id` from
+    // the workflow is caught two ways.
+    const run = shippedStep(REMEDIATE).run;
+    expect(run).toContain('delivery_id="backup-watchdog-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"');
+    expect(run).toContain('-f "delivery_id=$delivery_id"');
+
+    const context = scenario({ machine: freshEvidence() });
+    const step = remediate(context);
+    expect(step.status).toBe(0);
+    expect(context.dispatchedId()).toBe(WATCHDOG_DELIVERY_ID);
+    expect(context.verdict().remediation).toMatchObject({
+      runId: "4242",
+      deliveryId: WATCHDOG_DELIVERY_ID,
+    });
+  });
+
+  it("binds the wait to the exact dispatched title, never the first workflow_dispatch listed", () => {
+    // A decoy run — a differently identified workflow_dispatch — is listed
+    // FIRST. Binding to "the first run after now" (the defect) would pick the
+    // decoy's id; binding to the exact title picks the run this dispatch made.
+    const context = scenario({
+      machine: freshEvidence(),
+      decoyTitle: "Customer production backup [backup-delivery-8888-3]",
+    });
+    const step = remediate(context);
+
+    expect(step.status).toBe(0);
+    // 4242 is the exact-title match; 9999 is the decoy the stub lists first.
+    expect(context.verdict().remediation).toMatchObject({ runId: "4242" });
+    expect(context.verdict().remediation.runId).not.toBe("9999");
   });
 
   it("still fails, and still opens the issue, when the backup is stale after remediation", () => {
@@ -1143,9 +1235,14 @@ exit 0
         readFileSync(resolve(root, ".github/workflows/customer-backup-watchdog.yml"), "utf8"),
       ) as Record<string, any>
     ).jobs.freshness;
-    // 3min to observe the run + 6min for it to finish + 5min for the re-read,
-    // with room left over rather than room exactly consumed.
-    expect(freshness["timeout-minutes"]).toBe(25);
+    // The job timeout must clear the SERIAL worst case of every inside-the-step
+    // bound one run can hit in order: ensure the machine is up (list <=120s +
+    // start <=120s + lost-lease re-read <=60s + readiness <=180s = <=8min) +
+    // read (<=5min) + judge (~0) + remediate (observe <=3min + finish <=6min +
+    // re-read <=5min = <=14min). With setup that is ~30min of bounded work, so 40
+    // leaves real headroom rather than consuming it exactly — the earlier 25
+    // predated the ensure step's own waits and no longer cleared them.
+    expect(freshness["timeout-minutes"]).toBe(40);
     expect(freshness.permissions).toMatchObject({ "actions": "write", "issues": "write" });
   });
 
@@ -1162,5 +1259,483 @@ exit 0
       "cancel-in-progress": false,
     });
     expect(resolveBackupRpoSeconds()).toBe(CORE_DISASTER_RECOVERY_POLICY.rpoSeconds);
+  });
+});
+
+/**
+ * Machine recovery, proved on the SHIPPED "Ensure the customer machine is
+ * running" step under GitHub's real shell.
+ *
+ * The failure this closes is incident #659: the single customer machine has
+ * auto_start_machines off, so once it crashes past Fly's restart budget it stays
+ * `stopped` forever. Nothing on the platform or in customer-backup.yml starts a
+ * stopped machine, so every backup read failed and this watchdog alarmed hourly
+ * as "indeterminate" without ever naming the cause. This step reads first,
+ * starts only a stopped/created/suspended machine, never creates or stops one,
+ * and turns "the machine is down" into its own named verdict and alert. The
+ * stubs model production: `flyctl machine list --json` returns the real Machines
+ * API array and becomes `started` only AFTER `machine start` runs, and the
+ * public /livez turns 200 only once the machine is started.
+ */
+describe("customer backup watchdog — a stopped machine is started before the read", () => {
+  const steps = (
+    parse(
+      readFileSync(resolve(root, ".github/workflows/customer-backup-watchdog.yml"), "utf8"),
+    ) as Record<string, any>
+  ).jobs.freshness.steps as Record<string, any>[];
+
+  function shippedStep(name: string): Record<string, any> {
+    const found = steps.find((candidate) => candidate.name === name);
+    if (!found) throw new Error(`step not found: ${name}`);
+    expect(found.shell).toBe("bash");
+    return found;
+  }
+
+  const ENSURE = "Ensure the customer machine is running";
+  const READ = "Read backup evidence from the customer machine";
+
+  // The real Machines API array shape, per machine, exactly as flyctl renders.
+  const STOPPED_MACHINE = JSON.stringify([
+    {
+      id: "84e696a22eee68",
+      state: "stopped",
+      config: { image: "registry.fly.io/mendpoint-fettler-production:deployment-01" },
+    },
+  ]);
+  const STARTED_MACHINE = JSON.stringify([
+    {
+      id: "84e696a22eee68",
+      state: "started",
+      config: { image: "registry.fly.io/mendpoint-fettler-production:deployment-01" },
+    },
+  ]);
+  // `starting` is a running state for classification (started|starting), but it
+  // is NOT proof the app is back: a crash-loop restart sits here. It must not
+  // resolve the machine-DOWN alert.
+  const STARTING_MACHINE = JSON.stringify([
+    {
+      id: "84e696a22eee68",
+      state: "starting",
+      config: { image: "registry.fly.io/mendpoint-fettler-production:deployment-01" },
+    },
+  ]);
+  const SECOND_ID = "17ab34cd56ef90";
+  const TWO_STOPPED = JSON.stringify([
+    { id: "84e696a22eee68", state: "stopped", config: {} },
+    { id: SECOND_ID, state: "stopped", config: {} },
+  ]);
+  // What the list shows once the first machine has been started: one `started`,
+  // the second left `stopped` (either beyond the bound, or a failed start).
+  const STARTED_PLUS_STOPPED = JSON.stringify([
+    { id: "84e696a22eee68", state: "started", config: {} },
+    { id: SECOND_ID, state: "stopped", config: {} },
+  ]);
+  const EMPTY_LIST = "[]";
+
+  /**
+   * A flyctl that LOGS every invocation (so "how many starts" is a counted fact,
+   * not an inference from the script's shape) and is STATEFUL: `machine list`
+   * returns `started` only after a `machine start` has created the marker,
+   * exactly as production transitions. It NEVER has a `machine stop` branch, so
+   * a stray stop would be a PATH miss, not a silent success.
+   */
+  const FLYCTL_STUB = `#!/bin/sh
+echo "$@" >> "$FLYCTL_LOG"
+case "$1 $2" in
+  'machine list')
+    if [ -f "$FLYCTL_STATE_DIR/started" ]; then printf '%s' "$FLYCTL_LIST_STARTED"; else printf '%s' "$FLYCTL_LIST_INITIAL"; fi
+    ;;
+  'machine start')
+    start_id="$3"
+    # Lost-lease race: the machine comes up (marker created) but \`machine start\`
+    # still exits non-zero, exactly as it does when the deploy that fired this
+    # workflow_run still holds the lease. The step must re-read and treat this as
+    # started, not as a failure.
+    case " \${FLYCTL_START_RACE_IDS:-} " in *" $start_id "*)
+      mkdir -p "$FLYCTL_STATE_DIR"; : > "$FLYCTL_STATE_DIR/started"
+      echo "lease held by another operation" >&2; exit 1 ;;
+    esac
+    # Hard failure: no marker, non-zero exit, and the re-read still shows stopped.
+    case " \${FLYCTL_START_FAIL_IDS:-} " in *" $start_id "*) echo "could not start machine" >&2; exit 1 ;; esac
+    if [ "\${FLYCTL_START_FAILS:-0}" = "1" ]; then echo "could not start machine" >&2; exit 1; fi
+    mkdir -p "$FLYCTL_STATE_DIR"
+    : > "$FLYCTL_STATE_DIR/started"
+    ;;
+esac
+exit 0
+`;
+
+  /** The public /livez turns 200 only once the machine has been started. */
+  const CURL_STUB = `#!/bin/sh
+echo "$@" >> "$CURL_LOG"
+if [ -f "$FLYCTL_STATE_DIR/started" ]; then printf '%s' "\${CURL_CODE_AFTER_START:-200}"; else printf '%s' "\${CURL_CODE_BEFORE_START:-000}"; fi
+`;
+
+  /**
+   * A gh that logs invocations. `issue list` returns GH_STUB_OPEN_ISSUE, so a
+   * test can drive both branches: empty (no open issue -> the alert creates one)
+   * and a number (an open issue exists -> the alert comments, never creates).
+   */
+  const GH_STUB = `#!/bin/sh
+echo "$1 $2" >> "$GH_STUB_LOG"
+case "$1 $2" in
+  'issue list') printf '%s' "\${GH_STUB_OPEN_ISSUE:-}" ;;
+esac
+exit 0
+`;
+
+  interface EnsureResult {
+    readonly status: number | null;
+    readonly stdout: string;
+    readonly stderr: string;
+    readonly output: string;
+    readonly flyctlCalls: string[];
+    readonly machineState: any;
+    readonly verdict: any | null;
+  }
+
+  function runEnsure(options: {
+    initial: string;
+    started?: string;
+    startFails?: boolean;
+    /** Space-separated machine ids whose `machine start` should exit non-zero. */
+    startFailIds?: string;
+    /** Ids that come up (marker set) yet exit non-zero: the lost-lease race. */
+    startRaceIds?: string;
+    /** The one-machine cap; overrides the workflow default of "1". */
+    maxMachines?: string;
+    /**
+     * Readiness poll bound. The default is generous because a LIVE machine
+     * breaks the poll on iteration one and never waits it out, so a large value
+     * costs those tests nothing while removing any flake from integer-second
+     * granularity or host load. Only the not-live paths run to the deadline, so
+     * those tests pass a tiny value to stay fast.
+     */
+    readyDeadlineSeconds?: string;
+    /** /livez code before any start marker exists (already-running path). */
+    curlBeforeStart?: string;
+    /** /livez code once a start marker exists (post-start readiness path). */
+    curlAfterStart?: string;
+  }): EnsureResult {
+    const dir = workspace();
+    const stateDir = join(dir, "flyctl-state");
+    const flyctlLog = join(dir, "flyctl.log");
+    const curlLog = join(dir, "curl.log");
+    writeFileSync(flyctlLog, "", "utf8");
+    writeFileSync(curlLog, "", "utf8");
+    const bin = stubBin(dir, "flyctl", FLYCTL_STUB);
+    stubBin(dir, "curl", CURL_STUB);
+    // A real `sleep` (not a no-op) is what keeps the poll bounded: every
+    // blocking call is capped by the time remaining to the deadline, and with a
+    // ~1s deadline the loop does at most one short sleep before it exits, so it
+    // finishes in about a second rather than busy-looping to the wall clock.
+    const outputPath = join(dir, "github-output");
+    writeFileSync(outputPath, "", "utf8");
+    writeFileSync(join(dir, "step.sh"), shippedStep(ENSURE).run, "utf8");
+    // Git Bash prepends its real curl during startup. Restore the fixture PATH
+    // afterward and fail before the step if either external tool is not mocked.
+    const result = spawnSync("bash", [...GITHUB_BASH_FLAGS, "-c", `
+      fixture_bin="$(cd "$1" && pwd)"
+      export PATH="$fixture_bin:$PATH"
+      hash -r
+      for tool in flyctl curl; do
+        [[ "$(command -v "$tool")" == "$fixture_bin/$tool" ]] || {
+          echo "fixture_tool_selection_failed:$tool" >&2; exit 127;
+        }
+      done
+      source "$2"
+    `, "workflow-fixture", bin.replace(/\\/g, "/"), "./step.sh"], {
+      cwd: dir,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+        GITHUB_OUTPUT: outputPath,
+        FLY_API_TOKEN: STUB_TOKEN,
+        CUSTOMER_APP: STUB_APP,
+        MENDPOINT_CUSTOMER_MAX_MACHINES: options.maxMachines ?? "1",
+        MACHINE_READY_DEADLINE_SECONDS: options.readyDeadlineSeconds ?? "30",
+        FLYCTL_LOG: flyctlLog,
+        CURL_LOG: curlLog,
+        FLYCTL_STATE_DIR: stateDir,
+        FLYCTL_LIST_INITIAL: options.initial,
+        FLYCTL_LIST_STARTED: options.started ?? STARTED_MACHINE,
+        FLYCTL_START_FAILS: options.startFails ? "1" : "0",
+        FLYCTL_START_FAIL_IDS: options.startFailIds ?? "",
+        FLYCTL_START_RACE_IDS: options.startRaceIds ?? "",
+        CURL_CODE_BEFORE_START: options.curlBeforeStart ?? "000",
+        CURL_CODE_AFTER_START: options.curlAfterStart ?? "200",
+      },
+    });
+    const readIf = (p: string) => (existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : null);
+    return {
+      status: result.status,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+      output: readFileSync(outputPath, "utf8"),
+      flyctlCalls: readFileSync(flyctlLog, "utf8").split("\n").filter(Boolean),
+      machineState: readIf(join(dir, "test-results/customer-backup-watchdog/machine-state.json")),
+      verdict: readIf(join(dir, "test-results/customer-backup-watchdog/verdict.json")),
+    };
+  }
+
+  it("runs immediately before the read step, under bash, with the same bindings", () => {
+    const order = steps.map((each) => each.name);
+    // Placement is load bearing: the machine must be up before anything reads it.
+    expect(order.indexOf(ENSURE)).toBe(order.indexOf(READ) - 1);
+    const ensure = shippedStep(ENSURE);
+    expect(ensure.id).toBe("ensure");
+    const read = shippedStep(READ);
+    // The same app-scoped token and app binding as the read step: no new secret.
+    expect(ensure.env.FLY_API_TOKEN).toBe(read.env.FLY_API_TOKEN);
+    expect(ensure.env.CUSTOMER_APP).toBe(read.env.CUSTOMER_APP);
+    expect(ensure.env.FLY_API_TOKEN).toBe("${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}");
+    expect(ensure.env.CUSTOMER_APP).toBe("${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}");
+  });
+
+  it("reads first, starts only startable machines, and never stops or creates one", () => {
+    const ensure = shippedStep(ENSURE).run;
+    expect(ensure).toContain('flyctl machine list --app "$CUSTOMER_APP" --json');
+    expect(ensure).toContain('flyctl machine start "$id" --app "$CUSTOMER_APP"');
+    // The same state classification the CI deploy's compensating start uses.
+    expect(ensure).toContain('.state=="started" or .state=="starting"');
+    expect(ensure).toContain('.state=="created" or .state=="stopped" or .state=="suspended"');
+    // It never stops a machine and never creates one.
+    expect(ensure).not.toContain("machine stop");
+    expect(ensure).not.toContain("machine create");
+    expect(ensure).not.toContain("machine clone");
+    // The recovery wait is bounded inside the step by an injectable deadline
+    // (180s in production), and every blocking call in the loop is capped by the
+    // time REMAINING to it, so the loop's wall clock cannot overshoot the bound.
+    const ensureStep = shippedStep(ENSURE);
+    expect(ensureStep.env.MACHINE_READY_DEADLINE_SECONDS).toBe("180");
+    expect(ensureStep.env.MENDPOINT_CUSTOMER_MAX_MACHINES).toBe("1");
+    expect(ensure).toContain("ready_deadline=$(( $(date -u +%s) + ready_deadline_seconds ))");
+    expect(ensure).toContain("remaining=$(( ready_deadline - $(date -u +%s) ))");
+    expect(ensure).toContain("curl_max=$(( remaining < 10 ? remaining : 10 ))");
+    // The start count is bounded by the profile's machine cap.
+    expect(ensure).toContain('running_count + started )) -ge "$max_machines"');
+    // Requires BOTH the public liveness AND the machine state before "started".
+    expect(ensure).toContain('https://${CUSTOMER_APP}.fly.dev/livez');
+    expect(ensure).toContain('.state=="started"');
+  });
+
+  it("(a) makes no start call when a machine is already running, and lets the read proceed", () => {
+    const r = runEnsure({ initial: STARTED_MACHINE });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.output).toContain("outcome=running");
+    expect(r.flyctlCalls.filter((call) => call.startsWith("machine start"))).toHaveLength(0);
+    expect(r.machineState.machineState.running).toContain("84e696a22eee68");
+    // The judge, not this step, writes the verdict on the healthy path.
+    expect(r.verdict).toBeNull();
+  });
+
+  it("(b) starts a stopped machine exactly once, waits until it is live, then lets the read proceed", () => {
+    const r = runEnsure({ initial: STOPPED_MACHINE });
+    expect(r.status, r.stderr).toBe(0);
+    // EXACTLY one start. A retry loop, or a start moved inside the poll, shows
+    // up here as a count of 2+.
+    expect(r.flyctlCalls.filter((call) => call.startsWith("machine start"))).toHaveLength(1);
+    expect(r.flyctlCalls.filter((call) => call.startsWith("machine start 84e696a22eee68")))
+      .toHaveLength(1);
+    expect(r.output).toContain("outcome=started");
+    expect(r.output).toContain("machine_running=true");
+    expect(r.machineState.remediation.machineStart).toMatchObject({
+      attempted: true,
+      outcome: "started",
+      livez: "200",
+    });
+    expect(r.machineState.remediation.machineStart.started).toContain("84e696a22eee68");
+    expect(r.machineState.remediation.machineStart.failed).toEqual([]);
+    // The observed /livez is recorded on the machine-state record itself too.
+    expect(r.machineState.machineState.livez).toBe("200");
+    // Never a stop, and no machine-down verdict on the success path.
+    expect(r.flyctlCalls.some((call) => call.startsWith("machine stop"))).toBe(false);
+    expect(r.verdict).toBeNull();
+  });
+
+  it("(c) writes a production_machine_down verdict and fails when the start fails, never stopping a machine", () => {
+    // Not-live path: the poll runs to the deadline, so keep it tiny.
+    const r = runEnsure({ initial: STOPPED_MACHINE, startFails: true, readyDeadlineSeconds: "1" });
+    expect(r.status).toBe(1);
+    expect(r.output).toContain("outcome=production_machine_down");
+    expect(r.verdict.state).toBe("production_machine_down");
+    expect(r.verdict.reason).toBe("production_machine_down");
+    expect(r.stderr).toContain("customer_backup_watchdog_production_machine_down");
+    expect(r.machineState.remediation.machineStart.outcome).toBe("start_failed");
+    // No machine stop, ever.
+    expect(r.flyctlCalls.some((call) => call.startsWith("machine stop"))).toBe(false);
+  });
+
+  it("(d) makes no start call for an empty/unparseable list and falls through to the indeterminate read", () => {
+    const r = runEnsure({ initial: EMPTY_LIST });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.output).toContain("outcome=unknown");
+    expect(r.flyctlCalls.filter((call) => call.startsWith("machine start"))).toHaveLength(0);
+    expect(r.machineState.machineState.listParseable).toBe(false);
+    // No verdict here; the read step downstream records the indeterminate one.
+    expect(r.verdict).toBeNull();
+  });
+
+  it("(S5) fails as production_machine_down when a started machine never serves /livez", () => {
+    // The start command succeeds and the machine reports `started`, but the app
+    // never answers /livez 200 within the readiness deadline. That is still an
+    // outage: the read cannot succeed, so it is a named machine-down verdict, not
+    // a silent pass. The livez it observed is recorded, and no machine is stopped.
+    const r = runEnsure({ initial: STOPPED_MACHINE, curlAfterStart: "503", readyDeadlineSeconds: "1" });
+    expect(r.status).toBe(1);
+    expect(r.flyctlCalls.filter((call) => call.startsWith("machine start"))).toHaveLength(1);
+    expect(r.output).toContain("outcome=production_machine_down");
+    expect(r.output).toContain("machine_running=false");
+    expect(r.verdict.state).toBe("production_machine_down");
+    expect(r.verdict.reason).toBe("production_machine_down");
+    expect(r.machineState.remediation.machineStart.outcome).toBe("not_live_after_start");
+    expect(r.machineState.remediation.machineStart.livez).toBe("503");
+    expect(r.machineState.remediation.machineStart.started).toContain("84e696a22eee68");
+    expect(r.flyctlCalls.some((call) => call.startsWith("machine stop"))).toBe(false);
+  });
+
+  it("(S6b) counts a start that lost the deploy's lease but came up as started, not down", () => {
+    // `flyctl machine start` exits non-zero because the deploy that fired this
+    // workflow_run still holds the lease, yet the machine IS up. Re-reading the
+    // list is what distinguishes this from a real failure: it must not alarm.
+    const r = runEnsure({ initial: STOPPED_MACHINE, startRaceIds: "84e696a22eee68" });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.output).toContain("outcome=started");
+    expect(r.output).toContain("machine_running=true");
+    expect(r.machineState.remediation.machineStart.started).toContain("84e696a22eee68");
+    expect(r.machineState.remediation.machineStart.failed).toEqual([]);
+    expect(r.stdout).toContain("raced with it coming up");
+    expect(r.verdict).toBeNull();
+  });
+
+  it("(S6a) starts at most max-running machines and leaves the rest stopped and named", () => {
+    // Two stopped machines, a cap of one: start exactly the first and record the
+    // second as left-stopped-beyond-bound. A machine past the profile's cap fails
+    // closed on boot, so starting it would be worse than leaving it stopped.
+    const r = runEnsure({ initial: TWO_STOPPED, started: STARTED_PLUS_STOPPED, maxMachines: "1" });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.flyctlCalls.filter((call) => call.startsWith("machine start"))).toHaveLength(1);
+    expect(r.flyctlCalls.filter((call) => call.startsWith(`machine start ${SECOND_ID}`))).toHaveLength(0);
+    expect(r.output).toContain("outcome=started");
+    expect(r.machineState.remediation.machineStart.started).toEqual(["84e696a22eee68"]);
+    expect(r.machineState.remediation.machineStart.leftStoppedBeyondBound).toEqual([SECOND_ID]);
+    expect(r.stdout).toContain("bounded to 1 running machine");
+  });
+
+  it("(S6c) a later machine's failed start never overwrites an earlier machine's success", () => {
+    // With a cap of two, the first machine starts and the second fails. The bug
+    // this guards was a single start_status flag: a later failure reported the
+    // whole step as start_failed. Per-machine tracking keeps them distinct.
+    const r = runEnsure({
+      initial: TWO_STOPPED,
+      started: STARTED_PLUS_STOPPED,
+      maxMachines: "2",
+      startFailIds: SECOND_ID,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.output).toContain("outcome=started");
+    expect(r.machineState.remediation.machineStart.outcome).not.toBe("start_failed");
+    expect(r.machineState.remediation.machineStart.started).toEqual(["84e696a22eee68"]);
+    expect(r.machineState.remediation.machineStart.failed).toEqual([SECOND_ID]);
+  });
+
+  it("(S3) resolves nothing while a machine is only `starting`, but does once started and live", () => {
+    // `machine_running` — which the resolve step consumes — is the gate the
+    // machine-DOWN alert closes on. A `starting` machine (a crash-loop restart)
+    // must not close it; a `started` machine serving /livez 200 must.
+    const starting = runEnsure({ initial: STARTING_MACHINE, curlBeforeStart: "200" });
+    expect(starting.status, starting.stderr).toBe(0);
+    expect(starting.output).toContain("outcome=running");
+    expect(starting.output).toContain("machine_running=false");
+    expect(starting.flyctlCalls.filter((call) => call.startsWith("machine start"))).toHaveLength(0);
+
+    const live = runEnsure({ initial: STARTED_MACHINE, curlBeforeStart: "200" });
+    expect(live.status, live.stderr).toBe(0);
+    expect(live.output).toContain("outcome=running");
+    expect(live.output).toContain("machine_running=true");
+    expect(live.machineState.machineState.livez).toBe("200");
+    expect(live.flyctlCalls.filter((call) => call.startsWith("machine start"))).toHaveLength(0);
+  });
+
+  it("(S3) leaves machine_running false on an already-running machine whose /livez is not 200", () => {
+    // Already `started`, but the app is not answering: not proof it is back, so
+    // the alert must not resolve. It still proceeds to read.
+    const r = runEnsure({ initial: STARTED_MACHINE, curlBeforeStart: "503" });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.output).toContain("outcome=running");
+    expect(r.output).toContain("machine_running=false");
+    expect(r.machineState.machineState.livez).toBe("503");
+  });
+
+  it("alerts a machine-down verdict under its own label and title, deduplicated", () => {
+    const alert = shippedStep("Alert on stale or undetermined backup freshness");
+    expect(alert.if).toBe("${{ failure() }}");
+    // The distinct machine-down channel, and the staleness channel still exists.
+    expect(alert.run).toContain('label="customer-production-machine-down"');
+    expect(alert.run).toContain("Customer production machine is DOWN");
+    expect(alert.run).toContain('label="customer-production-backup-stale"');
+
+    // Behavioural, not a source scan: run the shipped alert step against a gh
+    // that reports either no open issue or one, and count what it actually does.
+    function runAlert(openIssue: string): string[] {
+      const dir = workspace();
+      const bin = stubBin(dir, "gh", GH_STUB);
+      const ghLog = join(dir, "gh.log");
+      writeFileSync(ghLog, "", "utf8");
+      mkdirSync(join(dir, "test-results/customer-backup-watchdog"), { recursive: true });
+      writeFileSync(
+        join(dir, "test-results/customer-backup-watchdog/verdict.json"),
+        JSON.stringify({
+          checkedAt: NOW,
+          state: "production_machine_down",
+          summary: "machine down",
+          reason: "production_machine_down",
+        }),
+        "utf8",
+      );
+      writeFileSync(join(dir, "step.sh"), alert.run, "utf8");
+      const result = spawnSync("bash", [...GITHUB_BASH_FLAGS, "step.sh"], {
+        cwd: dir,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+          GH_TOKEN: STUB_TOKEN,
+          GH_REPO: "mendpoint-tests/repository-that-does-not-exist",
+          RUN_URL: "https://example.invalid/run/1",
+          GH_STUB_LOG: ghLog,
+          GH_STUB_OPEN_ISSUE: openIssue,
+        },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      return readFileSync(ghLog, "utf8").split("\n").filter(Boolean);
+    }
+
+    // No open issue: it opens exactly one and comments on none.
+    const created = runAlert("");
+    expect(created.filter((call) => call === "issue create")).toHaveLength(1);
+    expect(created.filter((call) => call === "issue comment")).toHaveLength(0);
+
+    // An open issue already exists: it comments on that ONE and creates none —
+    // the dedup, executed rather than asserted from the source text.
+    const commented = runAlert("4242");
+    expect(commented.filter((call) => call === "issue comment")).toHaveLength(1);
+    expect(commented.filter((call) => call === "issue create")).toHaveLength(0);
+  });
+
+  it("closes the machine-down alert only once a machine is PROVEN up, independent of freshness", () => {
+    const resolveDown = shippedStep("Resolve the machine-down alert once a machine is running");
+    // Runs when the machine is proven up, regardless of backup staleness (so a
+    // recovered machine resolves DOWN even while the backup is still stale), and
+    // gated on `machine_running` — true only when a machine reports `started` AND
+    // /livez was 200 — so a machine merely `starting` never resolves it.
+    expect(resolveDown.if).toContain("!cancelled()");
+    expect(resolveDown.if).toContain("steps.ensure.outputs.machine_running == 'true'");
+    // Not the raw `running` outcome, which includes a `starting` machine.
+    expect(resolveDown.if).not.toContain("outcome == 'running'");
+    expect(resolveDown.if).not.toContain("success()");
+    expect(resolveDown.run).toContain('label="customer-production-machine-down"');
+    expect(resolveDown.run).toContain("gh issue close");
   });
 });

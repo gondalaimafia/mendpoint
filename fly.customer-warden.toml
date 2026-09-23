@@ -68,6 +68,15 @@ kill_timeout = 30
   # and is invisible to review -- prefer the reviewed config here.
   # See docs/SANDBOX_IMAGE.md ("Pin production to an immutable reference").
   MENDPOINT_SANDBOX_FLY_IMAGE = "registry.fly.io/mendpoint-sandbox@sha256:3aadc8555de5bc2fc4b03f0c135c4b4a845d5a21de9fffd3a0056b98f062f15a"
+  # File transport for the signed sandbox egress receipt on the persistent
+  # volume. The app reads this file first (falling back to the
+  # MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64 secret when absent) and re-reads
+  # it on every verification, so the 6-hourly renewal can deliver a fresh receipt
+  # over ssh WITHOUT a machine update, secrets set, or restart -- which is what
+  # repeatedly stopped this single-machine production app. start-fly.mjs creates
+  # the directory; scripts/sandbox-egress-attestation-install.ts writes the file
+  # only after verifying it against this machine's own trust configuration.
+  MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PATH = "/data/sandbox-egress/attestation.b64"
   AGENTIC_REPAIR = "1"
   POLL_LOCAL_ONLY = "0"
   MENDPOINT_FEED_POLLING_ENABLED = "1"

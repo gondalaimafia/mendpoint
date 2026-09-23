@@ -132,7 +132,11 @@ describe("sandbox egress engine — rotation reaches every configured app", () =
     expect(rotate).toContain('while IFS= read -r app');
     expect(rotate).toContain('flyctl machine list --app "$app" --json');
     expect(rotate).toContain('flyctl secrets set --app "$app"');
-    expect(rotate).not.toContain("flyctl secrets set --stage");
+    // The non-protected path DEPLOYS the receipt secret (asserted above). The
+    // protected branch instead STAGES a refreshed environment fallback (applied at
+    // the next boot, never a restart now), scoped to the consuming app -- never the
+    // verifying/sandbox-image app (guarded below).
+    expect(rotate).toContain('flyctl secrets set --stage --app "$app"');
     expect(rotate).toContain('flyctl machine update "$machine_id" --app "$app"');
     expect(rotate).toContain('--image "$machine_image"');
     expect(rotate).toContain('.image_ref | "\\(.registry)/\\(.repository)@\\(.digest)"');
@@ -246,7 +250,7 @@ describe("sandbox egress engine — failure visibility before expiry", () => {
     // The accept job must actually hold issues:write, or the alert step 403s.
     expect(workflow.jobs.accept.permissions).toMatchObject({ issues: "write" });
     const page = step(workflow, "accept", "Alert on renewal failure");
-    expect(page.if).toBe("${{ failure() }}");
+    expect(page.if).toBe("${{ failure() || cancelled() }}");
     expect(page.run).toContain("gh issue create");
     expect(page.run).toContain("sandbox-egress-renewal-failure");
     // No external paging secret: the old notify-based renewal page is gone.

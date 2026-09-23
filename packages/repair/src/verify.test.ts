@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -48,9 +49,12 @@ describe("verifierProtectedPaths covers every verification profile", () => {
 
 describe("runVerificationCommand distinguishes a refusal from a test failure", () => {
   const dirs: string[] = [];
-  afterEach(() => {
+  afterEach(async () => {
     vi.unstubAllEnvs();
-    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    for (const dir of dirs.splice(0)) {
+      // Abort can resolve before Windows releases the child's working directory.
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
   });
   function tempRepo(): string {
     const dir = mkdtempSync(join(tmpdir(), "mp-verify-outcome-"));
@@ -100,5 +104,68 @@ describe("runVerificationCommand distinguishes a refusal from a test failure", (
     expect(result.outcome).toBe("verified");
     expect(result.sandboxBackend).toBe("local");
     expect(result.ok).toBe(true);
+  });
+
+  it("records a command that cannot start in a missing directory as not_verified", async () => {
+    const missingRoot = join(tempRepo(), "missing");
+    const result = await runVerificationCommand("go test ./...", missingRoot);
+
+    expect(result.error).toContain("ENOENT");
+    expect(result.outcome).toBe("not_verified");
+    expect(result.sandboxBackend).toBeNull();
+    expect(result.ok).toBe(false);
+    expect(result.exitCode).toBe(1);
+  });
+
+  it("keeps a timed out host command classified as failed after it starts", async () => {
+    const dir = tempRepo();
+    writeFileSync(join(dir, "check.mjs"), "console.log('started'); setInterval(() => {}, 1000);\n");
+
+    const result = await runVerificationCommand("node check.mjs", dir, 1_000);
+
+    expect(result.stdout).toContain("started");
+    expect(result.outcome).toBe("failed");
+    expect(result.sandboxBackend).toBe("local");
+    expect(result.ok).toBe(false);
+  });
+
+  it("records an unavailable executable as not_verified", async () => {
+    const dir = tempRepo();
+    vi.stubEnv("PATH", dir);
+    vi.stubEnv("Path", dir);
+
+    const result = await runVerificationCommand("pytest", dir);
+
+    expect(result.error).toContain("ENOENT");
+    expect(result.outcome).toBe("not_verified");
+    expect(result.sandboxBackend).toBeNull();
+    expect(result.ok).toBe(false);
+  });
+
+  it.runIf(process.platform === "win32")("preserves synchronous EINVAL rejection for the npm fallback", async () => {
+    await expect(runVerificationCommand("npm test", tempRepo())).rejects.toMatchObject({ code: "EINVAL" });
+  });
+
+  it("keeps an aborted host command classified as failed after it starts", async () => {
+    const dir = tempRepo();
+    writeFileSync(join(dir, "check.mjs"), [
+      'import { writeFileSync } from "node:fs";',
+      'writeFileSync("started", "ready");',
+      'setInterval(() => {}, 1000);',
+    ].join("\n"));
+    const controller = new AbortController();
+    const execution = runVerificationCommand("node check.mjs", dir, 10_000, controller.signal);
+    try {
+      await vi.waitFor(() => expect(existsSync(join(dir, "started"))).toBe(true));
+    } finally {
+      controller.abort();
+    }
+
+    const result = await execution;
+
+    expect(result.error).toContain("aborted");
+    expect(result.outcome).toBe("failed");
+    expect(result.sandboxBackend).toBe("local");
+    expect(result.ok).toBe(false);
   });
 });

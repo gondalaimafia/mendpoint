@@ -12,7 +12,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 // Resolve committed fixtures from this module's own location, not process.cwd():
@@ -25,6 +25,9 @@ import {
   createDb,
   appendDomainEvent,
   bindConsumerRepoSnapshot,
+  bindMissionScope,
+  createMissionMutationAuthority,
+  createMissionTask,
   bindMissionToPolicyEnvelope,
   createWardenCampaign,
   claimNextJob,
@@ -35,13 +38,19 @@ import {
   failJob,
   enqueueAdaptiveDelivery,
   enqueueWardenCiCycle,
+  evaluateMissionExceptions,
   recordWardenCiObservation,
   getAdaptiveCandidate,
   getAdaptiveDeliveryByCandidate,
   getAgentRun,
   getJob,
+  getMission,
+  getMissionTask,
   getTrajectoryByRun,
   insertPrincipal,
+  openTaskHandoff,
+  resolveTaskHandoff,
+  transitionMissionTask,
   getWardenCiCycle,
   getRoutingLedgerForJob,
   insertAgentRun,
@@ -62,6 +71,7 @@ import {
   upsertGitHubInstallation,
   getRepairSession,
   listJobs,
+  missionTaskIdForJob,
   listActualExecutionCosts,
   listExecutionCostOutcomes,
   recordExecutionCostOutcome,
@@ -69,7 +79,7 @@ import {
 } from "@mendpoint/db";
 import { nowIso } from "@mendpoint/shared";
 import type { AgentPlanner } from "@mendpoint/agent";
-import type { PipelineReport } from "@mendpoint/pipeline";
+import { ensureDefaultPolicyEnvelopeBinding, type PipelineReport } from "@mendpoint/pipeline";
 import { canonicalPolicyEnvelopeJson, defaultPolicyEnvelope } from "@mendpoint/policy";
 import {
   GitHubAppDelivery,
@@ -179,7 +189,19 @@ it("does not construct standalone worker stores while a customer backup is exclu
   const fenceRoot = join(root, "fence");
   const databasePath = join(root, "worker.sqlite");
   mkdirSync(fenceRoot, { recursive: true });
-  writeFileSync(join(fenceRoot, "exclusive.json"), "{}\n");
+  // A live exclusive marker (this process's own host and pid) is not reapable, so
+  // admission is still refused. An orphaned or unparseable marker would instead be
+  // cleared by the boot reaper rather than block forever.
+  writeFileSync(join(fenceRoot, "exclusive.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    kind: "exclusive",
+    id: "customer-live-backup",
+    ownerToken: "owner-token-live-backup",
+    hostname: hostname(),
+    pid: process.pid,
+    processStartedAt: new Date(Date.now() - process.uptime() * 1_000).toISOString(),
+    acquiredAt: new Date().toISOString(),
+  })}\n`);
 
   expect(() =>
     initializeWorkerDurableState(
@@ -477,6 +499,113 @@ afterEach(() => {
 });
 
 describe("worker runtime", () => {
+  it("runs two reviewed regenerate successors through real claims and returns the exact task to review each time", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-reviewed-successors-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      useLlm: true,
+    });
+    const at = nowIso();
+    fixture.db.raw.prepare(`INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+      VALUES ('tenant_test', 'tenant-test', 'Tenant test', 'team', 'active', 10, ?)`)
+      .run(at);
+    insertPrincipal(fixture.db, { id: "mission-owner", tenantId: "tenant_test", kind: "human",
+      subject: "owner@example.com", displayName: "Owner", createdAt: at });
+    createMission(fixture.db, { id: "mission-reviewed", tenantId: "tenant_test", product: "fettler",
+      triggerKind: "provider_change", objective: "Repair the exact SDK snapshot",
+      ownerPrincipalId: "mission-owner", eventId: "e-mission-reviewed", idempotencyKey: "c-mission-reviewed",
+      correlationId: "corr-reviewed", createdAt: at });
+    bindMissionScope(fixture.db, { tenantId: "tenant_test", missionId: "mission-reviewed",
+      repositoryId: "repository-warden-snapshot", snapshotId: "snapshot-warden-a",
+      actorPrincipalId: "mission-owner", eventId: "e-reviewed-scope", idempotencyKey: "c-reviewed-scope",
+      correlationId: "corr-reviewed", createdAt: at });
+    ensureDefaultPolicyEnvelopeBinding(fixture.db, { tenantId: "tenant_test", missionId: "mission-reviewed",
+      actorPrincipalId: "mission-owner", correlationId: "corr-reviewed", createdAt: at });
+    let task = createMissionTask(fixture.db, { id: "task-reviewed", tenantId: "tenant_test",
+      missionId: "mission-reviewed", taskType: "code_migration", acceptanceCriteria: "Tests pass",
+      risk: "medium", actorPrincipalId: "mission-owner", eventId: "e-reviewed-task",
+      idempotencyKey: "c-reviewed-task", correlationId: "corr-reviewed", createdAt: at });
+    task = transitionMissionTask(fixture.db, { tenantId: "tenant_test", taskId: task.id,
+      expectedRevision: task.revision, to: "agent_assigned", actorPrincipalId: "mission-owner",
+      eventId: "e-reviewed-assign", idempotencyKey: "c-reviewed-assign",
+      correlationId: "corr-reviewed", createdAt: at });
+    task = transitionMissionTask(fixture.db, { tenantId: "tenant_test", taskId: task.id,
+      expectedRevision: task.revision, to: "agent_working", actorPrincipalId: "mission-owner",
+      eventId: "e-reviewed-work", idempotencyKey: "c-reviewed-work",
+      correlationId: "corr-reviewed", createdAt: at });
+    const initial = openTaskHandoff(fixture.db, { tenantId: "tenant_test", missionId: "mission-reviewed",
+      taskId: task.id, reason: "architecture_decision_required", question: "Regenerate the candidate?",
+      context: "The first reviewed candidate needs correction.", ownerPrincipalId: "mission-owner",
+      correlationId: "review-0", createdAt: at });
+    resolveTaskHandoff(fixture.db, { tenantId: "tenant_test", priorExceptionId: initial.id, taskId: task.id,
+      resolutionNote: "Regenerate", decision: "Regenerate", scope: "handoff_resolution:review-0",
+      authorPrincipalId: "mission-owner", correlationId: "review-0", createdAt: at });
+
+    const basePayload = JSON.parse(
+      getJob(fixture.db, "job-warden-snapshot", "tenant_test")!.payload_json,
+    ) as Record<string, unknown>;
+    const runCycle = async (cycle: number) => {
+      const currentTask = getMissionTask(fixture.db, "tenant_test", task.id)!;
+      const authority = createMissionMutationAuthority({
+        mission: getMission(fixture.db, "tenant_test", "mission-reviewed")!, task: currentTask,
+        repositoryId: "repository-warden-snapshot", snapshotId: "snapshot-warden-a",
+        resolvedSha: "a".repeat(40),
+      });
+      const jobId = cycle === 1 ? "job-warden-snapshot" : `job-reviewed-${cycle}`;
+      const sessionId = cycle === 1 ? "session-warden-snapshot" : `session-reviewed-${cycle}`;
+      const payload = { ...basePayload, missionId: "mission-reviewed", missionAuthority: authority,
+        sessionId, reviewFeedback: `Cycle ${cycle} exact reviewer feedback.` };
+      if (cycle === 1) {
+        fixture.db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?")
+          .run(JSON.stringify(payload), jobId, "tenant_test");
+      } else {
+        enqueueJob(fixture.db, { id: jobId, tenantId: "tenant_test", type: "agent.run", payload, createdAt: nowIso() });
+      }
+      insertAgentRun(fixture.db, { id: sessionId, tenantId: "tenant_test", jobId,
+        goal: String(basePayload.goal), repoPath: fixture.snapshotRoot, status: "queued", ok: false,
+        steps: 0, filesChanged: [], reportMd: null, resultJson: JSON.stringify({ jobId, product: "warden" }),
+        createdAt: nowIso(), finishedAt: null });
+      const outcome = await processJobsOnce(fixture.db, {
+        tenantId: "tenant_test", workerId: `worker-reviewed-${cycle}`, leaseMs: 30_000,
+        wardenPlanner: meteredWardenPlanner(), wardenEnv: {
+          MENDPOINT_DATA_DIR: fixture.dataRoot,
+          MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
+          MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS: "tenant_test",
+          MENDPOINT_WARDEN_MODEL_PROVIDER: "openai-compatible",
+          MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "1",
+          MENDPOINT_WARDEN_MODEL_REGION: "us-central",
+          MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION: "confidential",
+          MENDPOINT_WARDEN_REPOSITORY_CLASSIFICATIONS:
+            JSON.stringify({ tenant_test: { "tenant_test/fixture": "internal" } }),
+          MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD: "0.25",
+          MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: "1.00",
+          LLM_AGENT_MODEL: "model-a",
+          LLM_AGENT_URL: "https://models.example/v1",
+        },
+      });
+      expect(outcome).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
+      expect(getMissionTask(fixture.db, "tenant_test", task.id)).toMatchObject({
+        status: "human_review_required", ownerType: "human",
+      });
+      expect(getMissionTask(fixture.db, "tenant_test", missionTaskIdForJob(jobId))).toBeUndefined();
+    };
+
+    await runCycle(1);
+    const current = { snapshotId: "snapshot-warden-a", resolvedSha: "a".repeat(40) };
+    const firstReview = evaluateMissionExceptions(fixture.db, "tenant_test", "mission-reviewed", current).blocking;
+    expect(firstReview).toHaveLength(1);
+    resolveTaskHandoff(fixture.db, { tenantId: "tenant_test", priorExceptionId: firstReview[0]!.id,
+      taskId: task.id, resolutionNote: "Regenerate again", decision: "Regenerate again",
+      scope: "handoff_resolution:review-1", authorPrincipalId: "mission-owner",
+      correlationId: "review-1", createdAt: nowIso() });
+    await runCycle(2);
+    expect(evaluateMissionExceptions(fixture.db, "tenant_test", "mission-reviewed", current).blocking).toHaveLength(1);
+    fixture.db.raw.close();
+  }, 30_000);
+
   it("leaves ReGauge advisory dispatch to the durable coordinator", () => {
     const source = readFileSync(new URL("./cli.ts", import.meta.url), "utf8");
     expect(source).not.toContain("onVerifiedCandidateCompleted:");
@@ -520,6 +649,27 @@ describe("worker runtime", () => {
       .toThrow("warden_model_source_policy_incomplete");
   });
 
+  // A Mission/CI mutation fence collision is TRANSIENT: another writer holds the
+  // Mission mid-flight. Classified terminal, the job dead-lettered under a
+  // misleading code and lost its work - a policy deny raised while a delivery for
+  // the same Mission was `dispatching` went unrecorded, because
+  // raiseMissionException runs the mission-wide fence and throws this code (see
+  // packages/db/src/mission-exceptions.test.ts for that collision). Retryable
+  // within the ORDINARY budget only, so a fence that never clears still
+  // terminates. Revert either entry and this dies.
+  it("retries a transient Mission or CI mutation fence collision within the ordinary budget", () => {
+    for (const message of [
+      "mission_mutation_dispatch_in_flight",
+      "warden_ci_mutation_in_flight",
+    ]) {
+      expect(classifyJobFailure(new Error(message))).toMatchObject({
+        errorCode: message,
+        retryable: true,
+        retryPastMaxAttempts: false,
+      });
+    }
+  });
+
   it("does not retry permanent GitHub App authorization and scope failures", () => {
     for (const message of [
       "github_app_installation_revoked",
@@ -544,6 +694,23 @@ describe("worker runtime", () => {
     expect(classifyJobFailure(new Error("GitHub request failed with 503"))).toMatchObject({
       errorCode: "transient_dependency",
       retryable: true,
+    });
+    expect(classifyJobFailure(Object.assign(new Error("socket closed"), {
+      remoteSideEffectUncertain: true,
+    }))).toMatchObject({
+      errorCode: "transient_dependency",
+      retryable: true,
+      retryPastMaxAttempts: true,
+    });
+    // ...but uncertainty must NOT outrank the authorization exclusion. A
+    // credential refused now is refused on every retry, so letting an uncertain
+    // remote effect win here spins a permanently failing job past max_attempts.
+    expect(classifyJobFailure(Object.assign(new Error("bad credentials"), {
+      remoteSideEffectUncertain: true,
+    }))).toMatchObject({
+      errorCode: "authorization_failed",
+      retryable: false,
+      retryPastMaxAttempts: false,
     });
     for (const message of [
       "mcu_accounting_persistence_failed",
@@ -2624,6 +2791,189 @@ describe("worker runtime", () => {
     ]));
   });
 
+  it("verifies the sandbox egress authority from the receipt FILE at startup, with env fallback", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-sandbox-authority-file-"));
+    dirs.push(root);
+    const image = `registry.fly.io/mendpoint-sandbox@sha256:${"a".repeat(64)}`;
+    const policyDigest = `sha256:${"b".repeat(64)}`;
+    const testedAt = new Date(Date.now() - 60_000).toISOString();
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+    const keys = generateKeyPairSync("ed25519");
+    const payloadBytes = sandboxEgressAttestationPayloadBytes({
+      schemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+      app: "mendpoint-sandbox",
+      image,
+      policyDigest,
+      testedAt,
+      expiresAt,
+      forbiddenOutbound: {
+        commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+        targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+        blocked: true,
+      },
+      allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true },
+      evidenceRefs: ["evidence://protected-egress-acceptance/file-startup"],
+    });
+    const envelope = Buffer.from(JSON.stringify({
+      payload: payloadBytes.toString("base64"),
+      signatures: [{
+        keyId: "sandbox-egress-key-1",
+        signature: sign(null, payloadBytes, keys.privateKey).toString("base64"),
+      }],
+    }), "utf8").toString("base64");
+    const attestationPath = join(root, "attestation.b64");
+    writeFileSync(attestationPath, envelope);
+    // The receipt is delivered ONLY as a file (no MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64):
+    // the boot check must verify it through the file-first wrapper.
+    const base = {
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+      GITHUB_MODE: "mock",
+      MENDPOINT_DATA_DIR: root,
+      MENDPOINT_REPOS_DIR: root,
+      MENDPOINT_SANDBOX_KIND: "fly_machines",
+      MENDPOINT_SANDBOX_FLY_APP: "mendpoint-sandbox",
+      MENDPOINT_SANDBOX_FLY_TOKEN: "scoped-token",
+      MENDPOINT_SANDBOX_FLY_IMAGE: image,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PATH: attestationPath,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64:
+        keys.publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "sandbox-egress-key-1",
+      MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: policyDigest,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+    };
+    expect(validateWorkerProductionEnv(base)).toEqual([]);
+
+    // A tampered file with no environment fallback is refused at boot.
+    writeFileSync(attestationPath, "dGFtcGVyZWQ=");
+    expect(validateWorkerProductionEnv(base)).toEqual(expect.arrayContaining([
+      expect.stringContaining("Sandbox egress authority invalid"),
+    ]));
+
+    // A tampered file falls back to a valid environment receipt -> boot passes.
+    expect(validateWorkerProductionEnv({
+      ...base,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64: envelope,
+    })).toEqual([]);
+  });
+
+  it("degrades to a boot warning on an authentic but expired egress attestation instead of failing preflight", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-egress-expired-"));
+    dirs.push(root);
+    const image = `registry.fly.io/mendpoint-sandbox@sha256:${"a".repeat(64)}`;
+    const policyDigest = `sha256:${"b".repeat(64)}`;
+    // Authentic and in-window at signing, but observed after expiry: every check in
+    // verifySandboxEgressAttestation passes except the final expiry test.
+    const testedAt = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    const expiresAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    const keys = generateKeyPairSync("ed25519");
+    const payloadBytes = sandboxEgressAttestationPayloadBytes({
+      schemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+      app: "mendpoint-sandbox",
+      image,
+      policyDigest,
+      testedAt,
+      expiresAt,
+      forbiddenOutbound: {
+        commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+        targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+        blocked: true,
+      },
+      allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true },
+      evidenceRefs: ["evidence://protected-egress-acceptance/expired"],
+    });
+    const envelope = Buffer.from(JSON.stringify({
+      payload: payloadBytes.toString("base64"),
+      signatures: [{
+        keyId: "sandbox-egress-key-1",
+        signature: sign(null, payloadBytes, keys.privateKey).toString("base64"),
+      }],
+    }), "utf8").toString("base64");
+    const base = {
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+      GITHUB_MODE: "mock",
+      MENDPOINT_DATA_DIR: root,
+      MENDPOINT_REPOS_DIR: root,
+      MENDPOINT_SANDBOX_KIND: "fly_machines",
+      MENDPOINT_SANDBOX_FLY_APP: "mendpoint-sandbox",
+      MENDPOINT_SANDBOX_FLY_TOKEN: "scoped-token",
+      MENDPOINT_SANDBOX_FLY_IMAGE: image,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64: envelope,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64:
+        keys.publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "sandbox-egress-key-1",
+      MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: policyDigest,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+    };
+    const warnings: string[] = [];
+    expect(validateWorkerProductionEnv(base, (warning) => warnings.push(warning))).toEqual([]);
+    expect(warnings).toEqual([
+      "worker_boot_degraded sandbox_egress_attestation_expired: sandbox launches are refused until the renewal delivers a fresh receipt",
+    ]);
+  });
+
+  it("degrades (never crash-loops) on a corrupt/oversize FILE with an authentic-but-expired environment receipt, surfacing the file failure", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-egress-file-expired-"));
+    dirs.push(root);
+    const image = `registry.fly.io/mendpoint-sandbox@sha256:${"a".repeat(64)}`;
+    const policyDigest = `sha256:${"b".repeat(64)}`;
+    // Environment receipt: authentic, in-window at signing, observed after expiry.
+    const testedAt = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    const expiresAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    const keys = generateKeyPairSync("ed25519");
+    const payloadBytes = sandboxEgressAttestationPayloadBytes({
+      schemaVersion: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+      app: "mendpoint-sandbox",
+      image,
+      policyDigest,
+      testedAt,
+      expiresAt,
+      forbiddenOutbound: {
+        commandDigest: SANDBOX_EGRESS_FORBIDDEN_PROBE_DIGEST,
+        targets: SANDBOX_EGRESS_FORBIDDEN_PROBE_TARGETS.map(([host, port]) => `${host}:${port}`),
+        blocked: true,
+      },
+      allowedVerification: { commandDigest: SANDBOX_EGRESS_ALLOWED_PROBE_DIGEST, passed: true },
+      evidenceRefs: ["evidence://protected-egress-acceptance/file-expired"],
+    });
+    const envelope = Buffer.from(JSON.stringify({
+      payload: payloadBytes.toString("base64"),
+      signatures: [{
+        keyId: "sandbox-egress-key-1",
+        signature: sign(null, payloadBytes, keys.privateKey).toString("base64"),
+      }],
+    }), "utf8").toString("base64");
+    // Volume FILE is oversize (a file-only failure, unrelated to the expiry). Before
+    // the fix this made boot fatal and crash-looped the single production machine.
+    const attestationPath = join(root, "attestation.b64");
+    writeFileSync(attestationPath, "A".repeat(40 * 1024));
+    const base = {
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+      GITHUB_MODE: "mock",
+      MENDPOINT_DATA_DIR: root,
+      MENDPOINT_REPOS_DIR: root,
+      MENDPOINT_SANDBOX_KIND: "fly_machines",
+      MENDPOINT_SANDBOX_FLY_APP: "mendpoint-sandbox",
+      MENDPOINT_SANDBOX_FLY_TOKEN: "scoped-token",
+      MENDPOINT_SANDBOX_FLY_IMAGE: image,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PATH: attestationPath,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64: envelope,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64:
+        keys.publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID: "sandbox-egress-key-1",
+      MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST: policyDigest,
+      MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA: SANDBOX_EGRESS_ATTESTATION_SCHEMA,
+    };
+    const warnings: string[] = [];
+    expect(validateWorkerProductionEnv(base, (warning) => warnings.push(warning))).toEqual([]);
+    expect(warnings).toEqual([
+      "worker_boot_degraded sandbox_egress_attestation_expired: sandbox launches are refused until the renewal delivers a fresh receipt",
+      "worker_boot_degraded sandbox_egress_attestation_file_unusable: sandbox_egress_attestation_file_too_large",
+    ]);
+  });
+
   it("refuses a production worker whose sandbox kind is unset or a customer worker that is not fly_machines", () => {
     const repos = mkdtempSync(join(tmpdir(), "mendpoint-worker-sandbox-kind-"));
     dirs.push(repos);
@@ -3399,34 +3749,46 @@ describe("worker runtime", () => {
         maxAttempts: 3,
       },
     });
+    // Maintenance now discovers tenants only from Fettler agent runs and
+    // agent.run jobs. Seed the former so this regression reaches the damaged
+    // artifact-root path before proving ordinary jobs continue.
+    insertWardenLifecycleRun(db, {
+      id: "run-maint-fail",
+      tenantId: "tenant_test",
+      status: "candidate_ready",
+      resultJson: JSON.stringify({ artifacts: {} }),
+    });
     // Point the Warden data dir at a file so maintenance throws before touching jobs.
     const badDataDir = join(parent, "not-a-directory");
     writeFileSync(badDataDir, "x");
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    await expect(
-      processJobsOnce(db, {
-        tenantId: "tenant_test",
-        workerId: "worker-maint-fail",
-        leaseMs: 5_000,
-        wardenEnv: { MENDPOINT_DATA_DIR: badDataDir },
-      }),
-    ).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
+    try {
+      await expect(
+        processJobsOnce(db, {
+          tenantId: "tenant_test",
+          workerId: "worker-maint-fail",
+          leaseMs: 5_000,
+          wardenEnv: { MENDPOINT_DATA_DIR: badDataDir },
+        }),
+      ).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
 
-    expect(
-      errorSpy.mock.calls.some((call) =>
-        String(call[0]).includes("Fettler maintenance unavailable"),
-      ),
-    ).toBe(true);
-    expect(getRepairSession(db, "session-maint-fail", "tenant_test")).toMatchObject({
-      status: "verified",
-      ok: 1,
-    });
-    expect(listJobs(db, 10, "tenant_test")[0]).toMatchObject({
-      id: "job-maint-fail",
-      status: "done",
-    });
-    db.raw.close();
+      expect(
+        errorSpy.mock.calls.some((call) =>
+          String(call[0]).includes("Fettler maintenance deferred"),
+        ),
+      ).toBe(true);
+      expect(getRepairSession(db, "session-maint-fail", "tenant_test")).toMatchObject({
+        status: "verified",
+        ok: 1,
+      });
+      expect(listJobs(db, 10, "tenant_test")[0]).toMatchObject({
+        id: "job-maint-fail",
+        status: "done",
+      });
+    } finally {
+      db.raw.close();
+    }
   });
 
   it("reserves both source and evidence bytes against the candidate quota", async () => {

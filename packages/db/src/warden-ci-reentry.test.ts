@@ -61,9 +61,58 @@ const cycleInput = Object.freeze({
 });
 
 describe("Warden CI reentry authority", () => {
-  it("upgrades an existing cycle table to the operator-pausable awaiting-review state", () => {
+  // The sibling test above downgrades the CHECK constraint but copies the
+  // current column list, so its rebuilt table already has every additive column
+  // and a missing additive migration could never surface there. This one drops
+  // the column outright, which is the only shape that can catch it. It asserts
+  // schema convergence only: the VALUE cannot survive a column drop, which is
+  // exactly why the two cases have to be separate tests.
+  it("re-adds mission_authority_json when reopening a volume that lacks the column", () => {
     const db = database();
     const cycle = enqueueWardenCiCycle(db, cycleInput);
+    const schema = db.raw.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'fettler_ci_cycles'")
+      .get() as { sql: string };
+    const columns = (db.raw.prepare("PRAGMA table_info(fettler_ci_cycles)").all() as Array<{ name: string }>)
+      .map((column) => column.name)
+      .filter((name) => name !== "mission_authority_json").join(", ");
+    db.raw.exec("DROP INDEX fettler_ci_cycles_tenant_status_idx");
+    db.raw.exec(schema.sql.replace("CREATE TABLE fettler_ci_cycles", "CREATE TABLE fettler_ci_cycles_oldcheck")
+      .split("\n").filter((line) => !line.includes("mission_authority_json")).join("\n"));
+    db.raw.exec(`INSERT INTO fettler_ci_cycles_oldcheck (${columns}) SELECT ${columns} FROM fettler_ci_cycles;
+      DROP TABLE fettler_ci_cycles;
+      ALTER TABLE fettler_ci_cycles_oldcheck RENAME TO fettler_ci_cycles;`);
+    expect((db.raw.prepare("PRAGMA table_info(fettler_ci_cycles)").all() as Array<{ name: string }>)
+      .map((column) => column.name)).not.toContain("mission_authority_json");
+
+    const path = paths.at(-1)!;
+    db.raw.close();
+    databases.splice(databases.indexOf(db), 1);
+    const reopened = createDb(path);
+    databases.push(reopened);
+
+    // The additive migration put it back, and the pre-existing row survived.
+    expect((reopened.raw.prepare("PRAGMA table_info(fettler_ci_cycles)").all() as Array<{ name: string }>)
+      .map((column) => column.name)).toContain("mission_authority_json");
+    expect(getWardenCiCycle(reopened, "tenant-a", cycle.id)?.id).toBe(cycle.id);
+  });
+
+  it("upgrades a pre-awaiting-review cycle without dropping Mission authority or wake delivery", () => {
+    const db = database();
+    const cycle = enqueueWardenCiCycle(db, cycleInput);
+    const authority = {
+      schemaVersion: 1 as const,
+      missionId: "mission-upgrade",
+      missionRevision: 3,
+      missionState: "executing" as const,
+      taskId: "task-upgrade",
+      taskRevision: 2,
+      taskStatus: "agent_working" as const,
+      repositoryId: "repo-a",
+      snapshotId: "snapshot-a",
+      resolvedSha: sha("a"),
+    };
+    db.raw.prepare("UPDATE fettler_ci_cycles SET mission_authority_json = ? WHERE id = ?")
+      .run(JSON.stringify(authority), cycle.id);
     const schema = db.raw.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'fettler_ci_cycles'")
       .get() as { sql: string };
     const columns = (db.raw.prepare("PRAGMA table_info(fettler_ci_cycles)").all() as Array<{ name: string }>)
@@ -79,10 +128,26 @@ describe("Warden CI reentry authority", () => {
     databases.splice(databases.indexOf(db), 1);
     const reopened = createDb(path);
     databases.push(reopened);
+    expect(getWardenCiCycle(reopened, "tenant-a", cycle.id)?.missionAuthority).toEqual(authority);
     recordWardenCiObservation(reopened, { tenantId: "tenant-a", cycleId: cycle.id, headSha: sha("d"),
       verdict: "success", observationDigest: digest("e"), evidenceArtifactId: "artifact-success-migration",
       evidenceDigest: digest("f"), observedAt: "2026-08-13T12:02:00.000Z" });
     expect(getWardenCiCycle(reopened, "tenant-a", cycle.id)?.status).toBe("awaiting_review");
+    const woken = wakeWardenCiReviewObservation(reopened, {
+      tenantId: "tenant-a", remoteRepositoryId: 101, installationId: 202,
+      pullRequestNumber: 17, headSha: sha("d"), wakeId: "upgrade-review-wake",
+      observedAt: "2026-08-13T12:03:00.000Z",
+    });
+    expect(woken).toMatchObject({
+      status: "woken",
+      cycle: { id: cycle.id, missionAuthority: authority },
+    });
+    const observationJob = listJobs(reopened, 20, "tenant-a")
+      .find((job) => job.id === woken.cycle?.observationJobId);
+    expect(JSON.parse(observationJob!.payload_json)).toMatchObject({
+      missionId: authority.missionId,
+      missionAuthority: authority,
+    });
   });
 
   it("creates one deterministic observation job bound to the delivered draft", () => {

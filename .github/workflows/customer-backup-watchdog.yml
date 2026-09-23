@@ -45,6 +45,25 @@ name: Customer production backup watchdog
 # relaxes either: the RPO and the freshness threshold are untouched, an
 # indeterminate verdict is never remediated, and a run that needed remediation
 # says so out loud on every such run so the dropped cron cannot become invisible.
+#
+# It also STARTS a stopped customer machine, read-first and bounded
+# ------------------------------------------------------------------
+# The customer profile runs ONE machine with auto_start_machines off
+# (fly.customer-warden.toml), so once the app crashes past Fly's restart budget
+# the machine stays `stopped` forever: nothing on the platform and nothing in
+# customer-backup.yml starts it, every backup read then fails, and this watchdog
+# alarmed hourly as "indeterminate" without ever naming the cause (incident
+# #659). So before it reads anything, the watchdog brings the machine up using
+# the exact read-first discipline the CI deploy uses in "Ensure customer
+# production machines are running": it lists machines, classifies them by the
+# same states, starts only a `created|stopped|suspended` one, and NEVER creates
+# or stops a machine. The number it starts is bounded to the customer profile's
+# one-machine cap (MENDPOINT_CUSTOMER_MAX_MACHINES=1, which customer-warden-
+# profile.ts fails closed on), because a machine beyond that bound fails closed
+# on boot, so starting it would be strictly worse than leaving it stopped. A
+# machine that starts but never serves /livez, or that cannot be started at all,
+# becomes its own named `production_machine_down` verdict and alert — never a
+# silent pass, and never a stopped machine.
 
 permissions:
   contents: read
@@ -58,9 +77,14 @@ on:
   workflow_dispatch: {}
 
 # Cron and manual runs each get their own group so they are never cancelled: a
-# cancelled watchdog alerts nothing, which is the silence this exists to end.
-# Only the high-frequency workflow_run path shares a group, where collapsing to
-# the newest run is correct because it reads the same live state.
+# cancelled watchdog alerts nothing, which is the silence this exists to end,
+# and this workflow now also MUTATES — it can start a stopped customer machine —
+# so a cancelled cron/manual run could interrupt that start with nothing left to
+# report it. Only the high-frequency workflow_run path shares a group and can be
+# collapsed to the newest run: those runs read the same live state, and the one
+# mutation is safe to collapse because `flyctl machine start` is idempotent (it
+# no-ops a machine already running and never creates or stops one), so a
+# superseded start is simply redone by the newest run rather than lost.
 concurrency:
   group: >-
     customer-backup-watchdog-${{
@@ -106,12 +130,19 @@ jobs:
     # must not read production with an unreviewed script.
     if: ${{ needs.profile-gate.outputs.active == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
-    # Headroom for the bounded remediation waits below (<=3min to observe the
-    # dispatched run, <=6min for it to finish, <=5min for the re-read). Those
-    # waits are bounded INSIDE the step on purpose: a wait that ran into this
-    # job timeout would cancel the job, and `if: failure()` alert steps do not
-    # run on a cancelled job — the remediation would have muted the alarm.
-    timeout-minutes: 25
+    # Headroom for the serial worst case of every INSIDE-the-step bound below,
+    # summed because one run can hit all of them in order: ensure the machine is
+    # up (list <=120s + start <=120s + lost-lease re-read <=60s + readiness
+    # <=180s = <=8min) + read the evidence (<=5min) + judge (seconds) + remediate
+    # a stale backup (<=3min to observe the dispatched run + <=6min for it to
+    # finish + <=5min for the re-read = <=14min). With setup that is ~30min of
+    # bounded work, so 40 leaves real headroom rather than consuming it exactly.
+    # Those waits are bounded
+    # INSIDE their steps on purpose: a wait that ran into this job timeout would
+    # cancel the job, and `if: failure()` alert steps do not run on a cancelled
+    # job — the machine-start recovery and the remediation would have muted the
+    # very alarm they exist to protect.
+    timeout-minutes: 40
     environment: customer-production-backup
     permissions:
       contents: read
@@ -133,6 +164,278 @@ jobs:
 
       - name: Install Fly CLI
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+        with:
+          # Pinned to the same flyctl as customer-backup.yml, so both consumers
+          # of the app-scoped backup token run one proven CLI. The commands THIS
+          # workflow depends on — `flyctl machine list`, `machine start`,
+          # `ssh console` — were proven at 0.4.100 by the 2026-09-08 runs and
+          # still work at 0.4.102; the constraint comes from the backup run this
+          # watchdog dispatches, which needs `flyctl apps list` that 0.4.101+
+          # regressed to `Error: unauthorized` for app-scoped tokens. Bumping
+          # this pin means re-proving those commands with the app-scoped token.
+          version: "0.4.100"
+
+      # Before anything reads the machine, make sure the machine is up. The
+      # customer profile is bounded to ONE machine with auto_start_machines off
+      # (fly.customer-warden.toml), so when the app crashes past Fly's restart
+      # budget the machine stays `stopped` forever: nothing on the platform and
+      # nothing in customer-backup.yml starts it, so every backup read fails and
+      # this watchdog alarmed hourly as "indeterminate" without ever naming the
+      # cause (incident #659). This is the same read-first, start-only-what-is-
+      # not-running discipline the CI deploy uses in "Ensure customer production
+      # machines are running": it lists machines, classifies by the same states,
+      # starts only a `created|stopped|suspended` machine, never creates one, and
+      # never stops one.
+      #
+      # verdict.json does not exist yet — the judge step below is what creates it
+      # — so the machine-state record goes to its own retained file, kept by the
+      # artifact step. The readiness wait is bounded INSIDE the step to
+      # MACHINE_READY_DEADLINE_SECONDS, and every blocking call in that loop is
+      # capped by the time REMAINING to the deadline, so the loop's wall clock
+      # cannot overshoot the bound (see below). It is bounded inside the step for
+      # the same reason the freshness waits are: a wait that ran into
+      # `timeout-minutes` would CANCEL the job, and `if: failure()` alert steps do
+      # not run on a cancelled job, so the machine-down alarm would be muted.
+      - name: Ensure the customer machine is running
+        id: ensure
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}
+          CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
+          # The one-machine cap the customer profile pins
+          # (MENDPOINT_CUSTOMER_MAX_MACHINES=1 in fly.customer-warden.toml, which
+          # customer-warden-profile.ts fails closed on): a machine beyond it
+          # fails closed on boot, so this step never starts past the bound.
+          MENDPOINT_CUSTOMER_MAX_MACHINES: "1"
+          # Readiness poll bound in seconds. Injectable so tests exercise the
+          # not-live-after-start path in seconds; 180s is the production default.
+          MACHINE_READY_DEADLINE_SECONDS: "180"
+        run: |
+          set -euo pipefail
+          dir=test-results/customer-backup-watchdog
+          mkdir -p "$dir"
+          machine_state="$dir/machine-state.json"
+          verdict="$dir/verdict.json"
+          list="$dir/machine-list.json"
+
+          # Both bounds must be positive integers. The customer profile pins the
+          # machine cap to 1 and fails closed otherwise (customer-warden-
+          # profile.ts:185), so an absent or non-numeric bound here is a
+          # configuration fault, not licence to start an unbounded number of
+          # machines or to wait forever: fail closed and name it.
+          max_machines="${MENDPOINT_CUSTOMER_MAX_MACHINES:-}"
+          ready_deadline_seconds="${MACHINE_READY_DEADLINE_SECONDS:-}"
+          for bound in "max_machines=$max_machines" "ready_deadline_seconds=$ready_deadline_seconds"; do
+            value="${bound#*=}"
+            case "$value" in
+              ''|*[!0-9]*)
+                echo "customer_backup_watchdog_bound_invalid ${bound%%=*}=${value:-unset}" >&2
+                exit 1
+                ;;
+            esac
+            [ "$value" -ge 1 ] || {
+              echo "customer_backup_watchdog_bound_invalid ${bound%%=*}=$value" >&2
+              exit 1
+            }
+          done
+
+          # The read step validates the binding loudly; here a missing binding
+          # simply cannot list machines, so it classifies as unknown and falls
+          # through to that step rather than masking it.
+          list_status=0
+          if [ -z "${FLY_API_TOKEN:-}" ] || [ -z "${CUSTOMER_APP:-}" ]; then
+            list_status=78
+            : > "$list"
+          else
+            timeout 120 flyctl machine list --app "$CUSTOMER_APP" --json \
+              >"$list" 2>"$dir/machine-list-stderr.log" || list_status=$?
+          fi
+
+          # Same state classification as the CI deploy's compensating start:
+          # started|starting = running, created|stopped|suspended = startable,
+          # anything else (or an unparseable/empty list) = unknown. An absent
+          # state is unknown, never "stopped", so "could not look" can never be
+          # actioned as "needs starting".
+          running='[]'; startable='[]'; unknown_ids='[]'; ids='[]'; parseable=false
+          if [ "$list_status" -eq 0 ] && jq -e 'type=="array" and length>0' "$list" >/dev/null 2>&1; then
+            parseable=true
+            running="$(jq -c '[.[] | select(.state=="started" or .state=="starting") | .id]' "$list")"
+            startable="$(jq -c '[.[] | select(.state=="created" or .state=="stopped" or .state=="suspended") | .id]' "$list")"
+            unknown_ids="$(jq -c '[.[] | select((.state=="started" or .state=="starting" or .state=="created" or .state=="stopped" or .state=="suspended") | not) | .id]' "$list")"
+            ids="$(jq -c '[.[].id]' "$list")"
+          fi
+
+          # machineState is recorded in every path so the retained artifact shows
+          # what the watchdog saw. remediation.machineStart is null unless a start
+          # was attempted; it lives in this file, never colliding with the
+          # backup-dispatch remediation the judge/remediate steps write into
+          # verdict.json.
+          # $1 is the remediation.machineStart object (null unless a start was
+          # attempted); $2 is the /livez code observed this run, recorded on the
+          # already-running path too and not only after a start.
+          write_machine_state() {
+            ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            tmp="$(mktemp)"
+            jq -n --arg checkedAt "$ts" \
+              --argjson running "$running" --argjson startable "$startable" \
+              --argjson unknown "$unknown_ids" --argjson ids "$ids" \
+              --argjson parseable "$parseable" --argjson machineStart "$1" \
+              --arg livez "${2:-}" \
+              '{checkedAt:$checkedAt,machineState:{running:$running,startable:$startable,unknown:$unknown,ids:$ids,listParseable:$parseable,livez:$livez},remediation:{machineStart:$machineStart}}' \
+              >"$tmp"
+            mv "$tmp" "$machine_state"
+          }
+
+          running_count="$(jq 'length' <<<"$running")"
+          startable_count="$(jq 'length' <<<"$startable")"
+
+          # A machine is already `started` or `starting`. Proceed to read either
+          # way, but the machine-DOWN alert must NOT resolve on a machine that is
+          # merely `starting`: a crash-loop restart window is not proof the app
+          # is back. Probe the same public /livez the start path checks and
+          # require a machine actually reporting `started`, so `machine_running`
+          # — which the resolve step consumes — means "provably up in THIS run",
+          # never "starting".
+          if [ "$running_count" -ge 1 ]; then
+            livez="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "https://${CUSTOMER_APP}.fly.dev/livez" || true)"
+            started_now="$(jq '[.[] | select(.state=="started")] | length' "$list" 2>/dev/null || echo 0)"
+            machine_running=false
+            if [ "$livez" = "200" ] && [ "${started_now:-0}" -ge 1 ]; then
+              machine_running=true
+            fi
+            write_machine_state null "$livez"
+            {
+              echo "outcome=running"
+              echo "machine_running=$machine_running"
+            } >> "$GITHUB_OUTPUT"
+            echo "customer machine already running (livez=$livez, started=${started_now:-0}); continuing to read backup evidence"
+            exit 0
+          fi
+
+          if [ "$startable_count" -ge 1 ]; then
+            echo "::warning title=Customer production machine was stopped::No customer machine was running; the watchdog is starting a stopped machine before reading backup evidence."
+
+            # Same bounded start as the CI deploy's compensating step: start at
+            # most max-running machines, in order, and leave any beyond the bound
+            # stopped and named — a machine past the profile's cap fails closed on
+            # boot, so starting it would be strictly worse than leaving it
+            # stopped. Per-machine outcomes are tracked so a later machine's
+            # failure can never overwrite an earlier machine's success.
+            started=0
+            started_ids='[]'
+            failed_ids='[]'
+            left_stopped='[]'
+            # `tr -d '\r'`: a jq build that emits CRLF (some do) would otherwise
+            # leave a trailing carriage return on every id but the last, and that
+            # id would be handed verbatim to `flyctl machine start`.
+            for id in $(jq -r '.[]' <<<"$startable" | tr -d '\r'); do
+              if [ $(( running_count + started )) -ge "$max_machines" ]; then
+                echo "::warning::Not starting machine ${id}: bounded to ${max_machines} running machine(s) and that bound is already met; a machine beyond the bound fails closed on boot, so leaving it stopped is correct."
+                left_stopped="$(jq -c --arg id "$id" '. + [$id]' <<<"$left_stopped")"
+                continue
+              fi
+              echo "machine ${id} is not running; starting it."
+              if timeout 120 flyctl machine start "$id" --app "$CUSTOMER_APP"; then
+                started=$((started + 1))
+                started_ids="$(jq -c --arg id "$id" '. + [$id]' <<<"$started_ids")"
+              else
+                # A start that exits non-zero has NOT proven the machine down: it
+                # can lose a race with the machine coming up on its own, and
+                # `machine start` takes a lease it can lose to the deploy that
+                # fired this workflow_run. Re-read this machine's state rather
+                # than trust the exit code.
+                now_state="$(timeout 60 flyctl machine list --app "$CUSTOMER_APP" --json 2>/dev/null \
+                  | jq -r --arg id "$id" 'map(select(.id==$id)) | .[0].state // ""' 2>/dev/null || true)"
+                case "$now_state" in
+                  started|starting)
+                    echo "machine ${id} is ${now_state}; the start raced with it coming up."
+                    started=$((started + 1))
+                    started_ids="$(jq -c --arg id "$id" '. + [$id]' <<<"$started_ids")"
+                    ;;
+                  *)
+                    echo "::warning::Could not start machine ${id} (state now: ${now_state:-unknown})."
+                    failed_ids="$(jq -c --arg id "$id" '. + [$id]' <<<"$failed_ids")"
+                    ;;
+                esac
+              fi
+            done
+
+            # Readiness, bounded by MACHINE_READY_DEADLINE_SECONDS and re-read
+            # regardless of the start exit codes above. Each blocking call is
+            # capped by the time REMAINING to the deadline, so the loop's wall
+            # clock cannot exceed the bound: the previous fixed `curl -m 10 +
+            # timeout 60 + sleep 10` per iteration, with the deadline checked only
+            # at the loop top, let one iteration overshoot the bound by ~80s. The
+            # machine is declared down only if NO machine reports `started` AND
+            # /livez is not 200 by the deadline.
+            livez=""
+            outcome=""
+            ready_deadline=$(( $(date -u +%s) + ready_deadline_seconds ))
+            while :; do
+              remaining=$(( ready_deadline - $(date -u +%s) ))
+              [ "$remaining" -gt 0 ] || break
+              curl_max=$(( remaining < 10 ? remaining : 10 ))
+              livez="$(curl -s -m "$curl_max" -o /dev/null -w '%{http_code}' "https://${CUSTOMER_APP}.fly.dev/livez" || true)"
+              remaining=$(( ready_deadline - $(date -u +%s) ))
+              [ "$remaining" -gt 0 ] || break
+              list_max=$(( remaining < 60 ? remaining : 60 ))
+              started_now="$(timeout "$list_max" flyctl machine list --app "$CUSTOMER_APP" --json 2>/dev/null \
+                | jq '[.[] | select(.state=="started")] | length' 2>/dev/null || echo 0)"
+              if [ "$livez" = "200" ] && [ "${started_now:-0}" -ge 1 ]; then
+                outcome="started"
+                break
+              fi
+              remaining=$(( ready_deadline - $(date -u +%s) ))
+              [ "$remaining" -gt 0 ] || break
+              sleep_max=$(( remaining < 10 ? remaining : 10 ))
+              sleep "$sleep_max"
+            done
+            if [ "$outcome" != "started" ]; then
+              if [ "$started" -ge 1 ]; then outcome="not_live_after_start"; else outcome="start_failed"; fi
+            fi
+
+            write_machine_state "$(jq -nc --argjson started "$started_ids" --argjson failed "$failed_ids" \
+              --argjson leftStopped "$left_stopped" --arg outcome "$outcome" --arg livez "${livez:-}" \
+              '{attempted:true,started:$started,failed:$failed,leftStoppedBeyondBound:$leftStopped,outcome:$outcome,livez:$livez}')" \
+              "${livez:-}"
+
+            if [ "$outcome" = "started" ]; then
+              {
+                echo "outcome=started"
+                echo "machine_running=true"
+              } >> "$GITHUB_OUTPUT"
+              echo "::warning title=Customer production machine was stopped::A stopped customer machine was started by the watchdog (/livez=200, machine reports started). Recording the self-heal."
+              exit 0
+            fi
+
+            # Startable but could not be brought live: the start(s) failed and no
+            # machine came up on its own, or a machine started but never served
+            # /livez. Written as a distinct, named verdict directly to
+            # verdict.json (the judge step is skipped for this outcome, so it
+            # cannot overwrite it) and the step fails so the machine-DOWN alert
+            # below fires. No machine is ever stopped.
+            {
+              echo "outcome=production_machine_down"
+              echo "machine_running=false"
+            } >> "$GITHUB_OUTPUT"
+            echo "customer_backup_watchdog_production_machine_down outcome=$outcome livez=${livez:-none}" >&2
+            jq -nc --arg checkedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg outcome "$outcome" \
+              '{checkedAt:$checkedAt,state:"production_machine_down",summary:"The customer production machine was stopped and could not be started (\($outcome)); the backup age was NOT determined",reason:"production_machine_down"}' \
+              >"$verdict"
+            exit 1
+          fi
+
+          # None running and none startable: an empty/unparseable list, or only
+          # machines in states this step must not touch. Left exactly as the read
+          # step finds it, which turns an unreadable machine into an indeterminate
+          # verdict and its existing alert. That path is not silenced here.
+          write_machine_state null
+          {
+            echo "outcome=unknown"
+            echo "machine_running=false"
+          } >> "$GITHUB_OUTPUT"
+          echo "no running or startable customer machine identified; the read step will record an indeterminate verdict"
+          exit 0
 
       # The authoritative source is the evidence file ON the machine: it is the
       # exact file assessCustomerBackupReadiness reads, so this measures the same
@@ -204,7 +507,11 @@ jobs:
       # the same "could not look" defect this watchdog exists to prevent.
       - name: Judge backup freshness against the policy RPO
         id: judge
-        if: ${{ !cancelled() }}
+        # Skipped only when the machine was proven down and unstartable above:
+        # that path already wrote a production_machine_down verdict, and the
+        # judge would otherwise overwrite it with an indeterminate read. Every
+        # other outcome (running, started, unknown) still judges the read.
+        if: ${{ !cancelled() && steps.ensure.outputs.outcome != 'production_machine_down' }}
         shell: bash
         env:
           MENDPOINT_BACKUP_EVIDENCE_CAPTURE_PATH: test-results/customer-backup-watchdog/evidence-capture.json
@@ -291,33 +598,45 @@ jobs:
 
           echo "::warning title=Customer backup was stale::The newest verified backup was PAST the RPO, so the watchdog is dispatching one Customer production backup run. GitHub is dropping the */30 backup cron; this keeps the RPO but does not fix that."
 
-          # Taken BEFORE the dispatch, so the run waited on below cannot be an
-          # older one that merely happened to still be listed.
-          started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # An exact identity for this dispatch. `delivery_id` sets the backup
+          # run's display title (see customer-backup.yml `run-name`) to
+          # `Customer production backup [backup-watchdog-<run>-<attempt>]`, which
+          # is unique to this watchdog run and attempt. The delivery controller's
+          # active-run filter accepts exactly this identity, so a bare-titled
+          # remediation dispatch no longer reads to it as a metadata mismatch and
+          # alerts the owner; and the wait below binds to the run THIS dispatch
+          # created rather than to whichever workflow_dispatch was listed first.
+          delivery_id="backup-watchdog-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          expected_title="Customer production backup [$delivery_id]"
           dispatch=0
-          gh workflow run "$BACKUP_WORKFLOW" --repo "$GH_REPO" --ref "$BACKUP_REF" || dispatch=$?
+          gh workflow run "$BACKUP_WORKFLOW" --repo "$GH_REPO" --ref "$BACKUP_REF" \
+            -f "delivery_id=$delivery_id" || dispatch=$?
           if [ "$dispatch" -ne 0 ]; then
             echo "customer_backup_remediation_dispatch_failed status=$dispatch" >&2
-            record "$(jq -nc --argjson status "$dispatch" \
-              '{attempted:true,dispatched:false,outcome:"dispatch_failed",dispatchStatus:$status}')"
+            record "$(jq -nc --argjson status "$dispatch" --arg deliveryId "$delivery_id" \
+              '{attempted:true,dispatched:false,outcome:"dispatch_failed",dispatchStatus:$status,deliveryId:$deliveryId}')"
             exit 1
           fi
 
           # Bounded INSIDE the step (<=3min), never by the job timeout: a wait
           # that hit `timeout-minutes` would CANCEL the job, and `if: failure()`
           # steps do not run on a cancelled job, so the remediation would have
-          # muted the very alarm it is supposed to protect.
+          # muted the very alarm it is supposed to protect. Bound to the EXACT
+          # display title this dispatch set, never "the first run after now":
+          # that first run could be someone else's workflow_dispatch.
           run_id=""
           for _ in $(seq 1 18); do
             run_id="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
-              --event workflow_dispatch --limit 20 --json databaseId,createdAt \
-              --jq "[.[] | select(.createdAt >= \"$started\")] | first | .databaseId // empty" || true)"
+              --event workflow_dispatch --limit 20 --json databaseId,createdAt,displayTitle \
+              | jq -r --arg title "$expected_title" \
+                '[.[] | select(.displayTitle == $title)] | first | .databaseId // empty' || true)"
             if [ -n "$run_id" ]; then break; fi
             sleep 10
           done
           if [ -z "$run_id" ]; then
             echo "customer_backup_remediation_run_not_observed" >&2
-            record '{"attempted":true,"dispatched":true,"outcome":"run_not_observed"}'
+            record "$(jq -nc --arg deliveryId "$delivery_id" \
+              '{attempted:true,dispatched:true,outcome:"run_not_observed",deliveryId:$deliveryId}')"
             exit 1
           fi
 
@@ -334,8 +653,8 @@ jobs:
           done
           if [ "$conclusion" != "success" ]; then
             echo "customer_backup_remediation_run_unsuccessful conclusion=${conclusion:-not_completed}" >&2
-            record "$(jq -nc --arg id "$run_id" --arg conclusion "${conclusion:-not_completed}" \
-              '{attempted:true,dispatched:true,runId:$id,outcome:"backup_run_unsuccessful",conclusion:$conclusion}')"
+            record "$(jq -nc --arg id "$run_id" --arg conclusion "${conclusion:-not_completed}" --arg deliveryId "$delivery_id" \
+              '{attempted:true,dispatched:true,runId:$id,outcome:"backup_run_unsuccessful",conclusion:$conclusion,deliveryId:$deliveryId}')"
             exit 1
           fi
 
@@ -357,8 +676,8 @@ jobs:
           judge=0
           MENDPOINT_BACKUP_EVIDENCE_CAPTURE_STATUS="$status" \
             node --import tsx scripts/check-customer-backup-freshness.ts || judge=$?
-          record "$(jq -nc --arg id "$run_id" \
-            '{attempted:true,dispatched:true,runId:$id,outcome:"backup_run_completed"}')"
+          record "$(jq -nc --arg id "$run_id" --arg deliveryId "$delivery_id" \
+            '{attempted:true,dispatched:true,runId:$id,outcome:"backup_run_completed",deliveryId:$deliveryId}')"
           echo "post-remediation judge exit status: $judge"
 
       # The meta case: the judge itself did not run to completion, so nothing
@@ -436,9 +755,13 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: customer-backup-watchdog-${{ github.run_id }}-${{ github.run_attempt }}
-          # Only the redacted verdict. The raw capture is deliberately excluded:
-          # it carries the evidence keyId and integrity digest.
-          path: test-results/customer-backup-watchdog/verdict.json
+          # The redacted verdict plus the machine-state record (machine ids and
+          # states only, no key material). The raw evidence capture and the raw
+          # machine list are deliberately excluded: the capture carries the
+          # evidence keyId and integrity digest.
+          path: |
+            test-results/customer-backup-watchdog/verdict.json
+            test-results/customer-backup-watchdog/machine-state.json
           if-no-files-found: error
           retention-days: 90
 
@@ -470,18 +793,33 @@ jobs:
             state="indeterminate"
             reason="watchdog_produced_no_verdict"
           fi
-          label="customer-production-backup-stale"
+          # The machine being DOWN is a distinct condition from a stale backup and
+          # gets its own label and issue, so a recovered machine can resolve it
+          # independently and one late backup success can never silence it. Both
+          # branches share the same open-or-comment dedup, so a run only ever
+          # comments on the one open issue for its condition, never opens a second.
+          if [ "$state" = "production_machine_down" ]; then
+            label="customer-production-machine-down"
+            title="Customer production machine is DOWN"
+            description="Automated: the customer production machine is stopped and could not be started"
+            detected="Detected by the backup freshness watchdog: the single customer machine was stopped and the watchdog could not start it."
+          else
+            label="customer-production-backup-stale"
+            title="Customer production backup is STALE or undetermined"
+            description="Automated: customer production backup is stale or its age is undetermined"
+            detected="Detected by the backup freshness watchdog (age-driven, so this fires whether the backup run failed OR never happened)."
+          fi
           gh label create "$label" --repo "$GH_REPO" --color b60205 \
-            --description "Automated: customer production backup is stale or its age is undetermined" >/dev/null 2>&1 || true
-          body="$(printf 'state=%s reason=%s\n\n%s\n\nDetected by the backup freshness watchdog (age-driven, so this fires whether the backup run failed OR never happened). Run: %s. Runbook: docs/CUSTOMER_INCIDENT_RUNBOOK.md' \
-            "$state" "$reason" "$summary" "$RUN_URL")"
+            --description "$description" >/dev/null 2>&1 || true
+          body="$(printf 'state=%s reason=%s\n\n%s\n\n%s Run: %s. Runbook: docs/CUSTOMER_INCIDENT_RUNBOOK.md' \
+            "$state" "$reason" "$summary" "$detected" "$RUN_URL")"
           existing="$(gh issue list --repo "$GH_REPO" --state open --label "$label" \
             --json number --jq '.[0].number // empty')"
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --repo "$GH_REPO" --body "$body"
           else
             gh issue create --repo "$GH_REPO" --label "$label" \
-              --title "Customer production backup is STALE or undetermined" \
+              --title "$title" \
               --body "$body"
           fi
 
@@ -503,4 +841,30 @@ jobs:
             --json number --jq '.[].number'); do
             gh issue close "$number" --repo "$GH_REPO" --reason completed \
               --comment "$summary. Verified by $RUN_URL. Closing automatically."
+          done
+
+      # Closes the machine-DOWN alert only once a run has PROVEN a machine is
+      # back: `machine_running` (set by the ensure step) is true only when a
+      # machine reports `started` AND the public /livez returned 200 in this run.
+      # A machine merely `starting` (a crash-loop restart window) does not resolve
+      # it, so the alarm cannot flap closed-then-reopen on a machine that never
+      # actually recovered. Deliberately independent of backup freshness and of
+      # success(): a proven-up machine resolves "the machine is DOWN" even when
+      # the backup is separately still stale, which keeps its own alert open under
+      # its own label.
+      - name: Resolve the machine-down alert once a machine is running
+        if: ${{ !cancelled() && steps.ensure.outputs.machine_running == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          OUTCOME: ${{ steps.ensure.outputs.outcome }}
+        run: |
+          set -euo pipefail
+          label="customer-production-machine-down"
+          for number in $(gh issue list --repo "$GH_REPO" --state open --label "$label" \
+            --json number --jq '.[].number'); do
+            gh issue close "$number" --repo "$GH_REPO" --reason completed \
+              --comment "A customer machine is running again (watchdog outcome: $OUTCOME). Verified by $RUN_URL. Closing automatically."
           done

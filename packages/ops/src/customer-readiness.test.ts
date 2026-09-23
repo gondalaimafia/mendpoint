@@ -35,6 +35,7 @@ function attestation(): CustomerQualificationAttestation {
 function verifiedReceipt(): CustomerSandboxReceiptVerification {
   return {
     status: "verified",
+    source: "file",
     app: "mendpoint-sandbox",
     image: `registry.fly.io/mendpoint-sandbox@sha256:${"4".repeat(64)}`,
     policyDigest: `sha256:${"5".repeat(64)}`,

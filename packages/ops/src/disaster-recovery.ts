@@ -15,6 +15,7 @@ import {
   chownSync,
   constants,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -993,6 +994,9 @@ interface FenceMarker {
   pid: number;
   processStartedAt: string;
   acquiredAt: string;
+  // The kernel boot session the owner ran in. Optional: absent on markers written
+  // before this field existed and off Linux where no boot id is available.
+  bootId?: string;
 }
 
 export interface InspectedFenceMarker extends FenceMarker {
@@ -1000,6 +1004,26 @@ export interface InspectedFenceMarker extends FenceMarker {
 }
 
 const PROCESS_STARTED_AT = new Date(Date.now() - process.uptime() * 1_000).toISOString();
+
+/**
+ * The kernel boot session id. A pid is only meaningful within a single boot: after
+ * a reboot the same pid number belongs to an unrelated process, so a marker whose
+ * recorded boot id differs from the current one cannot have a surviving owner. The
+ * file is Linux-only, so this returns undefined on Windows, macOS, and in tests,
+ * where the boot-id liveness test is simply skipped.
+ */
+function readBootId(): string | undefined {
+  try {
+    const value = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    return value === "" ? undefined : value;
+  } catch {
+    return undefined;
+  }
+}
+
+// Read once at import: the boot id is stable for the process lifetime, keeping
+// tryAcquireMutationLease's per-call marker construction a fast path.
+const CURRENT_BOOT_ID = readBootId();
 
 function newFenceMarker(kind: FenceMarker["kind"], id: string = randomUUID()): FenceMarker {
   return {
@@ -1011,6 +1035,7 @@ function newFenceMarker(kind: FenceMarker["kind"], id: string = randomUUID()): F
     pid: process.pid,
     processStartedAt: PROCESS_STARTED_AT,
     acquiredAt: new Date().toISOString(),
+    ...(CURRENT_BOOT_ID ? { bootId: CURRENT_BOOT_ID } : {}),
   };
 }
 
@@ -1026,7 +1051,8 @@ function parseFenceMarker(raw: string, expectedKind?: FenceMarker["kind"]): Fenc
     typeof parsed.hostname !== "string" || !parsed.hostname ||
     !Number.isSafeInteger(parsed.pid) || Number(parsed.pid) <= 0 ||
     typeof parsed.processStartedAt !== "string" || !Number.isFinite(Date.parse(parsed.processStartedAt)) ||
-    typeof parsed.acquiredAt !== "string" || !Number.isFinite(Date.parse(parsed.acquiredAt))
+    typeof parsed.acquiredAt !== "string" || !Number.isFinite(Date.parse(parsed.acquiredAt)) ||
+    (parsed.bootId !== undefined && (typeof parsed.bootId !== "string" || parsed.bootId === ""))
   ) {
     throw new Error("backup_fence_marker_invalid");
   }
@@ -1247,7 +1273,12 @@ export function initializeWithMutationLease<T>(
   const enabled = env.MENDPOINT_DEPLOYMENT_PROFILE === "customer" ||
     Boolean(env.MENDPOINT_BACKUP_FENCE_ROOT?.trim());
   if (!enabled) return initialize();
-  const lease = tryAcquireMutationLease(resolveMutationFenceRoot(env));
+  const fenceRoot = resolveMutationFenceRoot(env);
+  // Clear any marker left by a process a restart destroyed before admission, so a
+  // dead backup's exclusive marker cannot refuse startup indefinitely. Live holds
+  // survive the reap and still block admission below.
+  reapOrphanedMutationMarkers(fenceRoot);
+  const lease = tryAcquireMutationLease(fenceRoot);
   if (!lease) throw new Error("customer_startup_blocked_by_backup");
   try {
     return initialize();
@@ -1296,6 +1327,89 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
+export interface MutationMarkerLivenessContext {
+  currentBootId?: string | undefined;
+  currentHostname: string;
+}
+
+/**
+ * The canonical process start epoch (ms) of a live pid from /proc, or null when it
+ * cannot be read. `/proc/<pid>/stat` field 22 is the start time in USER_HZ ticks
+ * (100 on Linux regardless of the kernel HZ), measured from boot; `/proc/stat`'s
+ * `btime` is the boot wall-clock epoch (seconds). Their sum is the process start
+ * epoch. Field 2 (the executable name) is parenthesised and may itself contain
+ * spaces and parentheses, so the numeric fields are read after the LAST ')'.
+ */
+function processStartEpochMs(pid: number): number | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const afterComm = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/);
+    // The fields after comm begin at field 3 (state) => index 0, so starttime
+    // (field 22) is at index 19.
+    const starttimeTicks = Number(afterComm[19]);
+    if (!Number.isFinite(starttimeTicks)) return null;
+    const btimeMatch = readFileSync("/proc/stat", "utf8").match(/^btime\s+(\d+)/m);
+    if (!btimeMatch) return null;
+    const btimeSeconds = Number(btimeMatch[1]);
+    if (!Number.isFinite(btimeSeconds)) return null;
+    return btimeSeconds * 1_000 + (starttimeTicks / 100) * 1_000;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The single judgement of whether a fence marker's owner is provably gone. Returns
+ * a reason string when the owner cannot still hold the lock, or null when it might
+ * still be alive (the conservative default that keeps a real backup fenced). The
+ * tests below are ordered strongest-evidence-first:
+ *   boot_id_mismatch          the marker was written in a different boot; a process
+ *                             cannot survive a reboot. This is the incident case: a
+ *                             restart left a dead backup's exclusive marker behind.
+ *   process_not_alive         same host and the recorded pid is gone.
+ *   pid_reused_start_time_...  same host, the pid is alive, but /proc says that pid
+ *                             started at a different time, so it is a reused number,
+ *                             not the original owner. Skipped when /proc is absent.
+ * A host mismatch alone is deliberately NOT proof of termination: in the self-hosted
+ * Compose deployment the api and worker containers share one fence volume with
+ * different container hostnames and the SAME host-kernel boot id, so the other
+ * container's live writer must survive. Its pid also lives in another namespace, so
+ * process_not_alive below would misjudge it; host mismatch therefore stays
+ * inconclusive and only same-host liveness (or a reboot) can reap.
+ */
+export function mutationMarkerOwnerTermination(
+  marker: Pick<FenceMarker, "bootId" | "hostname" | "pid" | "processStartedAt">,
+  context: MutationMarkerLivenessContext,
+): string | null {
+  if (marker.bootId && context.currentBootId && marker.bootId !== context.currentBootId) {
+    return "boot_id_mismatch";
+  }
+  if (marker.hostname !== context.currentHostname) {
+    return null;
+  }
+  if (!processIsAlive(marker.pid)) {
+    return "process_not_alive";
+  }
+  if (existsSync("/proc") && existsSync(`/proc/${marker.pid}`)) {
+    const startEpochMs = processStartEpochMs(marker.pid);
+    const markerStartedMs = Date.parse(marker.processStartedAt);
+    // Skip when either /proc file is unreadable: a live same-boot owner must not read
+    // as reused just because its start epoch could not be recomputed. The test is
+    // one-sided on purpose: a recycled pid can only have started LATER than the
+    // marker's owner, while a forward wall-clock step after boot (chrony, suspend
+    // and resume) shifts marker timestamps ahead of the kernel's fixed btime for
+    // every live process, which must never read as reuse.
+    if (
+      startEpochMs !== null &&
+      Number.isFinite(markerStartedMs) &&
+      startEpochMs - markerStartedMs > 15_000
+    ) {
+      return "pid_reused_start_time_mismatch";
+    }
+  }
+  return null;
+}
+
 export function recoverStaleMutationMarker(input: {
   fenceRoot: string;
   kind: "writer" | "exclusive";
@@ -1334,7 +1448,17 @@ export function recoverStaleMutationMarker(input: {
     if (!safeEqualHex(inspected.markerSha256, input.expectedMarkerSha256)) {
       throw new Error("backup_fence_recovery_marker_evidence_mismatch");
     }
-    if (inspected.hostname === hostname() && processIsAlive(inspected.pid)) {
+    // Refuse recovery only when the owner might still be alive. The shared judgement
+    // treats a boot-id mismatch or a same-host dead/reused pid as proof of
+    // termination. The manual path additionally accepts an operator-attested
+    // cross-host recovery (evidence is required above): a marker from another machine
+    // cannot own a lock here, even though the automatic reaper no longer treats host
+    // mismatch as proof, so as not to reap a second container sharing the fence volume.
+    const terminatedBySharedRule = mutationMarkerOwnerTermination(inspected, {
+      currentBootId: CURRENT_BOOT_ID,
+      currentHostname: hostname(),
+    }) !== null;
+    if (!terminatedBySharedRule && inspected.hostname === hostname()) {
       throw new Error("backup_fence_recovery_owner_still_alive");
     }
     const audit = {
@@ -1368,8 +1492,270 @@ export function recoverStaleMutationMarker(input: {
   }
 }
 
+export interface ReapedMutationMarker {
+  kind: "exclusive" | "recovery" | "writer";
+  id: string | null;
+  reason: string;
+  quarantined: boolean;
+}
+
+export interface ReapOrphanedMutationMarkersOptions {
+  currentBootId?: string | undefined;
+  currentHostname?: string;
+  now?: Date;
+  // "writers" restricts the sweep to writer leases, for a backup that already holds
+  // its own exclusive marker; "all" (default) also inspects the exclusive and
+  // recovery slots, for the boot path.
+  scope?: "all" | "writers";
+}
+
+// start-fly runs the reaper as root while the fence directory belongs to the
+// unprivileged runtime user (uid 1000); any file the reaper creates fresh must be
+// handed to that user so the later backup process (uid 1000) can still append to
+// the audit log. Returns null off Fly/root or when the directory is already root's.
+function privilegedDirectoryOwner(directory: string): { uid: number; gid: number } | null {
+  if (typeof process.getuid !== "function" || process.getuid() !== 0) return null;
+  try {
+    const stat = statSync(directory);
+    return stat.uid === 0 ? null : { uid: stat.uid, gid: stat.gid };
+  } catch {
+    return null;
+  }
+}
+
+function chownWhenPrivileged(target: string, owner: { uid: number; gid: number } | null): void {
+  if (!owner) return;
+  try {
+    chownSync(target, owner.uid, owner.gid);
+  } catch {
+    // Best effort: an un-chownable file must not wedge boot.
+  }
+}
+
+function appendReaperAudit(
+  auditPath: string,
+  line: string,
+  owner: { uid: number; gid: number } | null,
+): void {
+  const createdByThisAppend = !existsSync(auditPath);
+  appendFileSync(auditPath, line, { encoding: "utf8", mode: 0o600 });
+  if (createdByThisAppend) chownWhenPrivileged(auditPath, owner);
+}
+
+/**
+ * True when exclusive.json is the marker paired with a persistent ReGauge cutover
+ * hold, which must never be reaped or quarantined. acquireRegaugeCutoverFence
+ * (regauge-cutover.ts) writes exclusive.json AND the cutover fence file whose
+ * exclusiveMarkerSha256 binds those exact bytes; the cutover writer is a one-shot
+ * `flyctl console` process that exits by design, so the marker's pid always reads as
+ * dead. Bind by that sha256 when the cutover fence is present. If the fence exists
+ * but its sha256 cannot be determined (unreadable, unparseable, or missing the
+ * field), leave the marker alone: a present cutover fence signals a persistent hold.
+ */
+function pairedWithRegaugeCutover(root: string, rawExclusive: string): boolean {
+  const cutoverPath = resolve(root, REGAUGE_CUTOVER_FENCE_NAME);
+  if (!existsSync(cutoverPath)) return false;
+  let fenceRaw: string;
+  try {
+    fenceRaw = readFileSync(cutoverPath, "utf8");
+  } catch {
+    return true;
+  }
+  let expectedSha256: unknown;
+  try {
+    expectedSha256 = (JSON.parse(fenceRaw) as { exclusiveMarkerSha256?: unknown }).exclusiveMarkerSha256;
+  } catch {
+    return true;
+  }
+  if (typeof expectedSha256 !== "string") return true;
+  return sha256(rawExclusive) === expectedSha256;
+}
+
+/**
+ * Sweeps the fence for markers whose owner is provably gone and clears them, so a
+ * process that died holding the exclusive backup marker (the Sep 2026 outage) or a
+ * writer lease can no longer wedge startup or stall a backup forever. For each reaped
+ * marker the termination is recorded in recovery-audit.jsonl FIRST, and only once
+ * the append succeeds is the marker removed; if the append fails the marker is left
+ * in place and logged to stderr, so a full disk can never destroy a marker without a
+ * record. A marker that fails to parse cannot be a live lock, so it is quarantined
+ * rather than left to block boot, unless it is younger than 30s (a concurrent writer
+ * mid-write can be observed as a partial file). The persistent ReGauge cutover hold,
+ * and the exclusive.json bound to it, are never reaped or quarantined.
+ */
+export function reapOrphanedMutationMarkers(
+  fenceRoot: string,
+  options: ReapOrphanedMutationMarkersOptions = {},
+): ReapedMutationMarker[] {
+  const paths = ensureFenceDirectories(fenceRoot);
+  const currentBootId = options.currentBootId === undefined ? CURRENT_BOOT_ID : options.currentBootId;
+  const currentHostname = options.currentHostname ?? hostname();
+  const now = options.now ?? new Date();
+  const scope = options.scope ?? "all";
+  const owner = privilegedDirectoryOwner(paths.root);
+  const reaped: ReapedMutationMarker[] = [];
+
+  const slots: Array<{ kind: FenceMarker["kind"]; path: string; name: string }> = [];
+  if (scope === "all") {
+    slots.push({ kind: "exclusive", path: paths.exclusive, name: "exclusive.json" });
+    slots.push({ kind: "recovery", path: paths.recovery, name: "recovery.json" });
+  }
+  for (const entry of readdirSync(paths.writers, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith(".json")) {
+      slots.push({ kind: "writer", path: resolve(paths.writers, entry.name), name: entry.name });
+    }
+  }
+
+  for (const slot of slots) {
+    if (!existsSync(slot.path)) continue;
+    let raw: string;
+    try {
+      assertNoSymlink(slot.path);
+      raw = readFileSync(slot.path, "utf8");
+    } catch {
+      // Vanished or unreadable between listing and read; a later poll retries.
+      continue;
+    }
+    // The exclusive.json bound to a persistent ReGauge cutover hold is part of that
+    // hold, not an orphan: never reap or quarantine it. (B2)
+    if (slot.kind === "exclusive" && pairedWithRegaugeCutover(paths.root, raw)) continue;
+    let marker: FenceMarker;
+    try {
+      marker = parseFenceMarker(raw, slot.kind);
+    } catch {
+      // A concurrent writer's marker can be observed mid-write as a partial file, so
+      // a young unparseable marker is left for a later poll rather than quarantined.
+      let mtimeMs: number;
+      try {
+        mtimeMs = statSync(slot.path).mtimeMs;
+      } catch {
+        continue;
+      }
+      if (now.getTime() - mtimeMs < 30_000) continue;
+      const quarantinePath = resolve(
+        paths.root,
+        `.corrupt-${slot.name}-${now.toISOString().replaceAll(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`,
+      );
+      try {
+        renameSync(slot.path, quarantinePath);
+      } catch {
+        continue;
+      }
+      chownWhenPrivileged(quarantinePath, owner);
+      try {
+        appendReaperAudit(
+          paths.audit,
+          `${JSON.stringify({
+            schemaVersion: 1,
+            recoveredAt: now.toISOString(),
+            kind: slot.kind,
+            markerFile: slot.name,
+            quarantinedTo: parse(quarantinePath).base,
+            reason: "marker_unparseable",
+            recoveryOwnerToken: `boot-reaper:${randomUUID()}`,
+          })}\n`,
+          owner,
+        );
+      } catch {
+        // Audit is best effort; the corrupt marker is already quarantined.
+      }
+      process.stderr.write(
+        `backup_fence_marker_quarantined kind=${slot.kind} file=${slot.name} reason=marker_unparseable\n`,
+      );
+      reaped.push({ kind: slot.kind, id: null, reason: "marker_unparseable", quarantined: true });
+      continue;
+    }
+    const reason = mutationMarkerOwnerTermination(marker, { currentBootId, currentHostname });
+    if (reason === null) continue;
+    const markerSha256 = sha256(raw);
+    // Record the termination BEFORE removing the marker (the manual recovery
+    // convention). If the audit append fails the marker stays put, so a full disk
+    // never destroys a marker without a record.
+    try {
+      appendReaperAudit(
+        paths.audit,
+        `${JSON.stringify({
+          schemaVersion: 1,
+          recoveredAt: now.toISOString(),
+          kind: slot.kind,
+          markerId: marker.id,
+          markerSha256,
+          ownerHostname: marker.hostname,
+          ownerPid: marker.pid,
+          ownerProcessStartedAt: marker.processStartedAt,
+          ownerTerminationEvidence: reason,
+          recoveryOwnerToken: `boot-reaper:${randomUUID()}`,
+          ownerBootId: marker.bootId ?? null,
+          currentBootId: currentBootId ?? null,
+        })}\n`,
+        owner,
+      );
+    } catch {
+      process.stderr.write(
+        `backup_fence_orphan_reap_audit_unavailable kind=${slot.kind} id=${marker.id}\n`,
+      );
+      continue;
+    }
+    try {
+      rmSync(slot.path, { force: true });
+    } catch {
+      // Lost the race to the owner or another reaper; the audit already recorded it.
+      process.stderr.write(
+        `backup_fence_orphan_reap_removal_failed kind=${slot.kind} id=${marker.id}\n`,
+      );
+      continue;
+    }
+    process.stderr.write(
+      `backup_fence_orphan_reaped kind=${slot.kind} id=${marker.id} reason=${reason}\n`,
+    );
+    reaped.push({ kind: slot.kind, id: marker.id, reason, quarantined: false });
+  }
+  return reaped;
+}
+
 function wait(delayMs: number): Promise<void> {
   return new Promise((resolveWait) => setTimeout(resolveWait, delayMs));
+}
+
+function nonNegativeInteger(value: number, name: string): number {
+  if (!Number.isInteger(value) || value < 0) throw new Error(`${name}_invalid`);
+  return value;
+}
+
+/**
+ * Waits for any exclusive backup or recovery hold on the fence to clear before
+ * startup constructs durable state, reaping provably orphaned markers on every
+ * poll. A genuine in-progress hold on this machine becomes a bounded wait rather
+ * than the crash loop an orphaned marker used to cause; a marker left by a dead
+ * process is cleared on the first poll. Rejects if the hold outlives the timeout.
+ * A persistent ReGauge cutover hold never clears on its own, so it fails fast with a
+ * distinct error instead of consuming the whole timeout (matching main's immediate
+ * customer_startup_blocked_by_backup rather than a multi-minute stall). (S2)
+ */
+export async function waitForMutationFenceRelease(
+  fenceRoot: string,
+  options: { timeoutMs: number; pollMs: number },
+): Promise<void> {
+  const timeoutMs = nonNegativeInteger(options.timeoutMs, "backup_fence_wait_timeout_ms");
+  const pollMs = positiveInteger(options.pollMs, "backup_fence_poll_interval_ms");
+  const paths = fencePaths(fenceRoot);
+  const deadline = Date.now() + timeoutMs;
+  let announced = false;
+  for (;;) {
+    reapOrphanedMutationMarkers(fenceRoot);
+    if (existsSync(resolve(paths.root, REGAUGE_CUTOVER_FENCE_NAME))) {
+      throw new Error("backup_fence_blocked_by_regauge_cutover");
+    }
+    if (!isBackupFenceActive(fenceRoot) && !existsSync(paths.recovery)) return;
+    if (Date.now() >= deadline) throw new Error("backup_fence_wait_timeout");
+    if (!announced) {
+      announced = true;
+      process.stderr.write(
+        `backup_fence_wait_started fenceRoot=${fenceRoot} timeoutMs=${timeoutMs}\n`,
+      );
+    }
+    await wait(Math.min(pollMs, Math.max(1, deadline - Date.now())));
+  }
 }
 
 export function prepareMutationFenceDirectories(
@@ -1443,6 +1829,25 @@ function validateDurableBackupMount(input: ApplicationConsistentBackupInput): vo
 }
 
 /**
+ * Publishes a fence marker so no reader can observe it half-written. writeFileSync
+ * with "wx" is a create-then-write, so a concurrent reader (the boot reaper) can
+ * open the marker between its creation and its content being flushed and see an
+ * empty file; it then quarantines a live writer. Writing to a temp file first and
+ * hard-linking it into place makes the marker atomic (readers see the full content
+ * or nothing) while linkSync preserves the "wx" no-clobber claim: it fails EEXIST
+ * when the target already exists. (S4)
+ */
+function publishMarkerAtomically(finalPath: string, content: string): void {
+  const tempPath = resolve(dirname(finalPath), `.marker-${randomUUID()}.tmp`);
+  writeFileSync(tempPath, content, { flag: "wx", mode: 0o600 });
+  try {
+    linkSync(tempPath, finalPath);
+  } finally {
+    rmSync(tempPath, { force: true });
+  }
+}
+
+/**
  * Acquires the global backup fence, drains admitted writers, and snapshots all
  * resources while new mutations are rejected by cooperative admission points.
  */
@@ -1455,11 +1860,7 @@ export async function createApplicationConsistentBackup(
   const pollIntervalMs = positiveInteger(input.pollIntervalMs ?? 25, "backup_fence_poll_interval_ms");
   const exclusiveMarker = newFenceMarker("exclusive", input.backupId);
   try {
-    writeFileSync(
-      paths.exclusive,
-      `${JSON.stringify(exclusiveMarker)}\n`,
-      { flag: "wx", mode: 0o600 },
-    );
+    publishMarkerAtomically(paths.exclusive, `${JSON.stringify(exclusiveMarker)}\n`);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
       throw new Error("backup_fence_already_active");
@@ -1473,6 +1874,10 @@ export async function createApplicationConsistentBackup(
   }
 
   try {
+    // Clear writer leases whose owner is provably gone so a crashed writer cannot
+    // stall the drain until backup_fence_writer_drain_timeout. This backup's own
+    // exclusive marker is out of scope; live writers survive and are drained below.
+    reapOrphanedMutationMarkers(input.fenceRoot, { scope: "writers" });
     const deadline = Date.now() + waitTimeoutMs;
     while (activeMutationLeaseCount(paths.writers) > 0) {
       if (Date.now() >= deadline) throw new Error("backup_fence_writer_drain_timeout");

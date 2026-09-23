@@ -5,14 +5,21 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   claimNextJob,
+  bindMissionScope,
   createDb,
+  createMission,
+  createMissionMutationAuthority,
+  createMissionTask,
   enqueueJob,
   enqueueWardenCiCycle,
   getJob,
+  getMission,
   getWardenCiCycle,
   insertAgentRun,
+  insertPrincipal,
   listJobs,
   recordWardenCiObservation,
+  transitionMissionTask,
   type AppDb,
 } from "@mendpoint/db";
 import { runWardenCiRepairDispatch } from "./warden-ci-repair-dispatch.js";
@@ -70,6 +77,70 @@ afterEach(() => {
 });
 
 describe("Warden CI repair dispatch", () => {
+  it("propagates the CI cycle's fresh Mission authority instead of the original source job", async () => {
+    const value = fixture(
+      { failures: [{ name: "unit", text: "expected 1 received 2" }] },
+      { missionId: "stale-original-mission" },
+    );
+    const { db, evidence, job, root } = value;
+    const at = "2026-08-13T12:00:00.000Z";
+    db.raw.prepare(`INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+      VALUES ('tenant-a', 'tenant-a', 'Tenant A', 'team', 'active', 10, ?)`).run(at);
+    insertPrincipal(db, { id: "mission-owner", tenantId: "tenant-a", kind: "human",
+      subject: "owner@example.com", displayName: "Owner", createdAt: at });
+    db.raw.prepare(`INSERT INTO scm_connections
+      (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+      VALUES ('scm-a', 'tenant-a', 'github', 'app://1', '202', 'GitHub', ?, ?)`).run(at, at);
+    db.raw.prepare(`INSERT INTO connected_repositories
+      (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch,
+       environment, retention_days, status, created_at, updated_at)
+      VALUES ('repo-a', 'tenant-a', 'scm-a', '101', 'acme', 'service', 'main', 'main',
+       'production', 30, 'ready', ?, ?)`).run(at, at);
+    db.raw.prepare(`INSERT INTO repository_snapshots
+      (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+       submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+      VALUES ('snapshot-a', 'tenant-a', 'repo-a', 'main', ?, ?, 'C:\\snapshot',
+       'reject', 'reject', '[]', 1, ?, '2099-01-01T00:00:00.000Z')`)
+      .run(sha("a"), `sha256:${"b".repeat(64)}`, at);
+    createMission(db, { id: "mission-current", tenantId: "tenant-a", product: "fettler",
+      triggerKind: "provider_change", objective: "Repair the current draft", ownerPrincipalId: "mission-owner",
+      eventId: "e-mission", idempotencyKey: "c-mission", correlationId: "corr", createdAt: at });
+    bindMissionScope(db, { tenantId: "tenant-a", missionId: "mission-current", repositoryId: "repo-a",
+      snapshotId: "snapshot-a", actorPrincipalId: "mission-owner", eventId: "e-scope",
+      idempotencyKey: "c-scope", correlationId: "corr", createdAt: at });
+    let task = createMissionTask(db, { id: "task-current", tenantId: "tenant-a", missionId: "mission-current",
+      taskType: "code_migration", acceptanceCriteria: "CI passes", risk: "medium",
+      actorPrincipalId: "mission-owner", eventId: "e-task", idempotencyKey: "c-task",
+      correlationId: "corr", createdAt: at });
+    task = transitionMissionTask(db, { tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision,
+      to: "agent_assigned", actorPrincipalId: "mission-owner", eventId: "e-assign",
+      idempotencyKey: "c-assign", correlationId: "corr", createdAt: at });
+    task = transitionMissionTask(db, { tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision,
+      to: "agent_working", actorPrincipalId: "mission-owner", eventId: "e-work",
+      idempotencyKey: "c-work", correlationId: "corr", createdAt: at });
+    const authority = createMissionMutationAuthority({
+      mission: getMission(db, "tenant-a", "mission-current")!,
+      task, repositoryId: "repo-a", snapshotId: "snapshot-a", resolvedSha: sha("a"),
+    });
+    db.raw.prepare(`UPDATE fettler_ci_cycles SET mission_authority_json = ? WHERE id = ? AND tenant_id = ?`)
+      .run(JSON.stringify(authority), value.cycle.id, "tenant-a");
+    db.raw.prepare(`UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?`).run(
+      JSON.stringify({ ...JSON.parse(job.payload_json), missionId: authority.missionId, missionAuthority: authority }),
+      job.id, "tenant-a",
+    );
+
+    await runWardenCiRepairDispatch({ db, job: getJob(db, job.id, "tenant-a")!,
+      materializeHead: async () => ({ repositoryId: "repo-a", snapshotId: "snapshot-repair-a",
+        revision: sha("d"), manifestSha256: "e".repeat(64), root }),
+      readEvidence: async () => evidence, now: () => "2026-08-13T12:03:00.000Z" });
+    const repairJob = listJobs(db, 50, "tenant-a").find((candidate) => candidate.type === "agent.run" &&
+      candidate.id !== "initial-agent-job")!;
+    expect(JSON.parse(repairJob.payload_json)).toMatchObject({
+      missionId: "mission-current",
+      missionAuthority: { missionId: "mission-current", taskId: "task-current", taskStatus: "agent_working" },
+    });
+  });
+
   it("enqueues one standard checkpointable agent run bound to the failed head snapshot", async () => {
     const { db, cycle, evidence, job, root } = fixture();
     const materializeHead = vi.fn(async () => ({ repositoryId: "repo-a", snapshotId: "snapshot-repair-a",
@@ -150,7 +221,13 @@ describe("Warden CI repair dispatch", () => {
       .toHaveLength(1);
   });
 
-  it("copies a claimed Mission id from the source agent.run onto the repair run", async () => {
+  // The guarantee is that stale AUTHORITY (the pre-delivery task revision) is
+  // never revived. The plain claimed `missionId` is a different thing and is
+  // carried through UNBOUND: dropping it made resolveBoundMissionForJob return
+  // undefined for the successor, which silently skipped the Mission policy
+  // evaluation main applied to it. Carrying it keeps policy on; the absence of
+  // authority is recorded rather than inferred from silence.
+  it("carries the claimed Mission through unbound without reviving stale authority", async () => {
     const { db, evidence, job, root } = fixture(
       { failures: [{ name: "unit", text: "expected 1 received 2" }] },
       { missionId: "mission-claimed-a" },
@@ -163,10 +240,54 @@ describe("Warden CI repair dispatch", () => {
     });
     const repairJob = listJobs(db, 50, "tenant-a").find((candidate) => candidate.type === "agent.run" &&
       candidate.id !== "initial-agent-job")!;
-    expect(JSON.parse(repairJob.payload_json)).toMatchObject({
-      consumerId: "consumer-a",
+    const payload = JSON.parse(repairJob.payload_json);
+    expect(payload).toMatchObject({ consumerId: "consumer-a", missionId: "mission-claimed-a" });
+    // Unbound: the stale task revision is NOT revived.
+    expect(payload).not.toHaveProperty("missionAuthority");
+    // ...and proceeding unbound is on the durable record.
+    expect(db.raw.prepare(`SELECT resource_id FROM audit_events
+      WHERE action = 'fettler.ci_repair.mission_authority_absent'`).get()).toBeTruthy();
+  });
+
+  // The case the guard actually exists for, and which the fixture above could not
+  // reach: the SOURCE PAYLOAD carries authority while the cycle has none. The
+  // successor must take the cycle's (absent) authority, never the payload's stale
+  // one - that authority names the PRE-DELIVERY task revision, superseded by the
+  // handoff that produced this cycle. Mutating the guard to fall back to
+  // `originalPayload.missionAuthority` survived until this test existed.
+  it("never falls back to the source payload's stale authority when the cycle has none", async () => {
+    const staleAuthority = {
+      schemaVersion: 1 as const,
       missionId: "mission-claimed-a",
+      missionRevision: 2,
+      missionState: "executing" as const,
+      taskId: "task-pre-delivery",
+      taskRevision: 4,
+      taskStatus: "agent_working" as const,
+      repositoryId: "repo-a",
+      snapshotId: "snapshot-stale",
+      resolvedSha: "a".repeat(40),
+    };
+    const { db, evidence, job, root } = fixture(
+      { failures: [{ name: "unit", text: "expected 1 received 2" }] },
+      { missionId: "mission-claimed-a", missionAuthority: staleAuthority },
+    );
+    await runWardenCiRepairDispatch({
+      db, job,
+      materializeHead: async () => ({ repositoryId: "repo-a", snapshotId: "snapshot-repair-a",
+        revision: sha("d"), manifestSha256: "e".repeat(64), root }),
+      readEvidence: async () => evidence, now: () => "2026-08-13T12:03:00.000Z",
     });
+
+    const repairJob = listJobs(db, 50, "tenant-a").find((candidate) => candidate.type === "agent.run" &&
+      candidate.id !== "initial-agent-job")!;
+    const payload = JSON.parse(repairJob.payload_json);
+    // The claimed Mission is carried so policy still applies...
+    expect(payload).toMatchObject({ missionId: "mission-claimed-a" });
+    // ...but the stale pre-delivery authority is NOT revived.
+    expect(payload).not.toHaveProperty("missionAuthority");
+    expect(db.raw.prepare(`SELECT resource_id FROM audit_events
+      WHERE action = 'fettler.ci_repair.mission_authority_absent'`).get()).toBeTruthy();
   });
 
   it("omits padded or empty missionId rather than inventing a Mission", async () => {

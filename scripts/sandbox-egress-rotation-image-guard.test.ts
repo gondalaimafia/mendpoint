@@ -386,8 +386,14 @@ function runHealthGate(livezStatus: number, healthzStatus: number): HealthResult
   const harness = [
     "set -uo pipefail",
     'app="mendpoint-fettler-production"',
+    // This harness exercises the NON-protected containment path (the app name
+    // here is incidental). The determination block that would set
+    // is_protected_app is not part of the extracted region, and
+    // contain_current_machines now defaults an unset flag to protected
+    // (:-true), so set it false explicitly to test the stop-based path.
+    "is_protected_app=false",
     "machines_json=$(cat machines.json)",
-    "sleep() { :; }", // keep the 24-attempt backoff instant
+    "sleep() { :; }", // keep the readiness backoff instant
     curlStub,
     containment,
     healthBlock,

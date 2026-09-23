@@ -212,8 +212,11 @@ function dependencies(value: ReturnType<typeof fixture>, verify?: WardenCampaign
 
 function executionInput(value: ReturnType<typeof fixture>, overrides: Record<string, unknown> = {}) {
   return {
+    // now (authority) defaults to the enqueue clock here: every fixture time sits
+    // inside the maintenance window, so authority == enqueue is a no-op for these
+    // cases. Tests that must tell the two clocks apart override `now`.
     db: value.db, tenantId: "tenant-a", campaignId: "campaign-a", targetId: "target-a",
-    rolloutDecisionId: "rollout-a", source: source(), actorPrincipalId: "worker", runId: "run-a", createdAt,
+    rolloutDecisionId: "rollout-a", source: source(), actorPrincipalId: "worker", runId: "run-a", createdAt, now: createdAt,
     rolloutApproval: { decisionSha256: value.decision.decisionSha256, approvedByPrincipalId: "reviewer", approvedAt: createdAt },
     ownerApproval: { ownerPrincipalId: "owner", ownerHandle: "@payments", approvedAt: createdAt },
     dependencies: dependencies(value), ...overrides,
