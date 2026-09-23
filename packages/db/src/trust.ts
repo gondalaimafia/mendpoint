@@ -74,12 +74,23 @@ export function insertPrincipal(
     [input.tenantId, input.kind, input.subject],
   );
   if (existing) {
-    const same =
-      existing.display_name === input.displayName &&
+    const authorityMatches =
       existing.audience === (input.audience ?? null) &&
       existing.expires_at === (input.expiresAt ?? null) &&
       existing.revoked_at === (input.revokedAt ?? null);
-    if (!same) throw new Error("principal_identity_conflict");
+    if (!authorityMatches) throw new Error("principal_identity_conflict");
+    // A display name is a label, not identity; the identity is
+    // (tenant_id, kind, subject). Renaming the deterministic service principal
+    // (e.g. "Warden pipeline" -> "Fettler pipeline") must not throw and
+    // dead-letter every job that re-registers it, so update the label in place
+    // when the authority-relevant fields (audience, expires_at, revoked_at) all
+    // match, and return the re-read row with the new display name.
+    if (existing.display_name !== input.displayName) {
+      db.raw
+        .prepare(`UPDATE principals SET display_name = ? WHERE id = ? AND tenant_id = ?`)
+        .run(input.displayName, existing.id, input.tenantId);
+      return one<PrincipalRow>(db, `SELECT * FROM principals WHERE id = ?`, [existing.id])!;
+    }
     return existing;
   }
   // Read-then-insert has no BEGIN IMMEDIATE, so a concurrent caller can commit
