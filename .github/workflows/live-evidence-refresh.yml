@@ -143,13 +143,17 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SERVER_URL: ${{ github.server_url }}
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
           FAILED_LABEL="live-evidence-refresh-failed"
           READY_LABEL="live-evidence-refresh-ready"
           BRANCH="bot/live-evidence-refresh"
           BOT_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          FAILED_REPORTED=0
 
           upsert_issue() { # label title body
+            # Opening the FAILED issue marks it reported, so the ERR trap below
+            # never double-comments a failure an explicit path already surfaced.
+            [ "$1" = "$FAILED_LABEL" ] && FAILED_REPORTED=1
             gh label create "$1" --repo "$GH_REPO" --color b60205 \
               --description "Automated: live evidence refresh" >/dev/null 2>&1 || true
             existing="$(gh issue list --repo "$GH_REPO" --state open --label "$1" \
@@ -160,6 +164,22 @@ jobs:
               gh issue create --repo "$GH_REPO" --label "$1" --title "$2" --body "$3"
             fi
           }
+          # Any unhandled failure in the push/reset path (git fetch, a non-force
+          # or -u push, a jq on the summary) must surface as the FAILED issue, not
+          # a red run with no issue. set -E propagates the trap into functions.
+          # The trap preserves the exit code and never re-reports a failure an
+          # explicit path already opened (FAILED_REPORTED), and it disables itself
+          # first so a failure while reporting cannot recurse.
+          report_unexpected_failure() {
+            trap - ERR
+            local rc="$1"
+            if [ "$FAILED_REPORTED" -eq 0 ]; then
+              upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" \
+                "$(printf 'The live evidence refresh failed unexpectedly (command exited %s near line %s). No branch push is trusted after an unexpected failure; a human should inspect the run.\n\nRun: %s' "$rc" "${2:-?}" "$RUN_URL")" || true
+            fi
+            exit "$rc"
+          }
+          trap 'report_unexpected_failure "$?" "$LINENO"' ERR
           close_issues() { # label
             for number in $(gh issue list --repo "$GH_REPO" --state open --label "$1" \
               --json number --jq '.[].number'); do
@@ -167,21 +187,38 @@ jobs:
                 --comment "Resolved automatically by $RUN_URL."
             done
           }
-          # Three-valued open-PR lookup: "found <n>" / "none" / "failed". A
-          # swallowed lookup error must NOT read as "no open PR" — that would let
-          # the reset path force-push over a reviewer's branch. "failed" is a
-          # distinct state the callers fail closed on.
+          # Three-valued open-PR lookup: "found <n>" / "none" / "failed".
+          #
+          # SECURITY: `gh pr list --head "$BRANCH"` matches by ref NAME only, so a
+          # PR opened from a FORK whose branch is also named bot/live-evidence-
+          # refresh would match. Acting on it (push, `gh pr edit` its title/body
+          # with our label, close our issues) could dress an outsider's fork code
+          # up as "the refresh" for a reviewer to merge. Same-repo is the security
+          # boundary: filter to non-cross-repository PRs whose head ref is exactly
+          # this branch. A same-repo PR opened by a human from the compare link is
+          # legitimate; a fork PR is not, whoever opened it. More than one match
+          # is ambiguous -> failed (fail closed). A swallowed lookup error must
+          # never read as "no open PR" and let the reset path force-push.
           refresh_pr_state() {
-            local out status
-            out="$(gh pr list --repo "$GH_REPO" --head "$BRANCH" --state open \
-              --json number --jq '.[0].number // empty' 2>/dev/null)" && status=0 || status=$?
+            local json status count
+            json="$(gh pr list --repo "$GH_REPO" --state open --head "$BRANCH" \
+              --json number,isCrossRepository,headRefName \
+              --jq "map(select((.isCrossRepository|not) and .headRefName==\"$BRANCH\"))" 2>/dev/null)" \
+              && status=0 || status=$?
             if [ "${status:-0}" -ne 0 ]; then echo "failed"; return; fi
-            if [ -n "$out" ]; then echo "found $out"; else echo "none"; fi
+            count="$(printf '%s' "$json" | jq 'length' 2>/dev/null)" || { echo "failed"; return; }
+            if [ "${count:-0}" -gt 1 ]; then echo "failed"; return; fi
+            if [ "${count:-0}" -eq 1 ]; then
+              echo "found $(printf '%s' "$json" | jq -r '.[0].number')"
+            else
+              echo "none"
+            fi
           }
           # Three-valued remote-branch lookup: "exists <sha>" / "absent" / "failed".
+          # Exact refspec, so only this branch head is matched.
           remote_branch_state() {
             local out status
-            out="$(git ls-remote --heads origin "$BRANCH" 2>/dev/null)" && status=0 || status=$?
+            out="$(git ls-remote origin "refs/heads/${BRANCH}" 2>/dev/null)" && status=0 || status=$?
             if [ "${status:-0}" -ne 0 ]; then echo "failed"; return; fi
             if [ -n "$out" ]; then echo "exists $(printf '%s\n' "$out" | awk 'NR==1{print $1}')"; else echo "absent"; fi
           }
@@ -197,8 +234,11 @@ jobs:
             # distinct third state, not folded into "" (which would read as
             # bot-only and permit a force-push). Empty output from a SUCCESSFUL
             # log means no commits beyond main = bot-only.
+            # Both author AND committer email (%ae%n%ce): a reviewer's amend or
+            # rebase leaves the bot as author but the human as committer, and that
+            # is still a human commit we must not push over or reset away.
             local authors status foreign
-            authors="$(git log --format='%ae' "origin/main..origin/${BRANCH}")" && status=0 || status=$?
+            authors="$(git log --format='%ae%n%ce' "origin/main..origin/${BRANCH}")" && status=0 || status=$?
             if [ "${status:-0}" -ne 0 ]; then
               upsert_issue "$FAILED_LABEL" "Live evidence refresh FAILED" \
                 "$(printf 'Could not read the commit authors of %s (git log failed, exit %s). Refusing to touch the branch.\n\nRun: %s' "$BRANCH" "${status:-?}" "$RUN_URL")"
@@ -227,6 +267,16 @@ jobs:
               # remains (the PR merged). "found" (PR still open) and "failed"
               # (could not look) both leave it, so a failed lookup never resolves
               # a tracking issue on uncertainty.
+              #
+              # Branch cleanup: after the refresh PR merges (this repo squash-
+              # merges), the fixed branch bot/live-evidence-refresh should be
+              # deleted so the next refresh starts from main rather than resetting
+              # a stale branch. Enable "Automatically delete head branches" in the
+              # repo settings; this workflow deliberately does NOT delete it here,
+              # because deletion is only safe once the branch is both fully merged
+              # AND bot-only, and doing that check fail-closed is not worth the
+              # risk of deleting a branch a reviewer still has open work on. The
+              # reset path already rebuilds a stale bot-only branch from main.
               if [ "$(refresh_pr_state)" = "none" ]; then close_issues "$READY_LABEL"; fi
               exit 0
               ;;
@@ -306,9 +356,14 @@ jobs:
               git push origin "HEAD:${BRANCH}"
             fi
             # Refresh the PR title and observation table so the open PR reflects
-            # the latest run even when the file was already current.
-            gh pr edit "$existing_pr" --repo "$GH_REPO" --title "$title" \
-              --body-file pr-body.md --add-label release-owner:codex || true
+            # the latest run even when the file was already current. A failed edit
+            # is non-fatal (the branch is already updated) but is surfaced in the
+            # job summary rather than swallowed silently.
+            if ! gh pr edit "$existing_pr" --repo "$GH_REPO" --title "$title" \
+              --body-file pr-body.md --add-label release-owner:codex; then
+              echo "::warning::could not update PR #${existing_pr} title/body (branch was still updated)"
+              echo "Warning: gh pr edit failed for PR #${existing_pr}; the branch was updated but its title/body were not refreshed." | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
             pr_path="pr_updated"
             close_issues "$READY_LABEL"
             echo "Updated the branch behind open PR #${existing_pr}." | tee -a "$GITHUB_STEP_SUMMARY"

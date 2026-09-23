@@ -70,6 +70,24 @@ describe("live-evidence-refresh workflow shape", () => {
     const act = step("Open a review PR, or a tracking issue, for the refresh");
     expect(act.run).toContain('grep -qi "not permitted to create or approve pull requests"');
   });
+
+  it("filters open PRs to same-repo (non-fork) heads on the exact branch", () => {
+    const act = step("Open a review PR, or a tracking issue, for the refresh");
+    expect(act.run).toContain("isCrossRepository");
+    expect(act.run).toContain(".isCrossRepository|not");
+    expect(act.run).toContain("isCrossRepository,headRefName");
+  });
+
+  it("checks both author and committer email on the branch", () => {
+    const act = step("Open a review PR, or a tracking issue, for the refresh");
+    expect(act.run).toContain("--format='%ae%n%ce'");
+  });
+
+  it("installs an ERR trap so unexpected failures open the FAILED issue", () => {
+    const act = step("Open a review PR, or a tracking issue, for the refresh");
+    expect(act.run).toContain("set -Eeuo pipefail");
+    expect(act.run).toContain("trap 'report_unexpected_failure");
+  });
 });
 
 // The Act step's branch/PR/issue logic, run under the exact shell GitHub uses,
@@ -96,7 +114,15 @@ const GH_STUB = [
   "    esac ;;",
   '  "pr list")',
   '    if [ -n "${STUB_PR_LIST_EXIT:-}" ]; then exit "$STUB_PR_LIST_EXIT"; fi',
-  '    [ -n "${STUB_OPEN_PR:-}" ] && echo "$STUB_OPEN_PR" ;;',
+  // Apply the workflow's real --jq expression to a fixture dataset with real jq,
+  // so the fork/same-repo filter (which lives in that jq string) is exercised —
+  // removing it from the source changes what this returns and kills its test.
+  '    jqexpr=""; prev="";',
+  '    for a in "$@"; do [ "$prev" = "--jq" ] && jqexpr="$a"; prev="$a"; done',
+  '    if [ -n "${STUB_PR_LIST_JSON:-}" ]; then data="$STUB_PR_LIST_JSON";',
+  '    elif [ -n "${STUB_OPEN_PR:-}" ]; then data="[{\\"number\\":${STUB_OPEN_PR},\\"isCrossRepository\\":false,\\"headRefName\\":\\"bot/live-evidence-refresh\\"}]";',
+  '    else data="[]"; fi',
+  '    if [ -n "$jqexpr" ]; then printf "%s" "$data" | jq "$jqexpr"; else printf "%s" "$data"; fi ;;',
   '  "pr create")',
   '    if [ "${STUB_PR_CREATE_EXIT:-0}" != "0" ]; then',
   '      if [ -n "${STUB_PR_CREATE_403:-}" ]; then',
@@ -120,6 +146,14 @@ const GIT_STUB = [
   '    [ -n "${STUB_REMOTE_BRANCH:-}" ] && echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef refs/heads/bot/live-evidence-refresh"; exit 0 ;;',
   '  log)',
   '    if [ -n "${STUB_LOG_FAIL:-}" ]; then exit 3; fi',
+  // A commit whose AUTHOR is the bot but COMMITTER is a human (an amend/rebase).
+  // The committer line is emitted only when the format asks for %ce, so dropping
+  // %ce from the source (author-only) hides it and kills its test.
+  '    if [ -n "${STUB_COMMITTER_FOREIGN:-}" ]; then',
+  '      echo "41898282+github-actions[bot]@users.noreply.github.com";',
+  '      printf "%s" "$*" | grep -q "%ce" && echo "$STUB_COMMITTER_FOREIGN";',
+  '      exit 0;',
+  '    fi',
   // Honour the commit range: only report a foreign author when the real
   // main..origin/branch range is asked for, so an emptied/altered range in the
   // source (a mutation) makes the non-bot branch look bot-only and its test die.
@@ -130,6 +164,7 @@ const GIT_STUB = [
   '    fi; exit 0 ;;',
   '  diff) exit "${STUB_DIFF_EMPTY:-1}" ;;',
   '  push)',
+  '    if [ -n "${STUB_PUSH_FAIL:-}" ]; then exit 1; fi',
   '    if [ -n "${STUB_PUSH_LEASE_FAIL:-}" ] && printf "%s" "$*" | grep -q "force-with-lease"; then exit 1; fi',
   '    exit 0 ;;',
   "esac",
@@ -349,6 +384,62 @@ describe("live-evidence-refresh Act step under GitHub's shell", () => {
     });
     expect(result.status).toBe(0);
     expect(result.gh).not.toContain("issue close 8");
+  });
+
+  it("refreshed + only a FORK PR matches the branch name: treated as none, never edits the fork PR", () => {
+    const result = runActStep(REFRESHED_SUMMARY, {
+      STUB_PR_LIST_JSON:
+        '[{"number":99,"isCrossRepository":true,"headRefName":"bot/live-evidence-refresh"}]',
+    });
+    expect(result.status).toBe(0);
+    // The fork PR is filtered out, so the bot opens its OWN PR and never edits #99.
+    expect(result.gh).not.toContain("pr edit");
+    expect(result.gh).toContain("pr create");
+  });
+
+  it("refreshed + a fork PR newer than the same-repo bot PR: chooses the bot PR", () => {
+    const result = runActStep(REFRESHED_SUMMARY, {
+      STUB_REMOTE_BRANCH: "1",
+      // Fork listed FIRST (newer); a naive .[0] would pick it.
+      STUB_PR_LIST_JSON:
+        '[{"number":99,"isCrossRepository":true,"headRefName":"bot/live-evidence-refresh"},' +
+        '{"number":42,"isCrossRepository":false,"headRefName":"bot/live-evidence-refresh"}]',
+    });
+    expect(result.status).toBe(0);
+    expect(result.gh).toContain("pr edit 42");
+    expect(result.gh).not.toContain("pr edit 99");
+    expect(result.gh).not.toContain("pr create");
+  });
+
+  it("refreshed + two same-repo PRs on the branch: ambiguous, fails the job, no push", () => {
+    const result = runActStep(REFRESHED_SUMMARY, {
+      STUB_PR_LIST_JSON:
+        '[{"number":42,"isCrossRepository":false,"headRefName":"bot/live-evidence-refresh"},' +
+        '{"number":43,"isCrossRepository":false,"headRefName":"bot/live-evidence-refresh"}]',
+    });
+    expect(result.status).toBe(1);
+    expect(result.gh).toContain("issue create");
+    expect(result.gh).toContain("live-evidence-refresh-failed");
+    expect(result.git).not.toContain("push");
+  });
+
+  it("refreshed + a commit whose committer is human (bot author): refuses, no push", () => {
+    const result = runActStep(REFRESHED_SUMMARY, {
+      STUB_OPEN_PR: "42",
+      STUB_REMOTE_BRANCH: "1",
+      STUB_COMMITTER_FOREIGN: "human@example.com",
+    });
+    expect(result.status).toBe(1);
+    expect(result.gh).toContain("issue create");
+    expect(result.gh).toContain("live-evidence-refresh-failed");
+    expect(result.git).not.toContain("push");
+  });
+
+  it("refreshed + an unexpected push failure: the ERR trap opens the FAILED issue", () => {
+    const result = runActStep(REFRESHED_SUMMARY, { STUB_OPEN_PR: "42", STUB_REMOTE_BRANCH: "1", STUB_PUSH_FAIL: "1" });
+    expect(result.status).not.toBe(0);
+    expect(result.gh).toContain("issue create");
+    expect(result.gh).toContain("live-evidence-refresh-failed");
   });
 
   it("refused + an existing FAILED issue: comments (dedup), never a second issue", () => {
