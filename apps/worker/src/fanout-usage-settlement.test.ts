@@ -13,6 +13,7 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import type { PipelineReport } from "@mendpoint/pipeline";
+import { computeFanoutRunMcuMicros } from "@mendpoint/platform";
 import { settleFanoutRunUsage } from "./cli.js";
 
 const dbs: AppDb[] = [];
@@ -98,5 +99,16 @@ describe("fanout run usage settlement provenance", () => {
     const cappedReport = { surfaces: 30_000, consumers: [] } as unknown as PipelineReport;
     settleFanoutRunUsage(db, "tenant_default", payload, cappedReport, { MENDPOINT_SELF_SERVE_BILLING: "1" });
     expect(settlementProvenance(db)).toBe("not_measured:capped_at_reservation");
+  });
+  it("records measured at the exact boundary where the metered figure equals the reservation", () => {
+    const { db, payload } = setup();
+    // The boundary pins the comparison: metered == reserved is NOT capped (nothing
+    // was clamped), so it is a measurement. Changing \`>\` to \`>=\`, or deciding
+    // "capped" after clamping (actual === reserved), records capped here instead.
+    const boundaryReport = { surfaces: 20_000, consumers: [] } as unknown as PipelineReport;
+    const metered = computeFanoutRunMcuMicros({ surfaces: 20_000, findings: 0, candidates: 0, confirmed: 0, edits: 0 });
+    expect(metered).toBe(2_000_000); // the reservation set up above
+    settleFanoutRunUsage(db, "tenant_default", payload, boundaryReport, { MENDPOINT_SELF_SERVE_BILLING: "1" });
+    expect(settlementProvenance(db)).toBe("measured");
   });
 });
