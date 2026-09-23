@@ -73,8 +73,16 @@ describe("live-evidence-refresh workflow shape", () => {
 
   it("filters open PRs to same-repo (non-fork) heads on the exact branch targeting main", () => {
     const act = step("Open a review PR, or a tracking issue, for the refresh");
-    expect(act.run).toContain(".isCrossRepository == false");
-    expect(act.run).toContain('.baseRefName == "main"');
+    // Tie the assertion to the actual --jq argument line, NOT the whole step
+    // text: a comment mentioning the same expression must not satisfy it.
+    const jqLine = (act.run as string)
+      .split("\n")
+      .find((line) => line.includes("--jq") && line.includes("map(select"));
+    expect(jqLine, "the refresh_pr_state --jq line must exist").toBeTruthy();
+    // The quotes are shell-escaped inside the double-quoted --jq argument.
+    expect(jqLine).toContain(".isCrossRepository == false");
+    expect(jqLine).toContain('.baseRefName == \\"main\\"');
+    expect(jqLine).toContain('.headRefName == \\"$BRANCH\\"');
     expect(act.run).toContain("isCrossRepository,headRefName,baseRefName");
   });
 
@@ -433,6 +441,40 @@ describe("live-evidence-refresh Act step under GitHub's shell", () => {
     });
     expect(result.status).toBe(0);
     // Exact headRefName match: bot/other-branch is NOT adopted.
+    expect(result.gh).not.toContain("pr edit");
+    expect(result.gh).toContain("pr create");
+  });
+
+  // .isCrossRepository == false (not |not): null or a missing field must fail
+  // closed as "not same-repo" and never be adopted. These kill M3.
+  it("refreshed + a PR with isCrossRepository null: treated as none, opens its own PR", () => {
+    const result = runActStep(REFRESHED_SUMMARY, {
+      STUB_PR_LIST_JSON:
+        '[{"number":55,"isCrossRepository":null,"headRefName":"bot/live-evidence-refresh","baseRefName":"main"}]',
+    });
+    expect(result.status).toBe(0);
+    expect(result.gh).not.toContain("pr edit");
+    expect(result.gh).toContain("pr create");
+  });
+
+  it("refreshed + a PR with isCrossRepository field missing: treated as none, opens its own PR", () => {
+    const result = runActStep(REFRESHED_SUMMARY, {
+      STUB_PR_LIST_JSON:
+        '[{"number":56,"headRefName":"bot/live-evidence-refresh","baseRefName":"main"}]',
+    });
+    expect(result.status).toBe(0);
+    expect(result.gh).not.toContain("pr edit");
+    expect(result.gh).toContain("pr create");
+  });
+
+  // .baseRefName == "main": a same-repo bot-branch PR retargeted away from main
+  // is not the refresh and must not be adopted. This kills M4.
+  it("refreshed + a same-repo PR retargeted to release (not main): treated as none", () => {
+    const result = runActStep(REFRESHED_SUMMARY, {
+      STUB_PR_LIST_JSON:
+        '[{"number":57,"isCrossRepository":false,"headRefName":"bot/live-evidence-refresh","baseRefName":"release"}]',
+    });
+    expect(result.status).toBe(0);
     expect(result.gh).not.toContain("pr edit");
     expect(result.gh).toContain("pr create");
   });
