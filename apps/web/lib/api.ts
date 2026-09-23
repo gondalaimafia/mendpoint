@@ -1,3 +1,6 @@
+import { cookies } from "next/headers";
+import { authenticatedWebCredential } from "./proxy-auth";
+
 const API_URL =
   process.env.MENDPOINT_API_URL ??
   process.env.NEXT_PUBLIC_API_URL ??
@@ -29,10 +32,15 @@ async function fetchWithTimeout(
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const headers = new Headers(init?.headers);
-    const apiKey = process.env.MENDPOINT_API_KEY?.trim();
-    if (apiKey && !headers.has("Authorization")) {
-      headers.set("Authorization", `Bearer ${apiKey}`);
-    }
+    // Server components bypass the browser proxy. Resolve their own request's
+    // session so a deployment credential cannot replace a customer's identity.
+    const credential = await authenticatedWebCredential({ cookies: await cookies() });
+    if (!credential) throw new Error("web_session_required");
+    const apiKey = credential.subject.kind === "preview_access"
+      ? process.env.MENDPOINT_API_KEY?.trim()
+      : credential.upstreamAccessToken;
+    if (!apiKey) throw new Error("proxy_api_key_not_configured");
+    headers.set("Authorization", `Bearer ${apiKey}`);
     return await fetch(url, {
       ...init,
       headers,

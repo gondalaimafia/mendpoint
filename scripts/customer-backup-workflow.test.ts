@@ -186,7 +186,19 @@ function runValidateStep(flyctlBody: string): {
   writeFileSync(jqPath, JQ_LF_WRAPPER, "utf8");
   chmodSync(jqPath, 0o755);
   writeFileSync(join(dir, "step.sh"), validate.run, "utf8");
-  const result = spawnSync("bash", [...GITHUB_BASH_FLAGS, "step.sh"], {
+  // Git Bash prepends host tools during startup, ahead of the inherited PATH.
+  // Restore fixture precedence inside that shell before sourcing the real step.
+  const result = spawnSync("bash", [...GITHUB_BASH_FLAGS, "-c", `
+    fixture_bin="$(cd "$1" && pwd)"
+    export PATH="$fixture_bin:$PATH"
+    hash -r
+    for tool in flyctl jq; do
+      [[ "$(command -v "$tool")" == "$fixture_bin/$tool" ]] || {
+        echo "fixture_tool_selection_failed:$tool" >&2; exit 127;
+      }
+    done
+    source "$2"
+  `, "workflow-fixture", bin.replace(/\\/g, "/"), "./step.sh"], {
     cwd: dir,
     encoding: "utf8",
     env: {

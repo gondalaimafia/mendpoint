@@ -4869,3 +4869,26 @@ Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, ba
 - GREEN: the isolated regression passed with its same-tenant lifecycle transition and hostile ownership, identifier, and deletion assertions. The complete focused set passed 2 files and 88 tests.
 - The full database suite passed 59 files and 514 tests. Database TypeScript typecheck exited 0.
 - The trigger remains limited to scoped or quarantined rows and now raises only when `OLD.id IS NOT NEW.id` or `OLD.tenant_id IS NOT NEW.tenant_id`; the delete guard is unchanged.
+## 2026-09-21 Repository debugging
+
+- [x] Fetch current main and create an isolated checkout; preserve existing dirty worktrees.
+- [x] Run workspace, scripts, and evaluation tests; typecheck, build, and release checks. Record failing gates rather than suppressing them.
+- [x] Trace observed API, worker, persistence, and verification defects to production callers.
+- [x] Add failing regressions and isolate repairs for session authority (#678), campaign execution time (#679), verifier launch classification (#680), and Windows shell test isolation (#681).
+- [x] Independently review each repair and push separate pull requests without modifying another author's branch.
+- [ ] Complete protected review and merge gates, then verify the exact production revision. No deployment is claimed.
+- [ ] Repair authenticated campaign retry recovery (#676), including distinct attempt identity and replay binding.
+- [ ] Connect webhook review jobs to a genuinely read-only execution path (#677), without adding write authority.
+
+### Review
+
+Baseline: `ef2c3f928c6b40cfef3f6223cb23e875f9ff6427`. Local debugging does not establish production qualification.
+
+- All workspace suites passed: 5,509 tests, with existing skips retained. Evaluation typecheck and 319 evaluation tests passed. Full workspace/scripts typecheck and optimized production build passed. Production dependency audit reported zero vulnerabilities. Local runtime was Node 24.14.1; protected CI uses Node 22.
+- Web session regressions and existing proxy tests: 40 passed. Restoring the original deployment-key selection makes the actual customer page regression render the wrong tenant fixture and fail. No live customer data was accessed.
+- Campaign clock repair: 39 focused tests passed, including real executor checks for closed maintenance windows, expired snapshots, and delayed jobs becoming eligible. Worker typecheck passed.
+- Verifier launch repair: 59 repair tests passed. Independent review also reran 27 verifier/sandbox tests and repair typecheck. Missing executable/directory remains not_verified; started-process failures retain their prior classification.
+- Initial scripts run: 16 failures and two worker communication timeouts. Controlled repeat removed all eight test timeouts but retained eight deterministic shell-fixture failures. Git Bash was choosing host curl/jq before test substitutes. The two repaired test files pass all 88 tests; full serial scripts verification is recorded on #681 when complete. No production workflow was changed.
+- Release checks: 12 of 13 stages passed. Three public claim holds expired on September 16: CLM-001-EV01, CLM-013-EV01, CLM-013-EV02. Exact proposal authority confirms those failures. App identity, branch protection and matrix checks pass; downstream GitHub authority refuses the failed proposal observation. See #642. Dates and evidence were not fabricated or extended.
+- Public production health requests timed out. The local Fly CLI reports no access token, so live app state and deployment revision are unverified. No credentials were exposed and no production configuration was changed.
+- Two known product defects remain explicitly open (#676 and #677). This debugging pass is not a declaration that every repository path is bug-free.
