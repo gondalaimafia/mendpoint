@@ -974,7 +974,33 @@ export class DependencyOutageQueue {
     const reconciliationOnly =
       claim.lastFailureReason === "completed_effect_requires_reconciliation" ||
       claim.expiresAt <= now;
-    const observed = validateReconciliation<T>(await operation.reconcile());
+    let reconciliation: unknown;
+    try {
+      reconciliation = await operation.reconcile();
+    } catch (error) {
+      const failedAt = this.now();
+      const decision = operation.classify(error, {
+        attempt: claim.attemptsConsumed,
+        retryBudget: claim.retryBudget,
+        expiresAt: claim.expiresAt,
+        now: failedAt,
+        circuit: Object.freeze({
+          state: claim.circuitState,
+          ...(claim.circuitOpenedAt === null ? {} : { openedAt: claim.circuitOpenedAt }),
+          cooldownMs: claim.circuitCooldownMs,
+          consecutiveFailures: claim.consecutiveFailures,
+        }),
+      });
+      const record = this.fail(claim, decision, failedAt);
+      return Object.freeze({
+        status: record.status === "blocked" ? "blocked" :
+          record.status === "failed" ? "failed" : "deferred",
+        record,
+        decision,
+        error,
+      });
+    }
+    const observed = validateReconciliation<T>(reconciliation);
     if (observed.status === "completed") {
       const completed = this.complete(claim, observed.completionDigest, this.now());
       if (!completed.applied && completed.record.status !== "completed") {

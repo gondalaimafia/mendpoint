@@ -20,23 +20,39 @@ function fixture(tenantId: string) {
   const directory = mkdtempSync(join(tmpdir(), "dependency-outage-api-"));
   const db = createDb(join(directory, "app.sqlite"));
   opened.push({ db, directory });
+  // Distinct updated_at per tenant so ordering is deterministic rather than a
+  // tie broken by operation_id. The foreign tenant is written LAST (most recent
+  // updated_at) and with the highest-priority standing, so any missing tenant
+  // scope on the row query or the standing probe surfaces its data first.
+  let now = "2026-09-02T12:00:00.000Z";
   const queue = createDependencyOutageQueue(db.raw, {
-    now: () => "2026-09-02T12:00:00.000Z",
+    now: () => now,
   });
-  for (const owner of [tenantId, "tenant-foreign"]) {
-    queue.enqueue({
-      tenantId: owner,
-      dependencyKind: "model",
-      providerId: "muse-spark",
-      operationId: `${owner}:private-operation`,
-      operationDigest: owner === tenantId ? "a".repeat(64) : "b".repeat(64),
-      retryBudget: 3,
-      expiresAt: "2026-09-02T14:00:00.000Z",
-      nextAttemptAt: "2026-09-02T12:01:00.000Z",
-      standing: "degraded_retrying",
-      authorityVersion: "authority-v1",
-    });
-  }
+  queue.enqueue({
+    tenantId,
+    dependencyKind: "model",
+    providerId: "muse-spark",
+    operationId: `${tenantId}:private-operation`,
+    operationDigest: "a".repeat(64),
+    retryBudget: 3,
+    expiresAt: "2026-09-02T14:00:00.000Z",
+    nextAttemptAt: "2026-09-02T12:01:00.000Z",
+    standing: "degraded_retrying",
+    authorityVersion: "authority-v1",
+  });
+  now = "2026-09-02T12:05:00.000Z";
+  queue.enqueue({
+    tenantId: "tenant-foreign",
+    dependencyKind: "model",
+    providerId: "muse-spark",
+    operationId: "tenant-foreign:private-operation",
+    operationDigest: "b".repeat(64),
+    retryBudget: 3,
+    expiresAt: "2026-09-02T14:00:00.000Z",
+    nextAttemptAt: "2026-09-02T12:01:00.000Z",
+    standing: "degraded_blocked",
+    authorityVersion: "authority-v1",
+  });
   const app = new Hono<ApiEnv>();
   app.use("*", async (c, next) => {
     c.set("principal", { id: "human:owner", tenantId, role: "owner" });
@@ -62,6 +78,28 @@ describe("dependency outage routes", () => {
     const encoded = JSON.stringify(body);
     expect(encoded).not.toContain("tenant-foreign");
     expect(encoded).not.toContain("private-operation");
+  });
+
+  it("never returns a foreign tenant's rows or borrows its standing", async () => {
+    const response = await fixture("tenant-a").request("/dependency-outages?limit=100");
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      tenantId: string;
+      standing: string;
+      total: number;
+      returned: number;
+      operations: Array<{ standing: string }>;
+    };
+    // The foreign tenant owns a more recent row with a higher-priority
+    // (degraded_blocked) standing. If the row query or the standing probe
+    // dropped its tenant scope, that row would be counted and its standing
+    // borrowed here.
+    expect(body.tenantId).toBe("tenant-a");
+    expect(body.total).toBe(1);
+    expect(body.returned).toBe(1);
+    expect(body.operations).toHaveLength(1);
+    expect(body.operations[0]?.standing).toBe("degraded_retrying");
+    expect(body.standing).toBe("degraded_retrying");
   });
 
   it("rejects malformed and excessive bounds", async () => {

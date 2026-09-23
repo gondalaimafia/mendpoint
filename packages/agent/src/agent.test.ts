@@ -890,6 +890,7 @@ describe("Warden (API debug agent)", () => {
     const effectId = `sha256:${"7".repeat(64)}`;
     const requestDigest = `sha256:${"8".repeat(64)}`;
     let inspectedStatus: "queued" | "claimed" | "blocked" | "failed" | "completed" | null = null;
+    const inspectScopes: Array<Readonly<Record<string, unknown>>> = [];
     const run = vi.fn(async <T>(operation: ModelDependencyOutageOperation<T>) => {
       expect(operation).toMatchObject({
         tenantId: TEST_MODEL_SOURCE.tenantId,
@@ -967,7 +968,10 @@ describe("Warden (API debug agent)", () => {
       verifyCommand: "node check.mjs",
       modelOutage: {
         outage,
-        inspect: () => inspectedStatus === null ? null : { status: inspectedStatus },
+        inspect: (scope: Readonly<Record<string, unknown>>) => {
+          inspectScopes.push(scope);
+          return inspectedStatus === null ? null : { status: inspectedStatus };
+        },
         decide: () => {
           throw new Error("decision_not_expected");
         },
@@ -981,6 +985,18 @@ describe("Warden (API debug agent)", () => {
 
     expect(run).toHaveBeenCalledTimes(1);
     expect(result.metrics.model).toMatchObject({ calls: 1, successfulCalls: 1 });
+    // inspect() must be scoped to this binding's tenant and checkpoint identity,
+    // never a constant: a wrong or borrowed scope would resolve a foreign record.
+    expect(inspectScopes.length).toBeGreaterThan(0);
+    for (const scope of inspectScopes) {
+      expect(scope).toEqual({
+        tenantId: TEST_MODEL_SOURCE.tenantId,
+        dependencyKind: "model",
+        providerId: TEST_MODEL_SOURCE.modelSourcePolicy.provider,
+        operationId: `${binding.jobId}:${effectId}`,
+        operationDigest: "8".repeat(64),
+      });
+    }
   });
 
   it.each([

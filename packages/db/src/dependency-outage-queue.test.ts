@@ -568,6 +568,39 @@ describe("durable dependency outage queue", () => {
     db.close();
   });
 
+  it("fails the lease and records a failure event when reconcile throws before execute", async () => {
+    const db = new DatabaseSync(":memory:");
+    const queue = createDependencyOutageQueue(db, {
+      now: () => "2026-09-02T12:00:00.000Z",
+    });
+    const execute = vi.fn(async () => ({ value: "model-result", completionDigest: COMPLETION }));
+    const operation = {
+      ...SCOPE,
+      workerId: "w1",
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+      reconcile: async (): Promise<never> => {
+        throw new Error("github_exact_draft_branch_diverged");
+      },
+      execute,
+      classify: () => decisionForAction("fail"),
+    };
+
+    const result = await queue.run(operation);
+    expect(result).toMatchObject({ status: "failed", decision: { action: "fail" } });
+    expect(execute).not.toHaveBeenCalled();
+    const record = queue.get(SCOPE);
+    expect(record?.status).toBe("failed");
+    expect(queue.history(SCOPE).map((event) => event.kind)).toEqual([
+      "enqueued",
+      "claimed",
+      "failed",
+    ]);
+    db.close();
+  });
+
   it("blocks an uncertain completed effect for reconciliation instead of retrying it", async () => {
     const db = new DatabaseSync(":memory:");
     const queue = createDependencyOutageQueue(db, {
@@ -1017,6 +1050,145 @@ describe("durable dependency outage queue", () => {
     expect(() => db.exec("DELETE FROM dependency_outage_history"))
       .toThrow("dependency_outage_history_immutable");
     expect(queue.history(SCOPE).map((event) => event.kind)).toEqual(["enqueued"]);
+    db.close();
+  });
+
+  it("rejects a forged history append that breaks the hash chain", () => {
+    const db = new DatabaseSync(":memory:");
+    const queue = createDependencyOutageQueue(db);
+    queue.enqueue({
+      ...SCOPE,
+      retryBudget: 3,
+      expiresAt: "2026-09-01T13:00:00.000Z",
+      nextAttemptAt: "2026-09-01T12:00:00.000Z",
+      standing: "degraded_retrying",
+    }, "2026-09-01T12:00:00.000Z");
+
+    // The append-only triggers block UPDATE and DELETE but not INSERT, so a
+    // forger can still append a fabricated event. Only the hash-chain verifier
+    // in history() catches it: the forged row links to a bogus previous hash and
+    // carries a bogus event hash, so both chain checks must reject it.
+    db.prepare(`INSERT INTO dependency_outage_history (
+      tenant_id, dependency_kind, provider_id, operation_id, event_kind,
+      observed_at, details_json, previous_hash, event_hash
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      SCOPE.tenantId, SCOPE.dependencyKind, SCOPE.providerId, SCOPE.operationId,
+      "completed", "2026-09-01T12:00:05.000Z", "{}", "forged-previous-hash", "forged-event-hash",
+    );
+
+    expect(() => queue.history(SCOPE)).toThrow("dependency_outage_history_chain_invalid");
+    db.close();
+  });
+
+  it("scopes get() and history() to the caller's tenant across an identical scope", () => {
+    const db = new DatabaseSync(":memory:");
+    const queue = createDependencyOutageQueue(db, {
+      now: () => "2026-09-02T12:00:00.000Z",
+    });
+    const shared = {
+      dependencyKind: "model" as const,
+      providerId: "muse-spark",
+      operationId: "mission-shared:model-call-1",
+      operationDigest: DIGEST,
+    };
+    queue.enqueue({
+      ...shared,
+      tenantId: "tenant-foreign",
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      nextAttemptAt: "2026-09-02T12:00:00.000Z",
+      standing: "degraded_retrying",
+      authorityVersion: "authority-v1",
+    }, "2026-09-02T12:00:00.000Z");
+
+    // The foreign tenant owns the only row. A byte-identical scope under a
+    // different tenant must never resolve it: inspect()/get() and history() are
+    // both tenant-scoped, so dropping the tenant clause would leak this record.
+    expect(queue.get({ ...shared, tenantId: "tenant-foreign" })?.status).toBe("queued");
+    expect(queue.get({ ...shared, tenantId: "tenant-a" })).toBeNull();
+    expect(queue.history({ ...shared, tenantId: "tenant-a" })).toEqual([]);
+    db.close();
+  });
+
+  it("upgrades a pre-circuit-breaker operations table in place and preserves existing rows", () => {
+    const db = new DatabaseSync(":memory:");
+    // The pre-change production shape: the operations table before the circuit
+    // breaker persistence columns (circuit_opened_at / circuit_cooldown_ms /
+    // consecutive_failures) were added. Fresh-install coverage never reaches the
+    // ALTER TABLE upgrade branch because the current CREATE already has them.
+    db.exec(`
+      CREATE TABLE dependency_outage_operations (
+        tenant_id TEXT NOT NULL,
+        dependency_kind TEXT NOT NULL CHECK (dependency_kind IN ('model','scm','feed','registry','notification')),
+        provider_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        operation_digest TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('queued','claimed','blocked','failed','completed')),
+        standing TEXT NOT NULL CHECK (standing IN ('healthy','degraded_retrying','degraded_blocked','degraded_failed','recovering')),
+        circuit_state TEXT NOT NULL CHECK (circuit_state IN ('closed','open','half_open')),
+        retry_budget INTEGER NOT NULL CHECK (retry_budget > 0),
+        attempts_consumed INTEGER NOT NULL DEFAULT 0 CHECK (attempts_consumed >= 0),
+        next_attempt_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        authority_version TEXT,
+        claim_owner TEXT,
+        claim_generation INTEGER NOT NULL DEFAULT 0 CHECK (claim_generation >= 0),
+        claim_expires_at TEXT,
+        completion_digest TEXT,
+        last_failure_kind TEXT,
+        last_failure_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, dependency_kind, provider_id, operation_id)
+      ) STRICT;
+    `);
+    db.prepare(`INSERT INTO dependency_outage_operations (
+      tenant_id, dependency_kind, provider_id, operation_id, operation_digest,
+      status, standing, circuit_state, retry_budget, attempts_consumed,
+      next_attempt_at, expires_at, authority_version, claim_generation,
+      created_at, updated_at
+    ) VALUES ('tenant-legacy','model','muse-spark','legacy:op-1',?,'queued','degraded_retrying',
+      'closed',3,0,'2026-09-02T12:01:00.000Z','2026-09-02T14:00:00.000Z','authority-v1',0,
+      '2026-09-02T12:00:00.000Z','2026-09-02T12:00:00.000Z')`).run(DIGEST);
+
+    // Booting the queue runs ensureSchema, which must ALTER the existing table.
+    const queue = createDependencyOutageQueue(db, { now: () => "2026-09-02T12:02:00.000Z" });
+
+    const columns = new Set((db.prepare("PRAGMA table_info(dependency_outage_operations)").all() as
+      Array<{ name: string }>).map((column) => column.name));
+    expect(columns.has("circuit_opened_at")).toBe(true);
+    expect(columns.has("circuit_cooldown_ms")).toBe(true);
+    expect(columns.has("consecutive_failures")).toBe(true);
+
+    // The legacy row survives with sane circuit-breaker defaults.
+    const legacy = queue.get({
+      tenantId: "tenant-legacy",
+      dependencyKind: "model",
+      providerId: "muse-spark",
+      operationId: "legacy:op-1",
+      operationDigest: DIGEST,
+    });
+    expect(legacy).toMatchObject({
+      status: "queued",
+      circuitState: "closed",
+      circuitCooldownMs: 30_000,
+      consecutiveFailures: 0,
+      circuitOpenedAt: null,
+    });
+
+    // A write through the upgraded table succeeds: the INSERT names the new
+    // columns, so it would fail against the pre-change shape.
+    const enqueued = queue.enqueue({
+      ...SCOPE,
+      tenantId: "tenant-upgraded",
+      operationId: "upgraded:op-2",
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      nextAttemptAt: "2026-09-02T12:03:00.000Z",
+      standing: "degraded_retrying",
+      authorityVersion: "authority-v1",
+    });
+    expect(enqueued).toMatchObject({ status: "queued", circuitCooldownMs: 30_000, consecutiveFailures: 0 });
     db.close();
   });
 });

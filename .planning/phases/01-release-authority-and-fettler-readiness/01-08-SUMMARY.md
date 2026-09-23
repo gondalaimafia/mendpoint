@@ -144,22 +144,25 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 red tests:** `3284bab7` (`test`)
-2. **Task 1 durable outage contract and queue:** `7645beb3` (`feat`)
-3. **Task 2 model recovery seam:** `748aea91` (`feat`)
-4. **Task 3 SCM recovery seam:** `27123c67` (`feat`)
-5. **Typed result correction:** `fd51cdc6` (`fix`)
-6. **Authority, hostile tests, identifiers, and barrel exports:** `dbc632ac` (`fix`)
-7. **Durable circuit and read-only GitHub reconciliation repair:** `de0f4a34` (`fix`)
-8. **Current rebased evidence series:** `e73e1f03`, `64ed119a`, `1275ba67`, `939de04c`, `39c372e7`, `295b6fe4`, `6209a222`, `a472e346`, `02b81eb5`, `7dda371e`, `33bb3808`
-9. **Independent review RED tests:** `ad811437`
-10. **Exact-head outage delivery repair:** `a0862179`
-11. **Review RED tests for live model reachability and health:** `66407249`
-12. **Live model queue binding and bounded tenant health:** `4bb1af43`
-13. **Failure classification and health redaction:** `4ac0c0d8`
-14. **Exact-head state-machine review repair:** `bb9d4c2c`
-15. **Round-two recovery-chain RED tests:** `a07ec7aa`
-16. **Round-two durable reconciliation repair:** `08c4f304`
+This branch was rebased onto a moving `main` several times during review and was
+then merged (not rebased) with current `main`, so the original per-task commit
+hashes from the early rounds are no longer part of its history. Only hashes that
+are ancestors of the current head are cited in this document; the durable record
+is the branch commit graph itself. In order, the surviving work is:
+
+1. **Review RED tests for live model reachability and health:** `66407249` (`test`)
+2. **Live model queue binding and bounded tenant health:** `4bb1af43` (`fix`)
+3. **Failure classification and health redaction:** `4ac0c0d8` (`fix`)
+4. **Exact-head state-machine review repair:** `bb9d4c2c` (`fix`)
+5. **Round-two recovery-chain RED tests:** `a07ec7aa` (`test`)
+6. **Round-two durable reconciliation repair:** `08c4f304` (`fix`)
+7. **Claude review-repair pass:** reconcile-throw lease release inside `run()`, the test-integrity mutation coverage (history forgery, five GitHub divergence checks, tenant-scoped health and `get()`, agent seam and inspect scope, the ALTER-TABLE upgrade path), and this summary. Authored by Codex; these fixes by Claude.
+
+The earlier durable outage contract, queue, model and SCM recovery seams,
+authority hardening, and the durable-circuit and read-only reconciliation repair
+all landed before those rounds and remain in the branch history under hashes
+that the rebases did not preserve; they are described in the deviations below
+without fabricated hashes.
 
 Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/605), open, issue body read back with exact `Owner: Codex` claim.
 
@@ -195,14 +198,14 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - **Fix:** Added dependency-inverted structural ports and an architecture test that rejects the cycle.
 - **Files modified:** model provider, GitHub runtime, ops test, and three clean package barrels
 - **Verification:** 47 focused tests and four affected package type checks pass.
-- **Committed in:** `748aea91`, `27123c67`, `dbc632ac`
+- **Committed in:** the initial contract, model-seam, SCM-seam, and authority-hardening commits (pre-rebase hashes not preserved in the current history).
 
-**2. Active database barrel overlap**
+**2. Active database barrel overlap, later resolved by the root export**
 - **Found during:** open pull request and branch ownership inventory
-- **Issue:** Open pull request #587 actively modified `packages/db/src/index.ts` while this plan executed.
-- **Fix:** Preserved the other owner's file and did not export the queue from the database barrel on this branch.
-- **Verification:** Current-base rebase incorporated #587 without modifying or reverting its database barrel work.
-- **Committed in:** no database barrel commit by design
+- **Issue:** Open pull request #587 actively modified `packages/db/src/index.ts` while this plan executed, so exporting the queue from the database barrel at that point would have collided with the other owner's in-flight work.
+- **Initial fix:** Deferred the barrel export and kept `packages/db/src/index.ts` byte-identical to the other owner's version; the queue was reached only through package-internal paths.
+- **Later resolution:** #587 merged before the exact-head repair (Deviation #4), so the queue is now exported from the `@mendpoint/db` root contract (see `provides`, `key-files`, and Deviation #4). The initial deferral is no longer in effect.
+- **Verification:** Current-base rebase incorporated #587 without modifying or reverting its database barrel work; the root export was added on top of the merged result.
 
 **3. Independent review found non-durable circuit snapshots and write-before-reconcile behavior**
 - **Found during:** exact-head independent review of pull request #606
@@ -210,18 +213,18 @@ Issue and authority: [#605](https://github.com/gondalaimafia/mendpoint/issues/60
 - **Fix:** Persisted and reconstructed the complete circuit snapshot, transitioned a due open circuit to a fenced half-open claim, threaded the snapshot through both model and GitHub decision inputs, and added exact read-only GitHub state inspection before every write.
 - **Files modified:** outage policy, durable queue, model port, GitHub runtime, their tests, and two public type barrels
 - **Verification:** 51 focused tests, four affected package type checks, the full 179-test ops suite, and the full 195-test GitHub suite pass.
-- **Committed in:** `de0f4a34`
+- **Committed in:** the durable-circuit and read-only reconciliation repair commit (pre-rebase hash not preserved in the current history).
 
 **4. Exact-head review found four production reachability and authority defects**
-- **Found during:** independent exact-head review of pull request #606 at `3d9dceb6`
+- **Found during:** independent exact-head review of pull request #606 at an earlier exact head
 - **Issue:** The real pipeline still used legacy unfenced GitHub writes, executable queued work accepted stale authority, rate-limited `403` responses were treated as permission failures, and a new package dependency changed protected lockfile bytes.
 - **Fix:** Routed the real pipeline through exact-draft delivery, required matching authority for every executable state and takeover, ordered rate-limit evidence before generic permission handling, root-exported the queue, and injected the shared policy from existing API and worker composition roots.
 - **Files modified:** database queue and root, GitHub runtime, pipeline, API and worker composition roots, package metadata, and paired hostile tests
 - **Verification:** 106 focused tests, seven affected type checks, full database, GitHub, ops, and pipeline suites, protected authority test, optimized production build, and diff integrity pass.
-- **Committed in:** `ad811437`, `a0862179`
+- **Committed in:** the exact-head authority and delivery repair commits (pre-rebase hashes not preserved in the current history).
 
 **5. Current-main review found the production model seam and degraded-state surface were still unreachable**
-- **Found during:** independent exact-head review of pull request #606 at `aacad6dc`
+- **Found during:** independent exact-head review of pull request #606 at an earlier exact head
 - **Issue:** The production `agent.ts` model call bypassed the durable queue, the operator could not enumerate tenant degraded state, and the summary claimed both links existed.
 - **Fix:** Bound the real encrypted checkpoint model effect through a worker-supplied queue using the checkpoint effect and request digests, retained unknown outcomes as non-repeatable, blocked reconciliation-required outcomes from authority reactivation, and added an authenticated digest-only tenant health route.
 - **Files modified:** agent runtime and attempt engine, worker composition, durable queue and database barrel, API route and server composition, paired hostile tests, and this summary

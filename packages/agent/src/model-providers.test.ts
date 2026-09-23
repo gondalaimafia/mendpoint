@@ -342,6 +342,62 @@ describe("model provider outage recovery", () => {
     })).toThrow("model_dependency_outage_authority_invalid");
     expect(run).not.toHaveBeenCalled();
   });
+
+  it("threads the caller's tenant into the operation and the decision policy verbatim", async () => {
+    const distinctTenant = "tenant-9f3c-distinct";
+    const decide = vi.fn((input: Record<string, unknown>) => ({
+      schemaVersion: 1 as const,
+      action: "retry" as const,
+      failureKind: String(input.failureKind),
+      retryable: true,
+      reason: "transient_failure",
+      nextAttemptAt: "2026-09-01T12:00:01.000Z",
+      attemptsRemaining: 2,
+      circuitState: "closed" as const,
+      circuit: { state: "closed" as const, cooldownMs: 30_000, consecutiveFailures: 1 },
+      standing: "degraded_retrying" as const,
+    }));
+    let seenOperationTenant: string | undefined;
+    const outage: ModelDependencyOutagePort = {
+      async run<T>(
+        operation: ModelDependencyOutageOperation<T>,
+      ): Promise<ModelDependencyOutageResult<T>> {
+        seenOperationTenant = operation.tenantId;
+        const decision = operation.classify(
+          Object.assign(new Error("upstream unavailable"), { status: 503 }),
+          {
+            attempt: 1,
+            retryBudget: 3,
+            expiresAt: "2026-09-01T13:00:00.000Z",
+            now: "2026-09-01T12:00:00.000Z",
+            circuit: { state: "closed", cooldownMs: 30_000, consecutiveFailures: 0 },
+          },
+        );
+        return { status: "deferred", decision };
+      },
+    };
+    // A tenant that matches no plausible hardcoded default, asserted on both the
+    // durable operation and the injected decision policy, so replacing the seam
+    // source with a constant is caught rather than passing tautologically.
+    await expect(runModelProviderOperation({
+      tenantId: distinctTenant,
+      providerId: "muse-spark",
+      operationId: "mission-123:model-call-4",
+      operationDigest: "d".repeat(64),
+      retryBudget: 3,
+      expiresAt: "2026-09-01T13:00:00.000Z",
+      workerId: "worker-1",
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+      outage,
+      decide,
+      reconcile: async () => ({ status: "missing" }),
+      invoke: async () => ({ output: "unused" }),
+      completionDigest: () => "e".repeat(64),
+    })).resolves.toMatchObject({ status: "deferred" });
+    expect(seenOperationTenant).toBe(distinctTenant);
+    expect(decide).toHaveBeenCalledWith(expect.objectContaining({ tenantId: distinctTenant }));
+  });
 });
 
 describe("multi-provider gateway: local_only egress enforcement on the provider path", () => {
