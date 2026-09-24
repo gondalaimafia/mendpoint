@@ -223,6 +223,19 @@ function executionInput(value: ReturnType<typeof fixture>, overrides: Record<str
   };
 }
 
+// The run-a envelope events in append order, each with its per-run sequence and
+// kind, so a test can assert the sequence stays contiguous across attempts.
+function runEventSummary(db: AppDb): Array<{ kind: string; sequence: number }> {
+  return (db.raw.prepare(
+    `SELECT payload_json FROM domain_events
+     WHERE tenant_id = 'tenant-a' AND aggregate_type = 'warden_run' AND aggregate_id = 'run-a'
+     ORDER BY event_sequence`,
+  ).all() as Array<{ payload_json: string }>).map((row) => {
+    const envelope = JSON.parse(row.payload_json) as { eventKind: string; metadata: { sequence: number } };
+    return { kind: envelope.eventKind, sequence: envelope.metadata.sequence };
+  });
+}
+
 describe("Warden campaign executor", () => {
   it("executes one exact snapshot into an immutable review package with typed edits and replay links", async () => {
     const value = fixture();
@@ -519,6 +532,105 @@ describe("Warden campaign executor", () => {
   // tryRecordFettlerCampaignMissionVerification call turns it red. A source-regex
   // control was removed here because it matched the function DECLARATION too and
   // stayed green when the call was deleted.
+
+  it("keeps one continuous event sequence across a failed attempt and a successful retry", async () => {
+    const value = fixture();
+    const regression = digest("introduced failure");
+    const failing = dependencies(value, async (input) => input.phase === "baseline"
+      ? [check(input.commands[0]!, "passed")]
+      : [check(input.commands[0]!, "failed", [regression])]);
+    // Attempt 1 fails on a post-edit regression; the run records run_failed last.
+    await expect(executeWardenCampaignTarget(executionInput(value, { dependencies: failing })))
+      .rejects.toMatchObject({ code: "warden_verification_regression" });
+    expect(runEventSummary(value.db).at(-1)).toMatchObject({ kind: "run_failed" });
+
+    // Recover the failed target from its verified replay evidence, then retry.
+    recoverWardenCampaignTarget({
+      db: value.db, tenantId: "tenant-a", campaignId: "campaign-a", targetId: "target-a",
+      failedRunId: "run-a", expectedReplaySha256: replayWardenRun(value.db, "tenant-a", "run-a").replaySha256,
+      actorPrincipalId: "worker", createdAt,
+    });
+    const second = await executeWardenCampaignTarget(executionInput(value));
+    expect(second.stage).toBe("review");
+
+    // The retry continues the sequence instead of restarting it at 0. Restarting
+    // would reuse attempt 1's numbers: a run_completed landing on the same
+    // sequence as attempt 1's run_failed, so the sequence array would not be
+    // contiguous and the run would carry two terminal events.
+    const events = runEventSummary(value.db);
+    expect(events.map((event) => event.sequence)).toEqual(events.map((_, index) => index + 1));
+    expect(events.filter((event) => event.kind === "run_started")).toHaveLength(2);
+    expect(events.filter((event) => event.kind === "run_failed")).toHaveLength(1);
+    expect(events.filter((event) => event.kind === "run_completed")).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ kind: "run_completed" });
+  });
+
+  it("does not raise an idempotency conflict when two attempts fail with different codes", async () => {
+    const value = fixture();
+    const inconclusive = dependencies(value, async (input) => input.phase === "baseline"
+      ? [check(input.commands[0]!, "passed")]
+      : [check(input.commands[0]!, "not_verified")]);
+    await expect(executeWardenCampaignTarget(executionInput(value, { dependencies: inconclusive })))
+      .rejects.toMatchObject({ code: "warden_verification_not_verified" });
+    recoverWardenCampaignTarget({
+      db: value.db, tenantId: "tenant-a", campaignId: "campaign-a", targetId: "target-a",
+      failedRunId: "run-a", expectedReplaySha256: replayWardenRun(value.db, "tenant-a", "run-a").replaySha256,
+      actorPrincipalId: "worker", createdAt,
+    });
+    const regression = digest("introduced failure");
+    const failing = dependencies(value, async (input) => input.phase === "baseline"
+      ? [check(input.commands[0]!, "passed")]
+      : [check(input.commands[0]!, "failed", [regression])]);
+    // With a restarting counter the second run_failed would reuse attempt 1's
+    // run_failed sequence with a different payload and raise
+    // domain_event_idempotency_conflict; continuing the sequence gives it a fresh
+    // number, so the attempt rejects with its OWN code instead.
+    await expect(executeWardenCampaignTarget(executionInput(value, { dependencies: failing })))
+      .rejects.toMatchObject({ code: "warden_verification_regression" });
+    const failed = runEventSummary(value.db).filter((event) => event.kind === "run_failed");
+    expect(failed).toHaveLength(2);
+    expect(new Set(failed.map((event) => event.sequence)).size).toBe(2);
+  });
+
+  it("re-appends a crashed attempt byte-identically on replay without duplicating run_started", async () => {
+    const value = fixture();
+    // Crash between run_started and the queued->analyzing transition, before any
+    // terminal event reaches disk: one trigger aborts the transition, a second
+    // aborts the run_failed insert so the catch cannot record a terminal. Only
+    // run_started commits; the target stays queued.
+    value.db.raw.exec(
+      `CREATE TEMP TRIGGER fail_analyzing BEFORE UPDATE OF stage ON fettler_campaign_targets
+       WHEN NEW.stage = 'analyzing' BEGIN SELECT RAISE(ABORT, 'injected_transition_failure'); END;`,
+    );
+    value.db.raw.exec(
+      `CREATE TEMP TRIGGER fail_run_failed BEFORE INSERT ON domain_events
+       WHEN NEW.event_type = 'warden.run.run_failed' BEGIN SELECT RAISE(ABORT, 'injected_terminal_failure'); END;`,
+    );
+    await expect(executeWardenCampaignTarget(executionInput(value)))
+      .rejects.toThrow("injected_terminal_failure");
+    const startedBefore = value.db.raw.prepare(
+      `SELECT id, payload_sha256, event_hash FROM domain_events
+       WHERE aggregate_type = 'warden_run' AND aggregate_id = 'run-a'`,
+    ).all() as Array<{ id: string; payload_sha256: string; event_hash: string }>;
+    expect(startedBefore).toHaveLength(1); // run_started only; no terminal on disk
+
+    value.db.raw.exec("DROP TRIGGER fail_analyzing");
+    value.db.raw.exec("DROP TRIGGER fail_run_failed");
+
+    // Replaying the same run has no committed terminal to resume past, so it
+    // reuses sequence 1 for run_started: the existing row is returned unchanged
+    // (byte-identical, idempotent) rather than a second run_started being added.
+    const result = await executeWardenCampaignTarget(executionInput(value));
+    expect(result.stage).toBe("review");
+    const events = runEventSummary(value.db);
+    expect(events.filter((event) => event.kind === "run_started")).toHaveLength(1);
+    expect(events.map((event) => event.sequence)).toEqual(events.map((_, index) => index + 1));
+    const startedAfter = value.db.raw.prepare(
+      `SELECT id, payload_sha256, event_hash FROM domain_events
+       WHERE aggregate_type = 'warden_run' AND aggregate_id = 'run-a' AND event_type = 'warden.run.run_started'`,
+    ).all() as Array<{ id: string; payload_sha256: string; event_hash: string }>;
+    expect(startedAfter).toEqual(startedBefore);
+  });
 });
 
 function reviewPackageInput(
