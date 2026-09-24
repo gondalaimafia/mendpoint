@@ -52,9 +52,16 @@ const TITLE = "Fettler candidate";
 /** The oracle marker: the delivered body must always carry the package section. */
 const PACKAGE_SECTION = "### Structured review package";
 
+// Generate the RSA credential ONCE and reuse it: per-delivery keygen (2048-bit
+// RSA is a multi-ms synchronous op) across the ~1k-schedule sweep otherwise
+// blocks the event loop long enough to starve the test runner's progress RPC.
+let cachedCredentials: { appId: string; privateKeyPem: string } | undefined;
 function credentials() {
-  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  return { appId: "99", privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString() };
+  if (!cachedCredentials) {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    cachedCredentials = { appId: "99", privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString() };
+  }
+  return cachedCredentials;
 }
 
 function makeDelivery(
@@ -296,35 +303,41 @@ describe("delivery state machine — systematic interleaving sweep (PR-CI subset
   // covers the crash points, × head-move × outage × stale-read.
   const faultIndices = Array.from({ length: 13 }, (_, i) => i);
 
-  const progressing: Schedule[] = [];
-  for (const head of heads) {
+  function schedulesForHead(head: HeadSchedule): Schedule[] {
+    const out: Schedule[] = [];
     for (const outage of outages) {
       for (const fault of ["crash", "lose"] as FaultKind[]) {
         for (const faultIndex of faultIndices) {
           for (const stalePullsList of [false, true]) {
-            progressing.push({ head, outage, fault, faultIndex, stalePullsList });
+            out.push({ head, outage, fault, faultIndex, stalePullsList });
           }
         }
       }
       // A no-fault schedule per head/outage combination.
-      progressing.push({ head, outage, fault: "none", faultIndex: 0, stalePullsList: false });
+      out.push({ head, outage, fault: "none", faultIndex: 0, stalePullsList: false });
     }
+    return out;
   }
 
-  it(`asserts I1-I3, I5, I8 across ${progressing.length} schedules`, async () => {
-    let checked = 0;
-    for (const schedule of progressing) {
-      const result = await runSchedule(schedule);
-      // I5: a reachable, non-foreign branch always reaches draft within bounds;
-      // elapsed time / lease / budget / outage never make it terminal. (I1 and I3
-      // are asserted after every attempt inside runSchedule.)
-      expect(result.delivered, JSON.stringify(schedule)).toBe(true);
-      checked += 1;
-    }
-    // eslint-disable-next-line no-console
-    console.log(`[model-test] progressing schedules checked: ${checked}`);
-    expect(checked).toBe(progressing.length);
-  }, 120_000);
+  const totalSchedules = heads.reduce((sum, head) => sum + schedulesForHead(head).length, 0);
+
+  // One `it` per head-move schedule (~212 schedules each) so no single test runs
+  // long enough to starve the runner's progress RPC while still asserting I1/I3
+  // after every attempt (in runSchedule) and I5 at quiescence across every
+  // schedule. Total across the four: ~1k (logged below).
+  for (const head of heads) {
+    const schedules = schedulesForHead(head);
+    it(`asserts I1-I3, I5, I8 across ${schedules.length} schedules (head=${head}; ${totalSchedules} total)`, async () => {
+      for (const schedule of schedules) {
+        const result = await runSchedule(schedule);
+        // I5: a reachable, non-foreign branch always reaches draft within bounds;
+        // elapsed time / lease / budget / outage never make it terminal.
+        expect(result.delivered, JSON.stringify(schedule)).toBe(true);
+      }
+      // eslint-disable-next-line no-console
+      console.log(`[model-test] head=${head}: ${schedules.length} schedules ok (of ${totalSchedules})`);
+    }, 60_000);
+  }
 
   it("I8 oracle + I1/I3: a different body every attempt converges to one PR carrying the package section", async () => {
     // A lost response at the pull-create index forces a second attempt with a
