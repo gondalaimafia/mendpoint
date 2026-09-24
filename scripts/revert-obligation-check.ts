@@ -161,7 +161,9 @@ function realGitEnv(root: string): GitEnv {
     isShallow: () => git(root, ["rev-parse", "--is-shallow-repository"]).trim() === "true",
     commitPresence: () => {
       try {
-        git(root, ["rev-parse", "--verify", "HEAD"]);
+        // `HEAD^{commit}` dereferences HEAD to a commit object, so a detached
+        // HEAD pinned at a nonexistent sha fails here instead of crashing.
+        git(root, ["rev-parse", "--verify", "HEAD^{commit}"]);
         return "present";
       } catch {
         // HEAD did not resolve to a commit. That is a genuinely empty repository

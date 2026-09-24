@@ -98,7 +98,7 @@ export type OidcVerifierConfig = {
   jwksUri?: string;
 };
 
-function activeTrustPrincipal(
+export function activeTrustPrincipal(
   principal: Readonly<{ created_at: string; expires_at: string | null; revoked_at: string | null }>,
   observedAtMs = Date.now(),
 ): boolean {

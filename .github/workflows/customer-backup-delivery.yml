@@ -313,19 +313,24 @@ jobs:
                 # the unique run-name identity instead of accepting whichever
                 # backup happened to appear next.
                 backup_run_id=""
+                # `for x in $(gh run list ...)` does not fail closed: a failed
+                # list yields an empty word list that reads as "dispatch not
+                # acknowledged". Capture the list with an explicit status check.
+                # A single failed poll is transient (a 502 mid-poll): record it
+                # and keep polling across the remaining attempts, exactly as the
+                # loop already retries a not-yet-visible run. Only when the whole
+                # observation window is exhausted do we fail closed — as a lookup
+                # failure if any poll errored, else as an unacknowledged dispatch.
+                observe_lookup_failed=false
                 for _ in $(seq 1 "$DELIVERY_OBSERVE_ATTEMPTS"); do
-                  # `for x in $(gh run list ...)` does not fail closed: a failed
-                  # list yields an empty word list that reads as "dispatch not
-                  # acknowledged". Capture the list with an explicit status check
-                  # so an API outage fails closed as a lookup failure instead.
                   observe_run_ids=""
                   if ! observe_run_ids="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
                     --branch "$BACKUP_REF" --event workflow_dispatch --limit 50 \
                     --json databaseId,displayTitle,createdAt --jq '.[].databaseId')"; then
-                    echo "customer_backup_delivery_lookup_failed delivery_id=$delivery_id" >&2
+                    observe_lookup_failed=true
                     record --arg at "$checked_at" --arg deliveryId "$delivery_id" --argjson cycle "$cycle" \
                       '{at:$at,event:"backup_lookup_failed",cycle:$cycle,deliveryId:$deliveryId,operation:"run_list_observe"}'
-                    exit 1
+                    observe_run_ids=""
                   fi
                   for candidate_run_id in $observe_run_ids; do
                     candidate_metadata=""
@@ -342,6 +347,10 @@ jobs:
                   sleep "$DELIVERY_OBSERVE_SLEEP_SECONDS"
                 done
                 if [ -z "$backup_run_id" ]; then
+                  if [ "$observe_lookup_failed" = true ]; then
+                    echo "customer_backup_delivery_lookup_failed delivery_id=$delivery_id" >&2
+                    exit 1
+                  fi
                   echo "customer_backup_delivery_run_not_observed delivery_id=$delivery_id" >&2
                   record --arg at "$checked_at" --arg deliveryId "$delivery_id" \
                     --argjson cycle "$cycle" --argjson clientStatus "$dispatch_status" \
@@ -435,20 +444,24 @@ jobs:
             gh workflow run "$DELIVERY_WORKFLOW" --repo "$GH_REPO" --ref "$BACKUP_REF" \
               -f "predecessor_run_id=$CONTROLLER_RUN_ID" || handoff_status=$?
 
+            # `for x in $(gh run list ...)` does not fail closed: a failed list
+            # yields an empty word list that reads as "successor not observed"
+            # and re-dispatches. Capture the list with an explicit status check.
+            # A single failed poll is transient: record it and keep polling. If
+            # the whole observation window is exhausted by lookup failures, fail
+            # closed as a lookup failure WITHOUT re-dispatching — re-dispatching
+            # on an API outage would create a duplicate successor.
+            handoff_lookup_failed=false
             for _ in $(seq 1 "$DELIVERY_OBSERVE_ATTEMPTS"); do
-              # `for x in $(gh run list ...)` does not fail closed: a failed list
-              # yields an empty word list that reads as "successor not observed"
-              # and re-dispatches. Capture the list with an explicit status check
-              # so an API outage fails closed as a lookup failure instead.
               successor_run_ids=""
               if ! successor_run_ids="$(gh run list --repo "$GH_REPO" --workflow "$DELIVERY_WORKFLOW" \
                 --branch "$BACKUP_REF" --event workflow_dispatch --limit 50 \
                 --json databaseId,displayTitle,createdAt --jq '.[].databaseId')"; then
-                echo "customer_backup_delivery_lookup_failed predecessor_run_id=$CONTROLLER_RUN_ID" >&2
+                handoff_lookup_failed=true
                 record --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                   --arg predecessor "$CONTROLLER_RUN_ID" --argjson attempt "$dispatch_attempt" \
                   '{at:$at,event:"backup_lookup_failed",predecessorRunId:$predecessor,attempt:$attempt,operation:"run_list_observe"}'
-                exit 1
+                successor_run_ids=""
               fi
               for candidate_run_id in $successor_run_ids; do
                 candidate_metadata=""
@@ -477,6 +490,14 @@ jobs:
               sleep "$DELIVERY_OBSERVE_SLEEP_SECONDS"
             done
             if [ -n "$successor_run_id" ]; then break; fi
+
+            # The observation window was exhausted by lookup failures (an API
+            # outage), not by a genuinely-absent successor. Do not re-dispatch a
+            # duplicate; fail closed as a lookup failure.
+            if [ "$handoff_lookup_failed" = true ]; then
+              echo "customer_backup_delivery_lookup_failed predecessor_run_id=$CONTROLLER_RUN_ID" >&2
+              exit 1
+            fi
 
             if [ "$dispatch_attempt" -lt "$DELIVERY_HANDOFF_ATTEMPTS" ]; then
               backoff_seconds="$((DELIVERY_HANDOFF_BACKOFF_SECONDS * dispatch_attempt))"

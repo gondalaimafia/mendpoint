@@ -54,6 +54,11 @@ function runController(options: {
   runListConclusionFail?: boolean;
   runViewFail?: boolean;
   runListObserveFail?: boolean;
+  runListHandoffFail?: boolean;
+  observeFailTimes?: string;
+  handoffFailTimes?: string;
+  deliveryObserveAttempts?: string;
+  deliveryHandoffAttempts?: string;
 }) {
   const dir = mkdtempSync(join(tmpdir(), "customer-backup-delivery-"));
   const log = join(dir, "gh.log");
@@ -61,6 +66,8 @@ function runController(options: {
   const ledger = join(dir, "delivery.jsonl");
   const dispatched = join(dir, "dispatched");
   const handoffDispatched = join(dir, "handoff-dispatched");
+  const observeFailCounter = join(dir, "observe-fail-counter");
+  const handoffFailCounter = join(dir, "handoff-fail-counter");
   writeFileSync(log, "", "utf8");
   writeFileSync(flyctlLog, "", "utf8");
   // Keep the workflow integration real while avoiding a new shell process for
@@ -89,9 +96,32 @@ case "$1 $2" in
     esac
     case "$*" in
       *displayTitle*)
-        if [ -n "\${GH_STUB_RUN_LIST_OBSERVE_FAIL:-}" ]; then
-          echo 'gh: HTTP 502 Bad Gateway (api.github.com)' >&2; return 1
-        fi
+        case "$*" in
+          *customer-backup-delivery.yml*)
+            if [ -n "\${GH_STUB_RUN_LIST_HANDOFF_FAIL:-}" ]; then
+              echo 'gh: HTTP 502 Bad Gateway (api.github.com)' >&2; return 1
+            fi
+            if [ -n "\${GH_STUB_HANDOFF_FAIL_TIMES:-}" ]; then
+              n="$(cat "$GH_STUB_HANDOFF_FAIL_COUNTER" 2>/dev/null || echo 0)"
+              if [ "$n" -lt "$GH_STUB_HANDOFF_FAIL_TIMES" ]; then
+                printf '%s' "$((n + 1))" > "$GH_STUB_HANDOFF_FAIL_COUNTER"
+                echo 'gh: HTTP 502 Bad Gateway (api.github.com)' >&2; return 1
+              fi
+            fi
+            ;;
+          *)
+            if [ -n "\${GH_STUB_RUN_LIST_OBSERVE_FAIL:-}" ]; then
+              echo 'gh: HTTP 502 Bad Gateway (api.github.com)' >&2; return 1
+            fi
+            if [ -n "\${GH_STUB_OBSERVE_FAIL_TIMES:-}" ]; then
+              n="$(cat "$GH_STUB_OBSERVE_FAIL_COUNTER" 2>/dev/null || echo 0)"
+              if [ "$n" -lt "$GH_STUB_OBSERVE_FAIL_TIMES" ]; then
+                printf '%s' "$((n + 1))" > "$GH_STUB_OBSERVE_FAIL_COUNTER"
+                echo 'gh: HTTP 502 Bad Gateway (api.github.com)' >&2; return 1
+              fi
+            fi
+            ;;
+        esac
         ;;
     esac
     case "$*" in
@@ -176,9 +206,9 @@ return 0
     DELIVERY_RPO_SECONDS: options.deliveryRpoSeconds ?? "3600",
     DELIVERY_MAX_ACTIVE_AGE_SECONDS: "1200",
     DELIVERY_OBSERVATION_MARGIN_SECONDS: "300",
-    DELIVERY_OBSERVE_ATTEMPTS: "1",
+    DELIVERY_OBSERVE_ATTEMPTS: options.deliveryObserveAttempts ?? "1",
     DELIVERY_OBSERVE_SLEEP_SECONDS: "0",
-    DELIVERY_HANDOFF_ATTEMPTS: "2",
+    DELIVERY_HANDOFF_ATTEMPTS: options.deliveryHandoffAttempts ?? "2",
     DELIVERY_HANDOFF_BACKOFF_SECONDS: "0",
     GH_STUB_LOG: log,
     // The controller never receives the Fly token; CUSTOMER_APP is only the
@@ -209,6 +239,11 @@ return 0
     GH_STUB_RUN_LIST_CONCLUSION_FAIL: options.runListConclusionFail ? "1" : "",
     GH_STUB_RUN_VIEW_FAIL: options.runViewFail ? "1" : "",
     GH_STUB_RUN_LIST_OBSERVE_FAIL: options.runListObserveFail ? "1" : "",
+    GH_STUB_RUN_LIST_HANDOFF_FAIL: options.runListHandoffFail ? "1" : "",
+    GH_STUB_OBSERVE_FAIL_TIMES: options.observeFailTimes ?? "",
+    GH_STUB_HANDOFF_FAIL_TIMES: options.handoffFailTimes ?? "",
+    GH_STUB_OBSERVE_FAIL_COUNTER: observeFailCounter,
+    GH_STUB_HANDOFF_FAIL_COUNTER: handoffFailCounter,
   };
   const run = (name: string, source: string) => {
     const script = join(dir, `${name}.sh`);
@@ -714,6 +749,90 @@ describe("customer backup delivery controller workflow", () => {
     }));
     expect(result.ledger).not.toContainEqual(expect.objectContaining({
       event: "dispatch_unacknowledged",
+    }));
+  });
+
+  it("recovers a transient 502 on the acknowledgement poll and still delivers exactly one backup", () => {
+    // A single failed acknowledgement poll is transient. The loop must keep
+    // polling across its attempts and observe the dispatched run on a later
+    // poll, rather than failing the whole run on the first 502.
+    const result = runController({
+      observeFailTimes: "1",
+      deliveryObserveAttempts: "3",
+      latestSuccess: "",
+      deliveryCycles: "1",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup.yml")))
+      .toHaveLength(1);
+    expect(result.ledger).toContainEqual(expect.objectContaining({ event: "backup_dispatched" }));
+    // The transient failure was still recorded, but did not fail the run.
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_lookup_failed",
+      operation: "run_list_observe",
+    }));
+  });
+
+  it("fails closed as lookup_failed when every acknowledgement poll errors, without a duplicate dispatch", () => {
+    const result = runController({
+      runListObserveFail: true,
+      deliveryObserveAttempts: "3",
+      latestSuccess: "",
+      deliveryCycles: "1",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_delivery_lookup_failed");
+    // Exactly one backup dispatch; the observation outage never re-dispatches.
+    expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup.yml")))
+      .toHaveLength(1);
+    expect(result.stderr).not.toContain("customer_backup_delivery_run_not_observed");
+  });
+
+  it("recovers a transient 502 on the successor poll and still completes the handoff once", () => {
+    const result = runController({
+      latestSuccess: new Date().toISOString(),
+      handoffFailTimes: "1",
+      deliveryObserveAttempts: "3",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup-delivery.yml")))
+      .toHaveLength(1);
+    expect(result.ledger).toContainEqual(expect.objectContaining({ event: "controller_handoff" }));
+  });
+
+  it("fails closed as lookup_failed when every successor poll errors, without re-dispatching a successor", () => {
+    // The handoff dispatches once, then every successor observation poll errors.
+    // A re-dispatch on an API outage would create a duplicate successor, so the
+    // handoff must fail closed as a lookup failure with exactly one dispatch,
+    // even though DELIVERY_HANDOFF_ATTEMPTS would otherwise re-dispatch.
+    const result = runController({
+      latestSuccess: new Date().toISOString(),
+      runListHandoffFail: true,
+      deliveryObserveAttempts: "2",
+      deliveryHandoffAttempts: "3",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_delivery_lookup_failed");
+    expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup-delivery.yml")))
+      .toHaveLength(1);
+    expect(result.stderr).not.toContain("customer_backup_delivery_successor_not_observed");
+  });
+
+  it("reports a final-lookup outage as lookup_failed, never as completion-missing", () => {
+    // Every cycle sees an active backup, so the per-cycle history lookup is never
+    // taken; the final reconciliation lookup then errors. That must read as a
+    // lookup failure, not the generic completion-missing that masks an outage.
+    const result = runController({
+      activeRunId: "31337",
+      runListConclusionFail: true,
+      deliveryCycles: "1",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_delivery_lookup_failed");
+    expect(result.stderr).not.toContain("customer_backup_delivery_completion_missing");
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_lookup_failed",
+      operation: "run_list",
     }));
   });
 });
