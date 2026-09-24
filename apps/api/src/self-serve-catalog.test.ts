@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   decideCatalogMutation,
   isReservedSharedSlug,
+  isValidProviderSlug,
   namespacePrivateProviderSlug,
   normalizeReservedSlug,
   providerVisibleToTenant,
@@ -171,6 +172,24 @@ describe("isReservedSharedSlug", () => {
 
   it("allows a slug not in the shared set", () => {
     expect(isReservedSharedSlug("my-internal-api", reserved)).toBe(false);
+  });
+});
+
+describe("isValidProviderSlug", () => {
+  it("accepts lowercase alphanumeric-hyphen slugs", () => {
+    for (const s of ["stripe", "aws-sdk", "payments-api", "a", "a1", "x".repeat(63)]) {
+      expect(isValidProviderSlug(s)).toBe(true);
+    }
+  });
+  it("rejects empty, uppercase, path separators, the namespace separator, leading hyphen, whitespace and over-length", () => {
+    for (const s of ["", "Stripe", "a/b", "tenant-a~x", "-api", "a".repeat(64), "-", " ", "a b"]) {
+      expect(isValidProviderSlug(s)).toBe(false);
+    }
+  });
+  it("narrows non-strings without throwing", () => {
+    expect(isValidProviderSlug(undefined)).toBe(false);
+    expect(isValidProviderSlug(null)).toBe(false);
+    expect(isValidProviderSlug(42)).toBe(false);
   });
 });
 

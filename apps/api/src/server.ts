@@ -248,6 +248,7 @@ import {
 import {
   decideCatalogMutation,
   isReservedSharedSlug,
+  isValidProviderSlug,
   namespacePrivateProviderSlug,
   normalizeReservedSlug,
 } from "./self-serve-catalog.js";
@@ -1839,6 +1840,18 @@ app.post("/providers", async (c) => {
     openapiUrl?: string;
     changelogUrl?: string;
   }>();
+  // Validate the requested slug shape first (before any .trim()/reservation work), so an
+  // absent, empty, uppercase, `~`-bearing or path-like slug is a named 400 rather than a 500.
+  if (!isValidProviderSlug(body.slug)) {
+    return c.json(
+      {
+        error: "invalid_provider_slug",
+        message:
+          "Provider slug must be lowercase, start alphanumeric, and use only a-z, 0-9 and hyphens (max 63 characters).",
+      },
+      400,
+    );
+  }
   let slug = body.slug;
   if (scope.tenantScope !== null) {
     // Tenant-private (self-serve) create. Two guards, in order:

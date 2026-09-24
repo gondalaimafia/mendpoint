@@ -18,7 +18,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 const NOW = "2026-09-24T12:00:00.000Z";
 
@@ -155,10 +155,58 @@ describe("provider slug reservation — a tenant cannot squat a shared vendor sl
     expect((res.json as { error?: string }).error).toBe("provider_slug_reserved");
   });
 
-  it("is case-insensitive (Stripe cannot squat stripe)", async () => {
+  it("rejects a case-variant vendor slug at validation (uppercase is not a valid slug)", async () => {
+    // `Stripe` is not a valid slug shape, so it is refused at validation (400) before the
+    // reservation check ever runs — it still cannot squat the vendor.
     const res = await createProvider(tokenB, { slug: "Stripe", name: "Case Squat" });
-    expect(res.status).toBe(409);
-    expect((res.json as { error?: string }).error).toBe("provider_slug_reserved");
+    expect(res.status).toBe(400);
+    expect((res.json as { error?: string }).error).toBe("invalid_provider_slug");
+  });
+});
+
+describe("requested slug validation — named 400, no 500", () => {
+  const invalid: Array<{ label: string; slug: unknown }> = [
+    { label: "path separator", slug: "a/b" },
+    { label: "uppercase", slug: "MyApi" },
+    { label: "namespace separator", slug: "tenant-a~x" },
+    { label: "empty", slug: "" },
+    { label: "leading hyphen", slug: "-api" },
+    { label: "too long", slug: "a".repeat(64) },
+  ];
+  for (const { label, slug } of invalid) {
+    it(`rejects ${label} with 400 invalid_provider_slug`, async () => {
+      const res = await createProvider(tokenA, { slug, name: "Bad" });
+      expect(res.status).toBe(400);
+      expect((res.json as { error?: string }).error).toBe("invalid_provider_slug");
+    });
+  }
+
+  it("a missing slug field is a 400, not a 500", async () => {
+    const res = await createProvider(tokenA, { name: "No Slug" });
+    expect(res.status).toBe(400);
+    expect((res.json as { error?: string }).error).toBe("invalid_provider_slug");
+  });
+});
+
+describe("UNIQUE-constraint race path (pre-check bypassed) still returns 409, never 500", () => {
+  it("maps a slug UNIQUE violation at insert to 409 provider_slug_unavailable", async () => {
+    // Create the row so the effective slug genuinely exists.
+    expect((await createProvider(tokenA, { slug: "race-me", name: "Race 1" })).status).toBe(201);
+    // Simulate the TOCTOU window on a multi-instance deployment: force the pre-insert existence
+    // check to miss once, so control reaches the INSERT, which hits the UNIQUE index. The catch
+    // must turn that into the same 409 (a missing catch would surface a 500).
+    const dbMod = await import("@mendpoint/db");
+    const spy = vi
+      .spyOn(dbMod, "getProviderBySlugUnscopedForSystem")
+      .mockReturnValueOnce(undefined);
+    try {
+      const res = await createProvider(tokenA, { slug: "race-me", name: "Race 2" });
+      expect(spy).toHaveBeenCalled();
+      expect(res.status).toBe(409);
+      expect((res.json as { error?: string }).error).toBe("provider_slug_unavailable");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

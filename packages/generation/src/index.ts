@@ -12,6 +12,9 @@ import type {
 } from "@mendpoint/shared";
 import { migrateFromFixHint } from "@mendpoint/egraph";
 import { WARDEN_PR_FOOTER } from "@mendpoint/branding";
+import { refSafeBranchSegment, isValidGitBranchName } from "./branch.js";
+
+export { refSafeBranchSegment, isValidGitBranchName } from "./branch.js";
 
 /** GitHub rejects pull-request bodies longer than this many characters. */
 const MAX_PR_BODY_CHARS = 65_536;
@@ -411,7 +414,15 @@ export function generateMigration(input: GenerateInput): MigrationDraft {
     summary: change.summary,
     entries: change.entries,
   });
-  const branchName = `mendpoint/${providerSlug}-${createHash("sha256").update(branchKey, "utf8").digest("hex").slice(0, 16)}`;
+  // The branch's provider segment is a ref-safe display slug (never the raw stored slug): a
+  // tenant-private slug carries a `~` (forbidden by git check-ref-format) and the tenant id,
+  // neither of which may reach a branch name. A shared slug is unchanged, so its branch name is
+  // byte-identical to today. Uniqueness comes from the branchKey hash below, not the slug.
+  const branchSegment = refSafeBranchSegment(providerSlug);
+  const branchName = `mendpoint/${branchSegment}-${createHash("sha256").update(branchKey, "utf8").digest("hex").slice(0, 16)}`;
+  if (!isValidGitBranchName(branchName)) {
+    throw new Error(`generated an unpushable branch name: ${branchName}`);
+  }
 
   // E-graph migration exploration (localized) for PR evidence
   const egraphNotes: string[] = [];

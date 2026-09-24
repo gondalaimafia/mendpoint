@@ -12,6 +12,9 @@
  * decision is byte-identical to the existing shared-catalog gate: shared/system-admin only.
  */
 import { can, canMutateSystemCatalog, type Principal } from "@mendpoint/platform";
+import { TENANT_PRIVATE_SLUG_SEPARATOR } from "@mendpoint/shared";
+
+export { isValidProviderSlug, PROVIDER_SLUG_PATTERN } from "@mendpoint/shared";
 
 export const SELF_SERVE_WARDEN_FLAG = "MENDPOINT_SELF_SERVE_WARDEN" as const;
 
@@ -100,8 +103,11 @@ export function decideCatalogMutation(
  * owning tenant id in the prefix also keeps two tenants' identically-named private providers
  * from colliding on the globally-unique `providers.slug` (which would otherwise be a 500 /
  * cross-tenant existence oracle).
+ *
+ * The constant lives in `@mendpoint/shared` so the generation package can strip the same
+ * namespace out of branch names; re-exported here under the established name.
  */
-export const TENANT_SLUG_SEPARATOR = "~" as const;
+export const TENANT_SLUG_SEPARATOR = TENANT_PRIVATE_SLUG_SEPARATOR;
 
 /**
  * Auto-apply the tenant namespace to a self-serve private provider's requested slug. The result
