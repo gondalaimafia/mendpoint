@@ -24,13 +24,14 @@ function gitRepoRoot(): string {
 const REAL_ENV = { GITHUB_MODE: "real", GITHUB_APP_ID: "42", GITHUB_APP_PRIVATE_KEY: APP_PRIVATE_KEY } as unknown as NodeJS.ProcessEnv;
 const baseInput = { tenantId: "tenant-a", owner: "acme", repo: "shop", defaultBranch: "main", installationId: "77" };
 
-// A git runner that answers the "has commits" and "has origin" probes and then
-// a scripted response for fetch/checkout/rev-parse. Records the calls.
+// A git runner that answers the top-level / commits / origin probes and then a
+// scripted response for fetch/checkout/rev-parse. Records the calls.
 function scriptedRunner(head: string): { runner: RepositoryGitRunner; calls: string[][] } {
   const calls: string[][] = [];
   const runner: RepositoryGitRunner = async (input) => {
     calls.push([...input.args]);
     const args = input.args;
+    if (args[0] === "rev-parse" && args.includes("--show-toplevel")) return input.repoRoot; // repo root
     if (args[0] === "rev-parse" && args.includes("--verify")) return head; // "has commits" probe
     if (args[0] === "remote") return "https://github.com/acme/shop.git"; // "has origin" probe
     if (args[0] === "rev-parse") return head; // final HEAD
@@ -45,27 +46,48 @@ describe("repository base refresher", () => {
     expect(await refresh({ ...baseInput, repoRoot: gitRepoRoot() })).toEqual({ status: "not_applicable" });
   });
 
-  it("is not applicable when the clone has no git directory", async () => {
+  it("is not applicable when the path is not a git working tree", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-refresh-nogit-"));
     dirs.push(dir);
     const refresh = createRepositoryBaseRefresher(REAL_ENV, {
       mintToken: async () => "unused",
-      gitRunner: async () => { throw new Error("git must not run"); },
+      // rev-parse --show-toplevel fails outside a git working tree.
+      gitRunner: async () => { throw new Error("not a git repository"); },
     });
     expect(await refresh({ ...baseInput, repoRoot: dir })).toEqual({ status: "not_applicable" });
   });
 
   it("is not applicable for a git folder with no commits or no origin", async () => {
-    for (const failingProbe of ["rev-parse", "remote"]) {
+    for (const failingProbe of ["--verify", "remote"]) {
       const refresh = createRepositoryBaseRefresher(REAL_ENV, {
         mintToken: async () => { throw new Error("must not mint before probes pass"); },
         gitRunner: async (input) => {
-          if (input.args[0] === failingProbe) throw new Error("no commits / no origin");
+          if (input.args[0] === "rev-parse" && input.args.includes("--show-toplevel")) return input.repoRoot;
+          if (failingProbe === "--verify" && input.args.includes("--verify")) throw new Error("no commits");
+          if (failingProbe === "remote" && input.args[0] === "remote") throw new Error("no origin");
           return "";
         },
       });
       expect(await refresh({ ...baseInput, repoRoot: gitRepoRoot() })).toEqual({ status: "not_applicable" });
     }
+  });
+
+  it("resolves the repository top level so a subdirectory clone still refreshes", async () => {
+    const toplevel = "/repo/root";
+    const seen: string[] = [];
+    const runner: RepositoryGitRunner = async (input) => {
+      seen.push(input.repoRoot);
+      if (input.args[0] === "rev-parse" && input.args.includes("--show-toplevel")) return toplevel;
+      if (input.args[0] === "rev-parse" && input.args.includes("--verify")) return "a".repeat(40);
+      if (input.args[0] === "remote") return "url";
+      if (input.args[0] === "rev-parse") return "a".repeat(40);
+      return "";
+    };
+    const refresh = createRepositoryBaseRefresher(REAL_ENV, { mintToken: async () => "tok", gitRunner: runner });
+    expect(await refresh({ ...baseInput, repoRoot: "/repo/root/packages/sub" }))
+      .toEqual({ status: "refreshed", headSha: "a".repeat(40) });
+    // Every command after top-level resolution runs against the resolved root.
+    expect(seen.filter((r) => r !== toplevel)).toEqual(["/repo/root/packages/sub"]);
   });
 
   it("fetches the remote default head, in order, and reports the checked-out sha", async () => {
@@ -84,29 +106,35 @@ describe("repository base refresher", () => {
     expect(checkoutAt).toBeLessThan(headAt);
   });
 
-  it("sends the credential in an http.extraHeader, never in the URL/argv, and disables credential.helper", async () => {
+  it("carries the credential only in GIT_CONFIG env, never in argv, and disables credential.helper", async () => {
     const secretToken = "ghs_SUPER_SECRET_TOKEN_VALUE";
-    const fetchArgs: string[] = [];
+    const secretBase64 = Buffer.from(`x-access-token:${secretToken}`, "utf8").toString("base64");
+    let fetchArgs: string[] = [];
+    let fetchEnv: Record<string, string> = {};
     const runner: RepositoryGitRunner = async (input) => {
+      if (input.args[0] === "rev-parse" && input.args.includes("--show-toplevel")) return input.repoRoot;
       if (input.args[0] === "rev-parse" && input.args.includes("--verify")) return "a".repeat(40);
       if (input.args[0] === "remote") return "url";
-      if (input.args.includes("fetch")) fetchArgs.push(...input.args);
+      if (input.args.includes("fetch")) { fetchArgs = [...input.args]; fetchEnv = { ...input.env }; }
       if (input.args[0] === "rev-parse") return "a".repeat(40);
       return "";
     };
     const refresh = createRepositoryBaseRefresher(REAL_ENV, { mintToken: async () => secretToken, gitRunner: runner });
     await refresh({ ...baseInput, repoRoot: gitRepoRoot() });
-    // Auth header present (this dies if the header is removed).
-    expect(fetchArgs.some((a) => a.startsWith("http.extraHeader=Authorization: Basic "))).toBe(true);
+    // The credential rides in the environment, not the command line.
+    expect(fetchEnv.GIT_CONFIG_KEY_0).toBe("http.extraHeader");
+    expect(fetchEnv.GIT_CONFIG_VALUE_0).toBe(`Authorization: Basic ${secretBase64}`);
     // credential.helper emptied so git-credential-manager is never consulted.
     expect(fetchArgs).toContain("credential.helper=");
-    // Option-terminator before the refspec; bare "origin" remote (this dies if
-    // the token is moved into a URL in argv).
+    // Bare "origin" remote and an option terminator before the refspec.
     expect(fetchArgs).toContain("origin");
     expect(fetchArgs).toContain("--");
+    // Neither the raw token nor its base64 form nor a URL ever appears in argv
+    // (this dies if the header is moved to -c on the command line).
     for (const arg of fetchArgs) {
-      expect(arg).not.toContain(secretToken); // raw token never on the command line
-      expect(arg).not.toMatch(/^https?:\/\//); // no URL argument at all
+      expect(arg).not.toContain(secretToken);
+      expect(arg).not.toContain(secretBase64);
+      expect(arg).not.toMatch(/^https?:\/\//);
     }
   });
 
@@ -134,6 +162,7 @@ describe("repository base refresher", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const runner: RepositoryGitRunner = async (input) => {
+      if (input.args[0] === "rev-parse" && input.args.includes("--show-toplevel")) return input.repoRoot;
       if (input.args[0] === "rev-parse" && input.args.includes("--verify")) return "a".repeat(40);
       if (input.args[0] === "remote") return "url";
       throw new Error(`fatal: could not read from remote (Authorization: Basic ${secretToken})`);

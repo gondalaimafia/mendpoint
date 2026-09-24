@@ -1,6 +1,4 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { promisify } from "node:util";
 import {
   InstallationTokenCache,
@@ -59,12 +57,15 @@ const defaultGitRunner: RepositoryGitRunner = async (input) => {
  * Refresh a git-backed clone's default branch to the current remote head before
  * draft generation, using the same GitHub App installation credentials the
  * delivery path uses (no new secret). The token is repository-scoped when the
- * caller passes the resolver-validated repository id, ridden into git via
- * `http.extraHeader` (never in a URL), git-credential-manager is disabled, and
- * the branch is validated against option injection. A failure returns a named
- * retryable code — never the raw git error, never the token, and never a stale
- * base. Repositories with no git history, no commits, or no origin are not
- * applicable (they deliver through the content-manifest path).
+ * caller passes the resolver-validated repository id, and it rides into git only
+ * through the `http.extraHeader` git config passed in the environment
+ * (GIT_CONFIG_*), never on the command line or in a URL, so it is not visible in
+ * the process argument list. git-credential-manager is disabled, and the branch
+ * is validated against option injection. The fetch is not shallow, so it never
+ * truncates a full clone's history. A failure returns a named retryable code —
+ * never the raw git error, never the token, and never a stale base. Repositories
+ * with no git history, no commits, or no origin are not applicable (they deliver
+ * through the content-manifest path).
  */
 export function createRepositoryBaseRefresher(
   env: NodeJS.ProcessEnv = process.env,
@@ -88,7 +89,6 @@ export function createRepositoryBaseRefresher(
   return async (input): Promise<RepositoryBaseRefreshResult> => {
     // Only real GitHub App mode fetches; mock/dev delivery keeps its own base.
     if (env.GITHUB_MODE !== "real") return { status: "not_applicable" };
-    if (!existsSync(join(input.repoRoot, ".git"))) return { status: "not_applicable" };
     if (!SAFE_BRANCH.test(input.defaultBranch)) {
       return { status: "failed", code: "github_repository_base_refresh_branch_invalid" };
     }
@@ -100,11 +100,16 @@ export function createRepositoryBaseRefresher(
       return { status: "failed", code: "github_repository_base_refresh_installation_invalid" };
     }
 
-    // A git folder with no commits or no origin is treated as content-manifest
-    // (decision A): it is not applicable to exact-draft base refresh.
+    // Resolve the repository top level so a clone rooted at a subdirectory still
+    // works, and use it consistently for every git command. A path with no git
+    // history, no commits, or no origin is treated as content-manifest (decision
+    // A): not applicable to exact-draft base refresh.
+    let repoRoot: string;
     try {
-      await gitRunner({ repoRoot: input.repoRoot, args: ["rev-parse", "--verify", "HEAD"], env: {} });
-      await gitRunner({ repoRoot: input.repoRoot, args: ["remote", "get-url", "origin"], env: {} });
+      repoRoot = await gitRunner({ repoRoot: input.repoRoot, args: ["rev-parse", "--show-toplevel"], env: {} });
+      if (!repoRoot) return { status: "not_applicable" };
+      await gitRunner({ repoRoot, args: ["rev-parse", "--verify", "HEAD"], env: {} });
+      await gitRunner({ repoRoot, args: ["remote", "get-url", "origin"], env: {} });
     } catch {
       return { status: "not_applicable" };
     }
@@ -120,24 +125,34 @@ export function createRepositoryBaseRefresher(
     }
 
     const encodedCredential = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
-    // credential.helper is emptied so git-credential-manager is never consulted;
-    // the token rides only in the extra header, never on the command line.
-    const authArgs = ["-c", "credential.helper=", "-c", `http.extraHeader=Authorization: Basic ${encodedCredential}`];
-    const gitEnv = Object.freeze({ GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" });
+    // The credential rides in an http.extraHeader passed through the environment
+    // (GIT_CONFIG_*, git >= 2.31), never on the command line — so the base64 token
+    // is not visible in the process argument list. credential.helper is emptied
+    // (a non-secret) so git-credential-manager is never consulted.
+    const authArgs = ["-c", "credential.helper="];
+    const gitEnv = Object.freeze({
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "http.extraHeader",
+      GIT_CONFIG_VALUE_0: `Authorization: Basic ${encodedCredential}`,
+      GIT_TERMINAL_PROMPT: "0",
+      GCM_INTERACTIVE: "Never",
+    });
 
     try {
-      // "--" terminates option parsing so the branch is always read as a refspec.
+      // Not shallow: a --depth fetch would truncate a full clone's history that
+      // git-temporal analysis reads. "--" terminates option parsing so the
+      // branch is always read as a refspec.
       await gitRunner({
-        repoRoot: input.repoRoot,
-        args: [...authArgs, "fetch", "--depth=1", "origin", "--", input.defaultBranch],
+        repoRoot,
+        args: [...authArgs, "fetch", "origin", "--", input.defaultBranch],
         env: gitEnv,
       });
       await gitRunner({
-        repoRoot: input.repoRoot,
+        repoRoot,
         args: ["checkout", "-B", input.defaultBranch, "FETCH_HEAD"],
         env: {},
       });
-      const head = (await gitRunner({ repoRoot: input.repoRoot, args: ["rev-parse", "HEAD"], env: {} })).toLowerCase();
+      const head = (await gitRunner({ repoRoot, args: ["rev-parse", "HEAD"], env: {} })).toLowerCase();
       if (!SHA.test(head)) {
         return { status: "failed", code: "github_repository_base_refresh_head_invalid" };
       }

@@ -13,6 +13,9 @@ import {
   insertApiVersion,
   insertConsumer,
   insertConsumerRepo,
+  insertConnectedRepository,
+  upsertScmConnection,
+  upsertGitHubInstallation,
   insertMonitoredApi,
   insertPolicy,
   getConsumerRepo,
@@ -594,10 +597,12 @@ describe("pipeline", () => {
     // delivery_failed and retries.
     class LostResponseDelivery extends MockGitHubDelivery {
       attempts = 0;
+      readonly bodies: string[] = [];
       override async deliverExactDraft(
         input: Parameters<MockGitHubDelivery["deliverExactDraft"]>[0],
       ): ReturnType<MockGitHubDelivery["deliverExactDraft"]> {
         this.attempts += 1;
+        this.bodies.push(input.body);
         const result = await super.deliverExactDraft(input);
         if (this.attempts === 1) throw new Error("lost_response_after_create");
         return result;
@@ -629,6 +634,207 @@ describe("pipeline", () => {
     const pullsDir = join(deliveryRoot, "org", "lostshop", "pulls");
     const pulls = readdirSync(pullsDir).filter((name) => /^[1-9][0-9]*\.json$/.test(name));
     expect(pulls).toHaveLength(1);
+    // The replay delivered the byte-identical body of the created draft.
+    expect(github.bodies).toHaveLength(2);
+    expect(github.bodies[1]).toBe(github.bodies[0]);
+  });
+
+  it("reconciles a lost-response PR even after the remote default branch moves (persisted base)", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "movedshop", localPath: shop, installationId: "12345" });
+    const baseX = "1".repeat(40);
+    const baseY = "2".repeat(40);
+
+    // Attempt 1 anchors to base X, creates the PR, then loses the response. The
+    // remote default branch then moves to Y, so the refresh returns Y next time.
+    let refreshCalls = 0;
+    const refreshRepositoryBase = async () => {
+      refreshCalls += 1;
+      return { status: "refreshed" as const, headSha: refreshCalls === 1 ? baseX : baseY };
+    };
+    class LostThenReconcile extends MockGitHubDelivery {
+      attempts = 0;
+      override async deliverExactDraft(
+        input: Parameters<MockGitHubDelivery["deliverExactDraft"]>[0],
+      ): ReturnType<MockGitHubDelivery["deliverExactDraft"]> {
+        this.attempts += 1;
+        const result = await super.deliverExactDraft(input);
+        if (this.attempts === 1) throw new Error("lost_response_after_create");
+        return result;
+      }
+    }
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-moved-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    const github = new LostThenReconcile(deliveryRoot);
+    github.setRemoteBranchHead("org", "movedshop", "main", baseX);
+    const common = {
+      tenantId: "tenant_default", providerSlug: "acme-payments", db, graphDb: testGraphDb(),
+      github, persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true, refreshRepositoryBase,
+    };
+
+    const first = await runChangePipeline(common);
+    expect(first.consumers[0]?.prStatus).toBe("delivery_failed");
+
+    // Remote moves to Y before the retry.
+    github.setRemoteBranchHead("org", "movedshop", "main", baseY);
+    const second = await runChangePipeline(common);
+    // Without the persisted base, attempt 2 would re-anchor to Y and diverge; the
+    // persisted base X lets it reconstruct the same commit and reconcile.
+    expect(second.consumers[0]?.prStatus, JSON.stringify(second.consumers[0])).toBe("draft");
+    expect(second.consumers[0]?.prUrl).toBeTruthy();
+    const pulls = readdirSync(join(deliveryRoot, "org", "movedshop", "pulls"))
+      .filter((name) => /^[1-9][0-9]*\.json$/.test(name));
+    expect(pulls).toHaveLength(1);
+    const row = db.raw.prepare("SELECT github_pr_url, delivery_base_sha FROM migration_prs LIMIT 1")
+      .get() as { github_pr_url: string | null; delivery_base_sha: string | null };
+    expect(row.github_pr_url).toBeTruthy();
+    expect(row.delivery_base_sha).toBe(baseX);
+  });
+
+  it("appends distinct status events for two delivery_failed attempts with different errors (no idempotency conflict)", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "twicefail", localPath: shop });
+
+    class TwoErrors extends MockGitHubDelivery {
+      attempts = 0;
+      override async deliverExactDraft(): Promise<never> {
+        this.attempts += 1;
+        throw new Error(this.attempts === 1 ? "first_transient_error" : "second_transient_error");
+      }
+    }
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-twicefail-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    const common = {
+      tenantId: "tenant_default", providerSlug: "acme-payments", db, graphDb: testGraphDb(),
+      github: new TwoErrors(deliveryRoot), persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+    };
+    const first = await runChangePipeline(common);
+    expect(first.consumers[0]?.prStatus).toBe("delivery_failed");
+    // The same pr reaches delivery_failed twice with different errors; the status
+    // event is keyed by outcome, so the second run must not throw
+    // domain_event_idempotency_conflict.
+    const second = await runChangePipeline(common);
+    expect(second.consumers[0]?.prStatus).toBe("delivery_failed");
+    expect(second.consumers[0]?.deliveryError).toBe("second_transient_error");
+  });
+
+  it("passes the resolver-validated repository id to the refresher (repository-scoped token)", async () => {
+    const prior = { mode: process.env.GITHUB_MODE, appId: process.env.GITHUB_APP_ID, key: process.env.GITHUB_APP_PRIVATE_KEY, bindings: process.env.GITHUB_APP_ACCOUNT_TENANT_BINDINGS };
+    try {
+      const db = seedProviderVersions();
+      const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+      process.env.GITHUB_MODE = "real";
+      process.env.GITHUB_APP_ID = "99";
+      process.env.GITHUB_APP_PRIVATE_KEY = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+      process.env.GITHUB_APP_ACCOUNT_TENANT_BINDINGS = '{"7123456":"tenant_default"}';
+      upsertScmConnection(db, { id: "conn-r1", tenantId: "tenant_default", provider: "github", credentialRef: "github-app://installation/12345", externalAccountId: "12345", displayName: "Org", createdAt: nowIso(), updatedAt: nowIso() });
+      insertConnectedRepository(db, { id: "repo-r1", tenantId: "tenant_default", connectionId: "conn-r1", remoteId: "200", owner: "org", name: "scoped-shop", defaultBranch: "main", status: "ready", createdAt: nowIso(), updatedAt: nowIso() });
+      upsertGitHubInstallation(db, { id: "inst-r1", installationId: "12345", accountId: "7123456", accountLogin: "org", tenantId: "tenant_default", repositorySelection: "selected", permissions: { metadata: "read", contents: "write", pull_requests: "write", checks: "read" }, repositories: [{ id: 200, owner: "org", name: "scoped-shop" }], createdAt: nowIso(), updatedAt: nowIso() });
+      const cid = addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "scoped-shop", localPath: shop, installationId: "12345" });
+      db.raw.prepare("UPDATE consumer_repos SET scm_connection_id = 'conn-r1', connected_repository_id = 'repo-r1' WHERE consumer_id = ?").run(cid);
+
+      const refreshCalls: Array<Record<string, unknown>> = [];
+      const report = await runChangePipeline({
+        tenantId: "tenant_default", providerSlug: "acme-payments", db, graphDb: testGraphDb(),
+        persistIndex: false, dependencyOutagePolicy: () => { throw new Error("decide_not_expected"); },
+        contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+        securityScanAttested: true,
+        // Return failed so delivery is skipped (no real GitHub call); we only
+        // assert the repository id the pipeline threaded into the refresh.
+        refreshRepositoryBase: async (input) => { refreshCalls.push({ ...input }); return { status: "failed", code: "github_repository_base_refresh_fetch_failed" }; },
+      });
+      expect(report.consumers[0]?.prStatus).toBe("delivery_failed");
+      expect(refreshCalls).toHaveLength(1);
+      // The resolver's validated remote id, not null (installation-wide).
+      expect(refreshCalls[0]!.repositoryId).toBe("200");
+    } finally {
+      for (const [k, v] of Object.entries({ GITHUB_MODE: prior.mode, GITHUB_APP_ID: prior.appId, GITHUB_APP_PRIVATE_KEY: prior.key, GITHUB_APP_ACCOUNT_TENANT_BINDINGS: prior.bindings })) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+    }
+  });
+
+  it("does not mint a refresh token when the delivery resolver rejects the installation (suspended)", async () => {
+    const prior = { mode: process.env.GITHUB_MODE, appId: process.env.GITHUB_APP_ID, key: process.env.GITHUB_APP_PRIVATE_KEY, bindings: process.env.GITHUB_APP_ACCOUNT_TENANT_BINDINGS };
+    try {
+      const db = seedProviderVersions();
+      const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+      process.env.GITHUB_MODE = "real";
+      process.env.GITHUB_APP_ID = "99";
+      process.env.GITHUB_APP_PRIVATE_KEY = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+      process.env.GITHUB_APP_ACCOUNT_TENANT_BINDINGS = '{"7123456":"tenant_default"}';
+      upsertScmConnection(db, { id: "conn-r2", tenantId: "tenant_default", provider: "github", credentialRef: "github-app://installation/12345", externalAccountId: "12345", displayName: "Org", createdAt: nowIso(), updatedAt: nowIso() });
+      insertConnectedRepository(db, { id: "repo-r2", tenantId: "tenant_default", connectionId: "conn-r2", remoteId: "200", owner: "org", name: "suspended-shop", defaultBranch: "main", status: "ready", createdAt: nowIso(), updatedAt: nowIso() });
+      upsertGitHubInstallation(db, { id: "inst-r2", installationId: "12345", accountId: "7123456", accountLogin: "org", tenantId: "tenant_default", repositorySelection: "selected", permissions: { metadata: "read", contents: "write", pull_requests: "write", checks: "read" }, repositories: [{ id: 200, owner: "org", name: "suspended-shop" }], createdAt: nowIso(), updatedAt: nowIso() });
+      db.raw.prepare("UPDATE github_installations SET suspended_at = '2026-01-01T00:00:00.000Z' WHERE installation_id = '12345'").run();
+      const cid = addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "suspended-shop", localPath: shop, installationId: "12345" });
+      db.raw.prepare("UPDATE consumer_repos SET scm_connection_id = 'conn-r2', connected_repository_id = 'repo-r2' WHERE consumer_id = ?").run(cid);
+
+      let refreshCalled = false;
+      const report = await runChangePipeline({
+        tenantId: "tenant_default", providerSlug: "acme-payments", db, graphDb: testGraphDb(),
+        persistIndex: false, dependencyOutagePolicy: () => { throw new Error("decide_not_expected"); },
+        contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+        securityScanAttested: true,
+        refreshRepositoryBase: async () => { refreshCalled = true; return { status: "not_applicable" }; },
+      });
+      // The resolver's suspension check runs before the refresh, so no token is
+      // minted for a rejected installation; delivery fails.
+      expect(refreshCalled).toBe(false);
+      expect(report.consumers[0]?.prStatus).toBe("delivery_failed");
+    } finally {
+      for (const [k, v] of Object.entries({ GITHUB_MODE: prior.mode, GITHUB_APP_ID: prior.appId, GITHUB_APP_PRIVATE_KEY: prior.key, GITHUB_APP_ACCOUNT_TENANT_BINDINGS: prior.bindings })) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+    }
+  });
+
+  it("regenerates the full body (with the package section) when a base-refresh failure is followed by success", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "refreshshop", localPath: shop, installationId: "12345" });
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-refresh2s-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    const github = new MockGitHubDelivery(deliveryRoot);
+    let refreshCalls = 0;
+    const common = {
+      tenantId: "tenant_default", providerSlug: "acme-payments", db, graphDb: testGraphDb(),
+      github, persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+      refreshRepositoryBase: async () => {
+        refreshCalls += 1;
+        return refreshCalls === 1
+          ? { status: "failed" as const, code: "github_repository_base_refresh_fetch_failed" }
+          : { status: "not_applicable" as const };
+      },
+    };
+
+    // Attempt 1: refresh fails → delivery skipped, no branch/PR, no persisted base.
+    const first = await runChangePipeline(common);
+    expect(first.consumers[0]?.prStatus).toBe("delivery_failed");
+
+    // Attempt 2: refresh not applicable → fresh delivery, full body regenerated.
+    const second = await runChangePipeline(common);
+    expect(second.consumers[0]?.prStatus, JSON.stringify(second.consumers[0])).toBe("draft");
+    const pullFile = readdirSync(join(deliveryRoot, "org", "refreshshop", "pulls"))
+      .find((name) => /^[1-9][0-9]*\.json$/.test(name))!;
+    const body = (JSON.parse(readFileSync(join(deliveryRoot, "org", "refreshshop", "pulls", pullFile), "utf8")) as { body: string }).body;
+    // The delivered body is the freshly regenerated one, including the required
+    // structured package section — never the attempt-1 body that lacked it.
+    expect(body).toContain("Structured package artifact:");
   });
 
   it("emits and persists a capability-adoption opportunity for an unused new capability", async () => {

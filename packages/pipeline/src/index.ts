@@ -1174,9 +1174,25 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       consumer.github_delivery_mode === "app" &&
       consumer.installation_id
     ) {
+      // Resolve (and validate: tenant, account, suspension, repository) BEFORE
+      // minting any token, so a rejected installation never triggers a fetch.
+      let refreshResolution: PipelineDeliveryResolution | null = null;
       try {
-        const resolution = deliveryFor(consumer, repo);
-        await resolution.assertRepositoryIdentity?.();
+        refreshResolution = deliveryFor(consumer, repo);
+        await refreshResolution.assertRepositoryIdentity?.();
+      } catch (error) {
+        // A resolver rejection is audited distinctly from a transport failure.
+        baseRefreshFailedCode = error instanceof Error ? error.message : String(error);
+        recordAudit(db, {
+          tenantId: input.tenantId,
+          actor: "pipeline",
+          action: "repository.base_refresh_resolver_rejected",
+          resourceType: "consumer",
+          resourceId: consumer.id,
+          metadata: { code: baseRefreshFailedCode },
+        });
+      }
+      if (refreshResolution) {
         const refreshed = await input.refreshRepositoryBase({
           tenantId: input.tenantId,
           repoRoot: repo.local_path,
@@ -1184,22 +1200,21 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           repo: consumer.github_repo,
           defaultBranch: repo.default_branch,
           installationId: consumer.installation_id,
-          repositoryId: resolution.githubRepositoryId ?? null,
+          repositoryId: refreshResolution.githubRepositoryId ?? null,
         });
-        if (refreshed.status === "failed") baseRefreshFailedCode = refreshed.code;
-        else if (refreshed.status === "refreshed") refreshedHeadSha = refreshed.headSha;
-      } catch (error) {
-        baseRefreshFailedCode = error instanceof Error ? error.message : String(error);
-      }
-      if (baseRefreshFailedCode) {
-        recordAudit(db, {
-          tenantId: input.tenantId,
-          actor: "pipeline",
-          action: "repository.base_refresh_failed",
-          resourceType: "consumer",
-          resourceId: consumer.id,
-          metadata: { code: baseRefreshFailedCode },
-        });
+        if (refreshed.status === "failed") {
+          baseRefreshFailedCode = refreshed.code;
+          recordAudit(db, {
+            tenantId: input.tenantId,
+            actor: "pipeline",
+            action: "repository.base_refresh_failed",
+            resourceType: "consumer",
+            resourceId: consumer.id,
+            metadata: { code: baseRefreshFailedCode },
+          });
+        } else if (refreshed.status === "refreshed") {
+          refreshedHeadSha = refreshed.headSha;
+        }
       }
     }
     assertActive();
@@ -2097,6 +2112,13 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     // rather than opening a duplicate. On the first attempt it anchors to the
     // row's own created_at; on a retry it comes back from the persisted row.
     const deliveryCreatedAt = retryablePr?.created_at ?? nowIso();
+    // A delivery attempt has already anchored and created a branch/commit for
+    // this pr iff a base sha was persisted. Replaying such a delivery must reuse
+    // the SAME anchored base and body so the reconstructed commit matches and the
+    // existing draft reconciles; a fresh delivery (no persisted base) re-anchors
+    // to the current head and regenerates its body.
+    const persistedDeliveryBaseSha = retryablePr?.delivery_base_sha ?? null;
+    const replayCreatedDelivery = persistedDeliveryBaseSha !== null;
     const candidateContent = JSON.stringify({
       schemaVersion: 1,
       changeId,
@@ -2290,10 +2312,13 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         });
         const repositoryRevision = resolveRepositoryRevision(repo.local_path, snapshotIdentity);
         const { resolvedSha, revisionKind } = repositoryRevision;
-        // After a successful refresh the clone HEAD is the current remote head;
-        // anchor delivery to that exact sha so the draft is based on the live
-        // default branch (and a later remote move drifts, retryably, at delivery).
-        deliveryExpectedBaseSha = refreshedHeadSha ?? resolvedSha;
+        // Replaying a delivery that already anchored: reuse the persisted base so
+        // the reconstructed commit matches even if the remote default branch has
+        // since moved. A fresh delivery anchors to the refreshed current head (a
+        // later remote move then drifts, retryably, at delivery).
+        deliveryExpectedBaseSha = replayCreatedDelivery
+          ? persistedDeliveryBaseSha
+          : (refreshedHeadSha ?? resolvedSha);
         deliveryCommitDate = packageCreatedAt;
         deliveryRevisionKind = revisionKind;
         const snapshotManifest = {
@@ -2563,16 +2588,25 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     // Bound the fully assembled body before it is persisted or delivered, so a
     // large graph context never pushes PR creation past GitHub's hard limit.
     prBodyFinal = boundPrBody(prBodyFinal, graphEvidenceBlock);
-    // On a retry, deliver the exact body recorded on the first attempt. Parts of
-    // the body (e.g. the graph blast-radius counts) change as the learning graph
-    // accumulates state across runs; reusing the persisted body keeps the
-    // exact-draft delivery input byte-identical so a lost-response retry
-    // reconciles the existing pull request instead of diverging on its body.
-    if (retryablePr?.body) prBodyFinal = retryablePr.body;
+    // Reuse the persisted body ONLY when replaying a delivery that already
+    // created a branch/PR (lost-response replay): parts of the body (e.g. the
+    // graph blast-radius counts) drift as the learning graph accumulates state,
+    // and the existing draft was opened with the first body, so replaying it
+    // byte-identically lets exact-draft reconcile instead of diverging. A fresh
+    // delivery (including a prior attempt that failed BEFORE anchoring, e.g. a
+    // base-refresh failure, or a waiver that turns a gated candidate into a
+    // delivery) must regenerate the full current body (package section, current
+    // evidence ids), never a stale one.
+    if (replayCreatedDelivery && retryablePr?.body) prBodyFinal = retryablePr.body;
+    // Persist the anchored base on the delivery attempt that actually anchors and
+    // creates the commit (git-backed exact-draft only); COALESCE keeps the first.
+    const deliveryBaseShaToPersist =
+      shouldDeliver && deliveryRevisionKind === "git_commit" ? deliveryExpectedBaseSha : null;
     if (retryablePr) {
       updateMigrationPrDelivery(db, prId, {
         status: shouldDeliver ? "delivery_pending" : status,
         body: prBodyFinal,
+        ...(deliveryBaseShaToPersist ? { deliveryBaseSha: deliveryBaseShaToPersist } : {}),
       });
     } else {
       insertMigrationPr(db, {
@@ -2595,6 +2629,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         coverageJson: impactReport.coverage
           ? JSON.stringify(impactReport.coverage)
           : null,
+        deliveryBaseSha: deliveryBaseShaToPersist,
       });
     }
     if (shouldDeliver) {

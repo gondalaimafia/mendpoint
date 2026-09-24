@@ -365,6 +365,15 @@ export type MigrationPrRow = {
    * column existed.
    */
   coverage_json: string | null;
+  /**
+   * The exact base commit sha the first delivery attempt anchored to. It is set
+   * only once a delivery attempt actually anchors and creates the branch/commit,
+   * and every retry of that same delivery reuses it so the reconstructed commit
+   * (whose parent is this base) matches and the existing draft reconciles rather
+   * than diverging after the remote default branch moves. Null when no delivery
+   * has anchored yet (a fresh delivery re-anchors to the current remote head).
+   */
+  delivery_base_sha: string | null;
 };
 
 export type AuditEvent = {

@@ -135,7 +135,7 @@ status: complete
 - Settled expired queued operations transactionally with one immutable terminal history event and stable terminal replay across later runner invocations.
 - Preserved model transport dispatch evidence so refused connections, transient DNS failures, unreachable networks, and connect timeouts remain retryable while uncertain post-dispatch loss remains reconciliation-blocked.
 - Resumed an exact commit-ready GitHub draft at pull request creation without recreating blobs, trees, commits, or references.
-- Removed the legacy branch, commit, and pull-request write sequence from the real pipeline so every customer draft passes through `deliverExactDraft` and durable reconciliation.
+- Routed git-backed customer drafts through `deliverExactDraft` and durable reconciliation, while repositories with no git history (a content-manifest base) keep main's pre-exact-draft delivery path (create branch, commit files, open pull request).
 - Enforced exact authority equality before queued, claimed, or expired-lease work can execute, while preserving explicit blocked-operation reactivation after a validated authority rotation.
 - Classified GitHub primary and secondary rate-limit `403` responses as throttling before the generic permission rule, while true permission failures remain permanent.
 - Added `attemptsRemaining` to the exact versioned decision contract and reject decisions that disagree with the durable queue budget.

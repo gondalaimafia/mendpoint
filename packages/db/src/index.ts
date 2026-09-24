@@ -283,7 +283,8 @@ CREATE TABLE IF NOT EXISTS migration_prs (
   github_account_id TEXT,
   created_at TEXT NOT NULL,
   resolved_at TEXT,
-  coverage_json TEXT
+  coverage_json TEXT,
+  delivery_base_sha TEXT
 );
 CREATE INDEX IF NOT EXISTS migration_prs_status_idx ON migration_prs(status);
 CREATE INDEX IF NOT EXISTS migration_prs_change_idx ON migration_prs(change_id);
@@ -3406,6 +3407,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "migration_prs", name: "github_repository_id", sql: "TEXT" },
     { table: "migration_prs", name: "github_installation_id", sql: "TEXT" },
     { table: "migration_prs", name: "github_account_id", sql: "TEXT" },
+    { table: "migration_prs", name: "delivery_base_sha", sql: "TEXT" },
     {
       table: "regauge_adaptive_candidates",
       name: "base_branch",
@@ -4885,12 +4887,14 @@ export function insertMigrationPr(
     resolvedAt?: string | null;
     /** JSON-serialized ImpactCoverage for the analysis behind this PR. */
     coverageJson?: string | null;
+    /** Exact base commit sha the first delivery attempt anchored to (null until one does). */
+    deliveryBaseSha?: string | null;
   },
 ) {
   run(
     db,
-    `INSERT INTO migration_prs (id, change_id, consumer_id, title, body, branch_name, status, risk, patch_unified, github_pr_number, github_pr_url, created_at, resolved_at, coverage_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO migration_prs (id, change_id, consumer_id, title, body, branch_name, status, risk, patch_unified, github_pr_number, github_pr_url, created_at, resolved_at, coverage_json, delivery_base_sha)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
       row.changeId,
@@ -4906,6 +4910,7 @@ export function insertMigrationPr(
       row.createdAt,
       row.resolvedAt ?? null,
       row.coverageJson ?? null,
+      row.deliveryBaseSha ?? null,
     ],
   );
 }
@@ -4934,6 +4939,11 @@ export function updateMigrationPrDelivery(
     githubRepositoryId?: string;
     githubInstallationId?: string;
     githubAccountId?: string;
+    /**
+     * The anchored base commit sha, persisted on the first delivery attempt.
+     * COALESCE keeps the first value so retries never re-anchor to a moved head.
+     */
+    deliveryBaseSha?: string | null;
   },
 ) {
   const result = db.raw.prepare(
@@ -4944,7 +4954,8 @@ export function updateMigrationPrDelivery(
          body = COALESCE(?, body),
          github_repository_id = COALESCE(?, github_repository_id),
          github_installation_id = COALESCE(?, github_installation_id),
-         github_account_id = COALESCE(?, github_account_id)
+         github_account_id = COALESCE(?, github_account_id),
+         delivery_base_sha = COALESCE(delivery_base_sha, ?)
      WHERE id = ?
        AND (? IS NULL OR github_pr_number IS NULL OR github_pr_number = ?)
        AND (? IS NULL OR github_repository_id IS NULL OR github_repository_id = ?)
@@ -4958,6 +4969,7 @@ export function updateMigrationPrDelivery(
       row.githubRepositoryId ?? null,
       row.githubInstallationId ?? null,
       row.githubAccountId ?? null,
+      row.deliveryBaseSha ?? null,
       id,
       row.githubPrNumber ?? null,
       row.githubPrNumber ?? null,
