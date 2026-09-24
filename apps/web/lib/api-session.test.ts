@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cookies } from "next/headers";
-import { apiGet, apiPost } from "./api";
+import { ApiRequestError, apiGet, apiPost } from "./api";
 import {
   createOidcWebSession,
   createSelfServeWebSession,
@@ -91,7 +91,13 @@ describe("server-rendered API session authority", () => {
     vi.mocked(cookies).mockResolvedValue(cookieStore(value));
     const upstream = vi.fn(async () => Response.json([]));
     vi.stubGlobal("fetch", upstream);
-    await expect(apiGet("/consumers")).rejects.toThrow("web_session_required");
+    // The refusal is an ApiRequestError (status 401), not a plain Error, so
+    // pages that branch on error.status re-authenticate instead of showing a
+    // generic failure.
+    const error = await apiGet("/consumers").catch((thrown) => thrown);
+    expect(error).toBeInstanceOf(ApiRequestError);
+    expect(error).toMatchObject({ status: 401 });
+    expect(String((error as Error).message)).toContain("web_session_required");
     expect(upstream).not.toHaveBeenCalled();
   });
 
@@ -117,7 +123,10 @@ describe("server-rendered API session authority", () => {
     vi.mocked(cookies).mockResolvedValue(cookieStore(await createWebSessionV3({ accessToken: secret })));
     const upstream = vi.fn(async () => Response.json([]));
     vi.stubGlobal("fetch", upstream);
-    await expect(apiGet("/status")).rejects.toThrow("proxy_api_key_not_configured");
+    const error = await apiGet("/status").catch((thrown) => thrown);
+    expect(error).toBeInstanceOf(ApiRequestError);
+    expect(error).toMatchObject({ status: 503 });
+    expect(String((error as Error).message)).toContain("proxy_api_key_not_configured");
     expect(upstream).not.toHaveBeenCalled();
   });
 

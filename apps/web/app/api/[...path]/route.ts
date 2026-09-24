@@ -4,6 +4,7 @@ import { WEB_PROXY_RESPONSE_BYTES } from "@mendpoint/shared";
 import {
   authenticatedWebCredential,
   isAllowedMutationOrigin,
+  upstreamCredentialFor,
 } from "../../../lib/proxy-auth";
 import {
   BodyLimitExceededError,
@@ -177,11 +178,11 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
       ? incomingRequestId
       : randomUUID();
   headers.set("X-Request-Id", requestId);
-  const apiKey = process.env.MENDPOINT_API_KEY?.trim();
-  if (!credential.upstreamAccessToken && !apiKey) {
-    return Response.json({ error: "proxy_api_key_not_configured" }, { status: 503 });
+  const chosen = upstreamCredentialFor(credential, process.env.MENDPOINT_API_KEY?.trim());
+  if (!chosen.ok) {
+    return Response.json({ error: chosen.reason }, { status: chosen.status });
   }
-  headers.set("Authorization", `Bearer ${credential.upstreamAccessToken ?? apiKey}`);
+  headers.set("Authorization", `Bearer ${chosen.token}`);
   const proxySecret = process.env.TRUST_PROXY_SECRET?.trim();
   if (proxySecret) {
     const sessionCookie = request.cookies.get("mendpoint_web_session")?.value;
