@@ -18,6 +18,7 @@ import {
   resetMigrationPrReplayCount,
   recordMigrationPrDeliveryBlocked,
   clearMigrationPrDeliveryError,
+  advanceMigrationPrReplayGeneration,
   createDependencyOutageQueue,
   findPrByGitHubIdentityAndNumber,
   findWardenCandidateDeliveryByPrUrl,
@@ -2397,28 +2398,44 @@ app.post("/migration-prs/:id/retry-delivery", (c) => {
       );
     } catch { /* the operation row may not exist yet; the status flip still retries */ }
   }
-  updateMigrationPrStatus(db, pr.id, "delivery_failed", null);
-  // Clear any terminal delivery_error stamped by a prior dead-letter (e.g.
-  // github_delivery_replay_failed): the operator retry is a fresh start, so a stale
-  // code must not linger on the re-opened row (#707).
-  clearMigrationPrDeliveryError(db, pr.id, tenantId);
-  // Reopening gives the row a fresh automatic-replay budget (the cap counts only
-  // consecutive automatic replays; an operator retry is a deliberate fresh start).
-  resetMigrationPrReplayCount(db, pr.id);
-  // Re-queue a delivery-only retry job (D10): it replays the adoptive delivery from
-  // the persisted artifact, not the whole pipeline. The id is deterministic per row;
-  // enqueueOrResetJob enqueues a fresh row, or resets a spent (dead-lettered/done)
-  // one back to pending, so a prior dead-letter can never leave the endpoint
-  // reporting ok while nothing runs. The failure is never swallowed — a real enqueue
-  // error propagates to the caller.
-  const queueAction = enqueueOrResetJob(db, {
-    id: `pipeline-delivery-retry:${pr.id}`,
-    tenantId,
-    type: "pipeline.delivery-retry",
-    payload: { prId: pr.id },
-    maxAttempts: 50,
-    createdAt: nowIso(),
-  });
+  // Reopen the row, advance its replay generation, and re-queue the retry as ONE
+  // transaction. Advancing the generation together with clearing the error is what makes
+  // the next replay's admission key distinct (delivery-replay:<pr>:<generation>:<count>)
+  // instead of reusing the spent key from the previous generation — which returned an
+  // already-released reservation and failed settlement with mcu_settlement_persistence_
+  // failed (#717) — and it lets a fallback job still dead-lettering from the previous
+  // generation be recognised as stale so it never re-stamps this re-opened row (B1).
+  let queueAction: ReturnType<typeof enqueueOrResetJob>;
+  db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    updateMigrationPrStatus(db, pr.id, "delivery_failed", null);
+    // Clear any terminal delivery_error stamped by a prior dead-letter (e.g.
+    // github_delivery_replay_failed): the operator retry is a fresh start, so a stale
+    // code must not linger on the re-opened row (#707).
+    clearMigrationPrDeliveryError(db, pr.id, tenantId);
+    advanceMigrationPrReplayGeneration(db, pr.id, tenantId);
+    // Reopening gives the row a fresh automatic-replay budget (the cap counts only
+    // consecutive automatic replays; an operator retry is a deliberate fresh start).
+    resetMigrationPrReplayCount(db, pr.id);
+    // Re-queue a delivery-only retry job (D10): it replays the adoptive delivery from
+    // the persisted artifact, not the whole pipeline. The id is deterministic per row;
+    // enqueueOrResetJob enqueues a fresh row, or resets a spent (dead-lettered/done)
+    // one back to pending, so a prior dead-letter can never leave the endpoint
+    // reporting ok while nothing runs. The failure is never swallowed — a real enqueue
+    // error propagates to the caller.
+    queueAction = enqueueOrResetJob(db, {
+      id: `pipeline-delivery-retry:${pr.id}`,
+      tenantId,
+      type: "pipeline.delivery-retry",
+      payload: { prId: pr.id },
+      maxAttempts: 50,
+      createdAt: nowIso(),
+    });
+    db.raw.exec("COMMIT");
+  } catch (error) {
+    if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
   requestAudit(c, {
     actor: "human",
     action: "pr.retry_delivery",

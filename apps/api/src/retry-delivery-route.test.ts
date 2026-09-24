@@ -133,4 +133,21 @@ describe("POST /migration-prs/:id/retry-delivery", () => {
     expect(await res.json()).toMatchObject({ ok: true, status: "delivery_failed" });
     expect(dbMod.getPr(db, "pr-exhausted", "tenant-a")?.replay_count).toBe(0);
   });
+
+  it("#717: an operator retry clears the stale delivery_error AND advances the replay generation", async () => {
+    seedPr("pr-717", "delivery_failed");
+    // A prior dead-letter stamped a terminal code on the row.
+    db.raw.prepare("UPDATE migration_prs SET delivery_error = 'github_delivery_replay_failed' WHERE id = ?").run("pr-717");
+    const before = dbMod.getPr(db, "pr-717", "tenant-a")!.replay_generation;
+    const res = await app.request("/migration-prs/pr-717/retry-delivery", { method: "POST", headers: auth() });
+    expect(res.status).toBe(200);
+    const pr = dbMod.getPr(db, "pr-717", "tenant-a");
+    // Clearing the stale code is what keeps the endpoint from reporting a fresh start on a
+    // row that still reads terminal (removing the clear leaves this red).
+    expect(pr?.delivery_error ?? null).toBeNull();
+    // Advancing the generation is what gives the next replay a distinct admission key
+    // instead of reusing the spent delivery-replay:<pr>:<gen> key, whose reservation was
+    // already released, so settlement no longer fails with mcu_settlement_persistence_failed.
+    expect(pr?.replay_generation).toBe(before + 1);
+  });
 });

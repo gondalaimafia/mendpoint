@@ -68,6 +68,7 @@ import {
   recordMigrationPrDeliveryBlocked,
   recordMigrationPrDeliveryErrorCode,
   listUnfinalizedDeadLetteredReplayFallbacks,
+  listOpenReplayRunReservationIds,
   bumpMigrationPrReplayCount,
   updateMigrationPrStatus,
   releaseRunUsage,
@@ -2419,18 +2420,69 @@ const REPLAY_FALLBACK_JOB_PREFIX = "pipeline-delivery-fallback:";
  * paths and any repeated sweep. Best-effort — a failure here never masks the original
  * job failure.
  */
+/** The replay generation a fallback job was admitted under (absent on a pre-#712 row). */
+function replayGenerationFromPayload(payloadJson: string): number {
+  try {
+    const gen = (JSON.parse(payloadJson) as Record<string, unknown>).replayGeneration;
+    return typeof gen === "number" && Number.isSafeInteger(gen) && gen >= 0 ? gen : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function finalizeReplayFallbackDeadLetter(
   db: AppDb,
   input: { tenantId: string; jobId: string; payloadJson: string; errorCode: string },
 ): void {
-  releaseFanoutRunUsage(db, input.tenantId, input.payloadJson, input.jobId);
   const prId = input.jobId.slice(REPLAY_FALLBACK_JOB_PREFIX.length);
+  // Release first, driven from the ledger's own record of open holds rather than the
+  // row. Release EVERY open replay hold for this row (an infra failure burns no quota),
+  // including an older generation's hold left outstanding when the row was operator-
+  // retried into a newer generation. If a release fails (e.g. the row's tenant row is
+  // gone, or the db is locked), STOP: leave the hold open, do not stamp and do not audit,
+  // so the job stays listed for the next drain to retry the release rather than being
+  // marked finalized over a hold that still leaks the tenant's quota (S2).
+  let openReservationIds: string[];
+  try {
+    openReservationIds = listOpenReplayRunReservationIds(db, input.tenantId, prId);
+  } catch (error) {
+    console.error(
+      `  replay hold lookup skipped pr=${prId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return;
+  }
+  for (const reservationId of openReservationIds) {
+    try {
+      releaseRunUsage(db, {
+        tenantId: input.tenantId,
+        reservationId,
+        reason: `run failed: job ${input.jobId}`,
+        createdAt: nowIso(),
+      });
+    } catch (error) {
+      console.error(
+        `  usage release failed reservation=${reservationId} (retry next drain): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
+  }
+  // Then stamp the row's delivery_error and audit, but only when the row is undelivered
+  // AND this dead job is still the row's current replay generation. A stale-generation
+  // job (the row was operator-retried after this job was admitted) released its leaked
+  // hold above but must not stamp the row's live state with a stale failure (B1/#717).
+  // The stamp is a single guarded UPDATE that applies at most once per (row, generation),
+  // so the audit — gated on it — fires exactly once per finalized job.
   try {
     const stamped = recordMigrationPrDeliveryErrorCode(
       db,
       prId,
       "github_delivery_replay_failed",
       input.tenantId,
+      replayGenerationFromPayload(input.payloadJson),
     );
     if (stamped) {
       recordAudit(db, {
@@ -3523,13 +3575,21 @@ async function processJobsOnceUnfenced(
       );
     }
   }
+  // The tenant scope this drain operates under, resolved ONCE so the lease-expiry sweep
+  // and the claim below share it. Resolving them separately let the sweep run wider than
+  // the claim — a worker pinned by MENDPOINT_TENANT_ID (opts.tenantId unset) claimed only
+  // its tenant's jobs but finalized every tenant's rows (S3). allTenants means global for
+  // both.
+  const drainTenantScope = opts.allTenants
+    ? undefined
+    : opts.tenantId ?? process.env.MENDPOINT_TENANT_ID;
   // Finalize fallback replays that lease-expiry dead-lettered inside claimNextJob's
   // recoverExpiredJobs — that transition never re-enters this job loop, so the per-job
   // error boundary cannot stamp the row or release the hold (#707). Idempotent and
   // best-effort; runs regardless of Fettler maintenance so tests and lean workers still
   // reconcile.
   try {
-    reconcileLeaseExpiredReplayFallbacks(db, opts.tenantId);
+    reconcileLeaseExpiredReplayFallbacks(db, drainTenantScope);
   } catch (error) {
     console.error(
       `  replay dead-letter reconciliation unavailable: ${
@@ -3572,9 +3632,7 @@ async function processJobsOnceUnfenced(
       db,
       claimedTypes,
       {
-      tenantId: opts.allTenants
-        ? undefined
-        : opts.tenantId ?? process.env.MENDPOINT_TENANT_ID,
+      tenantId: drainTenantScope,
       workerId,
       leaseMs,
       maxRunningPerTenant: opts.maxRunningPerTenant,
@@ -4841,7 +4899,12 @@ if (job.type === "warden.candidate.cleanup") {
 
           // (1b) Cap automatic replays. After the cap, abandon (terminal, non-retryable;
           // the operator endpoint reopens it and resets the counter).
-          const priorReplays = getPr(db, prId, job.tenant_id)?.replay_count ?? 0;
+          const replayRow = getPr(db, prId, job.tenant_id);
+          const priorReplays = replayRow?.replay_count ?? 0;
+          // The row's replay generation: an operator retry advances it, so a replay
+          // admitted after a retry gets a distinct admission key instead of reusing the
+          // spent one from the previous generation (#717).
+          const replayGeneration = replayRow?.replay_generation ?? 0;
           if (priorReplays >= MAX_FULL_PIPELINE_REPLAYS) {
             updateMigrationPrStatus(db, prId, "github_delivery_abandoned", null);
             recordAudit(db, {
@@ -4871,7 +4934,7 @@ if (job.type === "warden.candidate.cleanup") {
           try {
             const admission = admitRunUsage(db, {
               tenantId: job.tenant_id,
-              runId: `delivery-replay:${prId}:${priorReplays}`,
+              runId: `delivery-replay:${prId}:${replayGeneration}:${priorReplays}`,
               mcuMicros: estimateRunMcuMicros({ targetCount: 1 }),
               reason: `delivery replay: ${provider.slug}`,
               createdAt: now,
@@ -4906,6 +4969,10 @@ if (job.type === "warden.candidate.cleanup") {
                 consumerIds: [outcome.consumerId!],
                 fromVersionId: change.from_version_id,
                 toVersionId: change.to_version_id,
+                // The generation this replay was admitted under, so a dead-letter
+                // finalizer can tell whether the row has since been operator-retried
+                // into a newer generation and must not be stamped by this stale job.
+                replayGeneration,
                 ...usageHold,
               };
               const backoffMs = FULL_PIPELINE_REPLAY_BASE_BACKOFF_MS * 2 ** priorReplays;

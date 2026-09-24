@@ -5841,3 +5841,260 @@ describe("Fettler agent.run policy seam (behavioral, through the job loop)", () 
     fixture.db.raw.close();
   }, 30_000);
 });
+
+// Job-reservation-keyed finalization of dead-lettered no-artifact replay fallbacks
+// (PR #712 re-review: B1/S1/S2/S3, the sweep predicate) and the per-row replay
+// generation that gives an operator retry a distinct admission key (#717). Fixtures
+// look like production: foreign keys ON with a real tenants row (the earlier
+// seedReplayableFailedRow ran FK OFF and had no tenant, which hid S2's release failure).
+describe("delivery-replay dead-letter finalization (PR #712, #717)", () => {
+  const ORIGIN = JSON.stringify({
+    providerSlug: "acme-r", securityScanAttested: true,
+    contractCases: [{ id: "f", name: "f", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+  });
+  type TDb = ReturnType<typeof createDb>;
+
+  function seedFk(db: TDb, tenant = "tenant-a", suffix = "r"): void {
+    dbModule.insertTenant(db, { id: tenant, slug: tenant, name: tenant, createdAt: nowIso() });
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+    insertProvider(db, { id: `prov-${suffix}`, slug: `acme-${suffix}`, name: "Acme", website: null, createdAt: nowIso() });
+    insertApiChange(db, { id: `chg-${suffix}`, providerId: `prov-${suffix}`, fromVersionId: "va", toVersionId: "vb", risk: "breaking", summary: "s", diffJson: "{}", createdAt: nowIso() });
+    insertConsumer(db, { id: `con-${suffix}`, name: "Shop", githubOwner: "org", githubRepo: `shop-${suffix}`, installationId: null, tenantId: tenant, createdAt: nowIso() });
+    insertConsumerRepo(db, { id: `repo-${suffix}`, consumerId: `con-${suffix}`, localPath: join(tmpdir(), `seed-${suffix}`), defaultBranch: "main", createdAt: nowIso() });
+    insertMigrationPr(db, {
+      id: `pr-${suffix}`, changeId: `chg-${suffix}`, consumerId: `con-${suffix}`, title: "t", body: "b",
+      branchName: `mendpoint/${suffix}`, status: "delivery_failed", risk: "low", patchUnified: "d",
+      createdAt: nowIso(), originFanoutJson: ORIGIN,
+    });
+  }
+  function entitle(db: TDb, tenant = "tenant-a"): void {
+    createUsagePriceVersion(db, { id: `price-${tenant}`, tenantId: tenant, formulaVersion: "mcu-v1", currency: "USD", pricePerMcuMoneyMicros: 20_000, effectiveAt: "2026-01-01T00:00:00.000Z", expiresAt: "2027-12-01T00:00:00.000Z", contractReference: "c", createdAt: "2026-01-01T00:00:00.000Z" });
+    createUsageEntitlement(db, { id: `ent-${tenant}`, tenantId: tenant, priceVersionId: `price-${tenant}`, quotaMcuMicros: 100_000_000, features: ["fettler"], contractReference: "c", periodStart: "2026-01-01T00:00:00.000Z", periodEnd: "2027-12-01T00:00:00.000Z", createdAt: "2026-01-01T00:00:00.000Z" });
+    db.raw.exec("PRAGMA foreign_keys = ON");
+  }
+  const throwingRunner: typeof runChangePipeline = async () => { throw new Error("replay pipeline crashed"); };
+  const deliveringRunner: typeof runChangePipeline = async () => ({
+    changeId: "chg-r", risk: "breaking", summary: "s",
+    diff: { risk: "breaking", summary: "s", entries: [] }, surfaces: 0,
+    consumers: [{ consumerId: "con-r", name: "Shop", findings: 1, candidates: 1, confirmed: 1, prId: "pr-r", prStatus: "draft" }],
+  }) as never;
+  const opts = (tenant = "tenant-a", runner: typeof runChangePipeline = throwingRunner) => ({
+    tenantId: tenant, maxJobs: 1, runWardenMaintenance: false, pipelineRunner: runner,
+    wardenEnv: { MENDPOINT_USAGE_ENFORCEMENT: "1" },
+  });
+  const auditCount = (db: TDb, t = "tenant-a") => listAudit(db, t).filter((a) => a.action === "pr.delivery_replay_failed").length;
+  const entries = (db: TDb, type: string, t = "tenant-a") => listUsageLedger(db, t).filter((e) => e.entryType === type).length;
+  function enqRetry(db: TDb, tenant = "tenant-a", suffix = "r") {
+    return dbModule.enqueueOrResetJob(db, { id: `pipeline-delivery-retry:pr-${suffix}`, tenantId: tenant, type: "pipeline.delivery-retry", payload: { prId: `pr-${suffix}` }, maxAttempts: 50, createdAt: nowIso() });
+  }
+  function leaseExpire(db: TDb, suffix = "r", tenant = "tenant-a") {
+    db.raw.prepare("UPDATE jobs SET status = 'running', attempts = 1, max_attempts = 1, lease_owner = 'stale', lease_generation = 1, lease_expires_at = ? WHERE id = ?").run(new Date(Date.now() - 60_000).toISOString(), `pipeline-delivery-fallback:pr-${suffix}`);
+    dbModule.recoverExpiredJobs(db, nowIso(), tenant);
+  }
+  // Simulate exactly the DB effects of POST /migration-prs/:id/retry-delivery (server.ts):
+  // reopen, clear the stale error, advance the replay generation, reset the counter,
+  // re-queue the retry job. Advancing the generation is what makes the next replay's key
+  // distinct (#717) and marks a still-dead old-generation fallback stale (B1).
+  function operatorRetry(db: TDb, tenant = "tenant-a", suffix = "r") {
+    dbModule.updateMigrationPrStatus(db, `pr-${suffix}`, "delivery_failed", null);
+    dbModule.clearMigrationPrDeliveryError(db, `pr-${suffix}`, tenant);
+    dbModule.advanceMigrationPrReplayGeneration(db, `pr-${suffix}`, tenant);
+    dbModule.resetMigrationPrReplayCount(db, `pr-${suffix}`);
+    enqRetry(db, tenant, suffix);
+  }
+  function newDb(tag: string): TDb {
+    const dir = mkdtempSync(join(tmpdir(), `mp712-${tag}-`));
+    dirs.push(dir);
+    return createDb(join(dir, "db.sqlite"));
+  }
+  // Drive a fallback into a lease-expiry dead-letter that still holds its usage
+  // reservation (not yet finalized), matching recoverExpiredJobs dead-lettering at max
+  // attempts without re-entering the job loop.
+  async function deadLetterWithOpenHold(db: TDb, tenant = "tenant-a", suffix = "r") {
+    enqRetry(db, tenant, suffix);
+    await processJobsOnce(db, opts(tenant));
+    leaseExpire(db, suffix, tenant);
+  }
+
+  it("B1: an operator retry survives the next drain — no re-stamp, still one audit", async () => {
+    const db = newDb("b1"); seedFk(db); entitle(db);
+    enqRetry(db);
+    await processJobsOnce(db, opts()); // delivery-retry -> fallback enqueued (reservation held)
+    db.raw.prepare("UPDATE jobs SET available_at = ? WHERE id = ?").run(nowIso(), "pipeline-delivery-fallback:pr-r");
+    await processJobsOnce(db, opts()); // fallback fanout throws -> dead-letter, finalized (release + stamp + audit)
+    expect(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")?.status).toBe("dead_letter");
+    expect(getPr(db, "pr-r", "tenant-a")?.delivery_error).toBe("github_delivery_replay_failed");
+    expect(auditCount(db)).toBe(1);
+    expect(entries(db, "release")).toBe(1);
+
+    operatorRetry(db); // clears delivery_error, advances generation, re-queues the retry
+    expect(getPr(db, "pr-r", "tenant-a")?.delivery_error ?? null).toBeNull();
+    // Park the retry job so ONLY the drain-start sweep runs on the next drain.
+    db.raw.prepare("UPDATE jobs SET available_at = ? WHERE id = ?").run("2099-01-01T00:00:00.000Z", "pipeline-delivery-retry:pr-r");
+    await processJobsOnce(db, opts());
+
+    // The old fallback's hold was already released, so it is not re-enumerated and the
+    // cleared error is not re-stamped; even if it were, its stale generation is guarded.
+    expect(getPr(db, "pr-r", "tenant-a")?.delivery_error ?? null, "operator retry must survive the next drain").toBeNull();
+    expect(auditCount(db), "no second replay_failed audit without a second failure").toBe(1);
+    db.raw.close();
+  });
+
+  it("upgrade: a main-built row operator-retried on main gets no false stamp or audit at the first drain", async () => {
+    // retried.sqlite state: delivery_error cleared, hold already RELEASED (closed),
+    // fallback still dead_letter, retry pending. The old delivery_error-IS-NULL sweep
+    // re-stamped it; the hold-driven sweep does not (the hold is closed).
+    const db = newDb("upg-retried"); seedFk(db); entitle(db);
+    await deadLetterWithOpenHold(db);
+    // Finalize once (release + stamp), then simulate the main-era operator retry.
+    await processJobsOnce(db, opts());
+    expect(entries(db, "release")).toBe(1);
+    operatorRetry(db);
+    db.raw.prepare("UPDATE jobs SET available_at = ? WHERE id = ?").run("2099-01-01T00:00:00.000Z", "pipeline-delivery-retry:pr-r");
+    const auditsBefore = auditCount(db);
+    await processJobsOnce(db, opts());
+    expect(getPr(db, "pr-r", "tenant-a")?.delivery_error ?? null).toBeNull();
+    expect(auditCount(db)).toBe(auditsBefore);
+    expect(entries(db, "release")).toBe(1);
+    db.raw.close();
+  });
+
+  it("upgrade: a main-era row with a stale delivery_error and an open hold is released once", async () => {
+    // staleerr.sqlite state: delivery_error = github_delivery_replay_quota_refused (set on
+    // main, never cleared), an OPEN hold, fallback dead_letter. The stale-code sweep
+    // excluded it (S1, hold leaks); the hold-driven sweep releases it.
+    const db = newDb("upg-stale"); seedFk(db); entitle(db);
+    await deadLetterWithOpenHold(db);
+    db.raw.prepare("UPDATE migration_prs SET delivery_error = 'github_delivery_replay_quota_refused', replay_count = 1 WHERE id = ?").run("pr-r");
+    expect(entries(db, "release")).toBe(0);
+    for (let i = 0; i < 3; i++) await processJobsOnce(db, opts());
+    expect(entries(db, "release"), "the leaked lease-expiry hold must be released").toBe(1);
+    expect(dbModule.listUnfinalizedDeadLetteredReplayFallbacks(db, "tenant-a")).toHaveLength(0);
+    db.raw.close();
+  });
+
+  it("S2: a release that throws leaves the row unstamped; the next drain releases and stamps once", async () => {
+    const db = newDb("s2"); seedFk(db); entitle(db);
+    await deadLetterWithOpenHold(db);
+    const spy = vi.spyOn(dbModule, "releaseRunUsage").mockImplementationOnce(() => { throw new Error("database is locked"); });
+    await processJobsOnce(db, opts()); // release throws -> STOP: no stamp, no audit
+    spy.mockRestore();
+    expect(getPr(db, "pr-r", "tenant-a")?.delivery_error ?? null, "no stamp while the hold is still open").toBeNull();
+    expect(entries(db, "release")).toBe(0);
+    expect(auditCount(db)).toBe(0);
+    for (let i = 0; i < 2; i++) await processJobsOnce(db, opts()); // retried: releases + stamps
+    expect(entries(db, "release"), "hold must eventually be released").toBe(1);
+    expect(getPr(db, "pr-r", "tenant-a")?.delivery_error).toBe("github_delivery_replay_failed");
+    expect(auditCount(db)).toBe(1);
+    db.raw.close();
+  });
+
+  it("S3: a drain pinned to tenant-a never finalizes tenant-b, via opts.tenantId AND via MENDPOINT_TENANT_ID", async () => {
+    const db = newDb("s3"); seedFk(db, "tenant-a", "r"); seedFk(db, "tenant-b", "s");
+    entitle(db, "tenant-a"); entitle(db, "tenant-b");
+    await deadLetterWithOpenHold(db, "tenant-b", "s"); // tenant-b: dead-letter with open hold
+    // (a) explicit opts.tenantId scope.
+    await processJobsOnce(db, opts("tenant-a"));
+    expect(getPr(db, "pr-s", "tenant-b")?.delivery_error ?? null, "opts.tenantId=tenant-a must not finalize tenant-b").toBeNull();
+    expect(entries(db, "release", "tenant-b")).toBe(0);
+    // (b) MENDPOINT_TENANT_ID pin with opts.tenantId unset: the sweep must use the SAME
+    // resolved scope as the claim, not a wider global scope (S3).
+    const prev = process.env.MENDPOINT_TENANT_ID;
+    process.env.MENDPOINT_TENANT_ID = "tenant-a";
+    try {
+      await processJobsOnce(db, { maxJobs: 1, runWardenMaintenance: false, pipelineRunner: throwingRunner, wardenEnv: { MENDPOINT_USAGE_ENFORCEMENT: "1" } });
+    } finally { if (prev === undefined) delete process.env.MENDPOINT_TENANT_ID; else process.env.MENDPOINT_TENANT_ID = prev; }
+    expect(getPr(db, "pr-s", "tenant-b")?.delivery_error ?? null, "a tenant-a-pinned worker must not finalize tenant-b").toBeNull();
+    expect(auditCount(db, "tenant-b")).toBe(0);
+    expect(entries(db, "release", "tenant-b")).toBe(0);
+    db.raw.close();
+  });
+
+  it("#717: an operator retry replays under a distinct admission key and settles cleanly", async () => {
+    const db = newDb("717"); seedFk(db); entitle(db);
+    enqRetry(db);
+    await processJobsOnce(db, opts()); // replay generation 0: fallback enqueued
+    db.raw.prepare("UPDATE jobs SET available_at = ? WHERE id = ?").run(nowIso(), "pipeline-delivery-fallback:pr-r");
+    await processJobsOnce(db, opts()); // generation-0 fallback fails, dead-letters, hold released
+    expect(getPr(db, "pr-r", "tenant-a")?.delivery_error).toBe("github_delivery_replay_failed");
+
+    operatorRetry(db); // advances the replay generation 0 -> 1
+    expect(getPr(db, "pr-r", "tenant-a")?.replay_generation).toBe(1);
+    await processJobsOnce(db, opts("tenant-a", deliveringRunner)); // generation 1: fallback enqueued under delivery-replay:pr-r:1:0
+    db.raw.prepare("UPDATE jobs SET available_at = ? WHERE id = ?").run(nowIso(), "pipeline-delivery-fallback:pr-r");
+    const drain = await processJobsOnce(db, opts("tenant-a", deliveringRunner)); // delivers -> settles
+
+    // The generation-1 replay ran to a clean settlement. Reverting the generation from
+    // the admission key reuses the spent delivery-replay:pr-r:0 reservation, so settlement
+    // throws mcu_settlement_persistence_failed and the fallback dead-letters instead.
+    expect(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")?.status).toBe("done");
+    expect(drain.failed).toBe(0);
+    expect(entries(db, "settlement")).toBe(1);
+    db.raw.close();
+  });
+
+  it("predicate — open hold: a dead-lettered fallback whose hold is CLOSED is not listed", async () => {
+    const db = newDb("pred-hold"); seedFk(db); entitle(db);
+    await deadLetterWithOpenHold(db);
+    expect(dbModule.listUnfinalizedDeadLetteredReplayFallbacks(db, "tenant-a")).toHaveLength(1);
+    // Release the hold (close it): the finalized job must drop out of the sweep. If the
+    // open-hold filter is dropped, this row is still listed.
+    const reservationId = listUsageLedger(db, "tenant-a").find((e) => e.entryType === "reservation")!.id;
+    dbModule.releaseRunUsage(db, { tenantId: "tenant-a", reservationId, reason: "test", createdAt: nowIso() });
+    expect(dbModule.listUnfinalizedDeadLetteredReplayFallbacks(db, "tenant-a")).toHaveLength(0);
+    db.raw.close();
+  });
+
+  it("predicate — tenant: a tenant-a query never lists tenant-b's open-hold dead-letter", async () => {
+    const db = newDb("pred-tenant"); seedFk(db, "tenant-a", "r"); seedFk(db, "tenant-b", "s");
+    entitle(db, "tenant-a"); entitle(db, "tenant-b");
+    await deadLetterWithOpenHold(db, "tenant-a", "r");
+    await deadLetterWithOpenHold(db, "tenant-b", "s");
+    expect(dbModule.listUnfinalizedDeadLetteredReplayFallbacks(db, "tenant-a").map((j) => j.id)).toEqual(["pipeline-delivery-fallback:pr-r"]);
+    expect(dbModule.listUnfinalizedDeadLetteredReplayFallbacks(db, "tenant-b").map((j) => j.id)).toEqual(["pipeline-delivery-fallback:pr-s"]);
+    db.raw.close();
+  });
+
+  it("predicate — github_pr_number: a delivered row with an open hold is not listed", async () => {
+    const db = newDb("pred-delivered"); seedFk(db); entitle(db);
+    await deadLetterWithOpenHold(db);
+    expect(dbModule.listUnfinalizedDeadLetteredReplayFallbacks(db, "tenant-a")).toHaveLength(1);
+    db.raw.prepare("UPDATE migration_prs SET github_pr_number = 7 WHERE id = ?").run("pr-r");
+    expect(dbModule.listUnfinalizedDeadLetteredReplayFallbacks(db, "tenant-a")).toHaveLength(0);
+    db.raw.close();
+  });
+
+  it("predicate — generation: a stale-generation dead-letter releases its hold but never stamps the row", async () => {
+    const db = newDb("pred-gen"); seedFk(db); entitle(db);
+    await deadLetterWithOpenHold(db);
+    // The row was operator-retried into a newer generation after this fallback (payload
+    // replayGeneration 0) was admitted. The finalizer must free the leaked hold but must
+    // NOT stamp the row's live state; dropping the generation guard re-stamps it.
+    db.raw.prepare("UPDATE migration_prs SET replay_generation = 5 WHERE id = ?").run("pr-r");
+    await processJobsOnce(db, opts());
+    expect(entries(db, "release"), "the stale generation's leaked hold is still released").toBe(1);
+    expect(getPr(db, "pr-r", "tenant-a")?.delivery_error ?? null, "a stale-generation job must not stamp the row").toBeNull();
+    expect(auditCount(db)).toBe(0);
+    db.raw.close();
+  });
+
+  it("already_active rollback: the reservation, replay_count bump and audit all roll back", async () => {
+    const db = newDb("active"); seedFk(db); entitle(db);
+    enqRetry(db);
+    const real = dbModule.enqueueOrResetJob;
+    const spy = vi.spyOn(dbModule, "enqueueOrResetJob").mockImplementation((d, row) => {
+      if (row.id === "pipeline-delivery-fallback:pr-r") return "already_active" as ReturnType<typeof real>;
+      return real(d, row);
+    });
+    const ledgerBefore = listUsageLedger(db, "tenant-a").length;
+    await processJobsOnce(db, opts());
+    spy.mockRestore();
+    // Removing the already_active throw commits the reserve + bump for a job the enqueue
+    // did not create — an orphaned hold. The rollback keeps the ledger and counter clean.
+    expect(listUsageLedger(db, "tenant-a").length).toBe(ledgerBefore);
+    expect(getPr(db, "pr-r", "tenant-a")?.replay_count).toBe(0);
+    expect(listAudit(db, "tenant-a").filter((a) => a.action.startsWith("pr.delivery_replay"))).toEqual([]);
+    expect(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")).toBeUndefined();
+    db.raw.close();
+  });
+});
