@@ -1137,7 +1137,13 @@ export function reserveUsage(
 ): UsageLedgerEntry {
   const amount = micros("usage_reservation_mcu_micros", input.mcuMicros);
   if (amount === 0) throw new Error("usage_reservation_empty");
-  db.raw.exec("BEGIN IMMEDIATE");
+  // Nestable, matching settleUsageReservation/signedUsageChange: when a caller has
+  // already opened a transaction (e.g. the worker admits, bumps the replay counter
+  // and enqueues the replay job as one atomic unit) this reservation joins that
+  // transaction instead of opening a second one — node:sqlite forbids nesting — so
+  // either the whole unit commits or none of it does.
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
     const entitlement = getActiveUsageEntitlement(db, input.tenantId, input.createdAt);
     if (!entitlement) throw new Error("usage_entitlement_required");
@@ -1157,7 +1163,7 @@ export function reserveUsage(
     );
     if (existing) {
       const result = insertEntry(db, entry);
-      db.raw.exec("COMMIT");
+      if (owns) db.raw.exec("COMMIT");
       return result;
     }
     const totals = currentTotals(db, input.tenantId, entitlement.id);
@@ -1165,10 +1171,10 @@ export function reserveUsage(
       throw new Error("usage_quota_exceeded");
     }
     const result = insertEntry(db, entry);
-    db.raw.exec("COMMIT");
+    if (owns) db.raw.exec("COMMIT");
     return result;
   } catch (error) {
-    db.raw.exec("ROLLBACK");
+    if (owns) db.raw.exec("ROLLBACK");
     throw error;
   }
 }

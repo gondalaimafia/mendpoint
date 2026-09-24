@@ -4993,6 +4993,28 @@ export function recordMigrationPrDeliveryBlocked(
 }
 
 /**
+ * Stamp a terminal delivery_error code on a row WITHOUT changing its status (PR #606
+ * D10 replay dead-letter): a full-pipeline replay exhausted its retries, so the row
+ * is already delivery_failed with no pending retry. Recording the code makes the row
+ * self-describing rather than a silent delivery_failed. Scoped to rows that never
+ * recorded a PR (github_pr_number IS NULL) so it can never relabel a delivered draft.
+ * Returns whether it applied.
+ */
+export function recordMigrationPrDeliveryErrorCode(
+  db: AppDb,
+  id: string,
+  code: string,
+): boolean {
+  const result = db.raw
+    .prepare(
+      `UPDATE migration_prs SET delivery_error = ?
+       WHERE id = ? AND github_pr_number IS NULL`,
+    )
+    .run(code, id);
+  return result.changes > 0;
+}
+
+/**
  * Increment a row's automatic-replay counter (D10 no-artifact fallback) and return
  * the new count, so the worker can cap replays. A row that recorded a PR is never
  * bumped (nothing to replay).

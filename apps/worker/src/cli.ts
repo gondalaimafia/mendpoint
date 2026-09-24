@@ -66,6 +66,7 @@ import {
   recordAgentRunMeter,
   recordAudit,
   recordMigrationPrDeliveryBlocked,
+  recordMigrationPrDeliveryErrorCode,
   bumpMigrationPrReplayCount,
   updateMigrationPrStatus,
   releaseRunUsage,
@@ -4779,59 +4780,80 @@ if (job.type === "warden.candidate.cleanup") {
           // uses). A distinct runId per replay keeps the reservation idempotency key
           // unique so each replay reserves and settles its own hold. Quota refusal
           // blocks the row (visible, operator-retryable) with no run.
+          //
+          // The reservation, the replay_count bump, the enqueue of the replay job and
+          // this retry job's completion are ONE transaction: a crash between the
+          // reservation and the enqueue would otherwise leave a hold that no job
+          // carries and no sweeper releases, pinning the tenant's quota forever (#707).
+          // admitRunUsage's reservation (reserveUsage) is nestable, so it joins this
+          // transaction rather than committing on its own; either the whole unit
+          // commits or it all rolls back, so the reservation never outlives its job.
           const now = nowIso();
-          const admission = admitRunUsage(db, {
-            tenantId: job.tenant_id,
-            runId: `delivery-replay:${prId}:${priorReplays}`,
-            mcuMicros: estimateRunMcuMicros({ targetCount: 1 }),
-            reason: `delivery replay: ${provider.slug}`,
-            createdAt: now,
-            env: workerEnv,
-          });
-          if (admission.enforced && !admission.admitted) {
-            recordMigrationPrDeliveryBlocked(db, prId, "github_delivery_replay_quota_refused");
-            recordAudit(db, {
-              tenantId: job.tenant_id, actor: "system",
-              action: "pr.delivery_replay_quota_refused", resourceType: "migration_pr", resourceId: prId,
-              metadata: { error: admission.body.error },
+          let replayLog: string;
+          db.raw.exec("BEGIN IMMEDIATE");
+          try {
+            const admission = admitRunUsage(db, {
+              tenantId: job.tenant_id,
+              runId: `delivery-replay:${prId}:${priorReplays}`,
+              mcuMicros: estimateRunMcuMicros({ targetCount: 1 }),
+              reason: `delivery replay: ${provider.slug}`,
+              createdAt: now,
+              env: workerEnv,
             });
-            settleFallback({ status: "delivery_blocked", code: "github_delivery_replay_quota_refused" }, "blocked (replay quota refused)");
-            continue;
-          }
-
-          // Admitted (or enforcement off): replay the ORIGINATING gate payload
-          // (contract cases, security attestation, severity, ...) bound to the FAILED
-          // change's versions and narrowed to the consumer — not a bare re-run of the
-          // provider's latest change. Carry the reservation so the fanout settles it.
-          const origin = JSON.parse(outcome.originFanoutJson) as Record<string, unknown>;
-          const usageHold = admission.enforced && admission.admitted
-            ? {
-                [RUN_USAGE_RESERVATION_KEY]: admission.reservationId,
-                [RUN_USAGE_RESERVED_MCU_KEY]: admission.reservedMcuMicros,
+            if (admission.enforced && !admission.admitted) {
+              recordMigrationPrDeliveryBlocked(db, prId, "github_delivery_replay_quota_refused");
+              recordAudit(db, {
+                tenantId: job.tenant_id, actor: "system",
+                action: "pr.delivery_replay_quota_refused", resourceType: "migration_pr", resourceId: prId,
+                metadata: { error: admission.body.error },
+              });
+              if (!completeJob(db, job.id, { prId, status: "delivery_blocked", code: "github_delivery_replay_quota_refused" }, now, fence)) {
+                throw new Error("lease_lost_before_delivery_retry_completion");
               }
-            : {};
-          const fallbackPayload = {
-            ...origin,
-            consumerIds: [outcome.consumerId!],
-            fromVersionId: change.from_version_id,
-            toVersionId: change.to_version_id,
-            ...usageHold,
-          };
-          const backoffMs = FULL_PIPELINE_REPLAY_BASE_BACKOFF_MS * 2 ** priorReplays;
-          bumpMigrationPrReplayCount(db, prId);
-          enqueueOrResetJob(db, {
-            id: `pipeline-delivery-fallback:${prId}`,
-            tenantId: job.tenant_id,
-            type: "pipeline.fanout",
-            payload: fallbackPayload,
-            maxAttempts: 50,
-            createdAt: now,
-            availableAt: new Date(Date.parse(now) + backoffMs).toISOString(),
-          });
-          settleFallback(
-            { status: outcome.status, fallback: "full_pipeline", replay: priorReplays + 1 },
-            `fallback replay ${priorReplays + 1}/${MAX_FULL_PIPELINE_REPLAYS}`,
-          );
+              replayLog = "blocked (replay quota refused)";
+            } else {
+              // Admitted (or enforcement off): replay the ORIGINATING gate payload
+              // (contract cases, security attestation, severity, ...) bound to the
+              // FAILED change's versions and narrowed to the consumer — not a bare
+              // re-run of the provider's latest change. Carry the reservation so the
+              // fanout settles it.
+              const origin = JSON.parse(outcome.originFanoutJson) as Record<string, unknown>;
+              const usageHold = admission.enforced && admission.admitted
+                ? {
+                    [RUN_USAGE_RESERVATION_KEY]: admission.reservationId,
+                    [RUN_USAGE_RESERVED_MCU_KEY]: admission.reservedMcuMicros,
+                  }
+                : {};
+              const fallbackPayload = {
+                ...origin,
+                consumerIds: [outcome.consumerId!],
+                fromVersionId: change.from_version_id,
+                toVersionId: change.to_version_id,
+                ...usageHold,
+              };
+              const backoffMs = FULL_PIPELINE_REPLAY_BASE_BACKOFF_MS * 2 ** priorReplays;
+              bumpMigrationPrReplayCount(db, prId);
+              enqueueOrResetJob(db, {
+                id: `pipeline-delivery-fallback:${prId}`,
+                tenantId: job.tenant_id,
+                type: "pipeline.fanout",
+                payload: fallbackPayload,
+                maxAttempts: 50,
+                createdAt: now,
+                availableAt: new Date(Date.parse(now) + backoffMs).toISOString(),
+              });
+              if (!completeJob(db, job.id, { prId, status: outcome.status, fallback: "full_pipeline", replay: priorReplays + 1 }, now, fence)) {
+                throw new Error("lease_lost_before_delivery_retry_completion");
+              }
+              replayLog = `fallback replay ${priorReplays + 1}/${MAX_FULL_PIPELINE_REPLAYS}`;
+            }
+            db.raw.exec("COMMIT");
+          } catch (error) {
+            if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+            throw error;
+          }
+          result.succeeded++;
+          console.log(`  delivery-retry ${prId} -> ${replayLog}`);
           continue;
         }
         if (outcome.status === "delivery_failed") {
@@ -5092,6 +5114,28 @@ if (job.type === "warden.candidate.cleanup") {
         failure.status === "dead_letter"
       ) {
         releaseFanoutRunUsage(db, job.tenant_id, job.payload_json, job.id);
+        // A dead-lettered no-artifact replay (pipeline-delivery-fallback:<prId>) has
+        // no pending retry, so the row must not be left a silent delivery_failed. Stamp
+        // a named delivery_error and audit it so the terminal state is self-describing
+        // and the operator retry endpoint has a reason to show (#707).
+        const replayFallbackPrefix = "pipeline-delivery-fallback:";
+        if (job.id.startsWith(replayFallbackPrefix)) {
+          const replayPrId = job.id.slice(replayFallbackPrefix.length);
+          try {
+            recordMigrationPrDeliveryErrorCode(db, replayPrId, "github_delivery_replay_failed");
+            recordAudit(db, {
+              tenantId: job.tenant_id, actor: "system",
+              action: "pr.delivery_replay_failed", resourceType: "migration_pr", resourceId: replayPrId,
+              metadata: { jobId: job.id, error: classified.errorCode },
+            });
+          } catch (error) {
+            console.error(
+              `  replay dead-letter annotation skipped pr=${replayPrId}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        }
       }
       console.error(`  failed: ${classified.message}`);
       if (!failure.applied) console.error(`  stale lease ignored job=${job.id}`);
