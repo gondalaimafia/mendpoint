@@ -139,6 +139,14 @@ export type AdoptiveDraftHooks = Readonly<{
     treeSha: string;
     parentSha: string;
   }>) => void | Promise<void>;
+  /**
+   * D5: is the (treeSha, parentSha) pair a persisted write-ahead artifact for this
+   * delivery? Lets ours() recognise OUR OWN commit from a prior attempt after the
+   * base moved (its tree and parent differ from the current attempt's, but it
+   * matches an artifact we persisted before writing it — unforgeable without a DB
+   * write). Absent hook or false = not ours (foreign).
+   */
+  isOursArtifact?: (content: Readonly<{ treeSha: string; parentSha: string }>) => boolean | Promise<boolean>;
 }>;
 
 /** Options for adoptive draft delivery through a GitHubDelivery transport. */
@@ -324,6 +332,7 @@ async function oursCommit(
   input: AdoptiveDraftInput,
   head: string,
   expectedTreeSha: string,
+  isOursArtifact?: AdoptiveDraftHooks["isOursArtifact"],
 ): Promise<{ verdict: OursVerdict; commit?: { tree: string; parents: string[]; message: string } }> {
   let data: Awaited<ReturnType<AdoptiveOctokit["git"]["getCommit"]>>["data"];
   try {
@@ -334,11 +343,17 @@ async function oursCommit(
   }
   const parents = data.parents.map((parent) => parent.sha);
   const commit = { tree: data.tree.sha, parents, message: data.message };
-  const isOurs =
-    trailer(data.message, "Mendpoint-Delivery") === input.deliveryKey &&
-    data.tree.sha === expectedTreeSha &&
-    parents.length === 1 &&
-    parents[0] === input.expectedBaseSha;
+  const trailerOk = trailer(data.message, "Mendpoint-Delivery") === input.deliveryKey && parents.length === 1;
+  // The current attempt's exact commit is ours.
+  const currentMatch = data.tree.sha === expectedTreeSha && parents[0] === input.expectedBaseSha;
+  let isOurs = trailerOk && currentMatch;
+  // Otherwise, OUR OWN commit from a prior attempt (its tree/parent differ because
+  // the base moved) is ours iff its (tree, parent) matches a write-ahead artifact
+  // we persisted — an unforgeable DB write. A foreign push (different tree, no
+  // matching artifact) stays foreign.
+  if (trailerOk && !currentMatch && isOursArtifact) {
+    isOurs = await isOursArtifact({ treeSha: data.tree.sha, parentSha: parents[0]! });
+  }
   return { verdict: isOurs ? "ours" : "foreign", commit };
 }
 
@@ -396,6 +411,7 @@ async function adopt(
   pull: RemotePull,
   expectedTreeSha: string,
   bodyDigest: string,
+  isOursArtifact?: AdoptiveDraftHooks["isOursArtifact"],
 ): Promise<AdoptiveDraftResult> {
   if (pull.base.ref !== input.baseBranch) {
     throw new AdoptiveDraftBlockedError("github_delivery_pr_base_mismatch");
@@ -407,7 +423,7 @@ async function adopt(
   let headIsOurs = false;
   let cursor: string | undefined = head;
   for (let step = 0; step < 200 && cursor; step += 1) {
-    const verdict = await oursCommit(octokit, input, cursor, expectedTreeSha);
+    const verdict = await oursCommit(octokit, input, cursor, expectedTreeSha, isOursArtifact);
     if (verdict.verdict === "ours" && verdict.commit) {
       deliveredHeadSha = cursor;
       deliveredBaseSha = verdict.commit.parents[0]!;
@@ -525,7 +541,7 @@ export async function deliverAdoptiveDraftWithOctokit(
 
     if (observation.open.length > 1) throw new AdoptiveDraftBlockedError("github_delivery_pr_ambiguous");
     if (observation.open.length === 1) {
-      const result = await adopt(octokit, input, observation.open[0]!, built.treeSha, bodyDigest);
+      const result = await adopt(octokit, input, observation.open[0]!, built.treeSha, bodyDigest, hooks.isOursArtifact);
       // D7: after our own create, re-check for an OLDER closed PR (a human closed
       // the recorded one, or pulls.list lag): close the new one and record the
       // original's closed outcome.
@@ -568,7 +584,7 @@ export async function deliverAdoptiveDraftWithOctokit(
       continue;
     }
 
-    const ours = await oursCommit(octokit, input, observation.head, built.treeSha);
+    const ours = await oursCommit(octokit, input, observation.head, built.treeSha, hooks.isOursArtifact);
     if (ours.verdict === "unknown") throw new AdoptiveDraftContentionError();
     if (ours.verdict === "ours") {
       try {

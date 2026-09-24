@@ -1224,11 +1224,12 @@ export class DependencyOutageQueue {
     if (!claim) {
       const record = this.get(operation)!;
       if (record.status === "completed") {
-        const observed = validateReconciliation<T>(await operation.reconcile());
-        if (observed.status !== "completed" || observed.completionDigest !== record.completionDigest) {
-          throw new Error("dependency_outage_completed_effect_not_reconciled");
-        }
-        return Object.freeze({ status: "recovered", value: observed.value, record });
+        // Adoptive execute is idempotent and self-reconciling (it begins with
+        // lookup L), so a completed operation re-runs it to fetch the CURRENT
+        // delivery state — a human may have closed or retargeted the PR since it
+        // first completed. The ledger row stays completed.
+        const executed = await operation.execute();
+        return Object.freeze({ status: "recovered", value: executed.value, record });
       }
       return Object.freeze({
         status: record.status === "blocked" ? "blocked" :

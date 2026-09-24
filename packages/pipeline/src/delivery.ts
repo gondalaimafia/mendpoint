@@ -15,6 +15,7 @@ import {
   insertMigrationPr,
   updateMigrationPrDelivery,
   persistDeliveryArtifact,
+  hasDeliveryArtifactByContent,
   type AppDb,
 } from "@mendpoint/db";
 import {
@@ -192,6 +193,10 @@ export async function deliverConsumerDraft(
                 createdAt: params.commitDate!,
               });
             },
+            // Recognise our own commit from a prior attempt after the base moved:
+            // its (tree, parent) matches a persisted artifact for this delivery.
+            isOursArtifact: (content) =>
+              hasDeliveryArtifactByContent(db, params.tenantId, params.deliveryKey, content.treeSha, content.parentSha),
           },
         },
       );

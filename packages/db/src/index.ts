@@ -5096,6 +5096,27 @@ export function persistDeliveryArtifact(db: AppDb, artifact: DeliveryArtifact): 
   );
 }
 
+/**
+ * True when a write-ahead artifact with this (treeSha, parentSha) was persisted
+ * for this tenant + delivery (D5). Lets ours() recognise our own commit from a
+ * prior attempt after the base moved — its tree/parent differ from the current
+ * attempt's but match an artifact we persisted before writing it (unforgeable).
+ */
+export function hasDeliveryArtifactByContent(
+  db: AppDb,
+  tenantId: string,
+  deliveryKey: string,
+  treeSha: string,
+  parentSha: string,
+): boolean {
+  return get(
+    db,
+    `SELECT 1 AS present FROM migration_delivery_artifacts
+     WHERE tenant_id = ? AND delivery_key = ? AND tree_sha = ? AND parent_sha = ? LIMIT 1`,
+    [tenantId, deliveryKey, treeSha, parentSha],
+  ) !== undefined;
+}
+
 /** Read a persisted delivery artifact by tenant + digest, or null when absent. */
 export function getDeliveryArtifact(
   db: AppDb,
