@@ -253,18 +253,19 @@ export type ActualExecutionCostInput = Omit<
   acceptedOutcomeId?: string | null;
   missionId?: string | null;
   /**
-   * Per-component measurement state. Omitted defaults to `true` (measured) so
-   * the HTTP caller — which supplies real numbers for every component — records
-   * measured rows unchanged. An internal writer that could not measure a
-   * component MUST pass `false` for it and 0 for its money-micros; the validator
-   * rejects a measured=false component that carries a nonzero cost.
+   * Per-component measurement state. REQUIRED: every writer must state, for each
+   * component, whether its cost was measured. An omitted flag is not "measured"
+   * — it is "we did not say", which the validator rejects rather than silently
+   * reading as measured. A writer that could not measure a component MUST pass
+   * `false` for it and 0 for its money-micros; the validator rejects a
+   * measured=false component that carries a nonzero cost.
    */
-  modelCostMeasured?: boolean;
-  cacheCostMeasured?: boolean;
-  gpuCostMeasured?: boolean;
-  graphCostMeasured?: boolean;
-  sandboxCostMeasured?: boolean;
-  verificationCostMeasured?: boolean;
+  modelCostMeasured: boolean;
+  cacheCostMeasured: boolean;
+  gpuCostMeasured: boolean;
+  graphCostMeasured: boolean;
+  sandboxCostMeasured: boolean;
+  verificationCostMeasured: boolean;
   measurementProvenance?: ActualExecutionCostEntry["measurementProvenance"];
 };
 
@@ -817,12 +818,12 @@ function sameRequest(
     entry.currency === input.currency.toUpperCase() &&
     entry.actorPrincipalId === input.actorPrincipalId &&
     entry.missionId === (input.missionId ?? null) &&
-    entry.modelCostMeasured === (input.modelCostMeasured ?? true) &&
-    entry.cacheCostMeasured === (input.cacheCostMeasured ?? true) &&
-    entry.gpuCostMeasured === (input.gpuCostMeasured ?? true) &&
-    entry.graphCostMeasured === (input.graphCostMeasured ?? true) &&
-    entry.sandboxCostMeasured === (input.sandboxCostMeasured ?? true) &&
-    entry.verificationCostMeasured === (input.verificationCostMeasured ?? true)
+    entry.modelCostMeasured === input.modelCostMeasured &&
+    entry.cacheCostMeasured === input.cacheCostMeasured &&
+    entry.gpuCostMeasured === input.gpuCostMeasured &&
+    entry.graphCostMeasured === input.graphCostMeasured &&
+    entry.sandboxCostMeasured === input.sandboxCostMeasured &&
+    entry.verificationCostMeasured === input.verificationCostMeasured
     && JSON.stringify(entry.measurementProvenance) ===
       JSON.stringify(canonicalMeasurementProvenance(input.measurementProvenance))
   );
@@ -870,17 +871,33 @@ function validateInput(input: ActualExecutionCostInput): number {
   timestamp("execution_cost_created_at", input.createdAt);
   if (input.missionId) text("execution_cost_mission_id", input.missionId);
   canonicalMeasurementProvenance(input.measurementProvenance);
+  // Every per-component measurement flag is required. An omitted (or otherwise
+  // non-boolean) flag is "we did not say", NOT "measured": reject it rather than
+  // reading absence as measured, which would let an unmeasured cost pass as real.
+  const measuredFlags: Array<[string, unknown]> = [
+    ["model", input.modelCostMeasured],
+    ["cache", input.cacheCostMeasured],
+    ["gpu", input.gpuCostMeasured],
+    ["graph", input.graphCostMeasured],
+    ["sandbox", input.sandboxCostMeasured],
+    ["verification", input.verificationCostMeasured],
+  ];
+  for (const [name, measured] of measuredFlags) {
+    if (typeof measured !== "boolean") {
+      throw new Error(`execution_cost_${name}_measured_required`);
+    }
+  }
   // A component that was not measured must carry zero money-micros. This keeps
   // the arithmetic total honest (unmeasured contributes 0) while the flag stays
   // the sole carrier of "not measured". A measured=false component with a
   // nonzero cost is a contradiction and is rejected — never silently coerced.
   const consistency: Array<[string, boolean, number]> = [
-    ["model", input.modelCostMeasured ?? true, input.modelCostMoneyMicros],
-    ["cache", input.cacheCostMeasured ?? true, input.cacheCostMoneyMicros],
-    ["gpu", input.gpuCostMeasured ?? true, input.gpuCostMoneyMicros],
-    ["graph", input.graphCostMeasured ?? true, input.graphCostMoneyMicros],
-    ["sandbox", input.sandboxCostMeasured ?? true, input.sandboxCostMoneyMicros],
-    ["verification", input.verificationCostMeasured ?? true, input.verificationCostMoneyMicros],
+    ["model", input.modelCostMeasured, input.modelCostMoneyMicros],
+    ["cache", input.cacheCostMeasured, input.cacheCostMoneyMicros],
+    ["gpu", input.gpuCostMeasured, input.gpuCostMoneyMicros],
+    ["graph", input.graphCostMeasured, input.graphCostMoneyMicros],
+    ["sandbox", input.sandboxCostMeasured, input.sandboxCostMoneyMicros],
+    ["verification", input.verificationCostMeasured, input.verificationCostMoneyMicros],
   ];
   for (const [name, measured, micros] of consistency) {
     if (!measured && micros !== 0) {
@@ -990,12 +1007,12 @@ export function recordActualExecutionCost(
       previousHash: previous?.entry_hash ?? null,
       createdAt: input.createdAt,
       missionId: input.missionId ?? null,
-      modelCostMeasured: input.modelCostMeasured ?? true,
-      cacheCostMeasured: input.cacheCostMeasured ?? true,
-      gpuCostMeasured: input.gpuCostMeasured ?? true,
-      graphCostMeasured: input.graphCostMeasured ?? true,
-      sandboxCostMeasured: input.sandboxCostMeasured ?? true,
-      verificationCostMeasured: input.verificationCostMeasured ?? true,
+      modelCostMeasured: input.modelCostMeasured,
+      cacheCostMeasured: input.cacheCostMeasured,
+      gpuCostMeasured: input.gpuCostMeasured,
+      graphCostMeasured: input.graphCostMeasured,
+      sandboxCostMeasured: input.sandboxCostMeasured,
+      verificationCostMeasured: input.verificationCostMeasured,
       measurementProvenance: canonicalMeasurementProvenance(input.measurementProvenance),
       costSchemaVersion: 3,
     });

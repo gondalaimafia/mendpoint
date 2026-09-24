@@ -1,6 +1,47 @@
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { delimiter, join } from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+
+// Executes the deploy job's "Verify dedicated app and coordinator volume" step
+// under GitHub's shell flags with a flyctl stub whose `status` fails with the
+// supplied stderr. The app-existence classification prologue exits before any
+// later flyctl call, so only `status` needs a stub.
+function runVerifyDedicatedAppStep(statusStderr: string): {
+  status: number;
+  stdout: string;
+} {
+  const workflow = parse(
+    readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+  ) as Record<string, any>;
+  const run = (workflow.jobs.deploy.steps as Record<string, any>[]).find(
+    (step) => step.name === "Verify dedicated app and coordinator volume",
+  )!.run as string;
+  const dir = mkdtempSync(join(tmpdir(), "regauge-verify-app-"));
+  mkdirSync(join(dir, "test-results/regauge-production"), { recursive: true });
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(
+    join(bin, "flyctl"),
+    `#!/bin/sh\nif [ "$1" = "status" ]; then\n  printf '%s\\n' ${JSON.stringify(statusStderr)} >&2\n  exit 1\nfi\nexit 0\n`,
+    "utf8",
+  );
+  chmodSync(join(bin, "flyctl"), 0o755);
+  const script = join(dir, "verify.sh");
+  writeFileSync(script, run, "utf8");
+  const result = spawnSync(
+    "bash",
+    ["--noprofile", "--norc", "-e", "-o", "pipefail", script.replaceAll("\\", "/")],
+    {
+      cwd: dir,
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` },
+    },
+  );
+  return { status: result.status ?? -1, stdout: `${result.stdout ?? ""}${result.stderr ?? ""}` };
+}
 
 describe("Regauge production workflow", () => {
   it("is manual, protected, draft only, and retains every production proof", () => {
@@ -690,5 +731,38 @@ describe("Regauge production workflow", () => {
     expect(context).toContain('revision: $revision');
     expect(upload.if).toBe("always()");
     expect(upload.with["if-no-files-found"]).toBe("error");
+  });
+
+  it("reads only a real missing-app error as bootstrap required, not a flyctl outage", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const verify = (workflow.jobs.deploy.steps as Record<string, any>[]).find(
+      (step) => step.name === "Verify dedicated app and coordinator volume",
+    )!.run as string;
+    // Structural: bootstrap-required is gated behind the preflight's stderr
+    // classification, and a distinct indeterminate reason exists.
+    expect(verify).toContain("could not find app|could not find the app|app not found|does not exist");
+    expect(verify).toContain("regauge_fly_app_status_indeterminate");
+    expect(verify).not.toMatch(
+      /flyctl status --app mendpoint-regauge-production >\/dev\/null 2>&1 \\?\s*\n?\s*\|\| \{ echo "regauge_fly_app_bootstrap_required"/,
+    );
+
+    // Behavioural: a flyctl outage (not a missing-app error) is indeterminate,
+    // never bootstrap required. This is the exact third-state the fix closes.
+    const outage = runVerifyDedicatedAppStep(
+      'Post "https://api.machines.dev": dial tcp: i/o timeout',
+    );
+    expect(outage.status).not.toBe(0);
+    expect(outage.stdout).toContain("regauge_fly_app_status_indeterminate");
+    expect(outage.stdout).not.toContain("regauge_fly_app_bootstrap_required");
+
+    // A genuine missing app still reads as bootstrap required.
+    const missing = runVerifyDedicatedAppStep(
+      "Could not find App 'mendpoint-regauge-production'",
+    );
+    expect(missing.status).not.toBe(0);
+    expect(missing.stdout).toContain("regauge_fly_app_bootstrap_required");
+    expect(missing.stdout).not.toContain("regauge_fly_app_status_indeterminate");
   });
 });

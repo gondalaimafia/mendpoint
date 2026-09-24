@@ -147,18 +147,35 @@ jobs:
             jq -e --arg branch "$BACKUP_REF" --arg path ".github/workflows/$BACKUP_WORKFLOW" --arg title "$expected_title" --arg windowStart "$window_start" --arg windowEnd "$window_end" "$filter" <<< "$metadata" >/dev/null
           }
 
+          # A command substitution runs in a subshell that does NOT inherit
+          # `set -e`, and this function is itself called inside `$(...)`, so a
+          # failed `gh run list`/`gh run view` here would otherwise yield an
+          # empty result that reads as "no successful backup" — dispatching a
+          # duplicate, or reporting completion-missing, on what was really an API
+          # outage. Each lookup is checked explicitly: a failure records a
+          # distinct `backup_lookup_failed` event and returns 2, so the caller
+          # can fail closed on the outage rather than mis-reading it as absence.
           latest_successful_backup() {
             local checked_at="$1"
             local cycle="$2"
             local candidate_rows
-            candidate_rows="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
+            if ! candidate_rows="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
               --branch "$BACKUP_REF" --limit 50 --json databaseId,conclusion,createdAt \
-              --jq '.[] | select(.conclusion == "success") | [.databaseId, .createdAt] | @tsv')"
+              --jq '.[] | select(.conclusion == "success") | [.databaseId, .createdAt] | @tsv')"; then
+              record --arg at "$checked_at" --argjson cycle "$cycle" \
+                '{at:$at,event:"backup_lookup_failed",cycle:$cycle,operation:"run_list"}'
+              return 2
+            fi
+            local candidate_run_id candidate_created_at backup_job_success
             while IFS=$'\t' read -r candidate_run_id candidate_created_at; do
               if [ -z "$candidate_run_id" ]; then continue; fi
-              backup_job_success="$(gh run view "$candidate_run_id" --repo "$GH_REPO" \
+              if ! backup_job_success="$(gh run view "$candidate_run_id" --repo "$GH_REPO" \
                 --json jobs \
-                --jq '[.jobs[] | select(.name == "backup" and .conclusion == "success")] | length')"
+                --jq '[.jobs[] | select(.name == "backup" and .conclusion == "success")] | length')"; then
+                record --arg at "$checked_at" --arg id "$candidate_run_id" --argjson cycle "$cycle" \
+                  '{at:$at,event:"backup_lookup_failed",cycle:$cycle,operation:"run_view",backupRunId:$id}'
+                return 2
+              fi
               if [ "$backup_job_success" = "1" ]; then
                 printf '%s\t%s\n' "$candidate_run_id" "$candidate_created_at"
                 return 0
@@ -167,6 +184,7 @@ jobs:
                 --arg createdAt "$candidate_created_at" --argjson cycle "$cycle" \
                 '{at:$at,event:"backup_workflow_success_without_backup_job",cycle:$cycle,backupRunId:$id,createdAt:$createdAt}'
             done <<< "$candidate_rows"
+            return 0
           }
 
           # Validate the app binding once, before any cycle interpolates it into
@@ -232,7 +250,17 @@ jobs:
               # the workflow green when the protected backup job is skipped.
               # Inspect each successful candidate and accept only a run whose
               # exact backup job completed successfully.
-              latest_success_row="$(latest_successful_backup "$checked_at" "$cycle")"
+              latest_success_row=""
+              latest_success_status=0
+              latest_success_row="$(latest_successful_backup "$checked_at" "$cycle")" \
+                || latest_success_status=$?
+              if [ "$latest_success_status" -ne 0 ]; then
+                # A backup lookup failed (API outage). `backup_lookup_failed` is
+                # already recorded inside the function. Never dispatch a backup on
+                # the strength of an unreadable history; fail closed instead.
+                echo "customer_backup_delivery_lookup_failed cycle=$cycle" >&2
+                exit 1
+              fi
               IFS=$'\t' read -r latest_success_run_id latest_success <<< "$latest_success_row"
 
               due=true
@@ -285,10 +313,26 @@ jobs:
                 # the unique run-name identity instead of accepting whichever
                 # backup happened to appear next.
                 backup_run_id=""
+                # `for x in $(gh run list ...)` does not fail closed: a failed
+                # list yields an empty word list that reads as "dispatch not
+                # acknowledged". Capture the list with an explicit status check.
+                # A single failed poll is transient (a 502 mid-poll): record it
+                # and keep polling across the remaining attempts, exactly as the
+                # loop already retries a not-yet-visible run. Only when the whole
+                # observation window is exhausted do we fail closed — as a lookup
+                # failure if any poll errored, else as an unacknowledged dispatch.
+                observe_lookup_failed=false
                 for _ in $(seq 1 "$DELIVERY_OBSERVE_ATTEMPTS"); do
-                  for candidate_run_id in $(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
+                  observe_run_ids=""
+                  if ! observe_run_ids="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
                     --branch "$BACKUP_REF" --event workflow_dispatch --limit 50 \
-                    --json databaseId,displayTitle,createdAt --jq '.[].databaseId'); do
+                    --json databaseId,displayTitle,createdAt --jq '.[].databaseId')"; then
+                    observe_lookup_failed=true
+                    record --arg at "$checked_at" --arg deliveryId "$delivery_id" --argjson cycle "$cycle" \
+                      '{at:$at,event:"backup_lookup_failed",cycle:$cycle,deliveryId:$deliveryId,operation:"run_list_observe"}'
+                    observe_run_ids=""
+                  fi
+                  for candidate_run_id in $observe_run_ids; do
                     candidate_metadata=""
                     if ! candidate_metadata="$(gh api "repos/$GH_REPO/actions/runs/$candidate_run_id")"; then
                       continue
@@ -303,6 +347,10 @@ jobs:
                   sleep "$DELIVERY_OBSERVE_SLEEP_SECONDS"
                 done
                 if [ -z "$backup_run_id" ]; then
+                  if [ "$observe_lookup_failed" = true ]; then
+                    echo "customer_backup_delivery_lookup_failed delivery_id=$delivery_id" >&2
+                    exit 1
+                  fi
                   echo "customer_backup_delivery_run_not_observed delivery_id=$delivery_id" >&2
                   record --arg at "$checked_at" --arg deliveryId "$delivery_id" \
                     --argjson cycle "$cycle" --argjson clientStatus "$dispatch_status" \
@@ -337,7 +385,17 @@ jobs:
           fi
 
           final_checked_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          final_success_row="$(latest_successful_backup "$final_checked_at" "$DELIVERY_CYCLES")"
+          final_success_row=""
+          final_success_status=0
+          final_success_row="$(latest_successful_backup "$final_checked_at" "$DELIVERY_CYCLES")" \
+            || final_success_status=$?
+          if [ "$final_success_status" -ne 0 ]; then
+            # A backup lookup failed (API outage). Report it as the lookup failure
+            # it is, not as completion-missing, which would mask an outage as a
+            # delivery incident. `backup_lookup_failed` is already recorded.
+            echo "customer_backup_delivery_lookup_failed" >&2
+            exit 1
+          fi
           IFS=$'\t' read -r final_success_run_id final_success <<< "$final_success_row"
           final_age_seconds=""
           if [ -n "$final_success" ]; then
@@ -386,10 +444,32 @@ jobs:
             gh workflow run "$DELIVERY_WORKFLOW" --repo "$GH_REPO" --ref "$BACKUP_REF" \
               -f "predecessor_run_id=$CONTROLLER_RUN_ID" || handoff_status=$?
 
+            # `for x in $(gh run list ...)` does not fail closed: a failed list
+            # yields an empty word list that reads as "successor not observed"
+            # and re-dispatches. Capture the list with an explicit status check.
+            # A single failed poll is transient: record it and keep polling.
+            # `handoff_poll_succeeded` records whether ANY poll in this attempt
+            # returned a list: if at least one poll succeeded and showed no
+            # successor, the successor is genuinely absent, so keep main's
+            # re-dispatch. Only when EVERY poll errored (a pure API outage) do we
+            # fail closed without re-dispatching, since re-dispatching then would
+            # create a duplicate successor.
+            handoff_lookup_failed=false
+            handoff_poll_succeeded=false
             for _ in $(seq 1 "$DELIVERY_OBSERVE_ATTEMPTS"); do
-              for candidate_run_id in $(gh run list --repo "$GH_REPO" --workflow "$DELIVERY_WORKFLOW" \
+              successor_run_ids=""
+              if ! successor_run_ids="$(gh run list --repo "$GH_REPO" --workflow "$DELIVERY_WORKFLOW" \
                 --branch "$BACKUP_REF" --event workflow_dispatch --limit 50 \
-                --json databaseId,displayTitle,createdAt --jq '.[].databaseId'); do
+                --json databaseId,displayTitle,createdAt --jq '.[].databaseId')"; then
+                handoff_lookup_failed=true
+                record --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                  --arg predecessor "$CONTROLLER_RUN_ID" --argjson attempt "$dispatch_attempt" \
+                  '{at:$at,event:"backup_lookup_failed",predecessorRunId:$predecessor,attempt:$attempt,operation:"run_list_observe"}'
+                successor_run_ids=""
+              else
+                handoff_poll_succeeded=true
+              fi
+              for candidate_run_id in $successor_run_ids; do
                 candidate_metadata=""
                 if ! candidate_metadata="$(gh api "repos/$GH_REPO/actions/runs/$candidate_run_id")"; then
                   continue
@@ -416,6 +496,16 @@ jobs:
               sleep "$DELIVERY_OBSERVE_SLEEP_SECONDS"
             done
             if [ -n "$successor_run_id" ]; then break; fi
+
+            # Every poll in this attempt errored and none succeeded: a pure API
+            # outage, not a genuinely-absent successor. Do not re-dispatch a
+            # duplicate; fail closed as a lookup failure. If at least one poll
+            # succeeded but showed no successor, fall through to main's
+            # re-dispatch below.
+            if [ "$handoff_lookup_failed" = true ] && [ "$handoff_poll_succeeded" = false ]; then
+              echo "customer_backup_delivery_lookup_failed predecessor_run_id=$CONTROLLER_RUN_ID" >&2
+              exit 1
+            fi
 
             if [ "$dispatch_attempt" -lt "$DELIVERY_HANDOFF_ATTEMPTS" ]; then
               backoff_seconds="$((DELIVERY_HANDOFF_BACKOFF_SECONDS * dispatch_attempt))"

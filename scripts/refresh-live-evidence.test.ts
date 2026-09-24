@@ -96,8 +96,8 @@ function baseInput(overrides: Partial<RefreshInput> = {}): RefreshInput {
     deployedRevision: DEPLOYED,
     versionBefore: DEPLOYED,
     versionAfter: DEPLOYED,
-    deployedRevisionIsAncestorOfMain: true,
-    auditedRevisionIsAncestorOfDeployed: true,
+    deployedRevisionIsAncestorOfMain: "ancestor",
+    auditedRevisionIsAncestorOfDeployed: "ancestor",
     now: NOW,
     comparison: cleanComparison(FIXTURE),
     requirements: REQUIREMENTS,
@@ -230,18 +230,47 @@ describe("refreshLiveEvidence — refusals", () => {
   });
 
   it("refuses when the deployed revision is not an ancestor of origin/main", () => {
-    const outcome = refreshLiveEvidence(baseInput({ deployedRevisionIsAncestorOfMain: false }));
+    const outcome = refreshLiveEvidence(baseInput({ deployedRevisionIsAncestorOfMain: "not-ancestor" }));
     expect(outcome.status).toBe("refused");
-    if (outcome.status === "refused") expect(outcome.reason).toContain("not an ancestor");
+    if (outcome.status === "refused") {
+      expect(outcome.reason).toContain("not an ancestor");
+      expect(outcome.reason).not.toContain("could not determine");
+    }
+  });
+
+  it("refuses with a distinct reason when deployed-revision ancestry is undetermined", () => {
+    // A git error (undetermined) must not read as a definitive "not an
+    // ancestor"; it refuses for its own reason, fail closed either way.
+    const outcome = refreshLiveEvidence(baseInput({ deployedRevisionIsAncestorOfMain: "undetermined" }));
+    expect(outcome.status).toBe("refused");
+    if (outcome.status === "refused") {
+      expect(outcome.reason).toContain("could not determine");
+      expect(outcome.reason).toContain("ancestor of origin/main");
+    }
   });
 
   it("refuses when the move would take auditedRevision backward", () => {
     const outcome = refreshLiveEvidence({
       ...baseInput(),
-      auditedRevisionIsAncestorOfDeployed: false,
+      auditedRevisionIsAncestorOfDeployed: "not-ancestor",
     });
     expect(outcome.status).toBe("refused");
-    if (outcome.status === "refused") expect(outcome.reason).toContain("would move auditedRevision backward");
+    if (outcome.status === "refused") {
+      expect(outcome.reason).toContain("would move auditedRevision backward");
+      expect(outcome.reason).not.toContain("could not determine");
+    }
+  });
+
+  it("refuses with a distinct reason when audited-revision ancestry is undetermined", () => {
+    const outcome = refreshLiveEvidence({
+      ...baseInput(),
+      auditedRevisionIsAncestorOfDeployed: "undetermined",
+    });
+    expect(outcome.status).toBe("refused");
+    if (outcome.status === "refused") {
+      expect(outcome.reason).toContain("could not determine");
+      expect(outcome.reason).not.toContain("would move auditedRevision backward");
+    }
   });
 
   it("refuses when a claim is surface-stale between the audited and deployed revisions", () => {

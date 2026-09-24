@@ -12,9 +12,13 @@ import {
   upsertScmConnection, type AppDb,
 } from "@mendpoint/db";
 import { enqueueVerifierAdvisoryJob } from "@mendpoint/pipeline";
-import { criteriaForProduct, type VerifierHttpRequest } from "@mendpoint/verifier";
-import { REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE } from "./verifier-product-shadow.js";
+import { criteriaForProduct, type AgentVerifierResult, type VerifierHttpRequest } from "@mendpoint/verifier";
 import {
+  recoveredAdvisoryResult,
+  REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE,
+} from "./verifier-product-shadow.js";
+import {
+  resolveAdvisoryOutcomeStatus,
   runVerifierAdvisoryJob,
   VerifierProviderNoResponseError,
 } from "./verifier-advisory-job.js";
@@ -85,6 +89,71 @@ function env(): Record<string, string> {
     MENDPOINT_AGENT_VERIFIER_PRICING_JSON: JSON.stringify({ version: "deepseek-v4-flash-2026-08-24", currency: "USD", effectiveAt: "2026-08-24T00:00:00.000Z", inputPerMillion: 0.14, cachedInputPerMillion: 0.0028, outputPerMillion: 0.28 }),
     MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({ policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824", tenantId: "tenant_regauge_canary", version: 1, repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"], branchScope: ["codex/regauge-canary-baseline"], forbiddenZones: [], allowedTools: ["deepseek-verifier"], allowedModelClasses: ["rented_specialist"], externalProcessingAllowed: true, residency: "cn", riskCeiling: "high", reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: 90, createdAt: "2026-08-24T00:00:00.000Z" }),
   };
+}
+
+describe("resolveAdvisoryOutcomeStatus", () => {
+  const resultWith = (
+    status: AgentVerifierResult["status"],
+    failureCode: AgentVerifierResult["failureCode"] = null,
+  ): AgentVerifierResult => ({ status, failureCode }) as unknown as AgentVerifierResult;
+
+  it("maps a verified result and a no-observation replay to their exact statuses", () => {
+    expect(resolveAdvisoryOutcomeStatus(null)).toBe("already_verified");
+    expect(resolveAdvisoryOutcomeStatus(resultWith("verified"))).toBe("verified");
+  });
+
+  it("never completes a non-verified provider result as verified", () => {
+    // A definitive but non-retryable provider failure (a cache/identity
+    // mismatch) is NOT a verified outcome. Before the fix, any truthy result
+    // read as "verified" and counted as succeeded.
+    expect(() => resolveAdvisoryOutcomeStatus(resultWith("failed", "cache_failure")))
+      .toThrow("verifier_advisory_not_verified:failed:cache_failure");
+    expect(() => resolveAdvisoryOutcomeStatus(resultWith("no_eligible_candidates", "evidence_missing")))
+      .toThrow("verifier_advisory_not_verified:no_eligible_candidates:evidence_missing");
+    expect(() => resolveAdvisoryOutcomeStatus(resultWith("disabled")))
+      .toThrow("verifier_advisory_not_verified:disabled");
+  });
+});
+
+describe("recoveredAdvisoryResult", () => {
+  const telemetry = (failureCode: AgentVerifierResult["failureCode"]) =>
+    ({
+      failureCode,
+      recommendation: "escalate",
+      suggestedCandidateId: null,
+      effectiveCandidateId: "candidate_a",
+      behaviorChanged: false,
+    }) as unknown as Parameters<typeof recoveredAdvisoryResult>[0];
+
+  it("replays a durably verified telemetry as an already-verified no-op", () => {
+    expect(recoveredAdvisoryResult(telemetry(null))).toBeNull();
+  });
+
+  it("surfaces a durably recorded non-verified telemetry as a non-verified result", () => {
+    const result = recoveredAdvisoryResult(telemetry("cache_failure"));
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe("failed");
+    expect(result!.failureCode).toBe("cache_failure");
+    // The recovered result flows through the same outcome decision as a fresh
+    // observation, so a non-verified replay re-fails rather than reading as
+    // already verified.
+    expect(() => resolveAdvisoryOutcomeStatus(result)).toThrow(
+      "verifier_advisory_not_verified:failed:cache_failure",
+    );
+  });
+});
+
+// canonicalJson identical to the verifier/pipeline implementations, so a
+// telemetry re-serialized here keeps a valid, findable digest.
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object)
+    .filter((key) => object[key] !== undefined)
+    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
+    .join(",")}}`;
 }
 
 describe("verifier advisory job runner", () => {
@@ -352,6 +421,57 @@ describe("verifier advisory job runner", () => {
     expect(getJob(db, queued.jobId, "tenant_regauge_canary")?.status).toBe("done");
     expect(getMissionTask(db, "tenant_regauge_canary", missionTaskIdForJob(queued.jobId)))
       .toMatchObject({ status: "human_review_required", handoffReason: "architecture_decision_required" });
+  });
+
+  it("re-fails a durably recorded non-verified observation on rerun instead of reading it as verified", async () => {
+    const db = setup();
+    const queued = enqueue(db);
+    const job = claimNextJob(db, ["verifier.advisory.verify"], {
+      tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 300_000,
+      now: "2026-08-24T12:01:01.000Z",
+    })!;
+    bridgeClaimedJobToMissionTask(db, job, "2026-08-24T12:01:01.000Z");
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => successfulProviderResponse());
+
+    // First pass durably records the observation, then crashes before the job
+    // settles, leaving the job running with the telemetry persisted.
+    await expect(runVerifierAdvisoryJob({
+      db, job, env: env(), transport: { request: transport },
+      now: () => "2026-08-24T12:01:02.000Z",
+      operationHooks: { afterMissionHandoffBeforeCommit: () => { throw new Error("simulated_settlement_crash"); } },
+    })).rejects.toThrow("simulated_settlement_crash");
+    expect(getJob(db, queued.jobId, "tenant_regauge_canary")?.status).toBe("running");
+
+    // Turn the recorded observation into a definitive NON-verified outcome (a
+    // non-retryable cache_failure), exactly as a real non-verified provider
+    // result would have been persisted. Re-derive the telemetry digest and the
+    // artifact sha256 so it stays a valid, findable telemetry.
+    const row = db.raw.prepare(
+      "SELECT id, content_text FROM artifact_manifests WHERE tenant_id = ? AND kind = 'agent_verifier_telemetry'",
+    ).get("tenant_regauge_canary") as { id: string; content_text: string };
+    const telemetry = JSON.parse(row.content_text) as Record<string, unknown>;
+    telemetry.failureCode = "cache_failure";
+    const { telemetryDigest: _drop, ...base } = telemetry;
+    telemetry.telemetryDigest = `sha256:${createHash("sha256").update(canonicalJson(base), "utf8").digest("hex")}`;
+    const content = canonicalJson(telemetry);
+    const contentSha = createHash("sha256").update(content, "utf8").digest("hex");
+    for (const { name } of db.raw.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'artifact_manifests'",
+    ).all() as { name: string }[]) db.raw.exec(`DROP TRIGGER IF EXISTS ${name}`);
+    db.raw.prepare("UPDATE artifact_manifests SET content_text = ?, sha256 = ?, size_bytes = ? WHERE id = ?")
+      .run(content, contentSha, Buffer.byteLength(content, "utf8"), row.id);
+
+    // Rerun: the recorded observation was non-verified, so the job must re-fail
+    // and never complete as already verified. The provider is not re-called.
+    const rerunTransport = vi.fn(async (_request: VerifierHttpRequest) => successfulProviderResponse());
+    await expect(runVerifierAdvisoryJob({
+      db, job, env: env(), transport: { request: rerunTransport },
+      now: () => "2026-08-24T12:01:03.000Z",
+    })).rejects.toThrow("verifier_advisory_not_verified:failed:cache_failure");
+    expect(rerunTransport).not.toHaveBeenCalled();
+    expect(getJob(db, queued.jobId, "tenant_regauge_canary")?.status).not.toBe("done");
+    expect(getMissionTask(db, "tenant_regauge_canary", missionTaskIdForJob(queued.jobId))?.status)
+      .not.toBe("human_review_required");
   });
 
   it("rejects and withholds the mission-review handoff when the lease is stolen after the provider returns", async () => {

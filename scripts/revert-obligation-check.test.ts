@@ -247,6 +247,42 @@ describe("revert-obligation — analysis over real repositories", () => {
     expect(analysis.obligations.some((o) => o.disposition === "recorded")).toBe(true);
   });
 
+  it("passes as no-commits only on a provably empty unborn repository", () => {
+    const root = makeRepo(`empty-${RUN_ID}`);
+    const analysis = analyzeRepository({ root, now });
+    expect(analysis.status).toBe("pass");
+    expect(analysis.reason).toBe("no commits");
+  });
+
+  it("fails closed as undetermined when HEAD points at a missing branch but commits exist", () => {
+    const root = makeRepo(`broken-head-${RUN_ID}`);
+    writeFile(root, "a.txt", "one\n");
+    commit(root, { message: "one", date: "2026-08-01T00:00:00Z", add: ["a.txt"] });
+    // Repoint HEAD at a branch that does not exist. `rev-parse --verify HEAD`
+    // now fails, but the repository plainly has a commit reachable from refs, so
+    // this is NOT an empty repository. Before the fix it read as "no commits"
+    // and passed silently; it must fail closed as undetermined.
+    execFileSync("git", ["symbolic-ref", "HEAD", "refs/heads/does-not-exist"], { cwd: root });
+
+    const analysis = analyzeRepository({ root, now });
+    expect(analysis.status).toBe("undetermined");
+    expect(analysis.reason).not.toContain("no commits");
+  });
+
+  it("fails closed as undetermined on a detached HEAD pinned at a nonexistent commit", () => {
+    const root = makeRepo(`detached-missing-${RUN_ID}`);
+    writeFile(root, "a.txt", "one\n");
+    commit(root, { message: "one", date: "2026-08-01T00:00:00Z", add: ["a.txt"] });
+    // Detach HEAD at a sha that does not exist. `rev-parse --verify HEAD` still
+    // exits 0 (it returns the raw sha without checking the object), so it is
+    // verifying `HEAD^{commit}` that makes this fail cleanly as undetermined
+    // instead of reading "present" and then crashing in `git log`.
+    writeFileSync(join(root, ".git", "HEAD"), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n");
+
+    expect(() => analyzeRepository({ root, now })).not.toThrow();
+    expect(analyzeRepository({ root, now }).status).toBe("undetermined");
+  });
+
   it("fails closed as could-not-determine on a shallow clone", () => {
     const source = makeRepo(`shallow-src-${RUN_ID}`);
     writeFile(source, "a.txt", "one\n");
