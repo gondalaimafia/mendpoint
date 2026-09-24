@@ -45,6 +45,8 @@ export {
   TENANT_PRIVATE_SLUG_SEPARATOR,
   PROVIDER_SLUG_PATTERN,
   isValidProviderSlug,
+  publicProviderSlug,
+  stripTenantScopeForDisplay,
 } from "./provider-slug.js";
 
 /**

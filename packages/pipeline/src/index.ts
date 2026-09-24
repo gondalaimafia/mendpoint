@@ -133,6 +133,8 @@ import {
 import {
   newId,
   nowIso,
+  publicProviderSlug,
+  stripTenantScopeForDisplay,
   type ImpactReport,
   type StructuralDiff,
 } from "@mendpoint/shared";
@@ -876,7 +878,9 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     surfaces,
   });
   const registryHits = listConsumersForProvider(db, provider.slug, input.tenantId);
-  const registryMd = registrySummaryMarkdown(registryHits, provider.slug);
+  // Customer-facing: the consumer-registry section renders the PUBLIC slug (never the stored,
+  // possibly tenant-namespaced one). The DB lookup above still uses the stored slug.
+  const registryMd = registrySummaryMarkdown(registryHits, publicProviderSlug(provider.slug));
   const apiReview = reviewOpenApiDesign(newSpec);
   // Deployment policy for the security gate. Keys on the deployment PROFILE
   // (customer profile requires a verified scanner result), never the deployment
@@ -1044,7 +1048,12 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
   // formatQueryForPlanner prints that. Emitting "" instead would drop the
   // one signal distinguishing "no graph was consulted" from "the graph was
   // consulted and found nothing" — the honest object is already built above.
-  const graphRagMd = formatQueryForPlanner(blast);
+  // The graph result is keyed by tenant-scoped node ids (`provider:<tenantId>:<slug>`, ...) and,
+  // for a private provider, the `<tenantId>~` namespaced slug. Those keyed ids stay as-is in the
+  // graph store; strip the tenant scope (and the namespace) from the CUSTOMER-FACING rendering
+  // only. This removes the tenant id from every delivered body, shared providers included (#716),
+  // and collapses a private slug to its public form (#704/#713).
+  const graphRagMd = stripTenantScopeForDisplay(formatQueryForPlanner(blast), input.tenantId);
 
   // Graph-update audit at the ingest entry point. Keep the replay identity and
   // metadata derived only from the immutable spec change. Blast-radius counts
@@ -1914,7 +1923,10 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           `- Context artifact: \`${graphContextArtifactId}\``,
           "",
           "```json",
-          graphContextContent,
+          // Customer-facing: the graph context artifact is serialised with tenant-scoped node
+          // ids and (for a private provider) the namespaced slug; strip the tenant scope from
+          // the rendered copy only. The stored artifact keeps its keyed identity.
+          stripTenantScopeForDisplay(graphContextContent, input.tenantId),
           "```",
         ].join("\n")
       : "";

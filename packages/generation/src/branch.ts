@@ -11,20 +11,20 @@
  * byte-identical (no churn that would orphan an in-flight draft). Uniqueness of the branch
  * comes from the delivery-key hash, not from the slug, so collapsing the namespace is safe.
  */
-import { TENANT_PRIVATE_SLUG_SEPARATOR } from "@mendpoint/shared";
+import { publicProviderSlug } from "@mendpoint/shared";
 
 /**
- * Ref-safe branch segment for a provider slug. Strips a tenant-private namespace prefix and
- * sanitises the requested part to `[a-z0-9-]`; a shared/legacy-bare slug (no separator) is
- * returned unchanged so its branch name never moves.
+ * Ref-safe branch segment for a provider slug. Strips a tenant-private namespace prefix (via the
+ * shared public-identity projection, the one source of truth) and sanitises the requested part to
+ * `[a-z0-9-]`; a shared/legacy-bare slug (no separator) is returned unchanged so its branch name
+ * never moves.
  */
 export function refSafeBranchSegment(providerSlug: string): string {
-  const sepIndex = providerSlug.lastIndexOf(TENANT_PRIVATE_SLUG_SEPARATOR);
-  if (sepIndex === -1) {
+  const requested = publicProviderSlug(providerSlug);
+  if (requested === providerSlug) {
     // Shared or legacy-bare slug: unchanged, byte-identical to today's branch name.
     return providerSlug;
   }
-  const requested = providerSlug.slice(sepIndex + 1);
   const sanitised = requested
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")

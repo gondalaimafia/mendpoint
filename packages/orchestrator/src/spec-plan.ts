@@ -2,7 +2,7 @@
  * Spec-first planner: OpenAPI structural diff / surfaces → plan-of-record.
  * Every step maps to a spec change before (or as) code is touched.
  */
-import type { ImpactableSurface, StructuralDiff } from "@mendpoint/shared";
+import { publicProviderSlug, type ImpactableSurface, type StructuralDiff } from "@mendpoint/shared";
 import { addStep, emptyPlan, type AgentPlan } from "./plan.js";
 
 export type SpecPlanInput = {
@@ -65,9 +65,12 @@ export function planFromSpecDiff(input: SpecPlanInput): AgentPlan {
   });
 
   for (const s of input.surfaces.slice(0, 40)) {
+    // The rendered step title must derive from public identity: a surface canonical id begins
+    // with the stored (possibly tenant-namespaced) slug, so project it before it can fall through
+    // to the customer-visible label. The `ref` below keeps the internal canonical id (not rendered).
     const label =
       s.explanation ||
-      s.canonicalId ||
+      publicProviderSlug(s.canonicalId) ||
       [s.path, s.field].filter(Boolean).join(" ") ||
       "surface";
     plan = addStep(plan, {

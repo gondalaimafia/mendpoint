@@ -188,6 +188,36 @@ describe("requested slug validation — named 400, no 500", () => {
   });
 });
 
+describe("request body validation — named 400, no 500 (should-fix)", () => {
+  it("a missing name is a 400 invalid_provider_name, not a 500", async () => {
+    const res = await createProvider(tokenA, { slug: "needs-a-name" });
+    expect(res.status).toBe(400);
+    expect((res.json as { error?: string }).error).toBe("invalid_provider_name");
+  });
+
+  it("an empty name is a 400 invalid_provider_name, not a 500", async () => {
+    const res = await createProvider(tokenA, { slug: "blank-name", name: "   " });
+    expect(res.status).toBe(400);
+    expect((res.json as { error?: string }).error).toBe("invalid_provider_name");
+  });
+
+  it("a null JSON body is a 400 invalid_request_body, not a 500", async () => {
+    const res = await body(
+      await app.request("/providers", { method: "POST", headers: auth(tokenA), body: "null" }),
+    );
+    expect(res.status).toBe(400);
+    expect((res.json as { error?: string }).error).toBe("invalid_request_body");
+  });
+
+  it("malformed JSON is a 400 invalid_request_body, not a 500", async () => {
+    const res = await body(
+      await app.request("/providers", { method: "POST", headers: auth(tokenA), body: "{not valid json" }),
+    );
+    expect(res.status).toBe(400);
+    expect((res.json as { error?: string }).error).toBe("invalid_request_body");
+  });
+});
+
 describe("UNIQUE-constraint race path (pre-check bypassed) still returns 409, never 500", () => {
   it("maps a slug UNIQUE violation at insert to 409 provider_slug_unavailable", async () => {
     // Create the row so the effective slug genuinely exists.

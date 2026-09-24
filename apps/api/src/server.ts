@@ -1833,13 +1833,25 @@ app.post("/providers", async (c) => {
   // while a self-serve tenant admin (flag on) creates a provider private to their tenant.
   const scope = catalogMutationScope(c);
   if ("deny" in scope) return scope.deny;
-  const body = await c.req.json<{
-    slug: string;
-    name: string;
-    website?: string;
-    openapiUrl?: string;
-    changelogUrl?: string;
-  }>();
+  // Malformed JSON must be a named 400, never a 500: c.req.json() throws on a non-JSON body.
+  const parsed = await c.req.json().catch(() => undefined);
+  // A null / array / non-object body is a named 400 too (reading .slug off null would 500).
+  if (parsed === undefined || typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return c.json(
+      {
+        error: "invalid_request_body",
+        message: "Request body must be a JSON object.",
+      },
+      400,
+    );
+  }
+  const body = parsed as {
+    slug?: unknown;
+    name?: unknown;
+    website?: unknown;
+    openapiUrl?: unknown;
+    changelogUrl?: unknown;
+  };
   // Validate the requested slug shape first (before any .trim()/reservation work), so an
   // absent, empty, uppercase, `~`-bearing or path-like slug is a named 400 rather than a 500.
   if (!isValidProviderSlug(body.slug)) {
@@ -1852,6 +1864,21 @@ app.post("/providers", async (c) => {
       400,
     );
   }
+  // A missing / empty / non-string name is a named 400 (a null name would otherwise hit the
+  // providers.name NOT NULL constraint and surface as a 500).
+  if (typeof body.name !== "string" || body.name.trim() === "") {
+    return c.json(
+      {
+        error: "invalid_provider_name",
+        message: "Provider name is required and must be a non-empty string.",
+      },
+      400,
+    );
+  }
+  const name = body.name;
+  const website = typeof body.website === "string" ? body.website : null;
+  const openapiUrl = typeof body.openapiUrl === "string" ? body.openapiUrl : null;
+  const changelogUrl = typeof body.changelogUrl === "string" ? body.changelogUrl : null;
   let slug = body.slug;
   if (scope.tenantScope !== null) {
     // Tenant-private (self-serve) create. Two guards, in order:
@@ -1889,10 +1916,10 @@ app.post("/providers", async (c) => {
     insertProvider(db, {
       id,
       slug,
-      name: body.name,
-      website: body.website ?? null,
-      openapiUrl: body.openapiUrl ?? null,
-      changelogUrl: body.changelogUrl ?? null,
+      name,
+      website,
+      openapiUrl,
+      changelogUrl,
       tenantId: scope.tenantScope,
       createdAt: nowIso(),
     });

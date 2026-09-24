@@ -6,6 +6,7 @@ import {
   type AdoptiveDraftInput,
 } from "./draft-adoption.js";
 import { FakeGitHub, type FakeFaultController } from "./testing/fake-github.js";
+import { stripTenantScopeForDisplay } from "@mendpoint/shared";
 
 const OWNER = "acme";
 const REPO = "shop";
@@ -99,6 +100,27 @@ describe("adoptive draft delivery state machine", () => {
     const second = await deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha, { body: "Body B regenerated" }));
     expect(second.number).toBe(first.number);
     expect(second.body).toBe("Body B regenerated");
+    expect(fake.allPulls(OWNER, REPO)).toHaveLength(1);
+  });
+
+  it("re-adopts a draft created by main after the graph section drops the tenant id (#606 x #716)", async () => {
+    // A draft delivered by MAIN carries the tenant id in its graph section. The HEAD build strips
+    // it (stripTenantScopeForDisplay). Adoption identity excludes the body, so the head re-delivery
+    // must adopt the same PR (same branch + delivery key) and converge the body — never a duplicate.
+    const tenantId = "f".repeat(64);
+    const mainEraBody = [
+      "### Graph-RAG: blast_radius",
+      `- (Provider) ${tenantId}:acme-payments \`provider:${tenantId}:acme-payments\``,
+    ].join("\n");
+    const headBody = stripTenantScopeForDisplay(mainEraBody, tenantId);
+    expect(headBody.includes(tenantId)).toBe(false);
+
+    const { fake, baseSha } = seed();
+    const main = await deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha, { body: mainEraBody }));
+    const head = await deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha, { body: headBody }));
+    expect(head.number).toBe(main.number);
+    expect(head.body).toBe(headBody);
+    expect(head.body.includes(tenantId)).toBe(false);
     expect(fake.allPulls(OWNER, REPO)).toHaveLength(1);
   });
 
