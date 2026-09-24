@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -23,6 +22,7 @@ import {
   sep,
 } from "node:path";
 import {
+  runExecFileVerification,
   runVerificationCommand,
   validateVerificationCommands,
   type VerificationExecution,
@@ -688,6 +688,44 @@ function copyManifest(sourceRoot: string, workspace: string, manifest: TreeManif
   });
 }
 
+/**
+ * Windows-only npm fallback for the verifier. `runVerificationCommand` throws a
+ * synchronous EINVAL when Node refuses to execFile npm's `.cmd` shim; this reruns
+ * the same npm verb under the Node runtime against npm's JS entrypoint. It shares
+ * runExecFileVerification's spawn tracking, so a fallback that never launches
+ * (missing working directory or npm entrypoint) is `not_verified` with no backend
+ * rather than an executed failing test (issue #699); only a process that started
+ * and then exited non-zero is `failed`. Any error that is not the specific,
+ * fallback-eligible EINVAL is rethrown unchanged. Exported for tests.
+ */
+export async function runNpmEinvalFallback(
+  error: unknown,
+  command: string,
+  workspace: string,
+  timeoutMs: number,
+): Promise<VerificationExecution> {
+  const failure = error as NodeJS.ErrnoException;
+  const npmExecutable = process.env.npm_execpath;
+  if (
+    failure.code !== "EINVAL" ||
+    process.env.NODE_ENV === "production" ||
+    !npmExecutable ||
+    !existsSync(npmExecutable) ||
+    !/^npm (?:test|build|run (?:test|build|typecheck|lint))$/.test(command)
+  ) {
+    throw error;
+  }
+  const args = command.split(" ").slice(1);
+  return runExecFileVerification(process.execPath, [npmExecutable, ...args], {
+    cwd: workspace,
+    encoding: "utf8",
+    timeout: Math.max(1_000, Math.min(timeoutMs, 300_000)),
+    windowsHide: true,
+    maxBuffer: 2 * 1024 * 1024,
+    env: wardenNpmFallbackEnvironment(process.env),
+  });
+}
+
 async function verify(
   command: string,
   workspace: string,
@@ -697,52 +735,7 @@ async function verify(
   try {
     execution = await runVerificationCommand(command, workspace, timeoutMs);
   } catch (error) {
-    const failure = error as NodeJS.ErrnoException;
-    const npmExecutable = process.env.npm_execpath;
-    if (
-      failure.code !== "EINVAL" ||
-      process.env.NODE_ENV === "production" ||
-      !npmExecutable ||
-      !existsSync(npmExecutable) ||
-      !/^npm (?:test|build|run (?:test|build|typecheck|lint))$/.test(command)
-    ) {
-      throw error;
-    }
-    const args = command.split(" ").slice(1);
-    execution = await new Promise<VerificationExecution>((resolveExecution) => {
-      execFile(process.execPath, [npmExecutable, ...args], {
-        cwd: workspace,
-        encoding: "utf8",
-        timeout: Math.max(1_000, Math.min(timeoutMs, 300_000)),
-        windowsHide: true,
-        maxBuffer: 2 * 1024 * 1024,
-        env: wardenNpmFallbackEnvironment(process.env),
-      }, (npmError, stdout, stderr) => {
-        if (!npmError) {
-          // The npm fallback runs on the host workdir (no isolation): backend "local".
-          resolveExecution({
-            ok: true,
-            stdout: String(stdout),
-            stderr: String(stderr),
-            exitCode: 0,
-            outcome: "verified",
-            sandboxBackend: "local",
-          });
-          return;
-        }
-        const npmFailure = npmError as Error & { code?: number | string };
-        // The command ran on the host and exited non-zero: a real test failure.
-        resolveExecution({
-          ok: false,
-          stdout: String(stdout),
-          stderr: String(stderr),
-          exitCode: Number.isInteger(npmFailure.code) ? Number(npmFailure.code) : 1,
-          error: npmFailure.message,
-          outcome: "failed",
-          sandboxBackend: "local",
-        });
-      });
-    });
+    execution = await runNpmEinvalFallback(error, command, workspace, timeoutMs);
   }
   return {
     execution,
