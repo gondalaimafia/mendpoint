@@ -1,4 +1,8 @@
-import { execFile } from "node:child_process";
+import {
+  execFile,
+  type ChildProcess,
+  type ExecFileOptionsWithStringEncoding,
+} from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -436,19 +440,67 @@ export async function runVerificationCommand(
   // Windows) throw synchronously from execFile rather than surfacing through the
   // callback. That synchronous throw is a deliberate contract: callers such as
   // packages/agent's attempt-engine catch EINVAL to apply a platform-specific
-  // npm fallback. Do NOT wrap this in try/catch — swallowing the throw would
-  // silently disable that fallback.
-  return await new Promise<VerificationExecution>((resolveExecution) => {
+  // npm fallback. runExecFileVerification runs execFile inside the promise
+  // executor, so the throw rejects the returned promise; do NOT wrap this in
+  // try/catch — swallowing the throw would silently disable that fallback.
+  return await runExecFileVerification(invocation.executable, args, {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: boundedTimeout,
+    windowsHide: true,
+    maxBuffer: 2 * 1024 * 1024,
+    env,
+    signal,
+  });
+}
+
+/**
+ * The child-process launcher {@link runExecFileVerification} drives. Injectable
+ * so the launch-vs-run classification can be exercised deterministically on any
+ * platform: a fake that never emits `spawn` before erroring models a launch
+ * failure, and one that emits `spawn` then errors models a process that started
+ * and then failed — neither needs the Windows-only `.cmd` shim that provokes
+ * these paths in production.
+ */
+export type VerificationExecFile = (
+  file: string,
+  args: readonly string[],
+  options: ExecFileOptionsWithStringEncoding,
+  callback: (
+    error: (Error & { code?: number | string | null }) | null,
+    stdout: string,
+    stderr: string,
+  ) => void,
+) => Pick<ChildProcess, "once">;
+
+const nodeExecFile: VerificationExecFile = (file, args, options, callback) =>
+  execFile(file, args, options, callback);
+
+/**
+ * Run a verification child process and classify its result into the three-state
+ * {@link VerificationExecution}, tracking the child's `spawn` event so a process
+ * that never launched is reported as `not_verified` (nothing was learned) rather
+ * than as an executed failing test. The `spawn` listener is attached
+ * synchronously on the returned child, so it cannot miss the event:
+ *
+ *  - launched, exited 0        → `verified`     / backend `local`
+ *  - launched, exited non-zero → `failed`       / backend `local`, real exit code
+ *  - never launched            → `not_verified` / no backend, exit code 126
+ *    (the canonical refusal code every other not_verified path returns)
+ *
+ * A synchronous throw from the launcher (Node's EINVAL on a `.cmd` shim) rejects
+ * the returned promise, preserving the contract that packages/agent's attempt
+ * engine catches that throw to apply its npm fallback.
+ */
+export function runExecFileVerification(
+  file: string,
+  args: readonly string[],
+  options: ExecFileOptionsWithStringEncoding,
+  launcher: VerificationExecFile = nodeExecFile,
+): Promise<VerificationExecution> {
+  return new Promise<VerificationExecution>((resolveExecution) => {
     let started = false;
-    execFile(invocation.executable, args, {
-      cwd: repoRoot,
-      encoding: "utf8",
-      timeout: boundedTimeout,
-      windowsHide: true,
-      maxBuffer: 2 * 1024 * 1024,
-      env,
-      signal,
-    }, (error, stdout, stderr) => {
+    launcher(file, args, options, (error, stdout, stderr) => {
       if (!error) {
         // The command genuinely ran on the host (no isolation): backend "local".
         resolveExecution({
@@ -461,14 +513,17 @@ export async function runVerificationCommand(
         });
         return;
       }
-      const failure = error as Error & { code?: number | string };
-      // execFile also reports launch errors here (for example ENOENT). Only a
-      // successful spawn establishes that the local backend ran the command.
+      const failure = error as Error & { code?: number | string | null };
+      // The launcher also reports launch errors here (for example ENOENT/EINVAL).
+      // Only a `spawn` event establishes that the local backend ran the command;
+      // without it nothing was learned, so it is not_verified with no backend and
+      // the same refusal exit code the early not_verified returns use, never a
+      // failed test.
       resolveExecution({
         ok: false,
         stdout: String(stdout),
         stderr: String(stderr),
-        exitCode: Number.isInteger(failure.code) ? Number(failure.code) : 1,
+        exitCode: started ? (Number.isInteger(failure.code) ? Number(failure.code) : 1) : 126,
         error: failure.message,
         outcome: started ? "failed" : "not_verified",
         sandboxBackend: started ? "local" : null,

@@ -4,7 +4,14 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { runVerificationCommand, verifierProtectedPaths } from "./verify.js";
+import { EventEmitter } from "node:events";
+import type { ChildProcess } from "node:child_process";
+import {
+  runExecFileVerification,
+  runVerificationCommand,
+  verifierProtectedPaths,
+  type VerificationExecFile,
+} from "./verify.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -114,7 +121,10 @@ describe("runVerificationCommand distinguishes a refusal from a test failure", (
     expect(result.outcome).toBe("not_verified");
     expect(result.sandboxBackend).toBeNull();
     expect(result.ok).toBe(false);
-    expect(result.exitCode).toBe(1);
+    // A launch failure is a refusal, so it uses the same exit code every other
+    // not_verified path returns (126), never the "1" of a run that produced a
+    // real verdict.
+    expect(result.exitCode).toBe(126);
   });
 
   it("keeps a timed out host command classified as failed after it starts", async () => {
@@ -167,5 +177,59 @@ describe("runVerificationCommand distinguishes a refusal from a test failure", (
     expect(result.outcome).toBe("failed");
     expect(result.sandboxBackend).toBe("local");
     expect(result.ok).toBe(false);
+  });
+});
+
+describe("runExecFileVerification classifies launch vs run on any platform", () => {
+  // A launcher whose child never emits `spawn` before erroring models a launch
+  // failure; one that emits `spawn` first models a process that started. This
+  // makes the classification (which packages/agent's npm EINVAL fallback also
+  // depends on) testable on Linux CI, not only on the Windows `.cmd` shim path.
+  type Behavior = "launch-error" | "started-then-failed" | "verified";
+  function fakeLauncher(behavior: Behavior): VerificationExecFile {
+    return (_file, _args, _options, callback) => {
+      const emitter = new EventEmitter();
+      // Defer so the synchronous `.once("spawn", ...)` registration inside
+      // runExecFileVerification runs before we emit anything, exactly like a
+      // real child process.
+      queueMicrotask(() => {
+        if (behavior !== "launch-error") emitter.emit("spawn");
+        if (behavior === "verified") {
+          callback(null, "ran-out", "ran-err");
+        } else if (behavior === "started-then-failed") {
+          callback(Object.assign(new Error("exited 3"), { code: 3 }), "ran-out", "ran-err");
+        } else {
+          callback(Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }), "", "");
+        }
+      });
+      return emitter as unknown as Pick<ChildProcess, "once">;
+    };
+  }
+
+  it("reports a verifier that never launched as not_verified with no backend", async () => {
+    const result = await runExecFileVerification("npm", ["test"], { encoding: "utf8" }, fakeLauncher("launch-error"));
+    expect(result.outcome).toBe("not_verified");
+    expect(result.sandboxBackend).toBeNull();
+    expect(result.ok).toBe(false);
+    // A refusal uses the canonical not_verified exit code, never a run's "1".
+    expect(result.exitCode).toBe(126);
+    expect(result.error).toContain("ENOENT");
+  });
+
+  it("reports a process that started then failed as failed under the local backend", async () => {
+    const result = await runExecFileVerification("npm", ["test"], { encoding: "utf8" }, fakeLauncher("started-then-failed"));
+    expect(result.outcome).toBe("failed");
+    expect(result.sandboxBackend).toBe("local");
+    expect(result.ok).toBe(false);
+    // The real exit code of the run is preserved (not collapsed to the refusal code).
+    expect(result.exitCode).toBe(3);
+  });
+
+  it("reports a process that started and passed as verified under the local backend", async () => {
+    const result = await runExecFileVerification("npm", ["test"], { encoding: "utf8" }, fakeLauncher("verified"));
+    expect(result.outcome).toBe("verified");
+    expect(result.sandboxBackend).toBe("local");
+    expect(result.ok).toBe(true);
+    expect(result.exitCode).toBe(0);
   });
 });
