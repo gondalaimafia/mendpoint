@@ -68,16 +68,27 @@ describe("production closure CI deployment authority", () => {
     // The exhausted-push failure is named, and the release does not ride here.
     expect(buildPush.run).toContain("registry_push_failed");
     expect(buildPush.run).not.toContain("MENDPOINT_RELEASE_REVISION");
+    // The classifier must NOT treat flyctl's generic push-stream wrapper as a
+    // transient signal (it wraps real auth failures), and must classify only the
+    // final Error line, read from a here-string rather than a pipe.
+    expect(buildPush.run).not.toMatch(/transient='[^\n]*error rendering push status stream/);
+    expect(buildPush.run).toContain('grep -qiE "${transient}" <<<"${error_line}"');
+    expect(buildPush.run).not.toContain('printf \'%s\\n\' "${push_output}" | grep');
+    // The image reference is advertised only inside the success branch.
+    expect(buildPush.run.indexOf('echo "image=')).toBeGreaterThan(
+      buildPush.run.indexOf('push_status=$?'),
+    );
 
     // The release is a separate no-retry step that names the exact pushed image;
-    // it neither rebuilds nor re-pushes.
+    // it neither rebuilds nor re-pushes, and it refuses an empty image reference.
     const deploy = steps.find((step) => step.name === "Deploy customer production")!;
     expect(deploy.env).toEqual({
       FLY_API_TOKEN: "${{ secrets.FLY_API_TOKEN_CUSTOMER }}",
     });
-    expect(deploy.run.trimStart().startsWith("flyctl deploy ")).toBe(true);
-    expect(deploy.run).toContain("--image ${{ steps.build_push.outputs.image }}");
-    expect(deploy.run).toContain("--ha=false --app mendpoint-fettler-production");
+    expect(deploy.shell).toBe("bash");
+    expect(deploy.run).toContain('image="${{ steps.build_push.outputs.image }}"');
+    expect(deploy.run).toContain('test -n "${image}"');
+    expect(deploy.run).toContain('flyctl deploy --image "${image}" --ha=false --app mendpoint-fettler-production');
     expect(deploy.run).not.toContain("--build-only");
     expect(deploy.run).not.toContain("--push");
     expect(deploy.run).not.toContain("--local-only");
@@ -275,20 +286,80 @@ const FLYCTL_PUSH_TRANSIENT_PERSISTENT = [
   "",
 ].join("\n");
 
-/** flyctl push that fails with an authorization error (token not scoped to push). */
-const FLYCTL_PUSH_UNAUTHORIZED = [
-  "#!/bin/sh",
-  'printf "%s\\n" "$*" >> "$FLYCTL_CALL_LOG"',
-  'if [ "$1" = "deploy" ]; then echo "Error: 401 Unauthorized: the deploy token is not authorized to push to this registry repository" >&2; exit 1; fi',
-  "exit 0",
-  "",
-].join("\n");
+/**
+ * A flyctl stub that prints optional preamble lines and then a final `Error:`
+ * line, all to stderr, and exits 1 on `deploy`. Single-quoted echo keeps the
+ * messages (which contain `"` and `:` but no `'`) byte-exact.
+ */
+function flyctlFinalError(finalLine: string, preamble: readonly string[] = []): string {
+  return [
+    "#!/bin/sh",
+    'printf "%s\\n" "$*" >> "$FLYCTL_CALL_LOG"',
+    'if [ "$1" = "deploy" ]; then',
+    ...preamble.map((line) => `  echo '${line}' >&2`),
+    `  echo '${finalLine}' >&2`,
+    "  exit 1",
+    "fi",
+    "exit 0",
+    "",
+  ].join("\n");
+}
+
+/**
+ * REAL flyctl v0.4.79 push-failure final lines. On 0.4.79 every docker
+ * push-stream error is wrapped as "error rendering push status stream:
+ * <cause>", so the wrapper text is present on genuine auth failures; the last
+ * shape is the one push error flyctl rewrites instead of wrapping
+ * (`denied: requested access to the resource is denied` -> "you are not
+ * authorized to push"). None is a transient transport signal, so each must fail
+ * on the first attempt.
+ */
+const REAL_AUTH_PUSH_FAILURES = [
+  "Error: failed to push image: error rendering push status stream: unauthorized: authentication required",
+  "Error: failed to push image: error rendering push status stream: denied: not allowed to push",
+  "Error: failed to push image: error rendering push status stream: manifest invalid",
+  "Error: failed to push image: error rendering push status stream: name unknown",
+  "Error: you are not authorized to push to this repository",
+] as const;
 
 /** flyctl push that fails with a build error before any push happens. */
-const FLYCTL_BUILD_ERROR = [
+const FLYCTL_BUILD_ERROR = flyctlFinalError(
+  "Error: failed to build: Dockerfile parse error on line 3: unknown instruction",
+);
+
+/**
+ * A deterministic build failure whose build LOG contains a transient-looking
+ * line ("Connection reset by peer" from an apt mirror), while the final Error
+ * line is a plain build failure. Classifying the whole log would retry this;
+ * classifying only the final Error line must not.
+ */
+const FLYCTL_BUILD_ERROR_WITH_TRANSIENT_NOISE = flyctlFinalError(
+  "Error: failed to build: process \"/bin/sh -c apt-get update\" did not complete successfully: exit code 1",
+  [
+    "#8 3.1 Err:1 http://deb.debian.org/debian bookworm InRelease",
+    "#8 3.1   Connection reset by peer",
+    "#8 ERROR: process did not complete successfully",
+  ],
+);
+
+/**
+ * The #718 incident string preceded by well over 64KB of build output. With a
+ * whole-log `printf | grep -q` under pipefail this took SIGPIPE and misclassified
+ * the transient signal as non-transient; reading only the final Error line from a
+ * here-string must still classify it transient and retry.
+ */
+const FLYCTL_INCIDENT_AFTER_LARGE_LOG = [
   "#!/bin/sh",
   'printf "%s\\n" "$*" >> "$FLYCTL_CALL_LOG"',
-  'if [ "$1" = "deploy" ]; then echo "Error: failed to build: Dockerfile parse error on line 3: unknown instruction" >&2; exit 1; fi',
+  'if [ "$1" = "deploy" ]; then',
+  "  i=0",
+  "  while [ \"$i\" -lt 1200 ]; do",
+  "    echo '#8 building an intentionally long build-log line to overflow the pipe buffer aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' >&2",
+  "    i=$((i + 1))",
+  "  done",
+  "  echo 'Error: failed to fetch an image or build from source: error rendering push status stream: Get \"https://registry.fly.io/v2/\": net/http: TLS handshake timeout' >&2",
+  "  exit 1",
+  "fi",
   "exit 0",
   "",
 ].join("\n");
@@ -408,18 +479,25 @@ describe("Build and push — the shipped step under GitHub's shell", () => {
     expect(result.stdout).toContain("::error::registry_push_failed:");
     // The real flyctl output is preserved, not discarded.
     expect(result.stdout).toContain("TLS handshake timeout");
+    // A failed push must NOT advertise an image reference to the release step.
+    expect(result.outputs).not.toContain("image=");
   });
 
-  it("fails immediately on an authorization error without retrying", () => {
-    const result = runDeploySplitStep(BUILD_PUSH_STEP, FLYCTL_PUSH_UNAUTHORIZED, {
-      sha: DEPLOY_SHA,
-    });
-    expect(result.status).toBe(1);
-    expect(deployCalls(result.calls)).toHaveLength(1);
-    expect(result.stdout).toContain("401 Unauthorized");
-    expect(result.stdout).toContain("non-transient error");
-    expect(result.stdout).not.toContain("registry_push_failed");
-  });
+  it.each(REAL_AUTH_PUSH_FAILURES)(
+    "fails immediately, without retrying, on a real flyctl auth/push failure: %s",
+    (finalLine) => {
+      const result = runDeploySplitStep(BUILD_PUSH_STEP, flyctlFinalError(finalLine), {
+        sha: DEPLOY_SHA,
+      });
+      expect(result.status).toBe(1);
+      // No retry: exactly one attempt.
+      expect(deployCalls(result.calls)).toHaveLength(1);
+      expect(result.stdout).toContain("non-transient error");
+      expect(result.stdout).not.toContain("registry_push_failed");
+      // The real flyctl output is preserved.
+      expect(result.stdout).toContain(finalLine);
+    },
+  );
 
   it("fails immediately on a build error without retrying", () => {
     const result = runDeploySplitStep(BUILD_PUSH_STEP, FLYCTL_BUILD_ERROR, {
@@ -431,12 +509,46 @@ describe("Build and push — the shipped step under GitHub's shell", () => {
     expect(result.stdout).not.toContain("registry_push_failed");
   });
 
-  it("pushes the exact label it advertises to the release step (no label drift)", () => {
-    const result = runDeploySplitStep(BUILD_PUSH_STEP, FLYCTL_DEPLOY_OK, { sha: DEPLOY_SHA });
-    expect(result.status).toBe(0);
-    const pushCall = deployCalls(result.calls)[0];
-    expect(pushCall).toContain(`--image-label deploy-${DEPLOY_SHA}`);
-    expect(result.outputs.trim()).toBe(`image=${PUSHED_IMAGE}`);
+  it("does not retry a build failure whose log merely mentions a transient-looking line", () => {
+    const result = runDeploySplitStep(BUILD_PUSH_STEP, FLYCTL_BUILD_ERROR_WITH_TRANSIENT_NOISE, {
+      sha: DEPLOY_SHA,
+    });
+    expect(result.status).toBe(1);
+    // Only the final Error line is classified; the "Connection reset by peer"
+    // in the build log must not trigger a retry.
+    expect(deployCalls(result.calls)).toHaveLength(1);
+    expect(result.stdout).toContain("non-transient error");
+    expect(result.stdout).not.toContain("registry_push_failed");
+  });
+
+  it("still retries the incident string when it trails more than 64KB of build output", () => {
+    const result = runDeploySplitStep(BUILD_PUSH_STEP, FLYCTL_INCIDENT_AFTER_LARGE_LOG, {
+      sha: DEPLOY_SHA,
+    });
+    // The transient signal on the final Error line is still classified even
+    // after a large log, so it retries to exhaustion rather than failing on
+    // attempt 1 (the SIGPIPE misclassification the pipe form suffered).
+    expect(result.status).toBe(1);
+    expect(deployCalls(result.calls)).toHaveLength(3);
+    expect(result.stdout).toContain("::error::registry_push_failed:");
+  });
+
+  it("releases the exact reference the push produced (push label == release image)", () => {
+    const push = runDeploySplitStep(BUILD_PUSH_STEP, FLYCTL_DEPLOY_OK, { sha: DEPLOY_SHA });
+    expect(push.status).toBe(0);
+    const pushLabel = /--image-label (\S+)/.exec(deployCalls(push.calls)[0])?.[1];
+    const exportedImage = /^image=(.+)$/m.exec(push.outputs)?.[1];
+    expect(pushLabel).toBeTruthy();
+    expect(exportedImage).toBeTruthy();
+    // Feed the release step the reference the push step exported (as GitHub does),
+    // and assert the argument flyctl actually receives equals the pushed tag.
+    const release = runDeploySplitStep(RELEASE_STEP, FLYCTL_DEPLOY_OK, {
+      sha: DEPLOY_SHA,
+      image: exportedImage!,
+    });
+    const releaseImage = /--image (\S+)/.exec(deployCalls(release.calls)[0])?.[1];
+    expect(releaseImage).toBe(`registry.fly.io/${CUSTOMER_APP}:${pushLabel}`);
+    expect(releaseImage).toBe(exportedImage);
   });
 });
 
@@ -468,4 +580,54 @@ describe("Release — the shipped step under GitHub's shell", () => {
     expect(releaseCalls).toHaveLength(1);
     expect(releaseCalls[0]).toContain(`--image ${PUSHED_IMAGE}`);
   });
+
+  it("refuses to release, and never calls flyctl, when the pushed image reference is empty", () => {
+    const result = runDeploySplitStep(RELEASE_STEP, FLYCTL_DEPLOY_OK, {
+      sha: DEPLOY_SHA,
+      image: "",
+    });
+    expect(result.status).not.toBe(0);
+    // flyctl is never invoked with an empty --image.
+    expect(deployCalls(result.calls)).toHaveLength(0);
+    expect(result.stdout).toContain("No pushed image reference");
+  });
+});
+
+/**
+ * The `if: steps.head.outputs.superseded != 'true'` guard must gate BOTH new
+ * steps: a run that lost the concurrency race to a newer commit must neither
+ * push nor release the superseded commit. This evaluates the shipped `if:`
+ * expression rather than asserting the string is present, so deleting the guard
+ * (which makes `if` undefined and the step unconditionally run) fails the test.
+ */
+function stepRunsWhenSuperseded(ifExpr: string | undefined, superseded: string): boolean {
+  // GitHub runs a step with no `if:` unconditionally.
+  if (ifExpr === undefined || ifExpr === null) return true;
+  const substituted = ifExpr.replace(
+    /steps\.head\.outputs\.superseded/g,
+    `'${superseded}'`,
+  );
+  const match = /^\s*('[^']*'|"[^"]*")\s*(==|!=)\s*('[^']*'|"[^"]*")\s*$/.exec(substituted);
+  if (!match) throw new Error(`unsupported if expression: ${ifExpr}`);
+  const left = match[1].slice(1, -1);
+  const op = match[2];
+  const right = match[3].slice(1, -1);
+  return op === "!=" ? left !== right : left === right;
+}
+
+describe("superseded guard on both split deploy steps", () => {
+  const workflow = parse(readFileSync(".github/workflows/ci.yml", "utf8")) as Record<string, any>;
+  const steps = (workflow.jobs as Record<string, any>)["deploy-customer-production"]
+    .steps as Record<string, any>[];
+
+  it.each([BUILD_PUSH_STEP, RELEASE_STEP])(
+    "step %s is skipped when the run was superseded and runs otherwise",
+    (stepName) => {
+      const step = steps.find((candidate) => candidate.name === stepName)!;
+      // Superseded: the step must be skipped. Deleting the guard makes this true.
+      expect(stepRunsWhenSuperseded(step.if, "true")).toBe(false);
+      // Current head: the step must run.
+      expect(stepRunsWhenSuperseded(step.if, "false")).toBe(true);
+    },
+  );
 });

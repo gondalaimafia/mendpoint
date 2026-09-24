@@ -469,18 +469,26 @@ jobs:
           # pushed.
           label="deploy-${{ github.sha }}"
           image="registry.fly.io/${app}:${label}"
-          echo "image=${image}" >>"$GITHUB_OUTPUT"
           # Retry ONLY the push, and ONLY on a transient registry/transport
-          # signal -- a TLS handshake timeout, a reset connection, an i/o
-          # timeout, a 5xx from the registry, or a half-rendered push status
-          # stream. At most three attempts with a short backoff. The build is
-          # deterministic (same source, same Dockerfile, same label), so a retry
-          # of `--build-only --push` rebuilds the identical image and re-pushes
-          # the identical tag: idempotent. Any OTHER failure -- a build error, an
-          # auth 401/403, a manifest or Dockerfile error -- does not match these
-          # signals and fails immediately with flyctl's real output; retrying
-          # those would only hide them.
-          transient='TLS handshake timeout|connection reset|error rendering push status stream|i/o timeout|5[0-9][0-9] (Service Unavailable|Bad Gateway|Gateway Time-?out|Internal Server Error)'
+          # signal in flyctl's FINAL `Error:` line: a TLS handshake timeout, a
+          # reset connection, an i/o timeout, or a registry 5xx. At most three
+          # attempts with a short backoff. The build is deterministic (same
+          # source, same Dockerfile, same label), so a retry of
+          # `--build-only --push` rebuilds the identical image and re-pushes the
+          # identical tag: idempotent.
+          #
+          # The signal is read from the LAST `Error:` line only, never the whole
+          # log. On 0.4.79 flyctl wraps every docker push-stream error --
+          # `unauthorized: authentication required`, `denied: ...`,
+          # `manifest invalid`, `name unknown` -- as
+          # "error rendering push status stream: <cause>", so that wrapper text
+          # is NOT a transient signal: matching it retried real auth failures
+          # three times and mislabelled them a transport blip. A build log can
+          # also print "connection reset by peer" in a RUN step without the push
+          # having failed. Any failure whose final Error line is not a transient
+          # transport signal -- a build error, an auth 401/403, a manifest or
+          # Dockerfile error -- fails immediately with flyctl's real output.
+          transient='TLS handshake timeout|connection reset|i/o timeout|5[0-9][0-9] (Service Unavailable|Bad Gateway|Gateway Time-?out|Internal Server Error)'
           max=3
           # Real backoff on CI; overridable to 0 so the workflow tests do not
           # sleep. It only changes the delay between attempts, never the retry
@@ -497,10 +505,22 @@ jobs:
             set -e
             printf '%s\n' "${push_output}"
             if [ "${push_status}" -eq 0 ]; then
+              # Advertise the pushed reference to the release step ONLY after a
+              # successful push, so a failed push can never leave a stale or
+              # unpushed image reference for the release to consume.
+              echo "image=${image}" >>"$GITHUB_OUTPUT"
               echo "Built and pushed ${image} on attempt ${attempt}."
               break
             fi
-            if ! printf '%s\n' "${push_output}" | grep -qiE "${transient}"; then
+            # Classify the LAST `Error:` line only, read from a here-string so
+            # there is no pipe to take SIGPIPE under `pipefail` on a large log.
+            error_line=""
+            while IFS= read -r line; do
+              case "${line}" in
+                Error:*) error_line="${line}" ;;
+              esac
+            done <<<"${push_output}"
+            if ! grep -qiE "${transient}" <<<"${error_line}"; then
               echo "::error::Customer production image build or push failed with a non-transient error (not a registry/transport blip); not retrying. See the flyctl output above."
               exit 1
             fi
@@ -527,11 +547,19 @@ jobs:
       - name: Deploy customer production
         id: deploy
         if: steps.head.outputs.superseded != 'true'
-        run: >-
-          flyctl deploy --image ${{ steps.build_push.outputs.image }}
-          --ha=false --app mendpoint-fettler-production
-          --config fly.customer-warden.toml
-          --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${{ steps.build_push.outputs.image }}"
+          # The build/push step exports image ONLY after a successful push, so an
+          # empty value here means the push never succeeded. Fail loudly rather
+          # than call flyctl with an empty --image, where pflag would otherwise
+          # consume the next flag (--ha=false) as the image argument and silently
+          # leave --ha at its default of true.
+          test -n "${image}" || { echo "::error::No pushed image reference from the build step; refusing to release customer production."; exit 1; }
+          flyctl deploy --image "${image}" --ha=false --app mendpoint-fettler-production \
+            --config fly.customer-warden.toml \
+            --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_CUSTOMER }}
       # A successful image swap is not a running app. On 4ae3c8d0 this deploy
