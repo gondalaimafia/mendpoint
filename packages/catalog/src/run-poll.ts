@@ -7,7 +7,8 @@ import {
   completeFeedTenantDispatch,
   createDb,
   findMonorepoRoot,
-  getProviderBySlug,
+  getProviderBySlugUnscopedForSystem,
+  getVisibleProviderBySlug,
   insertApiVersionIfAbsent,
   insertFeedPoll,
   insertProvider,
@@ -115,12 +116,19 @@ function pipelineResult(
     : { status: "pipeline_ran", changeId: report.changeId };
 }
 
-export function listPollableFeeds(db: AppDb): PollableFeed[] {
+/**
+ * Feeds a tenant may poll. `tenantId` undefined is the system enumeration (schedule
+ * reconciliation): every catalog + DB feed, unchanged. A real tenant gets the shared catalog
+ * plus its own private providers, and — because `providers.slug` is globally UNIQUE — any
+ * slug (even a static catalog slug) that another tenant has claimed as a PRIVATE provider is
+ * dropped, so a poll can never read or write that provider.
+ */
+export function listPollableFeeds(db: AppDb, tenantId?: string): PollableFeed[] {
   const bySlug = new Map<string, PollableFeed>();
   for (const f of listCatalogFeeds()) {
     bySlug.set(f.slug, f);
   }
-  for (const p of listProviders(db)) {
+  for (const p of listProviders(db, undefined, 0, tenantId)) {
     const url = p.openapi_url;
     if (url) {
       bySlug.set(p.slug, {
@@ -132,12 +140,30 @@ export function listPollableFeeds(db: AppDb): PollableFeed[] {
       });
     }
   }
+  if (tenantId !== undefined) {
+    for (const slug of [...bySlug.keys()]) {
+      // exists but not visible => a slug owned privately by another tenant: never poll it.
+      if (
+        !getVisibleProviderBySlug(db, tenantId, slug) &&
+        getProviderBySlugUnscopedForSystem(db, slug)
+      ) {
+        bySlug.delete(slug);
+      }
+    }
+  }
   return [...bySlug.values()];
 }
 
-function ensureProvider(db: AppDb, feed: PollableFeed) {
-  let p = getProviderBySlug(db, feed.slug);
+/**
+ * Resolve (creating a shared catalog provider when the slug is brand-new) the provider a feed
+ * writes into, scoped to `tenantId`. Returns undefined — signalling the caller to skip without
+ * any write — when the slug is owned privately by another tenant, so a poll never mutates
+ * another tenant's private provider.
+ */
+function ensureProvider(db: AppDb, feed: PollableFeed, tenantId: string) {
+  let p = getVisibleProviderBySlug(db, tenantId, feed.slug);
   if (!p) {
+    if (getProviderBySlugUnscopedForSystem(db, feed.slug)) return undefined;
     const cat = VENDOR_CATALOG.find((v) => v.slug === feed.slug);
     insertProvider(db, {
       id: newId(),
@@ -148,7 +174,7 @@ function ensureProvider(db: AppDb, feed: PollableFeed) {
       changelogUrl: feed.changelogUrl ?? null,
       createdAt: nowIso(),
     });
-    p = getProviderBySlug(db, feed.slug)!;
+    p = getVisibleProviderBySlug(db, tenantId, feed.slug)!;
   } else if (!p.openapi_url && feed.openapiUrl) {
     updateProviderFeedUrls(db, feed.slug, {
       openapiUrl: feed.openapiUrl,
@@ -283,7 +309,10 @@ async function pollOneFeedUnlocked(
     return { slug: feed.slug, url, status: "skipped" };
   }
 
-  ensureProvider(db, feed);
+  if (!ensureProvider(db, feed, opts.tenantId)) {
+    // The slug is owned privately by another tenant: skip without reading or writing it.
+    return { slug: feed.slug, url, status: "skipped" };
+  }
 
   const load = opts.sourceDocumentLoader
     ? () => opts.sourceDocumentLoader!(url, root, opts.signal)
@@ -310,7 +339,7 @@ async function pollOneFeedUnlocked(
 
   const latest = latestFeedPollForSlug(db, feed.slug);
   const prev = latestSuccessfulHash(db, feed.slug);
-  const provider = getProviderBySlug(db, feed.slug)!;
+  const provider = getVisibleProviderBySlug(db, opts.tenantId, feed.slug)!;
   if (prev === fetched.contentHash) {
     const versions = listVersionsForProvider(db, provider.id);
     const existingVersion =
@@ -470,7 +499,9 @@ async function pollOneFeedUnlocked(
 
 export async function pollAllFeeds(opts: PollAllOptions): Promise<PollOneResult[]> {
   const db = opts.db ?? createDb();
-  let feeds = listPollableFeeds(db);
+  // Scope the pollable set to the tenant this poll runs for: shared catalog + its own private
+  // providers, never another tenant's private provider (even a squatted catalog slug).
+  let feeds = listPollableFeeds(db, opts.tenantId);
   if (opts.slugs?.length) {
     const want = new Set(opts.slugs);
     feeds = feeds.filter((f) => want.has(f.slug));

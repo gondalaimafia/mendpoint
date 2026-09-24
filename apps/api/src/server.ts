@@ -4,11 +4,12 @@ import { cors } from "hono/cors";
 import { createHash, randomBytes } from "node:crypto";
 import {
   listProviders,
-  getProviderBySlug,
-  getProviderById,
+  getVisibleProviderBySlug,
+  getProviderBySlugUnscopedForSystem,
   listChanges,
   listCapabilityAdoptionOpportunities,
   getChange,
+  getVisibleChange,
   listConsumers,
   listPrs,
   getPr,
@@ -235,7 +236,6 @@ import {
 } from "./self-serve-onboarding.js";
 import {
   decideCatalogMutation,
-  providerVisibleToTenant,
 } from "./self-serve-catalog.js";
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
@@ -1077,7 +1077,7 @@ app.post(`${base}/plans/from-spec`, async (c) => {
       goal?: string;
     }>();
     if (!body.providerSlug) return c.json({ error: "providerSlug required" }, 400);
-    const provider = getProviderBySlug(db, body.providerSlug);
+    const provider = getVisibleProviderBySlug(db, catalogReadTenantId(c), body.providerSlug);
     if (!provider) return c.json({ error: "provider not found" }, 404);
     const versions = listVersionsForProvider(db, provider.id);
     if (versions.length < 2) {
@@ -1149,7 +1149,7 @@ app.post(`${base}/gates`, async (c) => {
     let oldSpec = body.oldSpec;
     let newSpec = body.newSpec;
     if (body.providerSlug && (!oldSpec || !newSpec)) {
-      const provider = getProviderBySlug(db, body.providerSlug);
+      const provider = getVisibleProviderBySlug(db, catalogReadTenantId(c), body.providerSlug);
       if (!provider) return c.json({ error: "provider not found" }, 404);
       const versions = listVersionsForProvider(db, provider.id);
       if (versions.length >= 2) {
@@ -1182,7 +1182,7 @@ app.post(`${base}/review`, async (c) => {
     }>();
     let spec = body.spec;
     if (!spec && body.providerSlug) {
-      const provider = getProviderBySlug(db, body.providerSlug);
+      const provider = getVisibleProviderBySlug(db, catalogReadTenantId(c), body.providerSlug);
       if (!provider) return c.json({ error: "provider not found" }, 404);
       const versions = listVersionsForProvider(db, provider.id);
       if (!versions.length) return c.json({ error: "no versions" }, 400);
@@ -1725,12 +1725,13 @@ app.get("/graph/product", (c) => {
 
 app.get("/graph/api/:providerSlug", (c) => {
   try {
-    const provider = getProviderBySlug(db, c.req.param("providerSlug"));
     // Isolation: a tenant-private provider's API graph is 404 for anyone but its owner.
-    if (
-      !provider ||
-      !providerVisibleToTenant(provider, catalogReadTenantId(c))
-    ) {
+    const provider = getVisibleProviderBySlug(
+      db,
+      catalogReadTenantId(c),
+      c.req.param("providerSlug"),
+    );
+    if (!provider) {
       return c.json({ error: "provider not found" }, 404);
     }
     const g = buildProviderApiGraph(db, provider.slug);
@@ -1756,9 +1757,9 @@ app.get("/providers", (c) => {
 });
 
 app.get("/providers/:slug", (c) => {
-  const p = getProviderBySlug(db, c.req.param("slug"));
   // Isolation: a tenant-private provider is 404 for anyone but its owning tenant.
-  if (!p || !providerVisibleToTenant(p, catalogReadTenantId(c))) {
+  const p = getVisibleProviderBySlug(db, catalogReadTenantId(c), c.req.param("slug"));
+  if (!p) {
     return c.json({ error: "not found" }, 404);
   }
   const versions = listVersionsForProvider(db, p.id).map(versionToApi);
@@ -1768,8 +1769,8 @@ app.get("/providers/:slug", (c) => {
 // Read-only: capability-adoption opportunities (NEW capabilities linked consumers
 // are not yet using), tenant-scoped for this provider.
 app.get("/providers/:slug/capability-opportunities", (c) => {
-  const p = getProviderBySlug(db, c.req.param("slug"));
-  if (!p || !providerVisibleToTenant(p, catalogReadTenantId(c))) {
+  const p = getVisibleProviderBySlug(db, catalogReadTenantId(c), c.req.param("slug"));
+  if (!p) {
     return c.json({ error: "not found" }, 404);
   }
   const opportunities = listCapabilityAdoptionOpportunities(db, requestTenantId(c), {
@@ -1811,7 +1812,7 @@ app.post("/providers", async (c) => {
 });
 
 app.patch("/providers/:slug/feed", async (c) => {
-  const p = getProviderBySlug(db, c.req.param("slug"));
+  const p = getProviderBySlugUnscopedForSystem(db, c.req.param("slug"));
   const scope = catalogMutationScope(c, p);
   if ("deny" in scope) return scope.deny;
   if (!p) return c.json({ error: "not found" }, 404);
@@ -1820,11 +1821,11 @@ app.patch("/providers/:slug/feed", async (c) => {
     openapiUrl: body.openapiUrl,
     changelogUrl: body.changelogUrl,
   });
-  return c.json(providerToApi(getProviderBySlug(db, p.slug)!));
+  return c.json(providerToApi(getProviderBySlugUnscopedForSystem(db, p.slug)!));
 });
 
 app.post("/providers/:slug/versions", async (c) => {
-  const p = getProviderBySlug(db, c.req.param("slug"));
+  const p = getProviderBySlugUnscopedForSystem(db, c.req.param("slug"));
   const scope = catalogMutationScope(c, p);
   if ("deny" in scope) return scope.deny;
   if (!p) return c.json({ error: "not found" }, 404);
@@ -1849,7 +1850,7 @@ app.post("/providers/:slug/publish", async (c) => {
   if (!synchronousPipelineExecutionAllowed()) {
     return c.json({ error: "synchronous_pipeline_execution_disabled" }, 503);
   }
-  const provider = getProviderBySlug(db, c.req.param("slug"));
+  const provider = getProviderBySlugUnscopedForSystem(db, c.req.param("slug"));
   const scope = catalogMutationScope(c, provider);
   if ("deny" in scope) return scope.deny;
   try {
@@ -1900,7 +1901,7 @@ app.post("/providers/:slug/publish", async (c) => {
 
 /** Phase C: upload OpenAPI version and optionally publish (run pipeline) in one step */
 app.post("/providers/:slug/publish-version", async (c) => {
-  const p = getProviderBySlug(db, c.req.param("slug"));
+  const p = getProviderBySlugUnscopedForSystem(db, c.req.param("slug"));
   const scope = catalogMutationScope(c, p);
   if ("deny" in scope) return scope.deny;
   if (!p) return c.json({ error: "not found" }, 404);
@@ -1985,16 +1986,10 @@ app.get("/changes/:id", (c) => {
   // public provider spec data is exposed here. Everything tenant-private — impact findings
   // and migration PRs — is read through tenant-scoped accessors so tenant A can never see
   // tenant B's findings or PRs on the same shared change.
-  const change = getChange(db, c.req.param("id"));
+  // Isolation (S1.1): a change on a tenant-private provider is 404 for anyone but its owner,
+  // resolved at the read so a non-visible change is indistinguishable from an unknown id.
+  const change = getVisibleChange(db, catalogReadTenantId(c), c.req.param("id"));
   if (!change) return c.json({ error: "not found" }, 404);
-  // Isolation (S1.1): a change on a tenant-private provider is 404 for anyone but its owner.
-  const changeProvider = getProviderById(db, change.provider_id);
-  if (
-    changeProvider &&
-    !providerVisibleToTenant(changeProvider, catalogReadTenantId(c))
-  ) {
-    return c.json({ error: "not found" }, 404);
-  }
   const tenantId = requestTenantId(c);
   return c.json(changeDetailBody(db, tenantId, change));
 });
@@ -2090,7 +2085,9 @@ app.post("/consumers/:id/monitor", async (c) => {
   );
   if (!consumer) return c.json({ error: "not found" }, 404);
   const body = await c.req.json<{ providerSlug: string }>();
-  const p = getProviderBySlug(db, body.providerSlug);
+  // Isolation: only a provider visible to this tenant (shared or its own private one) can be
+  // monitored; another tenant's private provider is indistinguishable from an unknown slug.
+  const p = getVisibleProviderBySlug(db, requestTenantId(c), body.providerSlug);
   if (!p) return c.json({ error: "provider not found" }, 404);
   const id = newId();
   insertMonitoredApi(db, {
@@ -2115,9 +2112,14 @@ app.post("/consumers/:id/detect", async (c) => {
   const { repo } = owned;
   const detected = detectVendors(repo.local_path);
   const linked: Array<{ slug: string; monitoredId: string; created: boolean }> = [];
+  const detectTenantId = requestTenantId(c);
   for (const d of detected) {
-    let p = getProviderBySlug(db, d.slug);
+    let p = getVisibleProviderBySlug(db, detectTenantId, d.slug);
     if (!p) {
+      // `providers.slug` is globally UNIQUE: if the slug is already owned privately by another
+      // tenant, never auto-link to it and never attempt to (re)create it. Skip the detection
+      // rather than leak the provider's existence or collide on the unique slug.
+      if (getProviderBySlugUnscopedForSystem(db, d.slug)) continue;
       const pid = newId();
       insertProvider(db, {
         id: pid,
@@ -2126,7 +2128,7 @@ app.post("/consumers/:id/detect", async (c) => {
         website: null,
         createdAt: nowIso(),
       });
-      p = getProviderBySlug(db, d.slug)!;
+      p = getVisibleProviderBySlug(db, detectTenantId, d.slug)!;
     }
     const existing = listMonitoredForConsumer(db, consumer.id).filter(
       (m) => m.provider_id === p!.id,
@@ -2887,19 +2889,23 @@ app.get("/metrics/design-partner", (c) =>
 
 /** Pre-customer A2: consumer exposure report (Warden) */
 app.get("/consumers/:id/exposure", (c) => {
-  if (!getConsumer(db, c.req.param("id"), requestTenantId(c))) {
+  const tenantId = requestTenantId(c);
+  if (!getConsumer(db, c.req.param("id"), tenantId)) {
     return c.json({ error: "not found" }, 404);
   }
-  const report = buildExposureReport(db, c.req.param("id"));
+  // Scope the report to this tenant so a stale monitored_apis link to another tenant's
+  // private provider can never surface that provider's slug/name.
+  const report = buildExposureReport(db, c.req.param("id"), tenantId);
   if (!report) return c.json({ error: "not found" }, 404);
   return c.json(report);
 });
 
 app.get("/consumers/:id/exposure.md", (c) => {
-  if (!getConsumer(db, c.req.param("id"), requestTenantId(c))) {
+  const tenantId = requestTenantId(c);
+  if (!getConsumer(db, c.req.param("id"), tenantId)) {
     return c.text("not found", 404);
   }
-  const report = buildExposureReport(db, c.req.param("id"));
+  const report = buildExposureReport(db, c.req.param("id"), tenantId);
   if (!report) return c.text("not found", 404);
   return c.body(report.markdown, 200, {
     "Content-Type": "text/markdown; charset=utf-8",
@@ -2975,6 +2981,11 @@ app.post("/jobs/fanout", async (c) => {
   }>();
   if (!body.providerSlug) return c.json({ error: "providerSlug required" }, 400);
   const tenantId = requestTenantId(c);
+  // Isolation: a tenant can only fan out over a provider visible to it (shared or its own
+  // private one). Another tenant's private provider is indistinguishable from an unknown slug.
+  if (!getVisibleProviderBySlug(db, tenantId, body.providerSlug)) {
+    return c.json({ error: "provider not found" }, 404);
+  }
   const id = newId();
   // Wave C: reserve the run's deterministic MCU estimate before admitting work.
   // Default-OFF (MENDPOINT_USAGE_ENFORCEMENT); when off this is a no-op and the

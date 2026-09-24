@@ -11,7 +11,7 @@ import {
   listPrs,
   listTenants,
   listVersionsForProvider,
-  getProviderBySlug,
+  getVisibleProviderBySlug,
 } from "@mendpoint/db";
 import { edge, node, withStats, type GraphEdge, type GraphNode, type ProductGraph } from "./types.js";
 import { productGraphCache } from "./cache.js";
@@ -57,7 +57,9 @@ export function buildProductKnowledgeGraph(
   let consumerFilter: Set<string> | null = null;
 
   if (focus.type === "provider") {
-    const p = getProviderBySlug(db, focus.slug);
+    // Tenant isolation: focusing on another tenant's private provider resolves to nothing,
+    // so its nodes never enter the graph (the provider list above is already tenant-scoped).
+    const p = getVisibleProviderBySlug(db, tenantId, focus.slug);
     providerFilter = new Set(p ? [p.id] : []);
   } else if (focus.type === "consumer") {
     consumerFilter = new Set([focus.id]);
