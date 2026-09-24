@@ -32,7 +32,7 @@ import {
   verifyDomainEventIntegrity,
 } from "@mendpoint/db";
 import { newId, nowIso } from "@mendpoint/shared";
-import { MockGitHubDelivery } from "@mendpoint/github";
+import { MockGitHubDelivery, type GitHubDelivery } from "@mendpoint/github";
 import { analyzeImpactWithSoftwareGraph } from "@mendpoint/code-impact";
 import {
   changeSubjectDigest,
@@ -696,7 +696,7 @@ describe("pipeline", () => {
     expect(row.delivery_base_sha).toBe(baseX);
   });
 
-  it("re-anchors and delivers one PR after a pre-creation failure when the remote base moves (clears the stale anchor)", async () => {
+  it("keeps the anchor on the first pre-creation failure (no drift), then re-anchors once the base moves (mock, no ledger)", async () => {
     const db = seedProviderVersions();
     const provider = db.raw
       .prepare("SELECT id FROM providers WHERE slug = ?")
@@ -706,8 +706,9 @@ describe("pipeline", () => {
     const baseY = "2".repeat(40);
 
     // Attempt 1 anchors to base X and persists it, but fails BEFORE the branch
-    // is created, so no remote branch exists. The remote default head then
-    // moves to Y, so the next refresh returns Y.
+    // is created. No drift has been observed yet (the base equals the refreshed
+    // head), so the anchor is KEPT so the identical operation can retry. The
+    // remote default head then moves to Y.
     let refreshCalls = 0;
     const refreshRepositoryBase = async () => {
       refreshCalls += 1;
@@ -736,16 +737,23 @@ describe("pipeline", () => {
 
     const first = await runChangePipeline(common);
     expect(first.consumers[0]?.prStatus).toBe("delivery_failed");
-    // The branch was never created, so the stale anchor must be cleared.
+    // No drift yet: the anchor is KEPT so the identical operation retries.
     const afterFirst = db.raw.prepare("SELECT delivery_base_sha FROM migration_prs LIMIT 1")
       .get() as { delivery_base_sha: string | null };
-    expect(afterFirst.delivery_base_sha).toBeNull();
+    expect(afterFirst.delivery_base_sha).toBe(baseX);
 
-    // Remote moves to Y before the retry; with the anchor cleared, the next
-    // attempt re-anchors to the refreshed head Y and delivers exactly one PR.
+    // Remote moves to Y. Attempt 2 replays base X, the mock drifts (remote head
+    // Y != base X) with the branch still absent, so the stale anchor is cleared.
     github.setRemoteBranchHead("org", "precreate", "main", baseY);
     const second = await runChangePipeline(common);
-    expect(second.consumers[0]?.prStatus, JSON.stringify(second.consumers[0])).toBe("draft");
+    expect(second.consumers[0]?.prStatus).toBe("delivery_failed");
+    const afterSecond = db.raw.prepare("SELECT delivery_base_sha FROM migration_prs LIMIT 1")
+      .get() as { delivery_base_sha: string | null };
+    expect(afterSecond.delivery_base_sha).toBeNull();
+
+    // Attempt 3 re-anchors to the refreshed head Y and delivers exactly one PR.
+    const third = await runChangePipeline(common);
+    expect(third.consumers[0]?.prStatus, JSON.stringify(third.consumers[0])).toBe("draft");
     const pulls = readdirSync(join(deliveryRoot, "org", "precreate", "pulls"))
       .filter((name) => /^[1-9][0-9]*\.json$/.test(name));
     expect(pulls).toHaveLength(1);
@@ -754,18 +762,24 @@ describe("pipeline", () => {
     expect(row.delivery_base_sha).toBe(baseY);
   });
 
-  it("keeps the anchor and surfaces a retryable code when the branch-existence lookup fails (never clears on unknown)", async () => {
+  it("keeps the anchor and records both errors when the branch-existence lookup fails under drift (never clears on unknown)", async () => {
     const db = seedProviderVersions();
     const provider = db.raw
       .prepare("SELECT id FROM providers WHERE slug = ?")
       .get("acme-payments") as { id: string };
     addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "lookupfail", localPath: shop, installationId: "12345" });
     const baseX = "3".repeat(40);
-    const refreshRepositoryBase = async () => ({ status: "refreshed" as const, headSha: baseX });
+    const baseY = "4".repeat(40);
+    let refreshCalls = 0;
+    const refreshRepositoryBase = async () => {
+      refreshCalls += 1;
+      return { status: "refreshed" as const, headSha: refreshCalls === 1 ? baseX : baseY };
+    };
 
-    // Delivery fails, and the branch-existence lookup itself fails (the
-    // transport cannot answer), so the anchor must be kept — never cleared on
-    // an unknown — and a retryable lookup-failed code is surfaced.
+    // Delivery always fails, and the branch-existence lookup itself fails, so
+    // even under observed drift the anchor must be kept — never cleared on an
+    // unknown — with the original error kept as the primary cause and the
+    // lookup failure appended.
     class LookupUnavailable extends MockGitHubDelivery {
       override async deliverExactDraft(): Promise<never> {
         throw new Error("transient_delivery_failure");
@@ -778,15 +792,55 @@ describe("pipeline", () => {
     dirs.push(deliveryRoot);
     const github = new LookupUnavailable(deliveryRoot);
     github.setRemoteBranchHead("org", "lookupfail", "main", baseX);
-    const report = await runChangePipeline({
+    const common = {
       tenantId: "tenant_default", providerSlug: "acme-payments", db, graphDb: testGraphDb(),
       github, persistIndex: false,
       contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
       securityScanAttested: true, refreshRepositoryBase,
-    });
+    };
+    // Attempt 1 anchors base X (no drift, lookup not consulted).
+    const first = await runChangePipeline(common);
+    expect(first.consumers[0]?.prStatus).toBe("delivery_failed");
+    expect(first.consumers[0]?.deliveryError).toBe("transient_delivery_failure");
+    // Attempt 2: remote moved to Y (drift), lookup throws → keep base X.
+    const report = await runChangePipeline(common);
     expect(report.consumers[0]?.prStatus).toBe("delivery_failed");
-    expect(report.consumers[0]?.deliveryError).toBe("github_delivery_branch_existence_lookup_failed");
-    // Fail-closed: the base anchored this attempt is kept, not cleared.
+    expect(report.consumers[0]?.deliveryError).toBe(
+      "transient_delivery_failure | github_delivery_branch_existence_lookup_failed",
+    );
+    const row = db.raw.prepare("SELECT delivery_base_sha FROM migration_prs LIMIT 1")
+      .get() as { delivery_base_sha: string | null };
+    expect(row.delivery_base_sha).toBe(baseX);
+  });
+
+  it("keeps the anchor under drift when the transport exposes no branchExists (never clears on unknown)", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "nolookup", localPath: shop, installationId: "12345" });
+    const baseX = "5".repeat(40);
+    const baseY = "6".repeat(40);
+    let refreshCalls = 0;
+    const refreshRepositoryBase = async () => {
+      refreshCalls += 1;
+      return { status: "refreshed" as const, headSha: refreshCalls === 1 ? baseX : baseY };
+    };
+    // A transport with deliverExactDraft but NO branchExists: under drift the
+    // branch state is unknown, so the anchor is kept (never cleared on unknown).
+    const deliver = async () => { throw new Error("transient_delivery_failure"); };
+    const github = { deliverExactDraft: deliver } as unknown as GitHubDelivery;
+    const common = {
+      tenantId: "tenant_default", providerSlug: "acme-payments", db, graphDb: testGraphDb(),
+      github, persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true, refreshRepositoryBase,
+    };
+    const first = await runChangePipeline(common);
+    expect(first.consumers[0]?.prStatus).toBe("delivery_failed");
+    // Attempt 2 observes drift but cannot look up the branch → keep base X.
+    const second = await runChangePipeline(common);
+    expect(second.consumers[0]?.prStatus).toBe("delivery_failed");
     const row = db.raw.prepare("SELECT delivery_base_sha FROM migration_prs LIMIT 1")
       .get() as { delivery_base_sha: string | null };
     expect(row.delivery_base_sha).toBe(baseX);

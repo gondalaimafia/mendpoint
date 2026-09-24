@@ -106,10 +106,39 @@ export type GitHubDependencyOutageResult<T> =
     decision?: GitHubDependencyOutageDecision;
   }>;
 
+/**
+ * Outcome of retiring (superseding) a ledger operation. Refused (never thrown)
+ * when the row proves a GitHub write may have happened. Structurally matches the
+ * db queue's DependencyOutageSupersession.
+ */
+export type GitHubDependencyOutageSupersession =
+  | Readonly<{ superseded: true }>
+  | Readonly<{ superseded: false; reason: string }>;
+
 /** Structurally implemented by the durable db recovery queue without importing db here. */
 export interface GitHubDependencyOutagePort {
   run<T>(operation: GitHubDependencyOutageOperation<T>): Promise<GitHubDependencyOutageResult<T>>;
+  /**
+   * Retire the operation identified by its stable identity so a caller may
+   * abandon it and re-anchor under a fresh operation id. Optional: a port that
+   * cannot prove no write happened simply omits it, and callers then keep the
+   * anchor (never abandon on an unknown).
+   */
+  supersede?(
+    identity: Readonly<{
+      tenantId: string;
+      dependencyKind: "scm";
+      providerId: "github";
+      operationId: string;
+    }>,
+    options: Readonly<{ reason: string; now?: string }>,
+  ): GitHubDependencyOutageSupersession;
 }
+
+/** What the pipeline learns when it asks the transport to retire a delivery operation. */
+export type DeliveryOperationRetirement =
+  | Readonly<{ superseded: true }>
+  | Readonly<{ superseded: false; reason: string }>;
 
 export type GitHubDependencyOutagePolicy = (
   input: Readonly<{
@@ -149,6 +178,28 @@ function stable(value: unknown): string {
 
 function digest(value: unknown): string {
   return createHash("sha256").update(stable(value)).digest("hex");
+}
+
+/**
+ * The durable-queue operation id for an exact-draft delivery. The anchored base
+ * is part of the identity: the hash-chained history binds the operation digest
+ * (which fingerprints the whole input, base included) into every event, and the
+ * queue rejects a changed digest for an existing operation. A different base is
+ * therefore a genuinely different delivery that must own a distinct ledger
+ * lineage, so re-anchoring onto a moved base is a new operation (no digest
+ * conflict) rather than a mutation of the existing one. Reusing the same base
+ * (a lost-response retry) keeps the id stable so the identical operation
+ * reconciles.
+ */
+export function exactDraftOperationId(
+  input: Readonly<{ owner: string; repo: string; branch: string; expectedBaseSha: string }>,
+): string {
+  return `github-draft:${digest({
+    owner: input.owner,
+    repo: input.repo,
+    branch: input.branch,
+    baseSha: input.expectedBaseSha,
+  })}`;
 }
 
 function parseRetryAfter(raw: unknown, now: string): number | undefined {
@@ -823,11 +874,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
       throw new Error("github_dependency_outage_configuration_invalid");
     }
     const operationDigest = digest(input);
-    const operationId = `github-draft:${digest({
-      owner: input.owner,
-      repo: input.repo,
-      branch: input.branch,
-    })}`;
+    const operationId = exactDraftOperationId(input);
     const expiresAt = new Date(Date.parse(now) + options.expiresInMs).toISOString();
     let commitReadySha: string | undefined;
     const result = await options.outage.run<ExactDraftDeliveryResult>(Object.freeze({
@@ -887,6 +934,46 @@ export class GitHubAppDelivery implements GitHubDelivery {
         throw error;
       }
     });
+  }
+
+  /**
+   * Retire the durable-queue operation for a delivery so the pipeline may
+   * abandon a stale anchored base and re-anchor under a fresh operation. The
+   * operation is keyed by (owner, repo, branch, baseSha) exactly as delivery
+   * enqueues it. Refused (superseded:false) when the ledger cannot prove no
+   * write happened (completed, in flight) so the caller keeps the anchor.
+   *
+   * When no outage ledger is configured, or the ledger exposes no supersede,
+   * there is no durable row to conflict with a re-anchored digest, so the
+   * retirement is a no-op success and the caller may re-anchor freely.
+   */
+  async retireDeliveryOperation(
+    input: Readonly<{ owner: string; repo: string; branch: string; baseSha: string }>,
+  ): Promise<DeliveryOperationRetirement> {
+    const options = this.dependencyOutage;
+    if (!options || typeof options.outage.supersede !== "function") {
+      return Object.freeze({ superseded: true as const });
+    }
+    const operationId = exactDraftOperationId({
+      owner: input.owner,
+      repo: input.repo,
+      branch: input.branch,
+      expectedBaseSha: input.baseSha,
+    });
+    const result = options.outage.supersede(
+      {
+        tenantId: options.tenantId,
+        dependencyKind: "scm",
+        providerId: "github",
+        operationId,
+      },
+      { reason: "delivery_base_reanchored", now: (options.now ?? (() => new Date().toISOString()))() },
+    );
+    // A missing row cannot have written anything and cannot conflict with a
+    // re-anchored digest, so it is safe to re-anchor.
+    if (result.superseded) return Object.freeze({ superseded: true as const });
+    if (result.reason === "operation_missing") return Object.freeze({ superseded: true as const });
+    return Object.freeze({ superseded: false as const, reason: result.reason });
   }
 
   observeExactDraft(input: ExactDraftObservationInput): Promise<ExactDraftObservation> {

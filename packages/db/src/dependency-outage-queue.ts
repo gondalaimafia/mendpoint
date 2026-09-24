@@ -98,7 +98,7 @@ export type DependencyOutageHistoryEvent = Readonly<{
   sequence: number;
   kind: "enqueued" | "claimed" | "claim_recovered" | "retry_scheduled" |
     "authority_blocked" | "authority_reactivated" | "reconciliation_required" |
-    "reconciliation_claimed" | "failed" | "completed";
+    "reconciliation_claimed" | "failed" | "completed" | "superseded";
   observedAt: string;
   details: Readonly<Record<string, unknown>>;
   previousHash: string | null;
@@ -137,6 +137,19 @@ export type DependencyOutageRunResult<T> =
     record: DependencyOutageRecord;
     decision?: DependencyOutageFailureDecision;
     error?: unknown;
+  }>;
+
+/**
+ * Outcome of retiring an operation. Superseding is refused (never thrown) when
+ * the row proves a GitHub write may have happened — a completed operation (its
+ * effect landed) or a claim still active (a write may be in flight) — so a
+ * caller can never abandon and re-anchor away from a delivery that wrote.
+ */
+export type DependencyOutageSupersession =
+  | Readonly<{ superseded: true; record: DependencyOutageRecord }>
+  | Readonly<{
+    superseded: false;
+    reason: "operation_missing" | "operation_completed" | "operation_in_flight";
   }>;
 
 type OutageRow = {
@@ -925,6 +938,72 @@ export class DependencyOutageQueue {
         nextAuthorityVersion: input.nextAuthorityVersion,
       }));
       return fromRow(this.row(scope)!);
+    });
+  }
+
+  /**
+   * Retire an operation so a caller may deliberately abandon it (for example to
+   * re-anchor a delivery onto a moved base under a fresh operation id). The
+   * operation is identified by its stable identity only — the row's own digest
+   * is used for the hash-chained event, so the caller need not reconstruct the
+   * abandoned input. Rows are never deleted: a terminal `superseded` event is
+   * appended and the row is settled non-claimable with a `healthy` standing (no
+   * outstanding outage for this identity).
+   *
+   * Refused (returned, not thrown) when the row proves a GitHub write may have
+   * happened: a `completed` operation (its effect landed) or a still-active
+   * `claimed` lease (a write may be in flight). This is the no-write proof — a
+   * delivery whose branch/PR was written can never be silently abandoned.
+   */
+  supersede(
+    identity: Readonly<{
+      tenantId: string;
+      dependencyKind: DependencyOutageKind;
+      providerId: string;
+      operationId: string;
+    }>,
+    options: Readonly<{ reason: string; now?: string }>,
+  ): DependencyOutageSupersession {
+    if (!IDENTITY.test(identity.tenantId)) throw new Error("dependency_outage_tenant_invalid");
+    if (!IDENTITY.test(identity.providerId)) throw new Error("dependency_outage_provider_invalid");
+    if (!OPERATION_ID.test(identity.operationId)) throw new Error("dependency_outage_operation_id_invalid");
+    if (!/^[a-z][a-z0-9_]{2,63}$/.test(options.reason)) {
+      throw new Error("dependency_outage_supersede_reason_invalid");
+    }
+    const observedAt = iso(options.now ?? this.now(), "dependency_outage_timestamp_invalid");
+    return withImmediateTransaction(this.db, () => {
+      const current = this.db.prepare(`SELECT * FROM dependency_outage_operations
+        WHERE tenant_id = ? AND dependency_kind = ? AND provider_id = ? AND operation_id = ?`)
+        .get(identity.tenantId, identity.dependencyKind, identity.providerId, identity.operationId) as
+          OutageRow | undefined;
+      if (!current) return Object.freeze({ superseded: false as const, reason: "operation_missing" as const });
+      if (current.status === "completed") {
+        return Object.freeze({ superseded: false as const, reason: "operation_completed" as const });
+      }
+      if (current.status === "claimed" && current.claim_expires_at !== null &&
+          current.claim_expires_at > observedAt) {
+        return Object.freeze({ superseded: false as const, reason: "operation_in_flight" as const });
+      }
+      const scope: DependencyOutageScope = {
+        tenantId: current.tenant_id,
+        dependencyKind: current.dependency_kind,
+        providerId: current.provider_id,
+        operationId: current.operation_id,
+        operationDigest: current.operation_digest,
+      };
+      this.db.prepare(`UPDATE dependency_outage_operations SET
+        status = 'failed', standing = 'healthy', circuit_state = 'closed',
+        circuit_opened_at = NULL, consecutive_failures = 0,
+        claim_owner = NULL, claim_expires_at = NULL,
+        last_failure_kind = 'superseded', last_failure_reason = ?, updated_at = ?
+        WHERE tenant_id = ? AND dependency_kind = ? AND provider_id = ? AND operation_id = ?`)
+        .run(options.reason, observedAt, current.tenant_id, current.dependency_kind,
+          current.provider_id, current.operation_id);
+      this.append(scope, "superseded", observedAt, Object.freeze({
+        reason: options.reason,
+        previousStatus: current.status,
+      }));
+      return Object.freeze({ superseded: true as const, record: fromRow(this.row(scope)!) });
     });
   }
 

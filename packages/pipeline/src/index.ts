@@ -2717,33 +2717,67 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         });
       } catch (error) {
         status = "delivery_failed";
-        deliveryError = error instanceof Error ? error.message : String(error);
-        // The persisted delivery_base_sha binds only once the delivery branch
-        // is known to exist remotely. On a git-backed delivery failure, ask the
-        // transport whether the branch exists (fail-closed): if it does NOT,
-        // this attempt failed before creating the branch, so reusing the
-        // anchored base would drift against a moved head forever — clear the
-        // anchor so the next attempt re-anchors to the refreshed head and
-        // regenerates the body (body reuse is gated on the anchor). If it
-        // EXISTS, keep the base for lost-response reconciliation. If the
-        // existence lookup itself fails (or the transport cannot answer), keep
-        // the base and surface a retryable lookup-failed code — never clear on
-        // an unknown.
-        if (
-          deliveryRevisionKind === "git_commit" &&
-          typeof resolution?.delivery.branchExists === "function"
-        ) {
-          try {
-            const exists = await resolution.delivery.branchExists(
-              consumer.github_owner,
-              consumer.github_repo,
-              draft.branchName,
-            );
-            if (!exists) {
-              clearMigrationPrDeliveryAnchor(db, prId);
+        const originalError = error instanceof Error ? error.message : String(error);
+        deliveryError = originalError;
+        // Ledger-first anchor policy. The durable outage queue fingerprints the
+        // whole delivery input (base sha AND body) for a branch and rejects any
+        // changed digest for that operation, so a retry MUST replay the
+        // identical operation. The default is therefore to KEEP the anchor and
+        // body (the lost-response path). We re-anchor onto the refreshed head
+        // only when ALL hold:
+        //   (a) the remote default head actually moved away from the anchored
+        //       base (drift observed here, not merely a delivery failure),
+        //   (b) branchExists confirms the branch is absent (fail-closed: a
+        //       lookup failure keeps the anchor — never abandon on an unknown),
+        //   (c) the ledger proves no GitHub write happened and retires
+        //       (supersedes) the abandoned operation, so the re-anchored
+        //       delivery is a fresh operation, not a forbidden mutation of the
+        //       existing one.
+        // Only then do we clear the anchor; body reuse is gated on the anchor,
+        // so the next attempt re-anchors to the refreshed head and regenerates.
+        // Any lookup/retirement code is APPENDED to the original error so the
+        // original stays the primary cause the worker classifies on.
+        if (deliveryRevisionKind === "git_commit") {
+          const anchoredBase = deliveryExpectedBaseSha;
+          const driftObserved =
+            refreshedHeadSha !== null &&
+            anchoredBase !== null &&
+            refreshedHeadSha !== anchoredBase;
+          if (driftObserved && typeof resolution?.delivery.branchExists === "function") {
+            let branchAbsent = false;
+            let lookupResolved = false;
+            try {
+              branchAbsent = !(await resolution.delivery.branchExists(
+                consumer.github_owner,
+                consumer.github_repo,
+                draft.branchName,
+              ));
+              lookupResolved = true;
+            } catch {
+              deliveryError = `${originalError} | github_delivery_branch_existence_lookup_failed`;
             }
-          } catch {
-            deliveryError = "github_delivery_branch_existence_lookup_failed";
+            if (lookupResolved && branchAbsent && anchoredBase) {
+              let mayReanchor = true;
+              if (typeof resolution.delivery.retireDeliveryOperation === "function") {
+                try {
+                  const retirement = await resolution.delivery.retireDeliveryOperation({
+                    owner: consumer.github_owner,
+                    repo: consumer.github_repo,
+                    branch: draft.branchName,
+                    baseSha: anchoredBase,
+                  });
+                  mayReanchor = retirement.superseded;
+                  if (!retirement.superseded) {
+                    deliveryError =
+                      `${originalError} | github_delivery_operation_retirement_declined:${retirement.reason}`;
+                  }
+                } catch {
+                  mayReanchor = false;
+                  deliveryError = `${originalError} | github_delivery_operation_retirement_failed`;
+                }
+              }
+              if (mayReanchor) clearMigrationPrDeliveryAnchor(db, prId);
+            }
           }
         }
         updateMigrationPrDelivery(db, prId, { status });

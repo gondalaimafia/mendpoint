@@ -1380,4 +1380,82 @@ describe("durable dependency outage queue", () => {
     expect(enqueued).toMatchObject({ status: "queued", circuitCooldownMs: 30_000, consecutiveFailures: 0 });
     db.close();
   });
+
+  it("retires a settled operation with a hash-chained superseded event and a healthy standing", () => {
+    const db = new DatabaseSync(":memory:");
+    const queue = createDependencyOutageQueue(db);
+    queue.enqueue({
+      ...SCOPE,
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      nextAttemptAt: "2026-09-02T12:00:00.000Z",
+      standing: "degraded_retrying",
+      authorityVersion: "model-authority-v1",
+    }, "2026-09-02T12:00:00.000Z");
+
+    const result = queue.supersede(
+      { tenantId: SCOPE.tenantId, dependencyKind: SCOPE.dependencyKind, providerId: SCOPE.providerId, operationId: SCOPE.operationId },
+      { reason: "delivery_base_reanchored", now: "2026-09-02T12:00:05.000Z" },
+    );
+    expect(result).toMatchObject({ superseded: true });
+    // Terminal and non-claimable, but not a false outstanding outage.
+    expect(queue.get(SCOPE)).toMatchObject({ status: "failed", standing: "healthy", lastFailureReason: "delivery_base_reanchored" });
+    // Rows are never deleted: the retirement is an immutable, chain-verified event.
+    const history = queue.history(SCOPE);
+    expect(history.at(-1)).toMatchObject({ kind: "superseded", details: { reason: "delivery_base_reanchored", previousStatus: "queued" } });
+    // A retired operation is not claimable.
+    expect(queue.claim({ ...SCOPE, workerId: "worker-1", now: "2026-09-02T12:00:06.000Z", leaseMs: 30_000, authorityVersion: "model-authority-v1" })).toBeNull();
+    db.close();
+  });
+
+  it("refuses to supersede a completed operation (a write happened) — no-write proof", async () => {
+    const db = new DatabaseSync(":memory:");
+    const queue = createDependencyOutageQueue(db, { now: () => "2026-09-02T12:00:00.000Z" });
+    await queue.run({
+      ...SCOPE,
+      workerId: "worker-1",
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+      reconcile: async () => ({ status: "missing" as const }),
+      execute: async () => ({ value: { ok: true }, completionDigest: COMPLETION }),
+      classify: () => retryDecision(),
+    });
+    expect(queue.get(SCOPE)).toMatchObject({ status: "completed" });
+    expect(queue.supersede(
+      { tenantId: SCOPE.tenantId, dependencyKind: SCOPE.dependencyKind, providerId: SCOPE.providerId, operationId: SCOPE.operationId },
+      { reason: "delivery_base_reanchored" },
+    )).toEqual({ superseded: false, reason: "operation_completed" });
+    db.close();
+  });
+
+  it("refuses to supersede an operation with an active claim (a write may be in flight)", () => {
+    const db = new DatabaseSync(":memory:");
+    const queue = createDependencyOutageQueue(db);
+    queue.enqueue({
+      ...SCOPE,
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      nextAttemptAt: "2026-09-02T12:00:00.000Z",
+      standing: "degraded_retrying",
+      authorityVersion: "model-authority-v1",
+    }, "2026-09-02T12:00:00.000Z");
+    queue.claim({ ...SCOPE, workerId: "worker-1", now: "2026-09-02T12:00:00.000Z", leaseMs: 30_000, authorityVersion: "model-authority-v1" });
+    expect(queue.supersede(
+      { tenantId: SCOPE.tenantId, dependencyKind: SCOPE.dependencyKind, providerId: SCOPE.providerId, operationId: SCOPE.operationId },
+      { reason: "delivery_base_reanchored", now: "2026-09-02T12:00:01.000Z" },
+    )).toEqual({ superseded: false, reason: "operation_in_flight" });
+    db.close();
+  });
+
+  it("reports a missing operation as not superseded", () => {
+    const db = new DatabaseSync(":memory:");
+    const queue = createDependencyOutageQueue(db);
+    expect(queue.supersede(
+      { tenantId: SCOPE.tenantId, dependencyKind: SCOPE.dependencyKind, providerId: SCOPE.providerId, operationId: SCOPE.operationId },
+      { reason: "delivery_base_reanchored" },
+    )).toEqual({ superseded: false, reason: "operation_missing" });
+    db.close();
+  });
 });

@@ -25,6 +25,7 @@ import {
   type ReviewableChangeDelivery,
   type ScmDeliveryProvider,
 } from "./gitlab.js";
+import type { DeliveryOperationRetirement } from "./app-runtime.js";
 
 export type PullRequestResult = {
   number: number;
@@ -75,6 +76,17 @@ export interface GitHubDelivery {
    * unknown and keep the anchor (fail-closed), never clearing on an unknown.
    */
   branchExists?(owner: string, repo: string, branch: string): Promise<boolean>;
+  /**
+   * Retire the durable-queue operation for a delivery so the caller may abandon
+   * a stale anchored base and re-anchor under a fresh operation. Refused
+   * (superseded:false) when the ledger cannot prove no GitHub write happened, so
+   * the caller keeps the anchor. Optional: transports with no durable ledger
+   * (mock, Octokit) omit it, and for them re-anchoring is digest-safe (there is
+   * no operation row to conflict with), so the caller may re-anchor without it.
+   */
+  retireDeliveryOperation?(
+    input: Readonly<{ owner: string; repo: string; branch: string; baseSha: string }>,
+  ): Promise<DeliveryOperationRetirement>;
   createBranch(owner: string, repo: string, branch: string, fromBranch?: string): Promise<void>;
   commitFiles(
     owner: string,
@@ -766,6 +778,9 @@ export {
   type GitHubDependencyOutagePort,
   type GitHubDependencyOutagePolicy,
   type GitHubDependencyOutageOptions,
+  type GitHubDependencyOutageSupersession,
+  type DeliveryOperationRetirement,
+  exactDraftOperationId,
 } from "./app-runtime.js";
 
 export {
