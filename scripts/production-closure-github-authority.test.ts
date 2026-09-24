@@ -43,7 +43,6 @@ function matrix(): GitHubAuthorityMatrix {
           owner: "gondalaimafia",
           title: "Production closure FC 00",
           url: "https://github.com/gondalaimafia/mendpoint/issues/430",
-          updatedAt: "2026-08-25T10:05:19.000Z",
           requirementIds: ["ME-FND-001"],
         },
       ],
@@ -2033,6 +2032,75 @@ describe("GitHub production closure authority", () => {
         "ISSUE_REQUIREMENT_MAPPING_MISMATCH",
       ]),
     );
+  });
+
+  it("a comment on an authority issue does not fail the push:main observation", async () => {
+    // A comment on an authority issue bumps its live updated_at while every
+    // semantic field (number, state, title, url, owner assignment, requirement
+    // mapping) is unchanged. The full-release-train push:main scope live-verifies
+    // every issue, and this used to turn any such comment into an
+    // ISSUE_METADATA_MISMATCH that kept main red until the pinned timestamp was
+    // refreshed. The record no longer carries updatedAt and the check no longer
+    // compares it, so the comment is invisible to the observation.
+    const client = new FixtureClient();
+    client.trackedPullRequest = pullRequest({
+      state: "closed",
+      merged: true,
+      merge_commit_sha: MERGED,
+    });
+    client.openPullRequests = [];
+    client.mainRevisions = [MERGED, MERGED];
+    // Live issue is identical in every semantic field but has a much later
+    // updated_at, exactly as a fresh comment would leave it.
+    client.trackedIssue = issue({ updated_at: "2026-09-24T02:16:39Z" });
+
+    const result = await verifyGitHubClosureAuthority(
+      matrix(),
+      context({
+        eventName: "push",
+        githubSha: MERGED,
+        checkout: { headRevision: MERGED, parentRevisions: [MAIN] },
+        pullRequest: undefined,
+      }),
+      client,
+    );
+
+    expect(codes(result)).not.toContain("ISSUE_METADATA_MISMATCH");
+    expect(result.verdict).toBe("pass");
+  });
+
+  it("a title, state, or assignee change on an authority issue still fails the observation", async () => {
+    // The semantic identity of an authority issue is still pinned exactly: a
+    // title, state, or owner-assignment change must fail closed even though the
+    // volatile timestamp is no longer compared.
+    for (const drift of [
+      { title: "Production closure FC 00 (renamed)" },
+      { state: "closed" as const },
+      { assignees: [] },
+    ]) {
+      const client = new FixtureClient();
+      client.trackedPullRequest = pullRequest({
+        state: "closed",
+        merged: true,
+        merge_commit_sha: MERGED,
+      });
+      client.openPullRequests = [];
+      client.mainRevisions = [MERGED, MERGED];
+      client.trackedIssue = issue(drift);
+
+      const result = await verifyGitHubClosureAuthority(
+        matrix(),
+        context({
+          eventName: "push",
+          githubSha: MERGED,
+          checkout: { headRevision: MERGED, parentRevisions: [MAIN] },
+          pullRequest: undefined,
+        }),
+        client,
+      );
+
+      expect(codes(result)).toContain("ISSUE_METADATA_MISMATCH");
+    }
   });
 
   it("fails closed and still returns an observation when GitHub is unavailable", async () => {
