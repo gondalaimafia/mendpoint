@@ -293,6 +293,36 @@ async function main(): Promise<void> {
   const total = scored.length;
   const passed = scored.filter((s) => s.record.passed).length;
   const p0 = scored.flatMap((s) => s.record.failures).filter((f) => f.severity === "P0").length;
+
+  // Machine-readable summary of WHAT ACTUALLY RAN, so a workflow can label the
+  // job honestly instead of claiming a full-corpus pass when the corpus was
+  // absent. `corpusAvailable` reflects scenarios that truly ran, not merely a
+  // configured env var, so a misconfigured corpus root is reported as unavailable
+  // rather than presented as full coverage.
+  const corpusScenariosRun = scenarios.filter((s) => s.origin === "corpus").length;
+  const generatedScenariosRun = scenarios.filter((s) => s.origin === "generated").length;
+  writeFileSync(
+    join(reportsDir, "run-summary.json"),
+    JSON.stringify(
+      {
+        schemaVersion: "mendpoint.synthetic-eval-run-summary.v1",
+        corpusConfigured: CORPUS_ROOT_CONFIGURED,
+        corpusRoot: CORPUS_ROOT,
+        corpusAvailable: corpusScenariosRun > 0,
+        corpusScenariosRun,
+        corpusScenariosSkipped: skippedCorpus.length,
+        generatedScenariosRun,
+        suiteTotal: total,
+        suitePassed: passed,
+        p0Failures: p0,
+        readinessOverall: readiness.overall,
+      },
+      null,
+      2,
+    ) + "\n",
+    "utf8",
+  );
+
   console.log("");
   console.log(`suite: ${passed}/${total} passed; P0 failures: ${p0}`);
   if (skippedCorpus.length) {
