@@ -280,14 +280,25 @@ export function appendWardenRunEvent(
  * `sequence`/`causationId`/`stateSha256` resume the envelope chain from the LAST
  * TERMINAL event (`run_completed` / `run_failed`) — the boundary of the last
  * COMPLETED attempt (0 / null / null when none). `attempt` is the number of
- * completed attempts so far (the count of terminal events); callers scope the
- * run's OTHER per-attempt idempotency keys (the target transition events, which
- * are keyed by run id, not by sequence) with it so attempt N's transitions never
- * conflict with attempt N-1's.
+ * COMPLETED (terminal) attempts so far, NOT the count of invocations; callers
+ * scope the run's OTHER per-attempt idempotency keys (the target transition
+ * events, which are keyed by run id, not by sequence) with it so attempt N's
+ * transitions never conflict with attempt N-1's.
  *
- * A crashed attempt commits no terminal event (its target stays `queued`, so
- * only its `run_started` is on disk), so this resume point is unchanged by it
- * and its partial events re-append byte-identically on replay.
+ * Which invocations re-enter the executor and hit this resume point:
+ * - A crash BEFORE the `queued -> analyzing` transition leaves the target
+ *   `queued` with only `run_started` committed (no terminal). The resume point
+ *   is unchanged, so the replay re-appends that `run_started` byte-identically.
+ * - A crash AFTER the transition leaves the target at its stage (`analyzing` /
+ *   `editing` / `verifying`) with no terminal. `claimReadyWardenTargets` only
+ *   picks `queued`, so that target is NOT retried today (pre-existing; see #676)
+ *   and never reaches this function again.
+ *
+ * If #676 adds a requeue path for such a stranded target, it MUST first advance
+ * `attempt` for the abandoned invocation — e.g. record a terminal `run_failed`
+ * (or an abandoned) event for it — before the successor runs. Otherwise the
+ * successor sees the same `attempt` and its `${runId}:${attempt}:target:*` keys
+ * collide with the crashed invocation's transitions.
  */
 export function wardenRunResumePoint(
   db: AppDb,

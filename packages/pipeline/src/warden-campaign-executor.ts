@@ -775,9 +775,11 @@ function runEnvelopeAppender(db: AppDb, input: {
    * restarting per attempt would land the retry's events on the sequence numbers
    * the previous attempt already used (issue #696: a `run_failed` and an
    * `artifact_ingested` both at `:2:`, and two failing attempts conflicting on
-   * `runId:2:run_failed`). A crashed attempt records no terminal, so this point
-   * is unchanged and its partial `run_started` re-appends byte-identically on
-   * replay (the #679 stable-clock guarantee).
+   * `runId:2:run_failed`). A crash BEFORE the `queued -> analyzing` transition
+   * records no terminal and leaves the target `queued`, so this point is
+   * unchanged and its partial `run_started` re-appends byte-identically on the
+   * replay (the #679 stable-clock guarantee). A crash after that transition
+   * strands the target off `queued` and is not retried today (see #676).
    */
   resume: Readonly<{ sequence: number; causationId: string | null; stateSha256: string | null }>;
 }) {
