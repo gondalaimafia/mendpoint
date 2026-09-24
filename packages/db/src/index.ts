@@ -296,7 +296,15 @@ CREATE TABLE IF NOT EXISTS migration_prs (
   -- so a delivery-only retry that must fall back to a full pipeline run replays the
   -- SAME gate inputs (contract cases, security attestation, severity, ...) for the
   -- SAME change instead of a bare re-run whose gates fail. Survives job resets.
-  origin_fanout_json TEXT
+  origin_fanout_json TEXT,
+  -- How many automatic full-pipeline replays (D10 no-artifact fallback) this row has
+  -- scheduled. Capped so a sustained outage cannot replay forever; the operator retry
+  -- endpoint resets it to 0 for a fresh budget.
+  replay_count INTEGER NOT NULL DEFAULT 0,
+  -- The named delivery error/blocked code for a delivery_blocked / abandoned row
+  -- (e.g. github_delivery_replay_unavailable, github_delivery_replay_quota_refused),
+  -- so an operator can see WHY a delivery is stuck without reading the audit log.
+  delivery_error TEXT
 );
 CREATE INDEX IF NOT EXISTS migration_prs_status_idx ON migration_prs(status);
 CREATE INDEX IF NOT EXISTS migration_prs_change_idx ON migration_prs(change_id);
@@ -3441,6 +3449,8 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "migration_prs", name: "delivered_base_sha", sql: "TEXT" },
     { table: "migration_prs", name: "delivered_head_sha", sql: "TEXT" },
     { table: "migration_prs", name: "origin_fanout_json", sql: "TEXT" },
+    { table: "migration_prs", name: "replay_count", sql: "INTEGER NOT NULL DEFAULT 0" },
+    { table: "migration_prs", name: "delivery_error", sql: "TEXT" },
     { table: "migration_delivery_artifacts", name: "files_json", sql: "TEXT" },
     {
       table: "regauge_adaptive_candidates",
@@ -4962,6 +4972,49 @@ export function updateMigrationPrStatus(
   ]);
 }
 
+/**
+ * Record a terminal delivery-blocked outcome (PR #606 D10): set status
+ * delivery_blocked and the named code, but only when no PR was ever recorded (CAS on
+ * github_pr_number IS NULL), so it can never downgrade a delivered draft. Returns
+ * whether it applied.
+ */
+export function recordMigrationPrDeliveryBlocked(
+  db: AppDb,
+  id: string,
+  code: string,
+): boolean {
+  const result = db.raw
+    .prepare(
+      `UPDATE migration_prs SET status = 'delivery_blocked', delivery_error = ?
+       WHERE id = ? AND github_pr_number IS NULL`,
+    )
+    .run(code, id);
+  return result.changes > 0;
+}
+
+/**
+ * Increment a row's automatic-replay counter (D10 no-artifact fallback) and return
+ * the new count, so the worker can cap replays. A row that recorded a PR is never
+ * bumped (nothing to replay).
+ */
+export function bumpMigrationPrReplayCount(db: AppDb, id: string): number {
+  db.raw
+    .prepare(
+      `UPDATE migration_prs SET replay_count = replay_count + 1
+       WHERE id = ? AND github_pr_number IS NULL`,
+    )
+    .run(id);
+  const row = get(db, "SELECT replay_count FROM migration_prs WHERE id = ?", [id]) as
+    | { replay_count: number }
+    | undefined;
+  return row?.replay_count ?? 0;
+}
+
+/** Reset a row's replay counter to 0 (operator retry gives a fresh replay budget). */
+export function resetMigrationPrReplayCount(db: AppDb, id: string): void {
+  run(db, `UPDATE migration_prs SET replay_count = 0 WHERE id = ?`, [id]);
+}
+
 export function updateMigrationPrDelivery(
   db: AppDb,
   id: string,
@@ -5927,10 +5980,15 @@ export {
   RUN_MCU_ESTIMATE,
   RUN_USAGE_RESERVATION_KEY,
   RUN_USAGE_RESERVED_MCU_KEY,
+  USAGE_ENFORCEMENT_FLAG,
   estimateRunMcuMicros,
   reserveRunUsage,
   settleRunUsage,
   releaseRunUsage,
+  admitRunUsage,
+  usageEnforcementEnabled,
+  type RunUsageAdmission,
+  type RunUsageRejection,
 } from "./usage-run.js";
 export {
   USAGE_PLAN_CATALOG,

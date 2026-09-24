@@ -61,6 +61,10 @@ import {
   insertMigrationPr,
   persistDeliveryArtifact,
   getPr,
+  listAudit,
+  createUsagePriceVersion,
+  createUsageEntitlement,
+  listUsageLedger,
   insertConnectedRepository,
   insertMonitoredApi,
   insertProvider,
@@ -1518,6 +1522,119 @@ describe("worker runtime", () => {
       resetGraphLearnDbForTests();
       db.raw.close();
     }
+  });
+
+  // Seed a replayable delivery_failed row (no artifact) plus the provider/change/
+  // consumer the D10 fallback needs. `originFanoutJson: null` seeds a NON-replayable row.
+  function seedReplayableFailedRow(
+    db: ReturnType<typeof createDb>,
+    originFanoutJson: string | null = JSON.stringify({
+      providerSlug: "acme-r", securityScanAttested: true,
+      contractCases: [{ id: "f", name: "f", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+    }),
+  ): void {
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+    insertProvider(db, { id: "prov-r", slug: "acme-r", name: "Acme", website: null, createdAt: nowIso() });
+    insertApiChange(db, { id: "chg-r", providerId: "prov-r", fromVersionId: "va", toVersionId: "vb", risk: "breaking", summary: "s", diffJson: "{}", createdAt: nowIso() });
+    insertConsumer(db, { id: "con-r", name: "Shop", githubOwner: "org", githubRepo: "shop-r", installationId: null, tenantId: "tenant-a", createdAt: nowIso() });
+    insertConsumerRepo(db, { id: "repo-r", consumerId: "con-r", localPath: join(tmpdir(), "seed-r"), defaultBranch: "main", createdAt: nowIso() });
+    insertMigrationPr(db, {
+      id: "pr-r", changeId: "chg-r", consumerId: "con-r", title: "t", body: "b",
+      branchName: "mendpoint/r", status: "delivery_failed", risk: "low", patchUnified: "d",
+      createdAt: nowIso(), originFanoutJson,
+    });
+  }
+
+  // A pipeline runner double whose delivery always fails (no artifact) so each fallback
+  // fanout re-enqueues the next delivery-retry — a sustained outage.
+  const alwaysFailingRunner: typeof runChangePipeline = async () => ({
+    changeId: "chg-r", risk: "breaking", summary: "s",
+    diff: { risk: "breaking", summary: "s", entries: [] }, surfaces: 0,
+    consumers: [{ consumerId: "con-r", name: "Shop", findings: 1, candidates: 1, confirmed: 1, prId: "pr-r", prStatus: "delivery_failed" }],
+  });
+
+  function seedEntitlement(db: ReturnType<typeof createDb>, quotaMcuMicros: number): void {
+    createUsagePriceVersion(db, {
+      id: "price-r", tenantId: "tenant-a", formulaVersion: "mcu-v1", currency: "USD",
+      pricePerMcuMoneyMicros: 20_000, effectiveAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2027-01-01T00:00:00.000Z", contractReference: "contract-r", createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    createUsageEntitlement(db, {
+      id: "ent-r", tenantId: "tenant-a", priceVersionId: "price-r", quotaMcuMicros,
+      features: ["fettler"], contractReference: "contract-r",
+      periodStart: "2026-01-01T00:00:00.000Z", periodEnd: "2027-01-01T00:00:00.000Z", createdAt: "2026-01-01T00:00:00.000Z",
+    });
+  }
+
+  it("(1) a sustained no-artifact outage replays exactly 3 times, each admitted and settled, then abandons", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-replay-cap-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    seedReplayableFailedRow(db);
+    seedEntitlement(db, 100_000_000); // ample quota
+    const opts = {
+      tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false,
+      pipelineRunner: alwaysFailingRunner, wardenEnv: { MENDPOINT_USAGE_ENFORCEMENT: "1" },
+    };
+    enqueueJob(db, { id: "pipeline-delivery-retry:pr-r", tenantId: "tenant-a", type: "pipeline.delivery-retry", payload: { prId: "pr-r" }, maxAttempts: 50, createdAt: nowIso() });
+    // Drive delivery-retry -> fallback (admit + enqueue) -> fallback fanout (fail + settle
+    // + re-enqueue) cycles until the cap abandons the row.
+    for (let cycle = 0; cycle < 6; cycle++) {
+      await processJobsOnce(db, opts);
+      if (getPr(db, "pr-r", "tenant-a")?.status === "github_delivery_abandoned") break;
+      const fb = getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a");
+      if (fb && fb.status === "pending") {
+        db.raw.prepare("UPDATE jobs SET available_at = ? WHERE id = ?").run(nowIso(), fb.id);
+        await processJobsOnce(db, opts);
+      }
+    }
+    expect(getPr(db, "pr-r", "tenant-a")?.status).toBe("github_delivery_abandoned");
+    expect(getPr(db, "pr-r", "tenant-a")?.replay_count).toBe(3);
+    const ledger = listUsageLedger(db, "tenant-a");
+    expect(ledger.filter((e) => e.entryType === "reservation")).toHaveLength(3);
+    expect(ledger.filter((e) => e.entryType === "settlement")).toHaveLength(3);
+    db.raw.close();
+  });
+
+  it("(1) a replay refused by quota blocks the row (github_delivery_replay_quota_refused) with no run", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-replay-quota-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    seedReplayableFailedRow(db);
+    seedEntitlement(db, 1_000_000); // 1 MCU < the 2 MCU replay estimate -> refused
+    enqueueJob(db, { id: "pipeline-delivery-retry:pr-r", tenantId: "tenant-a", type: "pipeline.delivery-retry", payload: { prId: "pr-r" }, maxAttempts: 50, createdAt: nowIso() });
+    await expect(processJobsOnce(db, {
+      tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false,
+      pipelineRunner: alwaysFailingRunner, wardenEnv: { MENDPOINT_USAGE_ENFORCEMENT: "1" },
+    })).resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+    const pr = getPr(db, "pr-r", "tenant-a");
+    expect(pr?.status).toBe("delivery_blocked");
+    expect(pr?.delivery_error).toBe("github_delivery_replay_quota_refused");
+    // No replay was scheduled and no reservation was held (quota refusal is not a hold).
+    expect(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")).toBeUndefined();
+    expect(pr?.replay_count).toBe(0);
+    expect(listUsageLedger(db, "tenant-a").filter((e) => e.entryType === "reservation")).toHaveLength(0);
+    expect(listAudit(db, "tenant-a").some((a) => a.action === "pr.delivery_replay_quota_refused")).toBe(true);
+    db.raw.close();
+  });
+
+  it("(2) a no-artifact row with no origin payload is blocked (github_delivery_replay_unavailable), not silently done", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-replay-unavailable-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    seedReplayableFailedRow(db, null); // NULL origin payload (main-era / watch / feed / demo row)
+    enqueueJob(db, { id: "pipeline-delivery-retry:pr-r", tenantId: "tenant-a", type: "pipeline.delivery-retry", payload: { prId: "pr-r" }, maxAttempts: 50, createdAt: nowIso() });
+    await expect(processJobsOnce(db, {
+      tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false, pipelineRunner: alwaysFailingRunner,
+    })).resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+    const pr = getPr(db, "pr-r", "tenant-a");
+    expect(pr?.status).toBe("delivery_blocked");
+    expect(pr?.delivery_error).toBe("github_delivery_replay_unavailable");
+    // The retry job is done (not stuck), no fallback fanout was scheduled, and it is audited.
+    expect(getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")?.status).toBe("done");
+    expect(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")).toBeUndefined();
+    expect(listAudit(db, "tenant-a").some((a) => a.action === "pr.delivery_replay_unavailable")).toBe(true);
+    db.raw.close();
   });
 
   it("restricts the coordinator advisory drain to verifier jobs", async () => {

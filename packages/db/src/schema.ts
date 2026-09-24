@@ -379,6 +379,10 @@ export type MigrationPrRow = {
    * gate inputs for the same change. Null for rows created outside a fanout.
    */
   origin_fanout_json: string | null;
+  /** Automatic full-pipeline replays scheduled for this row (D10), capped. */
+  replay_count: number;
+  /** Named delivery/blocked code for a stuck row (delivery_blocked / abandoned). */
+  delivery_error: string | null;
 };
 
 export type AuditEvent = {

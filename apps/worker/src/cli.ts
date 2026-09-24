@@ -45,11 +45,14 @@ import {
   renewJobLease,
   findMonorepoRoot,
   findAuthorizedGitHubInstallationForRepository,
+  admitRunUsage,
+  estimateRunMcuMicros,
   getChange,
   getConnectedRepository,
   getConsumer,
   getConsumerRepo,
   getJob,
+  getPr,
   getProviderById,
   getAgentRun,
   getAgentRunByJobId,
@@ -61,6 +64,10 @@ import {
   getScmConnection,
   insertAgentRun,
   recordAgentRunMeter,
+  recordAudit,
+  recordMigrationPrDeliveryBlocked,
+  bumpMigrationPrReplayCount,
+  updateMigrationPrStatus,
   releaseRunUsage,
   replayPendingWardenCandidateDeliveryMergedOutcomes,
   settleRunUsage,
@@ -1084,6 +1091,15 @@ export function startIndependentWorkerLanes<TFeed, TJobs>(input: {
 
 /** ~7-day cap on retrying a stuck GitHub delivery before it abandons (D10). */
 export const GITHUB_DELIVERY_ABANDON_AFTER_MS = 7 * 24 * 60 * 60 * 1_000;
+
+/**
+ * Cap on automatic full-pipeline replays of a delivery whose write-ahead artifact is
+ * missing (D10 no-artifact fallback). After the cap the row is abandoned (terminal,
+ * operator-reopenable). Prevents a sustained outage from replaying forever.
+ */
+export const MAX_FULL_PIPELINE_REPLAYS = 3;
+/** Base backoff between full-pipeline replays; doubles each replay (15m, 30m, 60m). */
+export const FULL_PIPELINE_REPLAY_BASE_BACKOFF_MS = 15 * 60_000;
 
 export function classifyJobFailure(
   error: unknown,
@@ -4700,54 +4716,122 @@ if (job.type === "warden.candidate.cleanup") {
         if (outcome.fallbackToPipeline) {
           // No write-ahead artifact exists (the outage hit before the commit was
           // built, e.g. a base-refresh failure), so a delivery-only replay cannot
-          // reconstruct the change. Fall back to a full pipeline run — but replaying
-          // the ORIGINATING fanout's gate payload (contract cases, security
-          // attestation, severity, notifications, repair commands) bound to the FAILED
-          // change's versions, not a bare re-run of the provider's latest change. A
-          // bare re-run would fail the gates (no attestation) into gates_failed and
-          // could target a newer change. The originating payload was persisted on the
-          // row (reservation keys stripped, so no double-charge — the original run
-          // already settled its hold). Bounded by the same ~7-day cap enforced inside
-          // retryConsumerDelivery before this branch. Complete this job (do not throw
-          // forever) and hand it to a deduped, backed-off fanout. If the
-          // change/provider/origin payload is gone there is nothing safe to re-run.
+          // reconstruct the change. Fall back to a full pipeline run that REPLAYS the
+          // originating gate payload bound to the FAILED change (see below), under a
+          // re-admission + replay cap so a sustained outage cannot run forever.
+          const prId = retryPayload.prId;
           const change = getChange(db, outcome.changeId!);
           const provider = change ? getProviderById(db, change.provider_id) : undefined;
-          let fanoutEnqueued = false;
-          if (change && provider && outcome.originFanoutJson) {
-            const origin = JSON.parse(outcome.originFanoutJson) as Record<string, unknown>;
-            // Pin the exact failed change and narrow to the failed consumer; keep every
-            // gate/mode field from the original payload. Reservation keys were already
-            // stripped at persist time, so the replay carries no usage hold.
-            const fallbackPayload = {
-              ...origin,
-              consumerIds: [outcome.consumerId!],
-              fromVersionId: change.from_version_id,
-              toVersionId: change.to_version_id,
-            };
-            enqueueOrResetJob(db, {
-              id: `pipeline-delivery-fallback:${retryPayload.prId}`,
-              tenantId: job.tenant_id,
-              type: "pipeline.fanout",
-              payload: fallbackPayload,
-              maxAttempts: 50,
-              createdAt: nowIso(),
-              availableAt: new Date(Date.now() + 15 * 60_000).toISOString(),
-            });
-            fanoutEnqueued = true;
-          }
-          db.raw.exec("BEGIN IMMEDIATE");
-          try {
-            if (!completeJob(db, job.id, { prId: retryPayload.prId, status: outcome.status, fallback: "full_pipeline", fanoutEnqueued }, nowIso(), fence)) {
-              throw new Error("lease_lost_before_delivery_retry_completion");
+          const settleFallback = (resultBody: Record<string, unknown>, log: string) => {
+            db.raw.exec("BEGIN IMMEDIATE");
+            try {
+              if (!completeJob(db, job.id, { prId, ...resultBody }, nowIso(), fence)) {
+                throw new Error("lease_lost_before_delivery_retry_completion");
+              }
+              db.raw.exec("COMMIT");
+            } catch (error) {
+              if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+              throw error;
             }
-            db.raw.exec("COMMIT");
-          } catch (error) {
-            if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
-            throw error;
+            result.succeeded++;
+            console.log(`  delivery-retry ${prId} -> ${log}`);
+          };
+
+          // (2) No replayable payload — main-era rows, or watch/feed/demo runs that
+          // call runChangePipeline without an origin payload, or a vanished
+          // change/provider. A bare re-run would fail the gates, so end the row
+          // delivery_blocked with a named code and audit it (never a silent no-op that
+          // leaves it stuck delivery_failed). An operator must re-run the change.
+          if (!change || !provider || !outcome.originFanoutJson) {
+            recordMigrationPrDeliveryBlocked(db, prId, "github_delivery_replay_unavailable");
+            recordAudit(db, {
+              tenantId: job.tenant_id, actor: "system",
+              action: "pr.delivery_replay_unavailable", resourceType: "migration_pr", resourceId: prId,
+              metadata: { changeId: outcome.changeId, reason: "no_replayable_origin_payload" },
+            });
+            settleFallback({ status: "delivery_blocked", code: "github_delivery_replay_unavailable" }, "blocked (replay unavailable)");
+            continue;
           }
-          result.succeeded++;
-          console.log(`  delivery-retry ${retryPayload.prId} -> fallback full pipeline (${fanoutEnqueued ? "enqueued" : "no origin payload"})`);
+
+          // A replay already scheduled/running for this row: don't double-admit,
+          // double-count or double-run (dedup on the deterministic fallback id).
+          const existingFallback = getJob(db, `pipeline-delivery-fallback:${prId}`, job.tenant_id);
+          if (existingFallback && (existingFallback.status === "pending" || existingFallback.status === "running")) {
+            settleFallback({ status: outcome.status, fallback: "already_scheduled" }, "fallback already scheduled");
+            continue;
+          }
+
+          // (1b) Cap automatic replays. After the cap, abandon (terminal, non-retryable;
+          // the operator endpoint reopens it and resets the counter).
+          const priorReplays = getPr(db, prId, job.tenant_id)?.replay_count ?? 0;
+          if (priorReplays >= MAX_FULL_PIPELINE_REPLAYS) {
+            updateMigrationPrStatus(db, prId, "github_delivery_abandoned", null);
+            recordAudit(db, {
+              tenantId: job.tenant_id, actor: "system",
+              action: "pr.delivery_replay_abandoned", resourceType: "migration_pr", resourceId: prId,
+              metadata: { replays: priorReplays, cap: MAX_FULL_PIPELINE_REPLAYS },
+            });
+            settleFallback({ status: "github_delivery_abandoned", replays: priorReplays }, `abandoned (replay cap ${MAX_FULL_PIPELINE_REPLAYS})`);
+            continue;
+          }
+
+          // (1a) Re-admit usage for this replay (tenant-scoped, same admission the API
+          // uses). A distinct runId per replay keeps the reservation idempotency key
+          // unique so each replay reserves and settles its own hold. Quota refusal
+          // blocks the row (visible, operator-retryable) with no run.
+          const now = nowIso();
+          const admission = admitRunUsage(db, {
+            tenantId: job.tenant_id,
+            runId: `delivery-replay:${prId}:${priorReplays}`,
+            mcuMicros: estimateRunMcuMicros({ targetCount: 1 }),
+            reason: `delivery replay: ${provider.slug}`,
+            createdAt: now,
+            env: workerEnv,
+          });
+          if (admission.enforced && !admission.admitted) {
+            recordMigrationPrDeliveryBlocked(db, prId, "github_delivery_replay_quota_refused");
+            recordAudit(db, {
+              tenantId: job.tenant_id, actor: "system",
+              action: "pr.delivery_replay_quota_refused", resourceType: "migration_pr", resourceId: prId,
+              metadata: { error: admission.body.error },
+            });
+            settleFallback({ status: "delivery_blocked", code: "github_delivery_replay_quota_refused" }, "blocked (replay quota refused)");
+            continue;
+          }
+
+          // Admitted (or enforcement off): replay the ORIGINATING gate payload
+          // (contract cases, security attestation, severity, ...) bound to the FAILED
+          // change's versions and narrowed to the consumer — not a bare re-run of the
+          // provider's latest change. Carry the reservation so the fanout settles it.
+          const origin = JSON.parse(outcome.originFanoutJson) as Record<string, unknown>;
+          const usageHold = admission.enforced && admission.admitted
+            ? {
+                [RUN_USAGE_RESERVATION_KEY]: admission.reservationId,
+                [RUN_USAGE_RESERVED_MCU_KEY]: admission.reservedMcuMicros,
+              }
+            : {};
+          const fallbackPayload = {
+            ...origin,
+            consumerIds: [outcome.consumerId!],
+            fromVersionId: change.from_version_id,
+            toVersionId: change.to_version_id,
+            ...usageHold,
+          };
+          const backoffMs = FULL_PIPELINE_REPLAY_BASE_BACKOFF_MS * 2 ** priorReplays;
+          bumpMigrationPrReplayCount(db, prId);
+          enqueueOrResetJob(db, {
+            id: `pipeline-delivery-fallback:${prId}`,
+            tenantId: job.tenant_id,
+            type: "pipeline.fanout",
+            payload: fallbackPayload,
+            maxAttempts: 50,
+            createdAt: now,
+            availableAt: new Date(Date.parse(now) + backoffMs).toISOString(),
+          });
+          settleFallback(
+            { status: outcome.status, fallback: "full_pipeline", replay: priorReplays + 1 },
+            `fallback replay ${priorReplays + 1}/${MAX_FULL_PIPELINE_REPLAYS}`,
+          );
           continue;
         }
         if (outcome.status === "delivery_failed") {

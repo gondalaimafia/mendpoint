@@ -14,6 +14,9 @@ import {
   listPrs,
   getPr,
   updateMigrationPrStatus,
+  getLatestDeliveryArtifact,
+  resetMigrationPrReplayCount,
+  recordMigrationPrDeliveryBlocked,
   createDependencyOutageQueue,
   findPrByGitHubIdentityAndNumber,
   findWardenCandidateDeliveryByPrUrl,
@@ -1928,6 +1931,17 @@ app.post("/providers/:slug/publish", async (c) => {
       contractCases: body.contractCases,
       securityScanAttested: body.securityScanAttested ?? body.securityScanOk,
       securityScanAttestation: body.securityScanAttestation,
+      // Persist the gate inputs on each row this synchronous run creates so a later
+      // operator retry whose delivery lost its artifact can replay the same gates for
+      // the same change (D10), rather than ending github_delivery_replay_unavailable.
+      originFanoutPayloadJson: JSON.stringify({
+        providerSlug: c.req.param("slug"),
+        severity: body.severity,
+        notificationsOnly: body.notificationsOnly,
+        contractCases: body.contractCases,
+        securityScanAttested: body.securityScanAttested ?? body.securityScanOk,
+        securityScanAttestation: body.securityScanAttestation,
+      }),
     });
     invalidateGraphCaches();
     void notifyWardenEvent(
@@ -2327,6 +2341,33 @@ app.post("/migration-prs/:id/retry-delivery", (c) => {
     // A recorded PR is delivered; retrying would risk downgrading it (I7).
     return c.json({ error: "retry_delivery_pr_recorded" }, 409);
   }
+  // Replayability: an operator retry re-runs delivery from the write-ahead artifact,
+  // or (if none) falls back to a full pipeline run that replays the row's persisted
+  // origin gate payload. A row with NEITHER (a main-era row, or a run that never
+  // carried a gate payload) has nothing to replay — a retry would only end
+  // delivery_blocked. Tell the operator to re-run the change instead of reporting
+  // "queued", and mark the row so its state is honest.
+  const deliveryKey = `${pr.change_id}:${pr.consumer_id}`;
+  const replayable = getLatestDeliveryArtifact(db, tenantId, deliveryKey) !== null ||
+    (pr as { origin_fanout_json?: string | null }).origin_fanout_json != null;
+  if (!replayable) {
+    recordMigrationPrDeliveryBlocked(db, pr.id, "github_delivery_replay_unavailable");
+    requestAudit(c, {
+      actor: "human",
+      action: "pr.delivery_replay_unavailable",
+      resourceType: "migration_pr",
+      resourceId: pr.id,
+      metadata: { previousStatus: pr.status, reason: "no_replayable_artifact_or_payload" },
+    });
+    return c.json({
+      ok: false,
+      id: pr.id,
+      status: "delivery_blocked",
+      error: "github_delivery_replay_unavailable",
+      action: "rerun_change_required",
+      message: "This delivery has no write-ahead artifact or origin payload to replay; re-run the change for this provider to regenerate and deliver it.",
+    }, 409);
+  }
   // Reopen the durable ledger operation for this delivery, if one exists, so a
   // terminal/expired operation gets a fresh window (best-effort: a missing or
   // non-failed row is simply not reopened).
@@ -2356,6 +2397,9 @@ app.post("/migration-prs/:id/retry-delivery", (c) => {
     } catch { /* the operation row may not exist yet; the status flip still retries */ }
   }
   updateMigrationPrStatus(db, pr.id, "delivery_failed", null);
+  // Reopening gives the row a fresh automatic-replay budget (the cap counts only
+  // consecutive automatic replays; an operator retry is a deliberate fresh start).
+  resetMigrationPrReplayCount(db, pr.id);
   // Re-queue a delivery-only retry job (D10): it replays the adoptive delivery from
   // the persisted artifact, not the whole pipeline. The id is deterministic per row;
   // enqueueOrResetJob enqueues a fresh row, or resets a spent (dead-lettered/done)
