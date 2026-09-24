@@ -61,8 +61,10 @@ describe("assertCorpusRunIsolation", () => {
   });
 
   it("does NOT fire on a runner with no corpus present (the nightly benign case)", () => {
-    // Empty/unset MENDPOINT_CORPUS_ROOT collapses CORPUS_ROOT onto the repo root,
-    // but nothing is staged, so there is nothing to leak — degrade cleanly.
+    // Even in the worst case where the corpus root equalled the repo root, with
+    // configured=false and nothing staged there is nothing to leak — degrade
+    // cleanly. (Unset MENDPOINT_CORPUS_ROOT now resolves to an unavailable
+    // sentinel outside the repo, which is safer still; see corpus-root.ts.)
     expect(() =>
       assertCorpusRunIsolation({
         corpusRoot: repoRoot,
