@@ -400,3 +400,40 @@ export async function authenticatedWebCredential(
 export async function authenticatedWebSession(request: NextRequest): Promise<boolean> {
   return Boolean(await authenticatedWebSubject(request));
 }
+
+export type UpstreamCredentialResult =
+  | { readonly ok: true; readonly token: string }
+  | {
+      readonly ok: false;
+      readonly reason: "web_session_required" | "proxy_api_key_not_configured";
+      readonly status: 401 | 503;
+    };
+
+/**
+ * The single rule for which upstream credential a web session presents to the
+ * API. Server-rendered calls (lib/api.ts) and the browser proxy
+ * (app/api/[...path]/route.ts) both resolve their credential here so the choice
+ * cannot drift between them:
+ *  - a verified preview session presents the deployment credential;
+ *  - a customer or company-identity session (self_serve / human_oidc) presents
+ *    its own upstream token and NEVER the deployment credential;
+ *  - a missing session (absent, tampered, or expired -- all resolve to null) and
+ *    an unconfigured credential are refused here, before any upstream fetch.
+ * `deploymentKey` is the caller's already-trimmed MENDPOINT_API_KEY.
+ */
+export function upstreamCredentialFor(
+  session: AuthenticatedWebCredential | null,
+  deploymentKey: string | undefined,
+): UpstreamCredentialResult {
+  if (!session) {
+    return { ok: false, reason: "web_session_required", status: 401 };
+  }
+  const token =
+    session.subject.kind === "preview_access"
+      ? deploymentKey || null
+      : session.upstreamAccessToken;
+  if (!token) {
+    return { ok: false, reason: "proxy_api_key_not_configured", status: 503 };
+  }
+  return { ok: true, token };
+}
