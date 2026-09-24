@@ -30,5 +30,7 @@ describe("api entry point refuses embedded mode under a deployment profile", () 
     // A valid data key so the assertion is on the guard, not an unrelated boot requirement.
     process.env.MENDPOINT_APPLICATION_DATA_KEY ??= "b".repeat(64);
     await expect(import("./server.js")).rejects.toThrow("api_embed_mode_forbidden_in_deployment");
-  });
+    // Importing the entry module loads the whole API module graph, which takes longer than
+    // vitest's 5 s default on slower hosts; the guard itself fires before any boot work.
+  }, 60_000);
 });
