@@ -98,7 +98,11 @@ export type DependencyOutageHistoryEvent = Readonly<{
   sequence: number;
   kind: "enqueued" | "claimed" | "claim_recovered" | "retry_scheduled" |
     "authority_blocked" | "authority_reactivated" | "reconciliation_required" |
-    "reconciliation_claimed" | "failed" | "completed" | "superseded";
+    "reconciliation_claimed" | "failed" | "completed" | "reopened" |
+    // "superseded" is retained ONLY so the hash-chain verifier accepts events
+    // written by intermediate heads; nothing writes it any more (supersede was
+    // removed in the PR #606 redesign — a delivery is one branch, one operation).
+    "superseded";
   observedAt: string;
   details: Readonly<Record<string, unknown>>;
   previousHash: string | null;
@@ -116,6 +120,16 @@ export type DependencyOutageRunOperation<T> = DependencyOutageScope & Readonly<{
   expiresAt: string;
   leaseMs: number;
   authorityVersion: string;
+  /**
+   * Adoptive delivery semantics (PR #606). When true the operation is a branch-
+   * identity delivery whose every attempt begins with lookup L (execute is
+   * idempotent and self-reconciling), so: a run() on a reopenable failed row
+   * reopens it in the enqueue transaction (a >1 h outage is a retry window, not
+   * a deadline); an expired-lease reclaim is a normal attempt, not reconcile-
+   * only; and a fenced worker whose execute succeeded returns
+   * {status:"completed", fenced:true} rather than throwing completion_fence_lost.
+   */
+  adoptive?: boolean;
   reconcile: () => Promise<DependencyOutageReconciliation<T>>;
   execute: () => Promise<Readonly<{ value: T; completionDigest: string }>>;
   classify: (
@@ -131,29 +145,35 @@ export type DependencyOutageRunOperation<T> = DependencyOutageScope & Readonly<{
 }>;
 
 export type DependencyOutageRunResult<T> =
-  | Readonly<{ status: "completed" | "recovered"; value: T; record: DependencyOutageRecord }>
+  | Readonly<{ status: "completed" | "recovered"; value: T; record: DependencyOutageRecord; fenced?: boolean }>
   | Readonly<{
     status: "deferred" | "blocked" | "failed";
     record: DependencyOutageRecord;
     decision?: DependencyOutageFailureDecision;
     error?: unknown;
+    fenced?: boolean;
   }>;
 
+/** Reasons a delivery operation is reopened for another retry window (PR #606 §3). */
+export type DependencyOutageReopenReason =
+  | "operation_expired"
+  | "retry_budget_exhausted"
+  | "operator_retry";
+
 /**
- * Outcome of retiring an operation. Superseding is refused (never thrown)
- * unless the row is settled with a history that PROVES no GitHub write
- * happened. It is refused for a completed operation (its effect landed), for
- * ANY claimed row (a lease can expire mid-write and the stalled worker can
- * still land a createRef/commit/PR — expiry is not proof the write did not
- * happen), and for any row whose history records a reconciliation-required or
- * completed transition (a remote-side-effect-uncertain failure, so a write may
- * have landed). Only then can a caller abandon and re-anchor.
+ * Outcome of reopening a settled-failed delivery operation for another retry
+ * window. expiresAt/retryBudget are a retry window, not a deadline: a failed
+ * row whose reason is reopenable is set back to queued with a fresh window,
+ * attempts reset, a half-open circuit, and a hash-chained `reopened` event.
+ * Refused (returned, not thrown) when the row is missing, not failed, a
+ * permanent failure, or the auto reason does not match the recorded failure —
+ * a permanent or authorisation failure is never auto-reopened.
  */
-export type DependencyOutageSupersession =
-  | Readonly<{ superseded: true; record: DependencyOutageRecord }>
+export type DependencyOutageReopen =
+  | Readonly<{ reopened: true; record: DependencyOutageRecord }>
   | Readonly<{
-    superseded: false;
-    reason: "operation_missing" | "operation_completed" | "operation_in_flight" | "operation_write_uncertain";
+    reopened: false;
+    reason: "operation_missing" | "operation_not_failed" | "operation_permanent" | "reason_not_reopenable";
   }>;
 
 type OutageRow = {
@@ -924,11 +944,18 @@ export class DependencyOutageQueue {
       if (!current || current.operation_digest !== scope.operationDigest) {
         throw new Error("dependency_outage_operation_missing");
       }
-      if (current.status !== "blocked" || current.authority_version !== input.previousAuthorityVersion) {
+      // Accept a blocked row (the original authority-change flow) or a queued row
+      // (adoptive delivery: an installation authority version changes while the
+      // delivery is still queued — reactivate it to the new authority instead of
+      // wedging on authority_mismatch).
+      if ((current.status !== "blocked" && current.status !== "queued") ||
+          current.authority_version !== input.previousAuthorityVersion) {
         throw new Error("dependency_outage_authority_mismatch");
       }
       if (current.expires_at <= input.now) throw new Error("dependency_outage_expired");
-      if (current.last_failure_reason !== "authority_change_required") {
+      // The reconciliation-required proof only applies to a blocked row; a queued
+      // row has no failure reason to check.
+      if (current.status === "blocked" && current.last_failure_reason !== "authority_change_required") {
         throw new Error("dependency_outage_reconciliation_required");
       }
       this.db.prepare(`UPDATE dependency_outage_operations SET
@@ -946,82 +973,77 @@ export class DependencyOutageQueue {
   }
 
   /**
-   * Retire an operation so a caller may deliberately abandon it (for example to
-   * re-anchor a delivery onto a moved base under a fresh operation id). The
-   * operation is identified by its stable identity only — the row's own digest
-   * is used for the hash-chained event, so the caller need not reconstruct the
-   * abandoned input. Rows are never deleted: a terminal `superseded` event is
-   * appended and the row is settled non-claimable with a `healthy` standing (no
-   * outstanding outage for this identity).
+   * Reopen a settled-failed delivery operation for another retry window (PR #606
+   * §3). expiresAt and retryBudget are a retry window, not a deadline: a failed
+   * row whose failure is reopenable is set back to `queued` with a fresh window
+   * (new expiresAt), attempts reset to 0, a half-open circuit, and a hash-chained
+   * `reopened{previousReason, reopenCount}` event, so the SAME operation retries.
    *
-   * Refused (returned, not thrown) when the row proves a GitHub write may have
-   * happened: a `completed` operation (its effect landed) or a still-active
-   * `claimed` lease (a write may be in flight). This is the no-write proof — a
-   * delivery whose branch/PR was written can never be silently abandoned.
+   * Reopenable reasons: `operation_expired` and `retry_budget_exhausted` are the
+   * auto-reopen reasons (the recorded failure must match), and `operator_retry`
+   * reopens any failed row on an operator's explicit request. A `permanent_failure`
+   * or an authorisation failure is NEVER auto-reopened — that needs operator
+   * action, not a retry. Refused (returned, not thrown) so callers see why.
    */
-  supersede(
-    identity: Readonly<{
-      tenantId: string;
-      dependencyKind: DependencyOutageKind;
-      providerId: string;
-      operationId: string;
+  reopen(
+    scope: DependencyOutageScope,
+    input: Readonly<{
+      reason: DependencyOutageReopenReason;
+      expiresAt: string;
+      nextAttemptAt?: string;
+      now?: string;
     }>,
-    options: Readonly<{ reason: string; now?: string }>,
-  ): DependencyOutageSupersession {
-    if (!IDENTITY.test(identity.tenantId)) throw new Error("dependency_outage_tenant_invalid");
-    if (!IDENTITY.test(identity.providerId)) throw new Error("dependency_outage_provider_invalid");
-    if (!OPERATION_ID.test(identity.operationId)) throw new Error("dependency_outage_operation_id_invalid");
-    if (!/^[a-z][a-z0-9_]{2,63}$/.test(options.reason)) {
-      throw new Error("dependency_outage_supersede_reason_invalid");
+  ): DependencyOutageReopen {
+    validateScope(scope);
+    if (input.reason !== "operation_expired" && input.reason !== "retry_budget_exhausted" &&
+        input.reason !== "operator_retry") {
+      throw new Error("dependency_outage_reopen_reason_invalid");
     }
-    const observedAt = iso(options.now ?? this.now(), "dependency_outage_timestamp_invalid");
+    const observedAt = iso(input.now ?? this.now(), "dependency_outage_timestamp_invalid");
+    iso(input.expiresAt, "dependency_outage_expiry_invalid");
+    const nextAttemptAt = iso(input.nextAttemptAt ?? observedAt, "dependency_outage_next_attempt_invalid");
+    if (Date.parse(input.expiresAt) <= Date.parse(observedAt)) {
+      throw new Error("dependency_outage_expired");
+    }
     return withImmediateTransaction(this.db, () => {
-      const current = this.db.prepare(`SELECT * FROM dependency_outage_operations
-        WHERE tenant_id = ? AND dependency_kind = ? AND provider_id = ? AND operation_id = ?`)
-        .get(identity.tenantId, identity.dependencyKind, identity.providerId, identity.operationId) as
-          OutageRow | undefined;
-      if (!current) return Object.freeze({ superseded: false as const, reason: "operation_missing" as const });
-      if (current.status === "completed") {
-        return Object.freeze({ superseded: false as const, reason: "operation_completed" as const });
+      const current = this.row(scope);
+      if (!current) return Object.freeze({ reopened: false as const, reason: "operation_missing" as const });
+      if (current.operation_digest !== scope.operationDigest) {
+        throw new Error("dependency_outage_operation_digest_conflict");
       }
-      // ANY claimed row is refused, expired lease included: a stalled worker can
-      // still land a createRef/commit/PR after its lease expires, so retiring it
-      // would fence out that write and lose the PR. The next attempt reclaims and
-      // settles the row before it can be retired.
-      if (current.status === "claimed") {
-        return Object.freeze({ superseded: false as const, reason: "operation_in_flight" as const });
+      if (current.status !== "failed") {
+        return Object.freeze({ reopened: false as const, reason: "operation_not_failed" as const });
       }
-      // Only a history that PROVES no write happened may be retired. A
-      // reconciliation-required transition (a remote-side-effect-uncertain
-      // failure) or a completed transition means a write may have/did land, so
-      // refuse even if the row later expired to `failed`.
-      const priorWrite = this.db.prepare(`SELECT 1 FROM dependency_outage_history
+      // A permanent failure (or any authorisation failure that settled to failed)
+      // is never auto-reopened: only operator action clears it, and the operator
+      // path uses the operator_retry reason, which still refuses permanent.
+      if (current.last_failure_reason === "permanent_failure") {
+        return Object.freeze({ reopened: false as const, reason: "operation_permanent" as const });
+      }
+      // Auto reasons must match the recorded failure so a run() never reopens a
+      // failure it did not cause; operator_retry may reopen any non-permanent one.
+      if (input.reason !== "operator_retry" && current.last_failure_reason !== input.reason) {
+        return Object.freeze({ reopened: false as const, reason: "reason_not_reopenable" as const });
+      }
+      const reopenCount = (this.db.prepare(`SELECT COUNT(*) AS count FROM dependency_outage_history
         WHERE tenant_id = ? AND dependency_kind = ? AND provider_id = ? AND operation_id = ?
-          AND event_kind IN ('reconciliation_required', 'completed') LIMIT 1`)
-        .get(identity.tenantId, identity.dependencyKind, identity.providerId, identity.operationId);
-      if (priorWrite) {
-        return Object.freeze({ superseded: false as const, reason: "operation_write_uncertain" as const });
-      }
-      const scope: DependencyOutageScope = {
-        tenantId: current.tenant_id,
-        dependencyKind: current.dependency_kind,
-        providerId: current.provider_id,
-        operationId: current.operation_id,
-        operationDigest: current.operation_digest,
-      };
+          AND event_kind = 'reopened'`)
+        .get(scope.tenantId, scope.dependencyKind, scope.providerId, scope.operationId) as
+          { count: number }).count + 1;
       this.db.prepare(`UPDATE dependency_outage_operations SET
-        status = 'failed', standing = 'healthy', circuit_state = 'closed',
-        circuit_opened_at = NULL, consecutive_failures = 0,
-        claim_owner = NULL, claim_expires_at = NULL,
-        last_failure_kind = 'superseded', last_failure_reason = ?, updated_at = ?
+        status = 'queued', standing = 'degraded_retrying', circuit_state = 'half_open',
+        circuit_opened_at = NULL, attempts_consumed = 0,
+        next_attempt_at = ?, expires_at = ?, claim_owner = NULL, claim_expires_at = NULL,
+        last_failure_kind = NULL, last_failure_reason = NULL, updated_at = ?
         WHERE tenant_id = ? AND dependency_kind = ? AND provider_id = ? AND operation_id = ?`)
-        .run(options.reason, observedAt, current.tenant_id, current.dependency_kind,
-          current.provider_id, current.operation_id);
-      this.append(scope, "superseded", observedAt, Object.freeze({
-        reason: options.reason,
-        previousStatus: current.status,
+        .run(nextAttemptAt, input.expiresAt, observedAt, scope.tenantId,
+          scope.dependencyKind, scope.providerId, scope.operationId);
+      this.append(scope, "reopened", observedAt, Object.freeze({
+        previousReason: current.last_failure_reason,
+        reopenReason: input.reason,
+        reopenCount,
       }));
-      return Object.freeze({ superseded: true as const, record: fromRow(this.row(scope)!) });
+      return Object.freeze({ reopened: true as const, record: fromRow(this.row(scope)!) });
     });
   }
 
@@ -1062,6 +1084,7 @@ export class DependencyOutageQueue {
   }
 
   async run<T>(operation: DependencyOutageRunOperation<T>): Promise<DependencyOutageRunResult<T>> {
+    if (operation.adoptive) return this.runAdoptive(operation);
     const now = this.now();
     const enqueued = this.enqueue({
       ...operation,
@@ -1169,6 +1192,115 @@ export class DependencyOutageQueue {
       decision,
       error,
     });
+  }
+
+  /**
+   * Adoptive delivery run (PR #606). Every attempt begins with lookup L inside
+   * `execute`, which is idempotent and self-reconciling, so there is no reconcile-
+   * only or completion-fence-lost path: a reopenable failed row is reopened for a
+   * fresh window before the attempt (a >1 h outage never makes the delivery
+   * terminal), an expired-lease reclaim is a normal attempt, and a fenced worker
+   * whose execute succeeded returns {completed, fenced:true} rather than throwing.
+   */
+  private async runAdoptive<T>(
+    operation: DependencyOutageRunOperation<T>,
+  ): Promise<DependencyOutageRunResult<T>> {
+    const now = this.now();
+    this.enqueueOrReopenAdoptive(operation, now);
+    const enqueued = this.get(operation)!;
+    if (enqueued.status === "queued" || enqueued.status === "claimed" || enqueued.status === "blocked") {
+      if (enqueued.authorityVersion === null) throw new Error("dependency_outage_authority_missing");
+      if (enqueued.authorityVersion !== operation.authorityVersion) {
+        // reactivateAuthority now accepts a queued row too, so an authority change
+        // while the delivery is still queued reactivates rather than wedging.
+        this.reactivateAuthority(operation, {
+          previousAuthorityVersion: enqueued.authorityVersion,
+          nextAuthorityVersion: operation.authorityVersion,
+          now,
+        });
+      }
+    }
+    const claim = this.claim({ ...operation, now, leaseMs: operation.leaseMs });
+    if (!claim) {
+      const record = this.get(operation)!;
+      if (record.status === "completed") {
+        const observed = validateReconciliation<T>(await operation.reconcile());
+        if (observed.status !== "completed" || observed.completionDigest !== record.completionDigest) {
+          throw new Error("dependency_outage_completed_effect_not_reconciled");
+        }
+        return Object.freeze({ status: "recovered", value: observed.value, record });
+      }
+      return Object.freeze({
+        status: record.status === "blocked" ? "blocked" :
+          record.status === "failed" ? "failed" : "deferred",
+        record,
+      });
+    }
+    let executed: Readonly<{ value: T; completionDigest: string }>;
+    try {
+      executed = await operation.execute();
+    } catch (error) {
+      const failedAt = this.now();
+      if (!this.isClaimActive(claim, failedAt)) {
+        // Fenced out (another worker reclaimed the lease). Do not fail a lease we
+        // no longer hold; the owner or a later reopen drives the next attempt.
+        const record = this.get(operation) ?? claim;
+        return Object.freeze({ status: "deferred", record, error, fenced: true });
+      }
+      return this.failThroughPolicy<T>(claim, error, operation.classify);
+    }
+    try {
+      const completed = this.complete(claim, executed.completionDigest, this.now());
+      if (completed.applied) {
+        return Object.freeze({ status: "completed", value: executed.value, record: completed.record });
+      }
+      // Fenced success: the adoptive execute delivered idempotently on GitHub even
+      // though our claim was lost, so the delivery IS complete — never fence-lost.
+      return Object.freeze({ status: "completed", value: executed.value, record: completed.record, fenced: true });
+    } catch (error) {
+      if (error instanceof Error && error.message === "dependency_outage_completion_digest_conflict") {
+        const record = this.get(operation) ?? claim;
+        return Object.freeze({ status: "completed", value: executed.value, record, fenced: true });
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Enqueue the adoptive operation, or reopen it when it is a settled-failed row
+   * whose failure is auto-reopenable (operation_expired / retry_budget_exhausted).
+   * Folds reopen-on-expiry into enqueue so a delivery past its retry window simply
+   * gets a fresh window on the next run() (design §3).
+   */
+  private enqueueOrReopenAdoptive<T>(
+    operation: DependencyOutageRunOperation<T>,
+    now: string,
+  ): void {
+    const existing = this.row(operation);
+    if (existing) {
+      if (existing.operation_digest !== operation.operationDigest) {
+        throw new Error("dependency_outage_operation_digest_conflict");
+      }
+      if (existing.status === "failed" &&
+          (existing.last_failure_reason === "operation_expired" ||
+            existing.last_failure_reason === "retry_budget_exhausted")) {
+        this.reopen(operation, {
+          reason: existing.last_failure_reason,
+          expiresAt: operation.expiresAt,
+          nextAttemptAt: now,
+          now,
+        });
+        return;
+      }
+    }
+    this.enqueue({ ...operation, nextAttemptAt: now, standing: "degraded_retrying" }, now);
+  }
+
+  private isClaimActive(claim: DependencyOutageClaim, observedAt: string): boolean {
+    const current = this.row(claim);
+    return !!current && current.status === "claimed" && current.claim_owner === claim.claimOwner &&
+      current.claim_generation === claim.claimGeneration &&
+      current.claim_expires_at !== null && current.claim_expires_at > observedAt;
   }
 }
 

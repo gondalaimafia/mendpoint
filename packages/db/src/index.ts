@@ -9453,6 +9453,8 @@ export {
   type DependencyOutageKind,
   type DependencyOutageRecord,
   type DependencyOutageReconciliation,
+  type DependencyOutageReopen,
+  type DependencyOutageReopenReason,
   type DependencyOutageRunOperation,
   type DependencyOutageRunResult,
   type DependencyOutageScope,

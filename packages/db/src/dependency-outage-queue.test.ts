@@ -1381,113 +1381,37 @@ describe("durable dependency outage queue", () => {
     db.close();
   });
 
-  it("retires a settled operation with a hash-chained superseded event and a healthy standing", () => {
-    const db = new DatabaseSync(":memory:");
-    const queue = createDependencyOutageQueue(db);
-    queue.enqueue({
-      ...SCOPE,
-      retryBudget: 3,
-      expiresAt: "2026-09-02T14:00:00.000Z",
-      nextAttemptAt: "2026-09-02T12:00:00.000Z",
-      standing: "degraded_retrying",
-      authorityVersion: "model-authority-v1",
-    }, "2026-09-02T12:00:00.000Z");
 
-    const result = queue.supersede(
-      { tenantId: SCOPE.tenantId, dependencyKind: SCOPE.dependencyKind, providerId: SCOPE.providerId, operationId: SCOPE.operationId },
-      { reason: "delivery_base_reanchored", now: "2026-09-02T12:00:05.000Z" },
-    );
-    expect(result).toMatchObject({ superseded: true });
-    // Terminal and non-claimable, but not a false outstanding outage.
-    expect(queue.get(SCOPE)).toMatchObject({ status: "failed", standing: "healthy", lastFailureReason: "delivery_base_reanchored" });
-    // Rows are never deleted: the retirement is an immutable, chain-verified event.
-    const history = queue.history(SCOPE);
-    expect(history.at(-1)).toMatchObject({ kind: "superseded", details: { reason: "delivery_base_reanchored", previousStatus: "queued" } });
-    // A retired operation is not claimable.
-    expect(queue.claim({ ...SCOPE, workerId: "worker-1", now: "2026-09-02T12:00:06.000Z", leaseMs: 30_000, authorityVersion: "model-authority-v1" })).toBeNull();
-    db.close();
-  });
-
-  it("refuses to supersede a completed operation (a write happened) — no-write proof", async () => {
-    const db = new DatabaseSync(":memory:");
-    const queue = createDependencyOutageQueue(db, { now: () => "2026-09-02T12:00:00.000Z" });
-    await queue.run({
-      ...SCOPE,
-      workerId: "worker-1",
-      retryBudget: 3,
-      expiresAt: "2026-09-02T14:00:00.000Z",
-      leaseMs: 30_000,
-      authorityVersion: "model-authority-v1",
-      reconcile: async () => ({ status: "missing" as const }),
-      execute: async () => ({ value: { ok: true }, completionDigest: COMPLETION }),
-      classify: () => retryDecision(),
-    });
-    expect(queue.get(SCOPE)).toMatchObject({ status: "completed" });
-    expect(queue.supersede(
-      { tenantId: SCOPE.tenantId, dependencyKind: SCOPE.dependencyKind, providerId: SCOPE.providerId, operationId: SCOPE.operationId },
-      { reason: "delivery_base_reanchored" },
-    )).toEqual({ superseded: false, reason: "operation_completed" });
-    db.close();
-  });
-
-  it("refuses to supersede an operation with an active claim (a write may be in flight)", () => {
-    const db = new DatabaseSync(":memory:");
-    const queue = createDependencyOutageQueue(db);
-    queue.enqueue({
-      ...SCOPE,
-      retryBudget: 3,
-      expiresAt: "2026-09-02T14:00:00.000Z",
-      nextAttemptAt: "2026-09-02T12:00:00.000Z",
-      standing: "degraded_retrying",
-      authorityVersion: "model-authority-v1",
-    }, "2026-09-02T12:00:00.000Z");
-    queue.claim({ ...SCOPE, workerId: "worker-1", now: "2026-09-02T12:00:00.000Z", leaseMs: 30_000, authorityVersion: "model-authority-v1" });
-    expect(queue.supersede(
-      { tenantId: SCOPE.tenantId, dependencyKind: SCOPE.dependencyKind, providerId: SCOPE.providerId, operationId: SCOPE.operationId },
-      { reason: "delivery_base_reanchored", now: "2026-09-02T12:00:01.000Z" },
-    )).toEqual({ superseded: false, reason: "operation_in_flight" });
-    db.close();
-  });
-
-  it("reports a missing operation as not superseded", () => {
-    const db = new DatabaseSync(":memory:");
-    const queue = createDependencyOutageQueue(db);
-    expect(queue.supersede(
-      { tenantId: SCOPE.tenantId, dependencyKind: SCOPE.dependencyKind, providerId: SCOPE.providerId, operationId: SCOPE.operationId },
-      { reason: "delivery_base_reanchored" },
-    )).toEqual({ superseded: false, reason: "operation_missing" });
-    db.close();
-  });
-
-  it("refuses to supersede a claimed operation AFTER its lease expires (a stalled worker may still land its write)", () => {
+  it("reopens an operation_expired failed row for a fresh retry window (queued, attempts reset, reopened event)", () => {
     const db = new DatabaseSync(":memory:");
     let now = "2026-09-02T12:00:00.000Z";
     const queue = createDependencyOutageQueue(db, { now: () => now });
     queue.enqueue({
       ...SCOPE,
       retryBudget: 3,
-      expiresAt: "2026-09-02T14:00:00.000Z",
+      expiresAt: "2026-09-02T12:00:01.000Z",
       nextAttemptAt: now,
       standing: "degraded_retrying",
       authorityVersion: "model-authority-v1",
     }, now);
-    // Worker 1 claims and then stalls mid-delivery (never completes or fails).
-    expect(queue.claim({ ...SCOPE, workerId: "worker-1", now, leaseMs: 30_000, authorityVersion: "model-authority-v1" })).not.toBeNull();
-    // 31s later the lease has expired, but worker 1 can still land a
-    // createRef/commit/PR. Worker 2 must NOT retire it (round-7 refused only
-    // NON-expired claims, which fenced worker 1 out and lost its PR).
-    now = "2026-09-02T12:00:31.000Z";
-    expect(queue.supersede(
-      { tenantId: SCOPE.tenantId, dependencyKind: SCOPE.dependencyKind, providerId: SCOPE.providerId, operationId: SCOPE.operationId },
-      { reason: "delivery_base_reanchored", now },
-    )).toEqual({ superseded: false, reason: "operation_in_flight" });
-    // The row stays claimed (not retired), so the next attempt reclaims and
-    // settles it — worker 1's write is recorded, never fenced out.
-    expect(queue.get(SCOPE)?.status).toBe("claimed");
+    now = "2026-09-02T12:00:05.000Z";
+    // Past expiry, the claim fails the operation terminally with operation_expired.
+    expect(queue.claim({ ...SCOPE, workerId: "worker-1", now, leaseMs: 30_000, authorityVersion: "model-authority-v1" })).toBeNull();
+    expect(queue.get(SCOPE)).toMatchObject({ status: "failed", lastFailureReason: "operation_expired" });
+    // expiresAt/retryBudget are a retry window, not a deadline: reopen gives a fresh one.
+    const result = queue.reopen(SCOPE, { reason: "operation_expired", expiresAt: "2026-09-02T13:00:05.000Z", now });
+    expect(result).toMatchObject({
+      reopened: true,
+      record: { status: "queued", attemptsConsumed: 0, circuitState: "half_open", expiresAt: "2026-09-02T13:00:05.000Z" },
+    });
+    expect(queue.history(SCOPE).at(-1)).toMatchObject({
+      kind: "reopened",
+      details: { previousReason: "operation_expired", reopenReason: "operation_expired", reopenCount: 1 },
+    });
     db.close();
   });
 
-  it("refuses to supersede an operation whose history recorded a reconciliation-required write", () => {
+  it("never auto-reopens a permanent failure", () => {
     const db = new DatabaseSync(":memory:");
     const now = "2026-09-02T12:00:00.000Z";
     const queue = createDependencyOutageQueue(db, { now: () => now });
@@ -1500,14 +1424,118 @@ describe("durable dependency outage queue", () => {
       authorityVersion: "model-authority-v1",
     }, now);
     const claim = queue.claim({ ...SCOPE, workerId: "worker-1", now, leaseMs: 30_000, authorityVersion: "model-authority-v1" })!;
-    // A remote-side-effect-uncertain failure records a reconciliation_required
-    // transition: a write may have landed and awaits reconciliation.
-    queue.fail(claim, decisionForAction("reconcile"), "2026-09-02T12:00:01.000Z");
-    expect(queue.history(SCOPE).some((event) => event.kind === "reconciliation_required")).toBe(true);
-    expect(queue.supersede(
-      { tenantId: SCOPE.tenantId, dependencyKind: SCOPE.dependencyKind, providerId: SCOPE.providerId, operationId: SCOPE.operationId },
-      { reason: "delivery_base_reanchored", now: "2026-09-02T12:00:02.000Z" },
-    )).toEqual({ superseded: false, reason: "operation_write_uncertain" });
+    queue.fail(claim, decisionForAction("fail"), "2026-09-02T12:00:01.000Z");
+    expect(queue.get(SCOPE)).toMatchObject({ status: "failed", lastFailureReason: "permanent_failure" });
+    // Even an operator retry may not reopen a permanent failure.
+    expect(queue.reopen(SCOPE, { reason: "operator_retry", expiresAt: "2026-09-02T13:00:00.000Z", now: "2026-09-02T12:00:02.000Z" }))
+      .toEqual({ reopened: false, reason: "operation_permanent" });
+    db.close();
+  });
+
+  it("refuses to reopen a queued row, refuses a mismatched auto reason, but an operator retry reopens a non-permanent failure", () => {
+    const db = new DatabaseSync(":memory:");
+    let now = "2026-09-02T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    queue.enqueue({
+      ...SCOPE,
+      retryBudget: 3,
+      expiresAt: "2026-09-02T12:00:01.000Z",
+      nextAttemptAt: now,
+      standing: "degraded_retrying",
+      authorityVersion: "model-authority-v1",
+    }, now);
+    // A queued row is not reopenable.
+    expect(queue.reopen(SCOPE, { reason: "operator_retry", expiresAt: "2026-09-02T13:00:00.000Z", now }))
+      .toEqual({ reopened: false, reason: "operation_not_failed" });
+    // Fail it with operation_expired; a mismatched auto reason is refused.
+    now = "2026-09-02T12:00:05.000Z";
+    queue.claim({ ...SCOPE, workerId: "worker-1", now, leaseMs: 30_000, authorityVersion: "model-authority-v1" });
+    expect(queue.reopen(SCOPE, { reason: "retry_budget_exhausted", expiresAt: "2026-09-02T13:00:05.000Z", now }))
+      .toEqual({ reopened: false, reason: "reason_not_reopenable" });
+    // But an operator retry reopens the same non-permanent failed row.
+    expect(queue.reopen(SCOPE, { reason: "operator_retry", expiresAt: "2026-09-02T13:00:05.000Z", now }))
+      .toMatchObject({ reopened: true });
+    db.close();
+  });
+
+  it("reports a missing operation as not reopened and scopes reopen to the caller's tenant", () => {
+    const db = new DatabaseSync(":memory:");
+    let now = "2026-09-02T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    queue.enqueue({
+      ...SCOPE,
+      retryBudget: 3,
+      expiresAt: "2026-09-02T12:00:01.000Z",
+      nextAttemptAt: now,
+      standing: "degraded_retrying",
+      authorityVersion: "model-authority-v1",
+    }, now);
+    now = "2026-09-02T12:00:05.000Z";
+    queue.claim({ ...SCOPE, workerId: "worker-1", now, leaseMs: 30_000, authorityVersion: "model-authority-v1" });
+    // A foreign tenant with the same operation id cannot see or reopen the row.
+    expect(queue.reopen({ ...SCOPE, tenantId: "tenant-evil" }, { reason: "operation_expired", expiresAt: "2026-09-02T13:00:05.000Z", now }))
+      .toEqual({ reopened: false, reason: "operation_missing" });
+    expect(queue.reopen(SCOPE, { reason: "operation_expired", expiresAt: "2026-09-02T13:00:05.000Z", now }))
+      .toMatchObject({ reopened: true });
+    db.close();
+  });
+
+  it("adoptive run() reopens a failed-expired operation and delivers (liveness past the retry window)", async () => {
+    const db = new DatabaseSync(":memory:");
+    let now = "2026-09-02T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    const makeOp = (execute: () => Promise<Readonly<{ value: unknown; completionDigest: string }>>) => ({
+      ...SCOPE,
+      adoptive: true as const,
+      workerId: "worker-1",
+      retryBudget: 5,
+      // A fresh window is computed each attempt, exactly like deliverAdoptiveDraft.
+      expiresAt: new Date(Date.parse(now) + 3_600_000).toISOString(),
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+      reconcile: async () => ({ status: "missing" as const }),
+      execute,
+      classify: (_error: unknown, context: { attempt: number; retryBudget: number }) =>
+        decisionForAction("retry", Math.max(0, context.retryBudget - context.attempt)),
+    });
+    const failTransient = async (): Promise<never> => { throw Object.assign(new Error("down"), { code: "ECONNREFUSED" }); };
+    // Attempt 1 defers (transient); the operation is queued.
+    expect((await queue.run(makeOp(failTransient))).status).toBe("deferred");
+    // Advance past the retry window: the next run fails it terminally (expired).
+    now = "2026-09-02T14:00:00.000Z";
+    expect((await queue.run(makeOp(failTransient))).status).toBe("failed");
+    expect(queue.get(SCOPE)).toMatchObject({ status: "failed", lastFailureReason: "operation_expired" });
+    // A later run REOPENS the expired operation and delivers — expiry is not terminal.
+    const delivered = await queue.run(makeOp(async () => ({ value: { pr: 1 }, completionDigest: COMPLETION })));
+    expect(delivered).toMatchObject({ status: "completed" });
+    expect(queue.history(SCOPE).some((event) => event.kind === "reopened")).toBe(true);
+    db.close();
+  });
+
+  it("adoptive run() returns {completed, fenced:true} when the claim is lost mid-flight but execute delivered", async () => {
+    const db = new DatabaseSync(":memory:");
+    let now = "2026-09-02T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    const result = await queue.run({
+      ...SCOPE,
+      adoptive: true as const,
+      workerId: "worker-1",
+      retryBudget: 5,
+      expiresAt: "2026-09-02T13:00:00.000Z",
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+      reconcile: async () => ({ status: "missing" as const }),
+      execute: async () => {
+        // The lease expires and worker 2 reclaims the operation mid-delivery, so
+        // worker 1's claim is fenced out — but its execute still delivered.
+        now = "2026-09-02T12:00:40.000Z";
+        queue.claim({ ...SCOPE, workerId: "worker-2", now, leaseMs: 30_000, authorityVersion: "model-authority-v1" });
+        return { value: { pr: 7 }, completionDigest: COMPLETION };
+      },
+      classify: () => decisionForAction("retry"),
+    });
+    // Fenced success: completed with the delivered value, never a fence-lost throw.
+    expect(result).toMatchObject({ status: "completed", fenced: true });
     db.close();
   });
 });

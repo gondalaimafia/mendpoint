@@ -176,10 +176,20 @@ describe("dependency outage routes", () => {
       standing: "degraded_retrying",
       authorityVersion: "authority-v1",
     });
-    queue.supersede(
-      { tenantId: scope.tenantId, dependencyKind: scope.dependencyKind, providerId: scope.providerId, operationId: scope.operationId },
-      { reason: "delivery_base_reanchored" },
+    // supersede() was removed in the PR #606 redesign, but a DB that ran an
+    // intermediate head can still hold a legacy `superseded` row; the listing
+    // must keep classifying it. Simulate one directly (status stays failed, and
+    // the last history event is `superseded`, which the derivation reads).
+    db.raw.exec(
+      "UPDATE dependency_outage_operations SET status='failed', standing='healthy', " +
+        "last_failure_kind='superseded', last_failure_reason='delivery_base_reanchored' " +
+        "WHERE tenant_id='tenant-a' AND operation_id='github-draft:retired'",
     );
+    db.raw.prepare(
+      "INSERT INTO dependency_outage_history (tenant_id, dependency_kind, provider_id, " +
+        "operation_id, event_kind, observed_at, details_json, previous_hash, event_hash) " +
+        "VALUES (?, ?, ?, ?, 'superseded', ?, '{}', NULL, ?)",
+    ).run("tenant-a", "scm", "github", "github-draft:retired", "2026-09-02T12:00:05.000Z", "f".repeat(64));
     const app = new Hono<ApiEnv>();
     app.use("*", async (c, next) => {
       c.set("principal", { id: "human:owner", tenantId: "tenant-a", role: "owner" });

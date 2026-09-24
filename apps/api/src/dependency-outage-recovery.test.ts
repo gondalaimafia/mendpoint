@@ -384,47 +384,6 @@ describe("dependency outage producer-to-consumer recovery", () => {
     db.close();
   });
 
-  it("(ii) supersedes the abandoned operation and re-anchors onto the moved base to deliver one PR", async () => {
-    const db = new DatabaseSync(":memory:");
-    let now = "2026-09-02T12:00:00.000Z";
-    const movedBase = "e".repeat(40);
-    let currentBase = BASE_SHA;
-    const queue = createDependencyOutageQueue(db, { now: () => now });
-    // Branch creation fails for the original base (X) forever; it succeeds only
-    // for the moved base (Y). The remote head is X, then moves to Y.
-    const { octokit } = deliveryHarness({
-      baseHead: () => currentBase,
-      onCreateRef: (sha) => (sha === BASE_SHA ? "503" : "ok"),
-    });
-    const delivery = harnessDelivery(queue, octokit, () => now);
-
-    // Attempt against base X fails before the branch is created.
-    await expect(delivery.deliverExactDraft(draftInput())).rejects.toMatchObject({ status: "deferred" });
-    // No write happened, so the abandoned operation may be retired.
-    const retirement = await delivery.retireDeliveryOperation({
-      owner: "acme",
-      repo: "shop",
-      branch: "mendpoint/fettler/candidate-a",
-      baseSha: BASE_SHA,
-    });
-    expect(retirement).toEqual({ superseded: true });
-
-    // The remote head moves to Y; the re-anchored delivery is a fresh operation
-    // (base is part of the operation id), so no digest conflict — it delivers.
-    now = "2026-09-02T12:00:05.000Z";
-    currentBase = movedBase;
-    await expect(
-      delivery.deliverExactDraft({ ...draftInput(), expectedBaseSha: movedBase }),
-    ).resolves.toMatchObject({ number: 24, draft: true });
-
-    // The old operation is retired (a superseded transition), not deleted, and
-    // it no longer reads as an outstanding degraded outage.
-    const health = queue.tenantHealth({ tenantId: "tenant-acme" });
-    expect(health.standing).toBe("healthy");
-    expect(health.operations.some((op) => op.lastTransition?.kind === "superseded")).toBe(true);
-    db.close();
-  });
-
   it("(iii) reconciles the existing PR after a lost pull-creation response even when the base moved (base reused)", async () => {
     const db = new DatabaseSync(":memory:");
     let now = "2026-09-02T12:00:00.000Z";
@@ -453,26 +412,6 @@ describe("dependency outage producer-to-consumer recovery", () => {
     db.close();
   });
 
-  it("(v) refuses to supersede an operation whose PR was written (completed)", async () => {
-    const db = new DatabaseSync(":memory:");
-    const now = "2026-09-02T12:00:00.000Z";
-    const queue = createDependencyOutageQueue(db, { now: () => now });
-    const { octokit } = deliveryHarness();
-    const delivery = harnessDelivery(queue, octokit, () => now);
-
-    await expect(delivery.deliverExactDraft(draftInput())).resolves.toMatchObject({ number: 24 });
-    // The operation completed (the PR was written), so retirement is refused —
-    // never abandon and re-anchor away from a delivery that wrote.
-    const retirement = await delivery.retireDeliveryOperation({
-      owner: "acme",
-      repo: "shop",
-      branch: "mendpoint/fettler/candidate-a",
-      baseSha: BASE_SHA,
-    });
-    expect(retirement).toEqual({ superseded: false, reason: "operation_completed" });
-    db.close();
-  });
-
   it("branchExists is fail-closed: false only on 404, true on a hit, and rejects on any other error", async () => {
     const db = new DatabaseSync(":memory:");
     const now = "2026-09-02T12:00:00.000Z";
@@ -497,30 +436,4 @@ describe("dependency outage producer-to-consumer recovery", () => {
     db.close();
   });
 
-  it("(wedge) a base revisited after retirement delivers under a higher generation with no permanent digest conflict", async () => {
-    const db = new DatabaseSync(":memory:");
-    const now = "2026-09-02T12:00:00.000Z";
-    const queue = createDependencyOutageQueue(db, { now: () => now });
-    // The remote head never leaves base X here; branch creation fails once so
-    // the generation-0 operation is retired before any write.
-    const { octokit } = deliveryHarness({ onCreateRef: (_sha, call) => (call === 1 ? "503" : "ok") });
-    const delivery = harnessDelivery(queue, octokit, () => now);
-    const branch = "mendpoint/fettler/candidate-a";
-
-    await expect(delivery.deliverExactDraft(draftInput())).rejects.toMatchObject({ status: "deferred" });
-    expect(await delivery.retireDeliveryOperation({ owner: "acme", repo: "shop", branch, baseSha: BASE_SHA, lineage: 0 }))
-      .toEqual({ superseded: true });
-
-    // The remote returns to base X and the pipeline regenerates the body. With a
-    // base-only id (round 7) this would collide with the retired row's digest
-    // and wedge on dependency_outage_operation_digest_conflict forever...
-    await expect(
-      delivery.deliverExactDraft({ ...draftInput(), body: "Regenerated body", deliveryLineage: 0 }),
-    ).rejects.toThrow("dependency_outage_operation_digest_conflict");
-    // ...but generation 1 is a distinct operation, so it delivers one PR.
-    await expect(
-      delivery.deliverExactDraft({ ...draftInput(), body: "Regenerated body", deliveryLineage: 1 }),
-    ).resolves.toMatchObject({ number: 24, draft: true });
-    db.close();
-  });
 });
