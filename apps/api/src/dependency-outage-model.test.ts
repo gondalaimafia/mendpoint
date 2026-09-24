@@ -229,7 +229,7 @@ describe("delivery state machine — invariants and reproduced defects (head 575
     db.close();
   }, 60_000);
 
-  it("REPRODUCES D1: a failure write clobbers a recorded PR (I7 violated)", () => {
+  it("I7 holds (was D1): a failure write can never clobber a recorded PR", () => {
     const directory = mkdtempSync(join(tmpdir(), "dependency-outage-model-"));
     const db = createDb(join(directory, "app.sqlite"));
     // Isolate the migration_prs write: skip the api_changes/consumers FKs.
@@ -250,14 +250,16 @@ describe("delivery state machine — invariants and reproduced defects (head 575
     });
 
     // A late failure write from another worker: no PR number, status delivery_failed.
-    // updateMigrationPrDelivery guards only the PR NUMBER (COALESCE + WHERE), not
-    // the STATUS, so it downgrades a recorded draft to delivery_failed.
+    // The D1 CAS guards this write on `github_pr_number IS NULL`, so it matches no
+    // row (the PR is recorded) and returns silently — the recorded draft wins.
     updateMigrationPrDelivery(db, "pr-1", { status: "delivery_failed" });
+    // A delivery_blocked write is guarded identically.
+    updateMigrationPrDelivery(db, "pr-1", { status: "delivery_blocked" });
     const row = db.raw.prepare("SELECT status, github_pr_number FROM migration_prs WHERE id = ?").get("pr-1") as
       { status: string; github_pr_number: number | null };
-    // The PR number survived (I2) but the status regressed from draft (I7 violated).
+    // The status never regresses from draft (I7); the PR number is intact (I2).
     expect(row.github_pr_number).toBe(24);
-    expect(row.status).toBe("delivery_failed");
+    expect(row.status).toBe("draft");
     db.raw.close();
     rmSync(directory, { recursive: true, force: true });
   });

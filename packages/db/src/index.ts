@@ -284,12 +284,34 @@ CREATE TABLE IF NOT EXISTS migration_prs (
   created_at TEXT NOT NULL,
   resolved_at TEXT,
   coverage_json TEXT,
-  delivery_base_sha TEXT,
-  delivery_retirement_generation INTEGER NOT NULL DEFAULT 0
+  -- Adoptive delivery (PR #606): the base commit the adopted PR's delivery
+  -- commit descends from, and the delivery-branch head sha at adoption. Written
+  -- once by ADOPT; never a re-anchoring anchor (delivery identity is the branch,
+  -- not the base). The pre-#606 delivery_base_sha/delivery_retirement_generation
+  -- columns never reached main and are intentionally absent here; a DB that ran
+  -- an intermediate head keeps them as unused columns.
+  delivered_base_sha TEXT,
+  delivered_head_sha TEXT
 );
 CREATE INDEX IF NOT EXISTS migration_prs_status_idx ON migration_prs(status);
 CREATE INDEX IF NOT EXISTS migration_prs_change_idx ON migration_prs(change_id);
 CREATE INDEX IF NOT EXISTS migration_prs_consumer_idx ON migration_prs(consumer_id);
+-- Write-ahead delivery artifact (PR #606 D5): the {title, body, treeSha,
+-- parentSha, deliveryKey} for an adoptive draft, persisted BEFORE any ref/PR
+-- write and keyed by its content digest, tenant-scoped. The delivery commit's
+-- Mendpoint-Body trailer references this digest; ours() is bound to treeSha and
+-- parentSha, so the artifact is unforgeable without a DB write. Kept permanently.
+CREATE TABLE IF NOT EXISTS migration_delivery_artifacts (
+  tenant_id TEXT NOT NULL,
+  artifact_digest TEXT NOT NULL,
+  delivery_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  tree_sha TEXT NOT NULL,
+  parent_sha TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, artifact_digest)
+);
 CREATE INDEX IF NOT EXISTS impact_findings_consumer_idx ON impact_findings(consumer_id);
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY,
@@ -3408,8 +3430,8 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "migration_prs", name: "github_repository_id", sql: "TEXT" },
     { table: "migration_prs", name: "github_installation_id", sql: "TEXT" },
     { table: "migration_prs", name: "github_account_id", sql: "TEXT" },
-    { table: "migration_prs", name: "delivery_base_sha", sql: "TEXT" },
-    { table: "migration_prs", name: "delivery_retirement_generation", sql: "INTEGER NOT NULL DEFAULT 0" },
+    { table: "migration_prs", name: "delivered_base_sha", sql: "TEXT" },
+    { table: "migration_prs", name: "delivered_head_sha", sql: "TEXT" },
     {
       table: "regauge_adaptive_candidates",
       name: "base_branch",
@@ -4889,14 +4911,18 @@ export function insertMigrationPr(
     resolvedAt?: string | null;
     /** JSON-serialized ImpactCoverage for the analysis behind this PR. */
     coverageJson?: string | null;
-    /** Exact base commit sha the first delivery attempt anchored to (null until one does). */
+    /**
+     * @deprecated PR #606 removed base re-anchoring; delivery identity is the
+     * branch. Accepted but ignored so pre-#606 callers still compile; not written.
+     */
     deliveryBaseSha?: string | null;
   },
 ) {
+  void row.deliveryBaseSha;
   run(
     db,
-    `INSERT INTO migration_prs (id, change_id, consumer_id, title, body, branch_name, status, risk, patch_unified, github_pr_number, github_pr_url, created_at, resolved_at, coverage_json, delivery_base_sha)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO migration_prs (id, change_id, consumer_id, title, body, branch_name, status, risk, patch_unified, github_pr_number, github_pr_url, created_at, resolved_at, coverage_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
       row.changeId,
@@ -4912,7 +4938,6 @@ export function insertMigrationPr(
       row.createdAt,
       row.resolvedAt ?? null,
       row.coverageJson ?? null,
-      row.deliveryBaseSha ?? null,
     ],
   );
 }
@@ -4942,12 +4967,25 @@ export function updateMigrationPrDelivery(
     githubInstallationId?: string;
     githubAccountId?: string;
     /**
-     * The anchored base commit sha, persisted on the first delivery attempt.
-     * COALESCE keeps the first value so retries never re-anchor to a moved head.
+     * @deprecated PR #606 removed base re-anchoring; delivery identity is the
+     * branch. Accepted but ignored so pre-#606 callers still compile; not written.
      */
     deliveryBaseSha?: string | null;
+    /** The base sha the adopted delivery commit descends from (set-once by ADOPT). */
+    deliveredBaseSha?: string | null;
+    /** The delivery-branch head sha at adoption (set-once by ADOPT). */
+    deliveredHeadSha?: string | null;
   },
 ) {
+  void row.deliveryBaseSha;
+  // D1 (PR #606): a pre-delivery or failure write — one that does NOT itself
+  // record a PR number — must never downgrade a row that already recorded a
+  // draft. Guard such writes with compare-and-set on `github_pr_number IS NULL`.
+  // The forward write that records the PR (it carries a github_pr_number) is the
+  // legitimate transition to draft and is exempt.
+  const downgradeableStatuses = new Set(["delivery_pending", "delivery_failed", "delivery_blocked"]);
+  const casGuard = (row.githubPrNumber === undefined || row.githubPrNumber === null) &&
+    downgradeableStatuses.has(row.status);
   const result = db.raw.prepare(
     `UPDATE migration_prs
      SET status = ?,
@@ -4957,12 +4995,14 @@ export function updateMigrationPrDelivery(
          github_repository_id = COALESCE(?, github_repository_id),
          github_installation_id = COALESCE(?, github_installation_id),
          github_account_id = COALESCE(?, github_account_id),
-         delivery_base_sha = COALESCE(delivery_base_sha, ?)
+         delivered_base_sha = COALESCE(delivered_base_sha, ?),
+         delivered_head_sha = COALESCE(delivered_head_sha, ?)
      WHERE id = ?
        AND (? IS NULL OR github_pr_number IS NULL OR github_pr_number = ?)
        AND (? IS NULL OR github_repository_id IS NULL OR github_repository_id = ?)
        AND (? IS NULL OR github_installation_id IS NULL OR github_installation_id = ?)
-       AND (? IS NULL OR github_account_id IS NULL OR github_account_id = ?)`,
+       AND (? IS NULL OR github_account_id IS NULL OR github_account_id = ?)
+       ${casGuard ? "AND github_pr_number IS NULL" : ""}`,
   ).run(
       row.status,
       row.githubPrNumber ?? null,
@@ -4971,7 +5011,8 @@ export function updateMigrationPrDelivery(
       row.githubRepositoryId ?? null,
       row.githubInstallationId ?? null,
       row.githubAccountId ?? null,
-      row.deliveryBaseSha ?? null,
+      row.deliveredBaseSha ?? null,
+      row.deliveredHeadSha ?? null,
       id,
       row.githubPrNumber ?? null,
       row.githubPrNumber ?? null,
@@ -4982,7 +5023,18 @@ export function updateMigrationPrDelivery(
       row.githubAccountId ?? null,
       row.githubAccountId ?? null,
   );
-  if (result.changes !== 1) throw new Error("migration_pr_delivery_identity_mismatch");
+  if (result.changes !== 1) {
+    // A CAS-guarded downgrade that matched no row because a PR is already
+    // recorded is the I7 invariant working: the recorded draft wins. Return
+    // silently — this is not an identity mismatch.
+    if (casGuard) {
+      const recorded = db.raw.prepare(
+        "SELECT github_pr_number FROM migration_prs WHERE id = ?",
+      ).get(id) as { github_pr_number: number | null } | undefined;
+      if (recorded && recorded.github_pr_number !== null) return;
+    }
+    throw new Error("migration_pr_delivery_identity_mismatch");
+  }
 }
 
 /**
@@ -5000,12 +5052,82 @@ export function updateMigrationPrDelivery(
  * distinct so a remote that returns to a previously retired base derives a new
  * operation id instead of colliding with the retired row's digest.
  */
-export function retireMigrationPrDeliveryAnchor(db: AppDb, id: string): void {
-  const result = db.raw
-    .prepare(`UPDATE migration_prs SET delivery_base_sha = NULL,
-       delivery_retirement_generation = delivery_retirement_generation + 1 WHERE id = ?`)
-    .run(id);
-  if (result.changes !== 1) throw new Error("migration_pr_delivery_identity_mismatch");
+export function retireMigrationPrDeliveryAnchor(_db: AppDb, _id: string): void {
+  // @deprecated PR #606 removed base re-anchoring: delivery identity is the
+  // branch, so there is no anchor to retire. Kept as a no-op only until the
+  // pipeline stops calling it (step 5); the columns it wrote no longer exist.
+  void _db;
+  void _id;
+}
+
+export type DeliveryArtifact = {
+  tenantId: string;
+  artifactDigest: string;
+  deliveryKey: string;
+  title: string;
+  body: string;
+  treeSha: string;
+  parentSha: string;
+  createdAt: string;
+};
+
+/**
+ * Persist the write-ahead delivery artifact (PR #606 D5) BEFORE any ref/PR write,
+ * tenant-scoped and keyed by its content digest. Idempotent: the same digest for
+ * the same tenant is a no-op (the content is identical by construction).
+ */
+export function persistDeliveryArtifact(db: AppDb, artifact: DeliveryArtifact): void {
+  run(
+    db,
+    `INSERT INTO migration_delivery_artifacts
+       (tenant_id, artifact_digest, delivery_key, title, body, tree_sha, parent_sha, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (tenant_id, artifact_digest) DO NOTHING`,
+    [
+      artifact.tenantId,
+      artifact.artifactDigest,
+      artifact.deliveryKey,
+      artifact.title,
+      artifact.body,
+      artifact.treeSha,
+      artifact.parentSha,
+      artifact.createdAt,
+    ],
+  );
+}
+
+/** Read a persisted delivery artifact by tenant + digest, or null when absent. */
+export function getDeliveryArtifact(
+  db: AppDb,
+  tenantId: string,
+  artifactDigest: string,
+): DeliveryArtifact | null {
+  const row = get(
+    db,
+    `SELECT tenant_id, artifact_digest, delivery_key, title, body, tree_sha, parent_sha, created_at
+     FROM migration_delivery_artifacts WHERE tenant_id = ? AND artifact_digest = ?`,
+    [tenantId, artifactDigest],
+  ) as {
+    tenant_id: string;
+    artifact_digest: string;
+    delivery_key: string;
+    title: string;
+    body: string;
+    tree_sha: string;
+    parent_sha: string;
+    created_at: string;
+  } | undefined;
+  if (!row) return null;
+  return {
+    tenantId: row.tenant_id,
+    artifactDigest: row.artifact_digest,
+    deliveryKey: row.delivery_key,
+    title: row.title,
+    body: row.body,
+    treeSha: row.tree_sha,
+    parentSha: row.parent_sha,
+    createdAt: row.created_at,
+  };
 }
 
 /**
