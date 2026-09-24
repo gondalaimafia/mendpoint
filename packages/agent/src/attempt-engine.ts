@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -23,6 +22,7 @@ import {
   sep,
 } from "node:path";
 import {
+  runExecFileVerification,
   runVerificationCommand,
   validateVerificationCommands,
   type VerificationExecution,
@@ -709,39 +709,18 @@ async function verify(
       throw error;
     }
     const args = command.split(" ").slice(1);
-    execution = await new Promise<VerificationExecution>((resolveExecution) => {
-      execFile(process.execPath, [npmExecutable, ...args], {
-        cwd: workspace,
-        encoding: "utf8",
-        timeout: Math.max(1_000, Math.min(timeoutMs, 300_000)),
-        windowsHide: true,
-        maxBuffer: 2 * 1024 * 1024,
-        env: wardenNpmFallbackEnvironment(process.env),
-      }, (npmError, stdout, stderr) => {
-        if (!npmError) {
-          // The npm fallback runs on the host workdir (no isolation): backend "local".
-          resolveExecution({
-            ok: true,
-            stdout: String(stdout),
-            stderr: String(stderr),
-            exitCode: 0,
-            outcome: "verified",
-            sandboxBackend: "local",
-          });
-          return;
-        }
-        const npmFailure = npmError as Error & { code?: number | string };
-        // The command ran on the host and exited non-zero: a real test failure.
-        resolveExecution({
-          ok: false,
-          stdout: String(stdout),
-          stderr: String(stderr),
-          exitCode: Number.isInteger(npmFailure.code) ? Number(npmFailure.code) : 1,
-          error: npmFailure.message,
-          outcome: "failed",
-          sandboxBackend: "local",
-        });
-      });
+    // Share the same spawn tracking as runVerificationCommand: a fallback that
+    // never launches (missing executable or working directory) is not_verified
+    // with no backend, and only a process that started then exited non-zero is a
+    // real failed test. Do NOT hard-code "failed"/"local" here — that recorded a
+    // verifier that never ran as an executed failing test (issue #699).
+    execution = await runExecFileVerification(process.execPath, [npmExecutable, ...args], {
+      cwd: workspace,
+      encoding: "utf8",
+      timeout: Math.max(1_000, Math.min(timeoutMs, 300_000)),
+      windowsHide: true,
+      maxBuffer: 2 * 1024 * 1024,
+      env: wardenNpmFallbackEnvironment(process.env),
     });
   }
   return {
