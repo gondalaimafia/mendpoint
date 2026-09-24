@@ -25,6 +25,7 @@ let tokenB = "";
 // Seeded change ids (on providers of each visibility).
 const changeId = { shared: "", aPrivate: "", bPrivate: "" };
 let consumerAId = "";
+let bPrivateProviderId = "";
 
 function auth(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
@@ -114,6 +115,7 @@ beforeAll(async () => {
   };
   const aPrivateId = await mkPrivate(tokenA, "a-private");
   const bPrivateId = await mkPrivate(tokenB, "b-private");
+  bPrivateProviderId = bPrivateId;
 
   const seedVersionsAndChange = (providerId: string, slug: string): string => {
     dbMod.insertApiVersion(db, {
@@ -158,6 +160,10 @@ beforeAll(async () => {
     tenantId: "tenant-a",
     createdAt: NOW,
   });
+  // A stale/hostile monitored_apis row linking A's consumer to B's private provider — the kind
+  // of row the (now scoped) monitor route can no longer create, seeded directly to prove the
+  // exposure report still filters it out by tenant visibility.
+  dbMod.insertMonitoredApi(db, { id: "mon-stale-b", consumerId: consumerAId, providerId: bPrivateProviderId });
 }, 120_000);
 
 afterAll(() => {
@@ -223,6 +229,16 @@ describe("HTTP cross-tenant isolation — reads never disclose B's private provi
     expect(cross).toEqual(unknown);
     expect(cross.status).toBe(404);
     expect((await app.request(`/graph/changes/${changeId.aPrivate}`, { headers: auth(tokenA) })).status).toBe(200);
+  });
+
+  it("GET /consumers/:id/exposure: a stale monitored link to b-private shows nothing of B", async () => {
+    const res = await app.request(`/consumers/${consumerAId}/exposure`, { headers: auth(tokenA) });
+    expect(res.status).toBe(200);
+    const report = (await res.json()) as { monitoredApis: Array<{ providerSlug: string; providerName: string }> };
+    // The exposure route passes the caller's tenant to buildExposureReport, so B's private
+    // provider (linked by the stale monitored_apis row seeded in beforeAll) is filtered out.
+    expect(report.monitoredApis.map((m) => m.providerSlug)).not.toContain("b-private");
+    expect(JSON.stringify(report)).not.toContain("b-private");
   });
 });
 

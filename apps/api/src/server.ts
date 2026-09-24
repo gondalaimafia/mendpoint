@@ -340,6 +340,25 @@ import {
 } from "./error-boundary.js";
 import { listPullRequestReadModel } from "./pull-request-read-model.js";
 
+// Embedded mode (MENDPOINT_API_EMBED=1): build the app + db without binding a socket, so a
+// test harness can drive the real routes and their middleware via app.request and seed the same
+// db handle. It is a TEST-ONLY switch: a real deployment that set it would run the full boot,
+// bind no port, log nothing and exit 0 — a silent outage a restart policy would never restart.
+// Refuse loudly, before any boot side effect, if it is combined with any deployment signal.
+const EMBEDDED = process.env.MENDPOINT_API_EMBED === "1";
+if (
+  EMBEDDED &&
+  ((process.env.NODE_ENV ?? "").toLowerCase() === "production" ||
+    (process.env.MENDPOINT_DEPLOYMENT_PROFILE ?? "").trim() !== "")
+) {
+  console.error(
+    "[mendpoint] FATAL: MENDPOINT_API_EMBED=1 is a test-only in-process switch (the app never " +
+      "binds a port). It must never be set for a real deployment — refusing to start because " +
+      "NODE_ENV=production or MENDPOINT_DEPLOYMENT_PROFILE is set.",
+  );
+  throw new Error("api_embed_mode_forbidden_in_deployment");
+}
+
 // Fail fast in production if env invalid
 assertApiEnvOrExit();
 
@@ -3894,11 +3913,8 @@ assertPublicDocsApiRoutesMounted(app.routes);
 const port = Number(process.env.API_PORT ?? 3001);
 const hostname = process.env.API_HOST?.trim() || "0.0.0.0";
 
-// Embedded mode (MENDPOINT_API_EMBED=1): build the app + db without binding a socket, so a
-// test harness can drive the real routes and their middleware via app.request and seed the
-// same db handle. Never set in production, where the app is the process entry point.
-const EMBEDDED = process.env.MENDPOINT_API_EMBED === "1";
-
+// EMBEDDED (defined at the top, where it also guards against deployment misuse) decides whether
+// this module binds a socket. In embedded mode the app + db are built for the test harness only.
 const server = EMBEDDED
   ? undefined
   : serve({ fetch: app.fetch, port, hostname }, () => {
