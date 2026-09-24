@@ -1812,7 +1812,11 @@ app.post("/providers", async (c) => {
 });
 
 app.patch("/providers/:slug/feed", async (c) => {
-  const p = getProviderBySlugUnscopedForSystem(db, c.req.param("slug"));
+  // Scoped to the caller's visibility so authority is decided on a provider they can see. A
+  // provider not visible to the caller (another tenant's private one) collapses to `undefined`,
+  // taking the same create-authority path as an unknown slug and returning the same 404 — no
+  // existence oracle. A 403 is reserved for a VISIBLE provider the caller may not mutate.
+  const p = getVisibleProviderBySlug(db, catalogReadTenantId(c), c.req.param("slug"));
   const scope = catalogMutationScope(c, p);
   if ("deny" in scope) return scope.deny;
   if (!p) return c.json({ error: "not found" }, 404);
@@ -1821,11 +1825,15 @@ app.patch("/providers/:slug/feed", async (c) => {
     openapiUrl: body.openapiUrl,
     changelogUrl: body.changelogUrl,
   });
-  return c.json(providerToApi(getProviderBySlugUnscopedForSystem(db, p.slug)!));
+  return c.json(providerToApi(getVisibleProviderBySlug(db, catalogReadTenantId(c), p.slug)!));
 });
 
 app.post("/providers/:slug/versions", async (c) => {
-  const p = getProviderBySlugUnscopedForSystem(db, c.req.param("slug"));
+  // Scoped to the caller's visibility so authority is decided on a provider they can see. A
+  // provider not visible to the caller (another tenant's private one) collapses to `undefined`,
+  // taking the same create-authority path as an unknown slug and returning the same 404 — no
+  // existence oracle. A 403 is reserved for a VISIBLE provider the caller may not mutate.
+  const p = getVisibleProviderBySlug(db, catalogReadTenantId(c), c.req.param("slug"));
   const scope = catalogMutationScope(c, p);
   if ("deny" in scope) return scope.deny;
   if (!p) return c.json({ error: "not found" }, 404);
@@ -1850,9 +1858,13 @@ app.post("/providers/:slug/publish", async (c) => {
   if (!synchronousPipelineExecutionAllowed()) {
     return c.json({ error: "synchronous_pipeline_execution_disabled" }, 503);
   }
-  const provider = getProviderBySlugUnscopedForSystem(db, c.req.param("slug"));
+  // Scoped like the other mutation routes: not visible => 404 (same as unknown), 403 only for
+  // a visible provider the caller may not mutate. The explicit not-found guard also fixes the
+  // pre-existing unknown-slug bug where the pipeline threw and the route returned 500.
+  const provider = getVisibleProviderBySlug(db, catalogReadTenantId(c), c.req.param("slug"));
   const scope = catalogMutationScope(c, provider);
   if ("deny" in scope) return scope.deny;
+  if (!provider) return c.json({ error: "not found" }, 404);
   try {
     const body = await c.req
       .json<{
@@ -1901,7 +1913,11 @@ app.post("/providers/:slug/publish", async (c) => {
 
 /** Phase C: upload OpenAPI version and optionally publish (run pipeline) in one step */
 app.post("/providers/:slug/publish-version", async (c) => {
-  const p = getProviderBySlugUnscopedForSystem(db, c.req.param("slug"));
+  // Scoped to the caller's visibility so authority is decided on a provider they can see. A
+  // provider not visible to the caller (another tenant's private one) collapses to `undefined`,
+  // taking the same create-authority path as an unknown slug and returning the same 404 — no
+  // existence oracle. A 403 is reserved for a VISIBLE provider the caller may not mutate.
+  const p = getVisibleProviderBySlug(db, catalogReadTenantId(c), c.req.param("slug"));
   const scope = catalogMutationScope(c, p);
   if ("deny" in scope) return scope.deny;
   if (!p) return c.json({ error: "not found" }, 404);
@@ -3878,14 +3894,24 @@ assertPublicDocsApiRoutesMounted(app.routes);
 const port = Number(process.env.API_PORT ?? 3001);
 const hostname = process.env.API_HOST?.trim() || "0.0.0.0";
 
-const server = serve({ fetch: app.fetch, port, hostname }, () => {
-  const release = resolveRelease();
-  console.log(releaseBanner());
-  console.log(`Mendpoint API listening on http://${hostname}:${port}`);
-  console.log(
-    `probes: /health /live /ready /version /status · auth=${effectiveAuthMode()} · channel=${release.channel}`,
-  );
-});
+// Embedded mode (MENDPOINT_API_EMBED=1): build the app + db without binding a socket, so a
+// test harness can drive the real routes and their middleware via app.request and seed the
+// same db handle. Never set in production, where the app is the process entry point.
+const EMBEDDED = process.env.MENDPOINT_API_EMBED === "1";
+
+const server = EMBEDDED
+  ? undefined
+  : serve({ fetch: app.fetch, port, hostname }, () => {
+      const release = resolveRelease();
+      console.log(releaseBanner());
+      console.log(`Mendpoint API listening on http://${hostname}:${port}`);
+      console.log(
+        `probes: /health /live /ready /version /status · auth=${effectiveAuthMode()} · channel=${release.channel}`,
+      );
+    });
+
+// The app graph and its live db handle, exported only for the embedded test harness above.
+export { app, db };
 
 let shuttingDown = false;
 
@@ -3946,5 +3972,7 @@ function shutdown(signal: string) {
   finalizeAndExit();
 }
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+if (!EMBEDDED) {
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+}
