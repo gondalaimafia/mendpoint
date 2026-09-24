@@ -56,9 +56,11 @@ npx tsx evals/datasets/build.ts
 node_modules/.bin/tsc -p evals/tsconfig.json
 ```
 
-The corpus repositories live OUTSIDE this git repo (default `C:/Users/Talal/dev`;
-override with `MENDPOINT_CORPUS_ROOT`). This keeps the answer key unreachable from
-the repo under test.
+The corpus repositories live OUTSIDE this git repo. Point a run at them by setting
+`MENDPOINT_CORPUS_ROOT`; there is no path default, so when it is unset the corpus is
+simply unavailable and corpus scenarios are cleanly skipped (see
+`evals/scenarios/corpus-root.ts`). This keeps the answer key unreachable from the
+repo under test.
 
 ## Answer-key isolation (do not break this)
 

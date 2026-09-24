@@ -792,11 +792,15 @@ deterministic** — no LLM judge anywhere (`evals/graders/fettler-graders.ts:12`
 `regauge-graders.ts:4`, `DEFERRED.md:49`), with the model hard-disabled
 (`fettler-runner.ts:92`).
 
-Wired at `.github/workflows/ci.yml:46-49`, plus a nightly full-corpus job
-(`.github/workflows/nightly-synthetic-eval.yml:19-43`). **It cannot fail the build**:
-`run-all.ts:274-277` exits non-zero only with `--enforce-readiness`, which CI does not pass; the
-workflow comment states this deliberately (`ci.yml:44-45`). The build is green while
-`evals/reports/latest.md:21` reads "Overall readiness: FAIL". Also, `evals/package.json:5` declares
+Wired at `.github/workflows/ci.yml:46-49`, plus a nightly job that adds the corpus
+scenarios when a corpus is present (`.github/workflows/nightly-synthetic-eval.yml`,
+`synthetic-eval` job). **It cannot fail the build**: `run-all.ts` (the
+`--enforce-readiness` guard) exits non-zero only with that flag, which CI does not
+pass; the workflow comment states this deliberately (`ci.yml:44-45`). The build is
+green while `evals/reports/latest.md:21` reads "Overall readiness: FAIL" — the nightly
+now labels that verdict informational and reports whether the corpus was full,
+partial, or unavailable, so a skipped corpus is no longer a silent full-corpus green.
+Also, `evals/package.json:5` declares
 itself "not a workspace", so `evals/**/*.test.ts` are invisible to root `npm test` and run only via
 `eval:synthetic:check`.
 

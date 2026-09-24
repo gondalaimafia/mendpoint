@@ -1,20 +1,26 @@
 /**
  * Single source of truth for the synthetic-corpus root.
  *
- * Corpus repos live OUTSIDE this git repo (default `C:/Users/Talal/dev`), so a
- * run cannot accidentally read a repo's own ground truth.
+ * Corpus repos live OUTSIDE this git repo, so a run cannot accidentally read a
+ * repo's own ground truth. An operator points a run at them by setting
+ * MENDPOINT_CORPUS_ROOT; when it is unset the corpus is simply UNAVAILABLE.
+ *
+ * There is deliberately NO path default. The previous fallback was a specific
+ * developer's Windows checkout (`C:/Users/Talal/dev`): on that machine a run read
+ * a live corpus while presenting as "unconfigured", and on a Linux runner
+ * `resolve("C:/Users/Talal/dev")` collapsed to a repo-internal path — so the
+ * nightly "full corpus" job looked green while it had actually skipped every
+ * corpus scenario. Absence now resolves to an explicit unavailable sentinel that
+ * is outside the repo and does not exist, so corpus scenarios cleanly skip
+ * (existsSync is false) and the isolation invariant still holds.
  *
  * A GitHub-hosted runner passes `MENDPOINT_CORPUS_ROOT: ${{ vars.MENDPOINT_CORPUS_ROOT }}`,
  * which is the EMPTY STRING when the repository variable is unset — not undefined.
- * `?? default` only falls back on null/undefined, so an empty string would survive
- * and `resolve("")` collapses to `process.cwd()` (the repo root), silently pointing
- * the corpus at the repository under test. That footgun took the nightly eval down
- * for four nights (via `evals/scenarios/index.ts`) and would misgrade the corpus
- * (via `scripts/impact-grade.ts`). Treat an empty or whitespace-only value as unset
- * so it degrades to the default / clean skip instead.
+ * An empty or whitespace-only value is treated as unset (the same "unavailable"
+ * path), never as `process.cwd()`.
  *
- * Both readers resolve the variable through here so they cannot diverge again —
- * two divergent handlings of this one variable is how the footgun survived twice.
+ * Both readers (`evals/scenarios/index.ts` and `scripts/impact-grade.ts`) resolve
+ * the variable through here so they cannot diverge again.
  */
 import { resolve } from "node:path";
 
@@ -23,7 +29,16 @@ const corpusRootEnv = process.env.MENDPOINT_CORPUS_ROOT?.trim();
 /** True when an operator explicitly configured a corpus root via the environment. */
 export const CORPUS_ROOT_CONFIGURED = corpusRootEnv !== undefined && corpusRootEnv.length > 0;
 
-/** Root under which the synthetic corpus repositories live. */
-export const CORPUS_ROOT = resolve(
-  CORPUS_ROOT_CONFIGURED ? corpusRootEnv! : "C:/Users/Talal/dev",
-);
+/**
+ * Sentinel used when no corpus root is configured. It is NOT a real location on
+ * any machine and no corpus ever lives here: it is absolute, resolves outside the
+ * repo, and does not exist, so every corpus scenario skips and answer-key
+ * isolation holds. `CORPUS_ROOT_CONFIGURED` — never this value — is the signal
+ * that an operator supplied a corpus.
+ */
+export const CORPUS_ROOT_UNAVAILABLE = resolve("/mendpoint-corpus-unavailable");
+
+/** Root under which the synthetic corpus repositories live, or the sentinel above when unavailable. */
+export const CORPUS_ROOT = CORPUS_ROOT_CONFIGURED
+  ? resolve(corpusRootEnv!)
+  : CORPUS_ROOT_UNAVAILABLE;

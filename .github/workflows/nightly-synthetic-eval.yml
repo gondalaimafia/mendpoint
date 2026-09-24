@@ -1,17 +1,27 @@
-name: Nightly synthetic eval (full corpus)
+name: Nightly synthetic eval
 
 # The per-PR CI (ci.yml) runs only the GENERATED synthetic families, which are
-# self-contained and need no external corpus. This nightly job is where the
-# HEAVY, hand-authored corpus scenarios belong — the 30,163-file scale case and
-# the language-support cases (Python/Go/Java/CJS) that drive the honest recall
-# failure and the ~precision-first readiness verdict. They are gated behind this
-# schedule rather than dropped.
+# self-contained and need no external corpus. This nightly job ALWAYS runs that
+# generated suite, and ADDITIONALLY runs the HEAVY, hand-authored corpus
+# scenarios (the 30,163-file scale case and the language-support cases that drive
+# the honest recall failure and the ~precision-first readiness verdict) WHEN a
+# corpus is present.
 #
 # The corpus lives OUTSIDE the repo and is reached via MENDPOINT_CORPUS_ROOT. A
-# GitHub-hosted runner does not have it, so this job cleanly SKIPS the corpus and
-# degrades to the generated suite; point this workflow at a self-hosted runner
-# (or add a corpus-checkout step) that sets MENDPOINT_CORPUS_ROOT to get the full
-# readiness measure. The readiness gate is reported, never used to block.
+# GitHub-hosted runner does not have it, so this job runs the generated suite
+# only and REPORTS that it did — it does not present itself as a full-corpus pass
+# (see the "Report what actually ran" step). To measure full-corpus readiness,
+# point this workflow at a self-hosted runner (or add a corpus-checkout step)
+# that sets MENDPOINT_CORPUS_ROOT.
+#
+# The readiness verdict is an INSTRUMENT, not a gate: run-all.ts reports OVERALL
+# PASS/FAIL and exits 0 unless --enforce-readiness is passed (see the comment at
+# the end of evals/runners/run-all.ts for why — a corpus authored to make the
+# product fail must not be able to gate CI green, and when the corpus is absent
+# the verdict is FAIL by construction because unmeasured capabilities cannot read
+# as ready). Making that FAIL hard-fail the job would keep the nightly
+# permanently red for a missing corpus and spam the owner, so it is surfaced in
+# the job summary and left informational instead.
 
 permissions:
   contents: read
@@ -22,7 +32,7 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  full-corpus-eval:
+  synthetic-eval:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -35,13 +45,55 @@ jobs:
         run: npm ci
       - name: Typecheck and unit-test evals
         run: npm run eval:synthetic:check
-      - name: Run full synthetic suite (corpus if present)
+      - name: Run generated suite (plus corpus scenarios if a corpus is present)
         run: npm run eval:synthetic
         env:
           # Set to the corpus location on a self-hosted runner that has it.
-          # Absent on GitHub-hosted runners -> corpus scenarios are skipped.
+          # Absent on GitHub-hosted runners -> corpus scenarios are skipped and
+          # the run is reported as synthetic-only below.
           MENDPOINT_CORPUS_ROOT: ${{ vars.MENDPOINT_CORPUS_ROOT }}
-      - name: Upload full readiness evidence
+      - name: Report what actually ran
+        if: always()
+        run: |
+          summary="evals/reports/run-summary.json"
+          if [ ! -f "$summary" ]; then
+            echo "## Nightly synthetic eval" >>"$GITHUB_STEP_SUMMARY"
+            echo "" >>"$GITHUB_STEP_SUMMARY"
+            echo "No run summary was produced (the eval did not complete). This run measured nothing." >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          status="$(jq -r '.corpusStatus' "$summary")"
+          corpus_run="$(jq -r '.corpusScenariosRun' "$summary")"
+          corpus_skipped="$(jq -r '.corpusScenariosSkipped' "$summary")"
+          corpus_total="$(jq -r '.corpusScenariosTotal' "$summary")"
+          skipped_ids="$(jq -r '.corpusSkippedScenarioIds | join(", ")' "$summary")"
+          generated_run="$(jq -r '.generatedScenariosRun' "$summary")"
+          suite_passed="$(jq -r '.suitePassed' "$summary")"
+          suite_total="$(jq -r '.suiteTotal' "$summary")"
+          readiness="$(jq -r '.readinessOverall' "$summary")"
+          {
+            case "$status" in
+              full)
+                echo "## Nightly synthetic eval — full corpus + synthetic"
+                echo ""
+                echo "Corpus present: ran all ${corpus_run} corpus scenario(s) alongside ${generated_run} generated scenario(s)."
+                ;;
+              partial)
+                echo "## Nightly synthetic eval — partial corpus + synthetic"
+                echo ""
+                echo "Corpus only partially present: ran ${corpus_run} of ${corpus_total} corpus scenario(s) plus ${generated_run} generated, and SKIPPED ${corpus_skipped} (skipped: ${skipped_ids}). It does NOT measure full-corpus readiness and is NOT a full-corpus pass."
+                ;;
+              *)
+                echo "## Nightly synthetic eval — corpus unavailable, synthetic only"
+                echo ""
+                echo "MENDPOINT_CORPUS_ROOT is not set (or no corpus is present on this runner), so this run executed the ${generated_run} generated scenario(s) ONLY and skipped ${corpus_skipped} corpus scenario(s). It does NOT measure full-corpus readiness and is NOT a full-corpus pass."
+                ;;
+            esac
+            echo ""
+            echo "- Suite: ${suite_passed}/${suite_total} scenarios passed."
+            echo "- Readiness verdict (informational, does not gate): OVERALL ${readiness}. When the corpus is not fully present this is FAIL by construction — unmeasured capabilities cannot read as ready."
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Upload readiness evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -50,6 +102,7 @@ jobs:
             evals/reports/latest.md
             evals/reports/readiness-scorecard.md
             evals/reports/latest-runs.json
+            evals/reports/run-summary.json
             evals/FAILURES.md
           if-no-files-found: error
           retention-days: 30
