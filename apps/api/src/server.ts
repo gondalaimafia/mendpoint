@@ -2348,6 +2348,19 @@ app.post("/migration-prs/:id/retry-delivery", (c) => {
     } catch { /* the operation row may not exist yet; the status flip still retries */ }
   }
   updateMigrationPrStatus(db, pr.id, "delivery_failed", null);
+  // Re-queue a delivery-only retry job (D10): it replays the adoptive delivery from
+  // the persisted artifact, not the whole pipeline. A deterministic id makes it a
+  // no-op if a retry is already queued.
+  try {
+    enqueueJob(db, {
+      id: `pipeline-delivery-retry:${pr.id}`,
+      tenantId,
+      type: "pipeline.delivery-retry",
+      payload: { prId: pr.id },
+      maxAttempts: 50,
+      createdAt: nowIso(),
+    });
+  } catch { /* a delivery-only retry for this pr is already queued */ }
   requestAudit(c, {
     actor: "human",
     action: "pr.retry_delivery",

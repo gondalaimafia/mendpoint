@@ -373,14 +373,6 @@ export type MigrationPrRow = {
    */
   delivered_base_sha: string | null;
   delivered_head_sha: string | null;
-  /**
-   * @deprecated PR #606 removed base re-anchoring. These never reached main and
-   * are no longer schema columns; a DB that ran an intermediate head keeps them
-   * as unused columns, so they remain here as optional read-only fields until the
-   * pipeline stops reading them (step 5). Always undefined on a current DB.
-   */
-  delivery_base_sha?: string | null;
-  delivery_retirement_generation?: number;
 };
 
 export type AuditEvent = {

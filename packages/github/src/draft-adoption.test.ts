@@ -249,6 +249,57 @@ describe("adoptive draft delivery state machine", () => {
     expect(fake.comments(OWNER, REPO).length).toBeGreaterThanOrEqual(1);
   });
 
+  it("C (D8 no-PR): adopts a main-era commit (Mendpoint identity, no trailer, no PR) by opening its PR", async () => {
+    const { fake, baseSha } = seed();
+    // Reconstruct main's exact-draft commit on the branch: Mendpoint author/committer,
+    // our exact tree against the base, but NO Mendpoint-Delivery trailer and no PR
+    // (main failed at PR creation). Content-addressing makes its tree == ours.
+    const { data: base } = await fake.git.getCommit({ owner: OWNER, repo: REPO, commit_sha: baseSha });
+    const { data: blob } = await fake.git.createBlob({ owner: OWNER, repo: REPO, content: Buffer.from("changed\n").toString("base64"), encoding: "base64" });
+    const { data: tree } = await fake.git.createTree({ owner: OWNER, repo: REPO, base_tree: base.tree.sha, tree: [{ path: "src/a.ts", mode: "100644", type: "blob", sha: blob.sha }] });
+    const identity = { name: "Mendpoint", email: "delivery@mendpoint.ai", date: "2026-09-02T12:00:00.000Z" };
+    const { data: commit } = await fake.git.createCommit({ owner: OWNER, repo: REPO, message: "Fettler candidate", tree: tree.sha, parents: [baseSha], author: identity, committer: identity });
+    await fake.git.createRef({ owner: OWNER, repo: REPO, ref: `refs/heads/${BRANCH}`, sha: commit.sha });
+    expect(fake.openPulls(OWNER, REPO, BRANCH)).toHaveLength(0);
+    const result = await deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha));
+    expect(result.state).toBe("draft");
+    expect(fake.openPulls(OWNER, REPO, BRANCH)).toHaveLength(1);
+    // Adopted the existing main-era commit, did not create a second one.
+    expect(fake.openPulls(OWNER, REPO, BRANCH)[0]!.head.sha).toBe(commit.sha);
+  });
+
+  it("D6: does NOT converge the body when a human pushed on top of our commit", async () => {
+    const { fake, baseSha } = seed();
+    const first = await deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha, { body: "our original body" }));
+    // A human pushes a commit on top of our commit and would-be edits the body.
+    fake.humanCommitOnto({ owner: OWNER, repo: REPO, branch: BRANCH, prNumber: first.number, content: { "src/human.ts": "hand edit\n" } });
+    fake.humanEditPullBody(OWNER, REPO, first.number, "human-owned body");
+    // A re-delivery with a fresh body must adopt but LEAVE the human's body — the
+    // branch head is no longer our commit.
+    const result = await deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha, { body: "regenerated body" }));
+    expect(result.state).toBe("draft");
+    expect(fake.openPulls(OWNER, REPO, BRANCH)[0]!.body).toBe("human-owned body");
+  });
+
+  it("D (cross-attempt): closes a duplicate open PR opened after the human-closed original, on a fresh L", async () => {
+    const { fake, baseSha } = seed();
+    const first = await deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha)); // PR #1
+    fake.humanClosePull(OWNER, REPO, first.number);
+    // A prior attempt (after a lost create response + a stale pulls.list) opened a
+    // duplicate PR #2 for the same branch; the human's close of #1 is authoritative.
+    const dup = await fake.pulls.create({
+      owner: OWNER, repo: REPO, title: "dup", head: `${OWNER}:${BRANCH}`, base: BASE_BRANCH, body: "dup", draft: true,
+    });
+    expect(dup.data.number).toBeGreaterThan(first.number);
+    // A fresh delivery (createdNewPull=false) must still close the duplicate and
+    // record the original's closed outcome — D7 runs on every L.
+    const result = await deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha));
+    expect(result.state).toBe("closed");
+    expect(result.number).toBe(first.number);
+    expect(fake.openPulls(OWNER, REPO, BRANCH)).toHaveLength(0);
+    expect(fake.comments(OWNER, REPO).length).toBeGreaterThanOrEqual(1);
+  });
+
   it("exposes typed blocked and contention errors", () => {
     expect(new AdoptiveDraftBlockedError("github_delivery_branch_foreign").blocked).toBe(true);
     expect(new AdoptiveDraftContentionError().retryable).toBe(true);

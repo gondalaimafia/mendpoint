@@ -1538,4 +1538,33 @@ describe("durable dependency outage queue", () => {
     expect(result).toMatchObject({ status: "completed", fenced: true });
     db.close();
   });
+
+  it("E: a fenced-but-successful worker settles a row another worker already failed", async () => {
+    const db = new DatabaseSync(":memory:");
+    let now = "2026-09-02T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    const result = await queue.run({
+      ...SCOPE,
+      adoptive: true as const,
+      workerId: "worker-1",
+      retryBudget: 5,
+      expiresAt: "2026-09-02T13:00:00.000Z",
+      leaseMs: 30_000,
+      authorityVersion: "model-authority-v1",
+      reconcile: async () => ({ status: "missing" as const }),
+      execute: async () => {
+        // Worker 1's lease expires; worker 2 reclaims and FAILS the row before
+        // worker 1's (successful) delivery returns.
+        now = "2026-09-02T12:00:40.000Z";
+        const c2 = queue.claim({ ...SCOPE, workerId: "worker-2", now, leaseMs: 30_000, authorityVersion: "model-authority-v1" })!;
+        queue.fail(c2, decisionForAction("fail", 3), now);
+        return { value: { pr: 7 }, completionDigest: COMPLETION };
+      },
+      classify: () => decisionForAction("retry"),
+    });
+    expect(result).toMatchObject({ status: "completed", fenced: true });
+    // The row must be settled completed/healthy, not left failed/degraded_failed.
+    expect(queue.get(SCOPE)).toMatchObject({ status: "completed", standing: "healthy", completionDigest: COMPLETION });
+    db.close();
+  });
 });

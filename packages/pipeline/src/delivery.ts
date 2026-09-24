@@ -11,11 +11,17 @@
  * retry re-runs delivery from the persisted write-ahead artifact and the current
  * body, and ADOPT converges the PR body when the head is still ours.
  */
+import { createHash } from "node:crypto";
 import {
   insertMigrationPr,
   updateMigrationPrDelivery,
+  updateMigrationPrStatus,
   persistDeliveryArtifact,
   hasDeliveryArtifactByContent,
+  getLatestDeliveryArtifact,
+  getPr,
+  getConsumer,
+  getConsumerRepo,
   type AppDb,
 } from "@mendpoint/db";
 import {
@@ -23,6 +29,14 @@ import {
   type GitHubDelivery,
   type AdoptiveDraftResult,
 } from "@mendpoint/github";
+
+/** ~7-day cap on retrying a stuck delivery before it abandons (D10). */
+export const GITHUB_DELIVERY_ABANDON_AFTER_MS = 7 * 24 * 60 * 60 * 1_000;
+
+/** Content-shape key for a write-ahead artifact: unique per (delivery key, tree, parent). */
+export function deliveryArtifactDigest(deliveryKey: string, treeSha: string, parentSha: string): string {
+  return createHash("sha256").update(`${deliveryKey}\u0000${treeSha}\u0000${parentSha}`).digest("hex");
+}
 
 export type DeliveryResolution = {
   delivery: GitHubDelivery;
@@ -184,12 +198,20 @@ export async function deliverConsumerDraft(
             persistArtifact: (artifact) => {
               persistDeliveryArtifact(db, {
                 tenantId: params.tenantId,
-                artifactDigest: artifact.bodyDigest,
+                // Key by the commit SHAPE (delivery key + tree + parent), not the
+                // body digest: the body is identical across attempts, so keying by
+                // it would (with ON CONFLICT DO NOTHING) never store the (tree,
+                // parent) of a later attempt built on a moved base — and ours()
+                // would then judge our own commit foreign. Each shape is its own row.
+                artifactDigest: deliveryArtifactDigest(artifact.deliveryKey, artifact.treeSha, artifact.parentSha),
                 deliveryKey: artifact.deliveryKey,
                 title: artifact.title,
                 body: artifact.body,
                 treeSha: artifact.treeSha,
                 parentSha: artifact.parentSha,
+                // The file edits, so a delivery-only retry (D10) reconstructs the
+                // whole delivery from the artifact without re-analysing.
+                filesJson: JSON.stringify(params.files.map((f) => ({ path: f.path, content: f.content }))),
                 createdAt: params.commitDate!,
               });
             },
@@ -239,4 +261,107 @@ export async function deliverConsumerDraft(
     updateMigrationPrDelivery(db, prId, { status });
     return Object.freeze({ status, prNumber: null, prUrl: null, deliveryError });
   }
+}
+
+export type RetryConsumerDeliveryInput = Readonly<{
+  db: AppDb;
+  tenantId: string;
+  prId: string;
+  /** Resolve the transport for the loaded consumer/repo (worker wires the App resolver). */
+  deliveryFor: (
+    consumer: Readonly<{
+      installation_id: string | null;
+      github_delivery_mode: "app" | "legacy_pat" | "revoked";
+      github_owner: string;
+      github_repo: string;
+    }>,
+    repo?: Readonly<{ scm_connection_id: string | null; connected_repository_id: string | null }>,
+  ) => DeliveryResolution;
+  /** The refreshed remote default head, when the worker refreshed the clone; else the artifact base. */
+  refreshedHeadSha?: string | null;
+  now: string;
+}>;
+
+export type RetryConsumerDeliveryResult = Readonly<{
+  /** Whether a delivery-only retry ran (false when there is nothing to retry or no artifact). */
+  retried: boolean;
+  status: string;
+  prNumber: number | null;
+  prUrl: string | null;
+  deliveryError: string | null;
+}>;
+
+/**
+ * Delivery-only retry (PR #606 D10): re-run ONLY the adoptive delivery for a
+ * failed/blocked migration_pr from its persisted write-ahead artifact — no
+ * re-analysis, no regeneration. Enforces the ~7-day age cap into a terminal
+ * github_delivery_abandoned. Returns retried:false (so the caller may fall back to
+ * a full pipeline run) when the row is not retryable or never anchored an artifact.
+ */
+export async function retryConsumerDelivery(
+  input: RetryConsumerDeliveryInput,
+): Promise<RetryConsumerDeliveryResult> {
+  const { db, tenantId, prId, now } = input;
+  const pr = getPr(db, prId, tenantId);
+  if (!pr) return Object.freeze({ retried: false, status: "not_found", prNumber: null, prUrl: null, deliveryError: null });
+  if (pr.status !== "delivery_failed" && pr.status !== "delivery_blocked") {
+    return Object.freeze({ retried: false, status: pr.status, prNumber: pr.github_pr_number ?? null, prUrl: pr.github_pr_url ?? null, deliveryError: null });
+  }
+  // 7-day age cap: abandon into a visible terminal state the operator can reopen.
+  if (Number.isFinite(Date.parse(pr.created_at)) &&
+      Date.parse(now) - Date.parse(pr.created_at) > GITHUB_DELIVERY_ABANDON_AFTER_MS) {
+    updateMigrationPrStatus(db, prId, "github_delivery_abandoned", null);
+    return Object.freeze({ retried: true, status: "github_delivery_abandoned", prNumber: null, prUrl: null, deliveryError: "github_delivery_abandoned" });
+  }
+  const consumer = getConsumer(db, pr.consumer_id, tenantId);
+  const repo = consumer ? getConsumerRepo(db, consumer.id, tenantId) : undefined;
+  if (!consumer || !repo) {
+    return Object.freeze({ retried: false, status: pr.status, prNumber: pr.github_pr_number ?? null, prUrl: pr.github_pr_url ?? null, deliveryError: null });
+  }
+  const deliveryKey = `${pr.change_id}:${pr.consumer_id}`;
+  const artifact = getLatestDeliveryArtifact(db, tenantId, deliveryKey);
+  // No artifact means delivery never reached the commit build (e.g. a base-refresh
+  // failure or a content-manifest repo). Delivery-only cannot reconstruct it; the
+  // caller falls back to a full pipeline run.
+  if (!artifact || !artifact.filesJson) {
+    return Object.freeze({ retried: false, status: pr.status, prNumber: pr.github_pr_number ?? null, prUrl: pr.github_pr_url ?? null, deliveryError: null });
+  }
+  const files = JSON.parse(artifact.filesJson) as Array<{ path: string; content: string }>;
+  const outcome = await deliverConsumerDraft({
+    db,
+    tenantId,
+    prId,
+    changeId: pr.change_id,
+    isRetry: true,
+    consumer: { id: consumer.id, github_owner: consumer.github_owner, github_repo: consumer.github_repo },
+    defaultBranch: (repo as { default_branch?: string }).default_branch ?? "main",
+    deliveryKey,
+    // The row's stored branch (D8) — a main-era branch is adopted, not duplicated.
+    branchName: pr.branch_name,
+    title: artifact.title,
+    risk: pr.risk,
+    patch: pr.patch_unified,
+    // Reuse the artifact's body (the persisted delivery), not a regenerated one.
+    body: artifact.body,
+    files,
+    // Base = the refreshed remote head when available, else the artifact's base.
+    baseSha: input.refreshedHeadSha ?? artifact.parentSha,
+    commitDate: pr.created_at,
+    revisionKind: "git_commit",
+    shouldDeliver: true,
+    terminalStatus: pr.status,
+    coverageJson: null,
+    createdAt: pr.created_at,
+    existingPrNumber: pr.github_pr_number ?? null,
+    existingPrUrl: pr.github_pr_url ?? null,
+    resolveDelivery: () => input.deliveryFor(consumer, repo),
+    assertActive: () => {},
+  });
+  return Object.freeze({
+    retried: true,
+    status: outcome.status,
+    prNumber: outcome.prNumber,
+    prUrl: outcome.prUrl,
+    deliveryError: outcome.deliveryError,
+  });
 }

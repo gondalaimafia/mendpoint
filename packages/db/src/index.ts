@@ -309,6 +309,9 @@ CREATE TABLE IF NOT EXISTS migration_delivery_artifacts (
   body TEXT NOT NULL,
   tree_sha TEXT NOT NULL,
   parent_sha TEXT NOT NULL,
+  -- The delivery file edits (path + content), so a delivery-only retry (D10) can
+  -- reconstruct the whole delivery from the artifact without re-analysing.
+  files_json TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, artifact_digest)
 );
@@ -3432,6 +3435,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "migration_prs", name: "github_account_id", sql: "TEXT" },
     { table: "migration_prs", name: "delivered_base_sha", sql: "TEXT" },
     { table: "migration_prs", name: "delivered_head_sha", sql: "TEXT" },
+    { table: "migration_delivery_artifacts", name: "files_json", sql: "TEXT" },
     {
       table: "regauge_adaptive_candidates",
       name: "base_branch",
@@ -4911,14 +4915,8 @@ export function insertMigrationPr(
     resolvedAt?: string | null;
     /** JSON-serialized ImpactCoverage for the analysis behind this PR. */
     coverageJson?: string | null;
-    /**
-     * @deprecated PR #606 removed base re-anchoring; delivery identity is the
-     * branch. Accepted but ignored so pre-#606 callers still compile; not written.
-     */
-    deliveryBaseSha?: string | null;
   },
 ) {
-  void row.deliveryBaseSha;
   run(
     db,
     `INSERT INTO migration_prs (id, change_id, consumer_id, title, body, branch_name, status, risk, patch_unified, github_pr_number, github_pr_url, created_at, resolved_at, coverage_json)
@@ -4966,18 +4964,12 @@ export function updateMigrationPrDelivery(
     githubRepositoryId?: string;
     githubInstallationId?: string;
     githubAccountId?: string;
-    /**
-     * @deprecated PR #606 removed base re-anchoring; delivery identity is the
-     * branch. Accepted but ignored so pre-#606 callers still compile; not written.
-     */
-    deliveryBaseSha?: string | null;
     /** The base sha the adopted delivery commit descends from (set-once by ADOPT). */
     deliveredBaseSha?: string | null;
     /** The delivery-branch head sha at adoption (set-once by ADOPT). */
     deliveredHeadSha?: string | null;
   },
 ) {
-  void row.deliveryBaseSha;
   // D1 (PR #606): a pre-delivery or failure write — one that does NOT itself
   // record a PR number — must never downgrade a row that already recorded a
   // draft. Guard such writes with compare-and-set on `github_pr_number IS NULL`.
@@ -5037,29 +5029,6 @@ export function updateMigrationPrDelivery(
   }
 }
 
-/**
- * Retire the anchored delivery base for a pull request row: clear
- * `delivery_base_sha` and increment `delivery_retirement_generation`.
- *
- * The persisted `delivery_base_sha` binds set-once (COALESCE in
- * updateMigrationPrDelivery) so lost-response retries reuse the same base. But
- * that binding is only valid until a proven-no-write retirement: when a retry
- * observes drift (the remote head moved off the anchored base), the branch is
- * absent, and the durable queue proves no write happened, the anchor is cleared
- * so the next attempt re-anchors to the refreshed head; the reused body is
- * gated on the anchor, so clearing it un-binds the body and the next attempt
- * regenerates from scratch. The generation bump makes each re-anchoring lineage
- * distinct so a remote that returns to a previously retired base derives a new
- * operation id instead of colliding with the retired row's digest.
- */
-export function retireMigrationPrDeliveryAnchor(_db: AppDb, _id: string): void {
-  // @deprecated PR #606 removed base re-anchoring: delivery identity is the
-  // branch, so there is no anchor to retire. Kept as a no-op only until the
-  // pipeline stops calling it (step 5); the columns it wrote no longer exist.
-  void _db;
-  void _id;
-}
-
 export type DeliveryArtifact = {
   tenantId: string;
   artifactDigest: string;
@@ -5068,6 +5037,8 @@ export type DeliveryArtifact = {
   body: string;
   treeSha: string;
   parentSha: string;
+  /** JSON of the delivery file edits ([{path, content}]) for a delivery-only retry (D10). */
+  filesJson?: string | null;
   createdAt: string;
 };
 
@@ -5080,8 +5051,8 @@ export function persistDeliveryArtifact(db: AppDb, artifact: DeliveryArtifact): 
   run(
     db,
     `INSERT INTO migration_delivery_artifacts
-       (tenant_id, artifact_digest, delivery_key, title, body, tree_sha, parent_sha, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       (tenant_id, artifact_digest, delivery_key, title, body, tree_sha, parent_sha, files_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (tenant_id, artifact_digest) DO NOTHING`,
     [
       artifact.tenantId,
@@ -5091,9 +5062,56 @@ export function persistDeliveryArtifact(db: AppDb, artifact: DeliveryArtifact): 
       artifact.body,
       artifact.treeSha,
       artifact.parentSha,
+      artifact.filesJson ?? null,
       artifact.createdAt,
     ],
   );
+}
+
+type DeliveryArtifactRow = {
+  tenant_id: string;
+  artifact_digest: string;
+  delivery_key: string;
+  title: string;
+  body: string;
+  tree_sha: string;
+  parent_sha: string;
+  files_json: string | null;
+  created_at: string;
+};
+
+function deliveryArtifactFromRow(row: DeliveryArtifactRow): DeliveryArtifact {
+  return {
+    tenantId: row.tenant_id,
+    artifactDigest: row.artifact_digest,
+    deliveryKey: row.delivery_key,
+    title: row.title,
+    body: row.body,
+    treeSha: row.tree_sha,
+    parentSha: row.parent_sha,
+    filesJson: row.files_json,
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * The most recently persisted delivery artifact for a delivery key, or null. A
+ * delivery-only retry (D10) reconstructs the whole delivery (files, title, body)
+ * from it without re-running analysis.
+ */
+export function getLatestDeliveryArtifact(
+  db: AppDb,
+  tenantId: string,
+  deliveryKey: string,
+): DeliveryArtifact | null {
+  const row = get(
+    db,
+    `SELECT tenant_id, artifact_digest, delivery_key, title, body, tree_sha, parent_sha, files_json, created_at
+     FROM migration_delivery_artifacts WHERE tenant_id = ? AND delivery_key = ?
+     ORDER BY created_at DESC, artifact_digest DESC LIMIT 1`,
+    [tenantId, deliveryKey],
+  ) as DeliveryArtifactRow | undefined;
+  return row ? deliveryArtifactFromRow(row) : null;
 }
 
 /**
@@ -5125,30 +5143,11 @@ export function getDeliveryArtifact(
 ): DeliveryArtifact | null {
   const row = get(
     db,
-    `SELECT tenant_id, artifact_digest, delivery_key, title, body, tree_sha, parent_sha, created_at
+    `SELECT tenant_id, artifact_digest, delivery_key, title, body, tree_sha, parent_sha, files_json, created_at
      FROM migration_delivery_artifacts WHERE tenant_id = ? AND artifact_digest = ?`,
     [tenantId, artifactDigest],
-  ) as {
-    tenant_id: string;
-    artifact_digest: string;
-    delivery_key: string;
-    title: string;
-    body: string;
-    tree_sha: string;
-    parent_sha: string;
-    created_at: string;
-  } | undefined;
-  if (!row) return null;
-  return {
-    tenantId: row.tenant_id,
-    artifactDigest: row.artifact_digest,
-    deliveryKey: row.delivery_key,
-    title: row.title,
-    body: row.body,
-    treeSha: row.tree_sha,
-    parentSha: row.parent_sha,
-    createdAt: row.created_at,
-  };
+  ) as DeliveryArtifactRow | undefined;
+  return row ? deliveryArtifactFromRow(row) : null;
 }
 
 /**

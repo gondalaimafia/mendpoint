@@ -60,6 +60,14 @@ import {
 } from "@mendpoint/github";
 import { evaluatePolicy, type PolicyConfig } from "@mendpoint/policy";
 import { deliverConsumerDraft } from "./delivery.js";
+export {
+  deliveryArtifactDigest,
+  retryConsumerDelivery,
+  GITHUB_DELIVERY_ABANDON_AFTER_MS,
+  type RetryConsumerDeliveryInput,
+  type RetryConsumerDeliveryResult,
+  type DeliveryResolution,
+} from "./delivery.js";
 import { filterRepairEdits } from "./repair-policy.js";
 import {
   applyBrandPack,
@@ -1104,6 +1112,11 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     "closed",
     "merged",
     "low_confidence",
+    // delivery_blocked needs a human action on GitHub (foreign branch, ambiguous
+    // or wrong-base PR); an automatic rerun would block again, so it is reported
+    // and skipped, never re-minted (which would throw an artifact-hash conflict).
+    // The operator retry endpoint flips it to delivery_failed to re-attempt.
+    "delivery_blocked",
     ...(!replayNotificationOnly ? ["notification_only"] : []),
   ]);
   const existingPrByConsumer = new Map(
@@ -2645,6 +2658,8 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
                   ? "pr.package_failed"
                 : status === "delivery_failed"
                   ? "pr.delivery_failed"
+                : status === "delivery_blocked"
+                  ? "pr.delivery_blocked"
                   : "pr.draft_opened",
       resourceType: "migration_pr",
       resourceId: prId,

@@ -126,6 +126,7 @@ describe("write-ahead delivery artifact (PR #606 D5)", () => {
       body: "body with the package section",
       treeSha: "e".repeat(40),
       parentSha: "f".repeat(40),
+      filesJson: JSON.stringify([{ path: "src/a.ts", content: "changed\n" }]),
       createdAt: "2026-09-02T12:00:00.000Z",
     };
     persistDeliveryArtifact(db, artifact);

@@ -1257,7 +1257,12 @@ export class DependencyOutageQueue {
       }
       // Fenced success: the adoptive execute delivered idempotently on GitHub even
       // though our claim was lost, so the delivery IS complete — never fence-lost.
-      return Object.freeze({ status: "completed", value: executed.value, record: completed.record, fenced: true });
+      // If another worker settled the row to a non-completed state (e.g. failed),
+      // settle it to completed/healthy so the ledger reflects the delivery (E).
+      const record = completed.record.status === "completed"
+        ? completed.record
+        : this.settleFencedCompletion(operation, executed.completionDigest, this.now());
+      return Object.freeze({ status: "completed", value: executed.value, record, fenced: true });
     } catch (error) {
       if (error instanceof Error && error.message === "dependency_outage_completion_digest_conflict") {
         const record = this.get(operation) ?? claim;
@@ -1265,6 +1270,44 @@ export class DependencyOutageQueue {
       }
       throw error;
     }
+  }
+
+  /**
+   * Settle a row to completed/healthy after a fenced worker's execute delivered on
+   * GitHub even though its ledger claim was lost (E). Idempotent: a row already
+   * completed with this digest is unchanged; a different completed digest conflicts.
+   * A failed/queued/blocked row is transitioned to completed with a `completed`
+   * event, so a fenced-but-successful delivery never leaves the tenant degraded.
+   */
+  private settleFencedCompletion(
+    scope: DependencyOutageScope,
+    completionDigest: string,
+    observedAt: string,
+  ): DependencyOutageRecord {
+    if (!SHA256.test(completionDigest)) throw new Error("dependency_outage_completion_digest_invalid");
+    return withImmediateTransaction(this.db, () => {
+      const current = this.row(scope);
+      if (!current || current.operation_digest !== scope.operationDigest) {
+        throw new Error("dependency_outage_operation_missing");
+      }
+      if (current.status === "completed") {
+        if (current.completion_digest !== completionDigest) {
+          throw new Error("dependency_outage_completion_digest_conflict");
+        }
+        return fromRow(current);
+      }
+      this.db.prepare(`UPDATE dependency_outage_operations SET
+        status = 'completed', standing = 'healthy', circuit_state = 'closed',
+        circuit_opened_at = NULL, consecutive_failures = 0,
+        completion_digest = ?, claim_owner = NULL, claim_expires_at = NULL,
+        last_failure_kind = NULL, last_failure_reason = NULL, updated_at = ?
+        WHERE tenant_id = ? AND dependency_kind = ? AND provider_id = ? AND operation_id = ?`)
+        .run(completionDigest, observedAt, scope.tenantId, scope.dependencyKind,
+          scope.providerId, scope.operationId);
+      this.append(scope, "completed", observedAt,
+        Object.freeze({ completionDigest, fencedSettlement: true }));
+      return fromRow(this.row(scope)!);
+    });
   }
 
   /**

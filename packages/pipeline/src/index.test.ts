@@ -20,6 +20,9 @@ import {
   insertMonitoredApi,
   insertPolicy,
   getConsumerRepo,
+  insertMigrationPr,
+  persistDeliveryArtifact,
+  getPr,
   listCapabilityAdoptionOpportunities,
   listPrs,
   listChanges,
@@ -33,7 +36,7 @@ import {
   verifyDomainEventIntegrity,
 } from "@mendpoint/db";
 import { newId, nowIso } from "@mendpoint/shared";
-import { MockGitHubDelivery, GitHubAppDelivery, type GitHubDelivery } from "@mendpoint/github";
+import { MockGitHubDelivery, GitHubAppDelivery, AdoptiveDraftBlockedError, type GitHubDelivery } from "@mendpoint/github";
 import { classifyDependencyOutage } from "@mendpoint/ops";
 import { analyzeImpactWithSoftwareGraph } from "@mendpoint/code-impact";
 import {
@@ -41,7 +44,7 @@ import {
   issueVerificationWaiver,
   type SecurityScanAttestation,
 } from "@mendpoint/contract";
-import { applyPrFeedback, createPipelineDeliveryResolver, runChangePipeline } from "./index.js";
+import { applyPrFeedback, createPipelineDeliveryResolver, runChangePipeline, retryConsumerDelivery, deliveryArtifactDigest } from "./index.js";
 import {
   getSoftwareGraphHead,
   openGraphLearnMemory,
@@ -507,6 +510,93 @@ describe("pipeline", () => {
     expect(second.consumers.some((c) => c.prStatus === "draft")).toBe(true);
     // No duplicate: one PR row for the consumer.
     expect(listPrs(db, "tenant_default")).toHaveLength(1);
+  });
+
+  it("A: a blocked consumer is reported and skipped on rerun; a sibling still delivers; no artifact conflict", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Blocked Shop", repo: "blocked-shop", localPath: shop });
+    addMonitoredConsumer(db, provider.id, { name: "Flaky Shop", repo: "flaky-shop", localPath: shop });
+
+    class MixedDelivery extends MockGitHubDelivery {
+      flakyFailed = false;
+      override async deliverAdoptiveDraft(
+        input: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[0],
+        options: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[1],
+      ): ReturnType<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>> {
+        if (input.repo === "blocked-shop") throw new AdoptiveDraftBlockedError("github_delivery_branch_foreign");
+        if (input.repo === "flaky-shop" && !this.flakyFailed) { this.flakyFailed = true; throw new Error("SCM unavailable"); }
+        return super.deliverAdoptiveDraft(input, options);
+      }
+    }
+    const dir = join(tmpdir(), `mendpoint-pipe-blocked-${Date.now()}-${Math.random()}`);
+    dirs.push(dir);
+    const github = new MixedDelivery(dir);
+    const common = {
+      tenantId: "tenant_default", providerSlug: "acme-payments", db, github, persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+    };
+    // Run 1: blocked-shop -> delivery_blocked; flaky-shop -> delivery_failed.
+    const first = await runChangePipeline({ ...common, graphDb: testGraphDb() });
+    const firstStatuses = new Map(first.consumers.map((c) => [c.consumerId, c.prStatus]));
+    // Run 2 must NOT throw (a blocked rerun previously minted a new row and threw
+    // an artifact-hash conflict). The blocked consumer is reported and skipped; the
+    // flaky sibling now delivers.
+    const second = await runChangePipeline({ ...common, graphDb: testGraphDb() });
+    const byConsumer = new Map(second.consumers.map((c) => [c.consumerId, c.prStatus]));
+    const blockedId = [...firstStatuses].find(([, s]) => s === "delivery_blocked")?.[0];
+    const flakyId = [...firstStatuses].find(([, s]) => s === "delivery_failed")?.[0];
+    expect(blockedId, "run 1 produced a delivery_blocked consumer").toBeDefined();
+    expect(flakyId, "run 1 produced a delivery_failed consumer").toBeDefined();
+    expect(byConsumer.get(blockedId!)).toBe("delivery_blocked"); // reported, skipped
+    expect(byConsumer.get(flakyId!)).toBe("draft"); // sibling delivered
+    // No duplicate rows minted for the blocked consumer.
+    expect(listPrs(db, "tenant_default")).toHaveLength(2);
+  });
+
+  it("F (D10): a delivery-only retry replays from the artifact (no re-analysis); the 7-day cap abandons", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+    const consumerId = addMonitoredConsumer(db, provider.id, { name: "Retry Shop", repo: "retry-shop", localPath: shop });
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+    const deliveryKey = `change-x:${consumerId}`;
+    const baseSha = "b".repeat(40);
+    // A delivery_failed row plus its persisted write-ahead artifact (files + base).
+    insertMigrationPr(db, {
+      id: "pr-retry-1", changeId: "change-x", consumerId, title: "Retry candidate",
+      body: "body with the package section", branchName: "mendpoint/retry-abc",
+      status: "delivery_failed", risk: "low", patchUnified: "diff", createdAt: nowIso(),
+    });
+    persistDeliveryArtifact(db, {
+      tenantId: "tenant_default", artifactDigest: deliveryArtifactDigest(deliveryKey, "t".repeat(40), baseSha),
+      deliveryKey, title: "Retry candidate", body: "body with the package section",
+      treeSha: "t".repeat(40), parentSha: baseSha,
+      filesJson: JSON.stringify([{ path: "src/a.ts", content: "changed\n" }]), createdAt: nowIso(),
+    });
+    const dir = join(tmpdir(), `mendpoint-retry-${Date.now()}-${Math.random()}`);
+    dirs.push(dir);
+    const github = new MockGitHubDelivery(dir);
+    // Delivery-only retry: reconstructs from the artifact and delivers, no analysis.
+    const outcome = await retryConsumerDelivery({
+      db, tenantId: "tenant_default", prId: "pr-retry-1",
+      deliveryFor: () => ({ delivery: github }), refreshedHeadSha: null, now: nowIso(),
+    });
+    expect(outcome.retried).toBe(true);
+    expect(outcome.status).toBe("draft");
+    expect(getPr(db, "pr-retry-1", "tenant_default")?.status).toBe("draft");
+    // 7-day cap: a row older than the cap abandons into a visible terminal state.
+    insertMigrationPr(db, {
+      id: "pr-retry-old", changeId: "change-y", consumerId, title: "Old", body: "b",
+      branchName: "mendpoint/old", status: "delivery_failed", risk: "low", patchUnified: "diff",
+      createdAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+    const abandoned = await retryConsumerDelivery({
+      db, tenantId: "tenant_default", prId: "pr-retry-old",
+      deliveryFor: () => ({ delivery: github }), refreshedHeadSha: null, now: nowIso(),
+    });
+    expect(abandoned.status).toBe("github_delivery_abandoned");
+    expect(getPr(db, "pr-retry-old", "tenant_default")?.status).toBe("github_delivery_abandoned");
   });
 
   it("delivers a no-history (content-manifest) repo through main's legacy path, not exact-draft", async () => {

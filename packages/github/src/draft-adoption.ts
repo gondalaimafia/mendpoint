@@ -346,7 +346,15 @@ async function oursCommit(
   const trailerOk = trailer(data.message, "Mendpoint-Delivery") === input.deliveryKey && parents.length === 1;
   // The current attempt's exact commit is ours.
   const currentMatch = data.tree.sha === expectedTreeSha && parents[0] === input.expectedBaseSha;
-  let isOurs = trailerOk && currentMatch;
+  // C (D8 no-PR legacy): main's exact-draft commit carries the Mendpoint author
+  // identity but not our trailer. A Mendpoint-authored commit with our exact tree
+  // and base is ours to adopt (open the PR from it), so a main-era branch whose
+  // PR creation failed is recovered instead of judged foreign.
+  const mendpointAuthored =
+    data.author?.name === "Mendpoint" && data.author?.email === "delivery@mendpoint.ai" &&
+    data.committer?.name === "Mendpoint" && data.committer?.email === "delivery@mendpoint.ai" &&
+    parents.length === 1;
+  let isOurs = (trailerOk || mendpointAuthored) && currentMatch;
   // Otherwise, OUR OWN commit from a prior attempt (its tree/parent differ because
   // the base moved) is ours iff its (tree, parent) matches a write-ahead artifact
   // we persisted — an unforgeable DB write. A foreign push (different tree, no
@@ -541,29 +549,29 @@ export async function deliverAdoptiveDraftWithOctokit(
 
     if (observation.open.length > 1) throw new AdoptiveDraftBlockedError("github_delivery_pr_ambiguous");
     if (observation.open.length === 1) {
-      const result = await adopt(octokit, input, observation.open[0]!, built.treeSha, bodyDigest, hooks.isOursArtifact);
-      // D7: after our own create, re-check for an OLDER closed PR (a human closed
-      // the recorded one, or pulls.list lag): close the new one and record the
-      // original's closed outcome.
-      if (createdNewPull && observation.closed.length > 0) {
-        const older = observation.closed.filter((pull) => pull.number < observation.open[0]!.number);
-        if (older.length > 0) {
-          await octokit.pulls.update({
-            owner: input.owner,
-            repo: input.repo,
-            pull_number: observation.open[0]!.number,
-            state: "closed",
-          });
-          await octokit.issues.createComment({
-            owner: input.owner,
-            repo: input.repo,
-            issue_number: observation.open[0]!.number,
-            body: "Closing this duplicate; the original delivery pull request already exists.",
-          });
-          return closedOutcome(input, older);
-        }
+      // D7 (runs on EVERY L, not just after our own create): if an OLDER closed PR
+      // exists for the branch, a human closed the original and this open PR is a
+      // duplicate (opened by us after a lost create response + a stale pulls.list,
+      // possibly on a later attempt). Close the duplicate and record the original's
+      // closed outcome — never re-open what a human closed.
+      const older = observation.closed.filter((pull) => pull.number < observation.open[0]!.number);
+      void createdNewPull;
+      if (older.length > 0) {
+        await octokit.pulls.update({
+          owner: input.owner,
+          repo: input.repo,
+          pull_number: observation.open[0]!.number,
+          state: "closed",
+        });
+        await octokit.issues.createComment({
+          owner: input.owner,
+          repo: input.repo,
+          issue_number: observation.open[0]!.number,
+          body: "Closing this duplicate; the original delivery pull request already exists.",
+        });
+        return closedOutcome(input, older);
       }
-      return result;
+      return adopt(octokit, input, observation.open[0]!, built.treeSha, bodyDigest, hooks.isOursArtifact);
     }
     if (observation.closed.length > 0) return closedOutcome(input, observation.closed);
 

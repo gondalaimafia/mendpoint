@@ -41,6 +41,7 @@ import {
 } from "@mendpoint/db";
 import { GitHubAppDelivery } from "@mendpoint/github";
 import { classifyDependencyOutage } from "@mendpoint/ops";
+import { deliveryArtifactDigest } from "@mendpoint/pipeline";
 import { FakeGitHub, type FakeFaultController } from "@mendpoint/github/testing/fake-github";
 
 const OWNER = "acme";
@@ -98,6 +99,25 @@ function adoptiveInput(baseSha: string) {
     title: TITLE,
     commitDate: "2026-09-02T12:00:00.000Z",
     files: [{ path: "src/a.ts", content: "changed\n", mode: "100644" as const }],
+  };
+}
+
+/**
+ * Models the write-ahead artifact store with production's exact keying
+ * (deliveryArtifactDigest, insert-if-absent). Keying by the commit SHAPE means a
+ * later attempt built on a moved base stores its own (tree, parent) even when the
+ * body is identical — so ours() recognises our own prior commit. Keying by the
+ * body (the bug) would drop it, and ours() would judge our commit foreign.
+ */
+function makeArtifactHooks() {
+  const store = new Map<string, { treeSha: string; parentSha: string }>();
+  return {
+    persistArtifact: (a: { treeSha: string; parentSha: string }) => {
+      const key = deliveryArtifactDigest(DELIVERY_KEY, a.treeSha, a.parentSha);
+      if (!store.has(key)) store.set(key, { treeSha: a.treeSha, parentSha: a.parentSha });
+    },
+    isOursArtifact: (c: { treeSha: string; parentSha: string }) =>
+      [...store.values()].some((v) => v.treeSha === c.treeSha && v.parentSha === c.parentSha),
   };
 }
 
@@ -167,16 +187,10 @@ async function runSchedule(schedule: Schedule): Promise<ScheduleResult> {
       content: { "src/a.ts": "original\n" }, date: "2026-09-02T11:00:00.000Z",
     });
     const delivery = makeDelivery(queue, fake, "worker-1", () => clock);
-    // In-memory model of the write-ahead artifact store (D5): persistArtifact
-    // records the (treeSha, parentSha) an attempt built, and isOursArtifact lets
-    // ours() recognise our own prior commit after the base moved.
-    const artifacts = new Set<string>();
-    const hooks = {
-      persistArtifact: (a: { treeSha: string; parentSha: string }) =>
-        void artifacts.add(`${a.treeSha}\u0000${a.parentSha}`),
-      isOursArtifact: (c: { treeSha: string; parentSha: string }) =>
-        artifacts.has(`${c.treeSha}\u0000${c.parentSha}`),
-    };
+    // In-memory model of the write-ahead artifact store (D5), keyed exactly like
+    // production (deliveryArtifactDigest), so an identical-body base move stores
+    // each distinct commit shape.
+    const hooks = makeArtifactHooks();
 
     const moveHead = () => {
       currentBase = fake.moveBranch({
@@ -381,11 +395,7 @@ describe("delivery state machine — human actors and a stalled writer", () => {
     const base = fake.seedDefaultBranch({
       owner: OWNER, repo: REPO, branch: BASE_BRANCH, content: { "src/a.ts": "original\n" },
     });
-    const artifacts = new Set<string>();
-    const hooks = {
-      persistArtifact: (a: { treeSha: string; parentSha: string }) => void artifacts.add(`${a.treeSha}\u0000${a.parentSha}`),
-      isOursArtifact: (c: { treeSha: string; parentSha: string }) => artifacts.has(`${c.treeSha}\u0000${c.parentSha}`),
-    };
+    const hooks = makeArtifactHooks();
     const delivery = makeDelivery(queue, fake, "worker-1", () => clock);
     const setClock = (v: string) => { clock = v; };
     return { db, fake, base, hooks, delivery, setClock };
@@ -437,11 +447,7 @@ describe("delivery state machine — human actors and a stalled writer", () => {
       const base = fake.seedDefaultBranch({
         owner: OWNER, repo: REPO, branch: BASE_BRANCH, content: { "src/a.ts": "original\n" },
       });
-      const artifacts = new Set<string>();
-      const hooks = {
-        persistArtifact: (a: { treeSha: string; parentSha: string }) => void artifacts.add(`${a.treeSha}\u0000${a.parentSha}`),
-        isOursArtifact: (c: { treeSha: string; parentSha: string }) => artifacts.has(`${c.treeSha}\u0000${c.parentSha}`),
-      };
+      const hooks = makeArtifactHooks();
       const w1 = makeDelivery(queue, fake, "worker-1", () => clock);
       // Worker 1's createRef is held; its lease expires while it is parked.
       let release!: () => void;
@@ -471,6 +477,51 @@ describe("delivery state machine — human actors and a stalled writer", () => {
       const recovered = await makeDelivery(queue, fake, "worker-3", () => clock)
         .deliverAdoptiveDraft(adoptiveInput(base), { resolveBody: () => bodyForAttempt(3), hooks });
       expect(recovered.state).toBe("draft");
+      expect(fake.openPulls(OWNER, REPO, BRANCH)).toHaveLength(1);
+      assertUniqueOpenPr(fake);
+      assertRefsForwardOnly(fake);
+    } finally {
+      db.close();
+    }
+  }, 60_000);
+
+  it("B: adopts our own commit across two base moves with an IDENTICAL body every attempt", async () => {
+    // Repro of the write-ahead-artifact keying bug: 503 on createRef at X; head->Y;
+    // createRef lands but pulls.create 503; head->Z; attempt 3 must adopt the
+    // commit we built on Y (not judge it foreign). The body is identical every
+    // attempt, so a body-keyed artifact store would drop Y's (tree, parent).
+    const db = new DatabaseSync(":memory:");
+    try {
+      let clock = "2026-09-02T12:00:00.000Z";
+      const queue = createDependencyOutageQueue(db, { now: () => clock });
+      const fake = new FakeGitHub({ clock: () => clock });
+      let base = fake.seedDefaultBranch({ owner: OWNER, repo: REPO, branch: BASE_BRANCH, content: { "src/a.ts": "v0\n" } });
+      const hooks = makeArtifactHooks();
+      const delivery = makeDelivery(queue, fake, "worker-1", () => clock);
+      const body = "Identical body with the same package section every attempt";
+
+      let attempt = 0;
+      fake.setFaults(({ method }) => {
+        if (attempt === 1 && method === "git.createRef") return { kind: "fail-before", status: 503 };
+        if (attempt === 2 && method === "pulls.create") return { kind: "fail-before", status: 503 };
+        return { kind: "pass" };
+      });
+      // Attempt 1 at base X: createRef 503 -> defer.
+      attempt = 1;
+      await delivery.deliverAdoptiveDraft(adoptiveInput(base), { resolveBody: () => body, hooks }).catch(() => undefined);
+      // Head moves X -> Y.
+      clock = "2026-09-02T12:00:05.000Z";
+      base = fake.moveBranch({ owner: OWNER, repo: REPO, branch: BASE_BRANCH, content: { "src/a.ts": "v1\n" }, date: clock });
+      // Attempt 2 at base Y: createRef lands, pulls.create 503 -> defer (branch = our commit on Y).
+      attempt = 2;
+      await delivery.deliverAdoptiveDraft(adoptiveInput(base), { resolveBody: () => body, hooks }).catch(() => undefined);
+      // Head moves Y -> Z.
+      clock = "2026-09-02T12:00:10.000Z";
+      base = fake.moveBranch({ owner: OWNER, repo: REPO, branch: BASE_BRANCH, content: { "src/a.ts": "v2\n" }, date: clock });
+      // Attempt 3 at base Z: must adopt our own commit on Y (its artifact was stored), one PR.
+      attempt = 3;
+      const result = await delivery.deliverAdoptiveDraft(adoptiveInput(base), { resolveBody: () => body, hooks });
+      expect(result.state).toBe("draft");
       expect(fake.openPulls(OWNER, REPO, BRANCH)).toHaveLength(1);
       assertUniqueOpenPr(fake);
       assertRefsForwardOnly(fake);

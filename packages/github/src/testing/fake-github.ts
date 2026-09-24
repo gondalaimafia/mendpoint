@@ -278,6 +278,32 @@ export class FakeGitHub {
     if (pull) pull.body = body;
   }
 
+  /**
+   * Human actor: push a commit ON TOP of the branch's current head (so it stays a
+   * descendant), advancing both the branch ref and the pull's head sha the way
+   * GitHub does. Used to test that ADOPT does not overwrite a human's push.
+   */
+  humanCommitOnto(input: Readonly<{
+    owner: string;
+    repo: string;
+    branch: string;
+    prNumber: number;
+    content: Readonly<Record<string, string>>;
+  }>): string {
+    const repo = this.repo(input.owner, input.repo);
+    const parent = repo.branches.get(input.branch)!;
+    const entries: TreeEntry[] = Object.entries(input.content)
+      .map(([path, content]) => ({ path, mode: "100644", type: "blob" as const, sha: repo.store({ kind: "blob", content }) }))
+      .sort((a, b) => a.path.localeCompare(b.path));
+    const treeSha = repo.store({ kind: "tree", entries });
+    const identity = { name: "Human", email: "human@example.com", date: this.clock() };
+    const sha = repo.store({ kind: "commit", message: "human push", treeSha, parents: [parent], author: identity, committer: identity });
+    repo.branches.set(input.branch, sha);
+    const pull = repo.pulls.find((candidate) => candidate.number === input.prNumber);
+    if (pull) pull.head.sha = sha;
+    return sha;
+  }
+
   /** Yield point: consult the controller, then apply `work` (possibly losing the response). */
   private async yield<T>(
     method: string,

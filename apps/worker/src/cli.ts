@@ -16,6 +16,8 @@ import { fileURLToPath } from "node:url";
 import { createRepositoryBaseRefresher } from "@mendpoint/github";
 import {
   runChangePipeline,
+  createPipelineDeliveryResolver,
+  retryConsumerDelivery,
   VERIFIER_ADVISORY_JOB_TYPE,
   type DelegatedPrCandidateOperationDependencies,
   type DelegatedPrVerificationDependencies,
@@ -4667,6 +4669,42 @@ if (job.type === "warden.candidate.cleanup") {
         continue;
       }
 
+      if (job.type === "pipeline.delivery-retry") {
+        // D10: delivery-only retry — replay the adoptive delivery from the persisted
+        // artifact, no re-analysis. retryConsumerDelivery enforces the ~7-day cap
+        // into github_delivery_abandoned; a delivery_failed outcome re-throws so the
+        // job retries (delivery-only) under the backoff cap.
+        const retryPayload = JSON.parse(job.payload_json) as { prId: string };
+        const resolveDelivery = createPipelineDeliveryResolver(
+          { tenantId: job.tenant_id, providerSlug: "", db, dependencyOutagePolicy: classifyDependencyOutage },
+          db,
+        );
+        const outcome = await retryConsumerDelivery({
+          db,
+          tenantId: job.tenant_id,
+          prId: retryPayload.prId,
+          deliveryFor: (consumer, repo) => resolveDelivery(consumer, repo),
+          refreshedHeadSha: null,
+          now: nowIso(),
+        });
+        if (outcome.status === "delivery_failed") {
+          throw new Error(outcome.deliveryError ?? "pipeline_delivery_failed");
+        }
+        db.raw.exec("BEGIN IMMEDIATE");
+        try {
+          if (!completeJob(db, job.id, { prId: retryPayload.prId, status: outcome.status }, nowIso(), fence)) {
+            throw new Error("lease_lost_before_delivery_retry_completion");
+          }
+          db.raw.exec("COMMIT");
+        } catch (error) {
+          if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+          throw error;
+        }
+        result.succeeded++;
+        console.log(`  delivery-retry ${retryPayload.prId} -> ${outcome.status}`);
+        continue;
+      }
+
       const payload = JSON.parse(job.payload_json) as {
         providerSlug: string;
         consumerIds?: string[];
@@ -4724,18 +4762,22 @@ if (job.type === "warden.candidate.cleanup") {
       ) {
         throw new Error("fettler_provider_change_execution_binding_mismatch");
       }
-      const deliveryFailures = report.consumers.filter(
-        (consumer) => consumer.prStatus === "delivery_failed",
-      );
-      if (deliveryFailures.length) {
-        throw new Error(
-          `pipeline_delivery_failed:${deliveryFailures
-            .map(
-              (consumer) =>
-                `${consumer.consumerId}:${consumer.deliveryError ?? "unknown delivery error"}`,
-            )
-            .join("|")}`,
-        );
+      // D10: a delivery failure does NOT re-run the whole pipeline (re-analysing).
+      // Each failed consumer is handed to a delivery-only retry job that replays
+      // the adoptive delivery from the persisted artifact under the backoff cap and
+      // the ~7-day abandon cap. A deterministic job id makes re-enqueue a no-op.
+      for (const failed of report.consumers.filter((c) => c.prStatus === "delivery_failed")) {
+        if (!failed.prId) continue;
+        try {
+          enqueueJob(db, {
+            id: `pipeline-delivery-retry:${failed.prId}`,
+            tenantId: job.tenant_id,
+            type: "pipeline.delivery-retry",
+            payload: { prId: failed.prId },
+            maxAttempts: 50,
+            createdAt: nowIso(),
+          });
+        } catch { /* a delivery-only retry for this pr is already queued */ }
       }
       if (leaseLost) throw new Error("lease_lost_before_pipeline_completion");
       if (fettlerProductionIntent || legacyWardenPilot) {
