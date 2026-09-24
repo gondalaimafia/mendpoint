@@ -13,6 +13,7 @@ import {
   resolveMissionForFettlerCampaign,
   getActiveMissionDecisions,
   transitionWardenTarget,
+  wardenRunResumePoint,
   type AppDb,
   type WardenCampaignTarget,
   type WardenRolloutDecision,
@@ -768,10 +769,23 @@ function runEnvelopeAppender(db: AppDb, input: {
   createdAt: string;
   snapshotState: string;
   rolloutDecisionSha256: string;
+  /**
+   * The run's continuation point (from `wardenRunResumePoint`). The chain
+   * continues from the last completed attempt's terminal event, never from 0:
+   * restarting per attempt would land the retry's events on the sequence numbers
+   * the previous attempt already used (issue #696: a `run_failed` and an
+   * `artifact_ingested` both at `:2:`, and two failing attempts conflicting on
+   * `runId:2:run_failed`). A crash BEFORE the `queued -> analyzing` transition
+   * records no terminal and leaves the target `queued`, so this point is
+   * unchanged and its partial `run_started` re-appends byte-identically on the
+   * replay (the #679 stable-clock guarantee). A crash after that transition
+   * strands the target off `queued` and is not retried today (see #676).
+   */
+  resume: Readonly<{ sequence: number; causationId: string | null; stateSha256: string | null }>;
 }) {
-  let sequence = 0;
-  let causationId: string | null = null;
-  let state = sha256(input.snapshotState);
+  let sequence = input.resume.sequence;
+  let causationId: string | null = input.resume.causationId;
+  let state = input.resume.stateSha256 ?? sha256(input.snapshotState);
   return (kind: WardenRunEventKind, value: unknown, artifacts: readonly WardenRunArtifactReference[] = []) => {
     sequence += 1;
     const output = sha256(canonicalJson(value));
@@ -911,6 +925,12 @@ export async function executeWardenCampaignTarget(input: {
   const source = createWardenSourceEnvelope(input.source);
   if (source.tenantId !== input.tenantId) throw new WardenCampaignExecutionError("warden_source_tenant_mismatch", false);
   const runId = required(input.runId, "warden_run_id_required");
+  // One scan of the run's committed events fixes both the envelope continuation
+  // and the per-attempt scope for the target-transition idempotency keys, so a
+  // retry (same runId) never collides with a previous attempt. `resume.attempt`
+  // is the number of completed attempts so far (0 on the first).
+  const resume = wardenRunResumePoint(input.db, input.tenantId, runId);
+  const attempt = resume.attempt;
   const appendRun = runEnvelopeAppender(input.db, {
     tenantId: input.tenantId,
     runId,
@@ -919,6 +939,7 @@ export async function executeWardenCampaignTarget(input: {
     createdAt: input.createdAt,
     snapshotState: canonicalJson(snapshot),
     rolloutDecisionSha256: decision.decisionSha256,
+    resume,
   });
   appendRun("run_started", {
     campaignId: input.campaignId,
@@ -935,8 +956,8 @@ export async function executeWardenCampaignTarget(input: {
     current = transitionWardenTarget(input.db, {
       tenantId: input.tenantId, campaignId: input.campaignId, targetId: input.targetId,
       expectedRevision: current.revision, from: "queued", to: "analyzing",
-      actorPrincipalId: input.actorPrincipalId, eventId: `${runId}:target:analyzing`,
-      idempotencyKey: `${runId}:target:analyzing`, correlationId: input.campaignId, createdAt: input.createdAt,
+      actorPrincipalId: input.actorPrincipalId, eventId: `${runId}:${attempt}:target:analyzing`,
+      idempotencyKey: `${runId}:${attempt}:target:analyzing`, correlationId: input.campaignId, createdAt: input.createdAt,
     });
     const sourceArtifact = persistJsonArtifact(input.db, {
       tenantId: input.tenantId, kind: "warden-source-envelope", value: source,
@@ -1008,8 +1029,8 @@ export async function executeWardenCampaignTarget(input: {
     current = transitionWardenTarget(input.db, {
       tenantId: input.tenantId, campaignId: input.campaignId, targetId: input.targetId,
       expectedRevision: current.revision, from: "analyzing", to: "editing",
-      actorPrincipalId: input.actorPrincipalId, eventId: `${runId}:target:editing`,
-      idempotencyKey: `${runId}:target:editing`, correlationId: input.campaignId, createdAt: input.createdAt,
+      actorPrincipalId: input.actorPrincipalId, eventId: `${runId}:${attempt}:target:editing`,
+      idempotencyKey: `${runId}:${attempt}:target:editing`, correlationId: input.campaignId, createdAt: input.createdAt,
     });
     const candidate = await input.dependencies.applyEdits({
       snapshotId: snapshot.id, resolvedSha: snapshot.resolved_sha,
@@ -1031,8 +1052,8 @@ export async function executeWardenCampaignTarget(input: {
     current = transitionWardenTarget(input.db, {
       tenantId: input.tenantId, campaignId: input.campaignId, targetId: input.targetId,
       expectedRevision: current.revision, from: "editing", to: "verifying",
-      actorPrincipalId: input.actorPrincipalId, eventId: `${runId}:target:verifying`,
-      idempotencyKey: `${runId}:target:verifying`, correlationId: input.campaignId, createdAt: input.createdAt,
+      actorPrincipalId: input.actorPrincipalId, eventId: `${runId}:${attempt}:target:verifying`,
+      idempotencyKey: `${runId}:${attempt}:target:verifying`, correlationId: input.campaignId, createdAt: input.createdAt,
     });
     const postChecks = await verify({
       phase: "post_edit", workspaceRoot: candidate.candidateRoot, commands,
@@ -1104,8 +1125,8 @@ export async function executeWardenCampaignTarget(input: {
     current = transitionWardenTarget(input.db, {
       tenantId: input.tenantId, campaignId: input.campaignId, targetId: input.targetId,
       expectedRevision: current.revision, from: "verifying", to: "review", packageArtifactId: packageArtifact.id,
-      actorPrincipalId: input.actorPrincipalId, eventId: `${runId}:target:review`,
-      idempotencyKey: `${runId}:target:review`, correlationId: input.campaignId, createdAt: input.createdAt,
+      actorPrincipalId: input.actorPrincipalId, eventId: `${runId}:${attempt}:target:review`,
+      idempotencyKey: `${runId}:${attempt}:target:review`, correlationId: input.campaignId, createdAt: input.createdAt,
     });
     tryRecordFettlerCampaignMissionVerification(input.db, {
       tenantId: input.tenantId,
@@ -1143,7 +1164,7 @@ export async function executeWardenCampaignTarget(input: {
         expectedRevision: latest.revision, from: latest.stage,
         to: error.code === "warden_campaign_paused" ? "blocked" : "failed",
         exceptionCode: error.code, actorPrincipalId: input.actorPrincipalId,
-        eventId: `${runId}:target:${error.code}`, idempotencyKey: `${runId}:target:${error.code}`,
+        eventId: `${runId}:${attempt}:target:${error.code}`, idempotencyKey: `${runId}:${attempt}:target:${error.code}`,
         correlationId: input.campaignId, createdAt: input.createdAt,
       });
     }
