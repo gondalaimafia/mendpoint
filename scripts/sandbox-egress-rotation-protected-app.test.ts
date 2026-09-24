@@ -415,18 +415,46 @@ describe("sandbox egress rotation — protected consuming apps are never stopped
  * restart, no containment) and the PRESENCE of exactly one ssh install plus one
  * ssh /ready read that must agree before the branch reports success.
  */
-function protectedBranch(stripReadinessGuard = false): string {
+interface BranchMutations {
+  /** Remove the post-install /ready confirmation guard (existing mutation). */
+  stripReadinessGuard?: boolean;
+  /** Remove the post-loop final /ready read that catches an attempt-3 hang that landed. */
+  stripFinalReadyCheck?: boolean;
+  /** Cut the readiness-confirmation retry loop from 3 attempts to 1 (mutation E3). */
+  readyRetryToOne?: boolean;
+  /** Remove the conclusive-answer break so a definite /ready read is retried (mutation E4). */
+  stripConclusiveBreak?: boolean;
+}
+
+function protectedBranch(mutations: BranchMutations = {}): string {
   let branch = extractRegion(
     '            if [ "$is_protected_app" = true ]; then',
     "              continue\n            fi",
   );
-  if (stripReadinessGuard) {
+  if (mutations.stripReadinessGuard) {
     const start = branch.indexOf("# readiness-confirmation-guard (mutation strips");
     const endMarker = "# readiness-confirmation-guard-end";
     const end = branch.indexOf(endMarker);
     expect(start, "readiness confirmation guard start not found").toBeGreaterThan(-1);
     expect(end, "readiness confirmation guard end not found").toBeGreaterThan(start);
     branch = branch.slice(0, start) + branch.slice(end + endMarker.length);
+  }
+  if (mutations.stripFinalReadyCheck) {
+    const start = branch.indexOf("# post-loop-landed-check (mutation strips");
+    const endMarker = "# post-loop-landed-check-end";
+    const end = branch.indexOf(endMarker);
+    expect(start, "post-loop landed check start not found").toBeGreaterThan(-1);
+    expect(end, "post-loop landed check end not found").toBeGreaterThan(start);
+    branch = branch.slice(0, start) + branch.slice(end + endMarker.length);
+  }
+  if (mutations.readyRetryToOne) {
+    expect(branch, "ready retry loop not found").toContain("for ready_attempt in 1 2 3");
+    branch = branch.replace("for ready_attempt in 1 2 3", "for ready_attempt in 1");
+  }
+  if (mutations.stripConclusiveBreak) {
+    const line = 'if [ "$ready_conclusive" = true ]; then break; fi';
+    expect(branch, "conclusive break not found").toContain(line);
+    branch = branch.replace(line, ": # conclusive break removed by mutation");
   }
   return branch;
 }
@@ -436,6 +464,19 @@ interface ProtectedOptions {
   installFail?: boolean;
   stageFail?: boolean;
   stripReadinessGuard?: boolean;
+  stripFinalReadyCheck?: boolean;
+  readyRetryToOne?: boolean;
+  stripConclusiveBreak?: boolean;
+  /**
+   * Per-call behaviour of the in-machine /ready read, space-separated (last
+   * repeats), overriding the LANDED-based default. Each is one of: `empty` (the
+   * ssh read produced nothing -- a hung/timed-out read, inconclusive), `match`
+   * (serves the new file receipt, conclusive and matching), `env` (serves an
+   * env-sourced receipt, conclusive but disagreeing), or `pending` (not yet
+   * serving, conclusive but disagreeing). Used to exercise the readiness-
+   * confirmation retry loop deterministically (mutations E3 and E4).
+   */
+  readySequence?: string;
   expiresAt?: string;
   /**
    * Per-attempt behaviour of the ssh install, space-separated; the last entry
@@ -493,6 +534,14 @@ function runProtected(opts: ProtectedOptions = {}): ProtectedResult {
     ok: false,
     detail: JSON.stringify({ status: "pending" }),
   });
+  // A conclusive but DISAGREEING reading: the app serves an env-sourced receipt,
+  // not the freshly installed file. Used by the readiness-loop mutation tests.
+  const readyJsonEnv = JSON.stringify({
+    name: "sandbox_egress_receipt",
+    ok: true,
+    detail: JSON.stringify({ status: "verified", source: "env", expiresAt }),
+  });
+  const readyCount = join(dir, "ready.count").replace(/\\/g, "/");
   const machinesJson = '[{"id":"84e696a22eee68","state":"started"}]';
   const installBehavior = opts.installBehavior ?? (opts.installFail ? "fail" : "ok");
 
@@ -523,7 +572,17 @@ function runProtected(opts: ProtectedOptions = {}): ProtectedResult {
       '    esac',
       "    ;;",
       '  *"ssh console"*"sandbox_egress_receipt"*)',
-      '    if [ -f "$LANDED" ]; then printf "%s\\n" "$READY_JSON"; else printf "%s\\n" "$READY_JSON_PENDING"; fi',
+      '    if [ -n "${READY_SEQUENCE:-}" ]; then',
+      '      rn=0; [ -f "$READY_COUNT" ] && rn="$(cat "$READY_COUNT")"; rn=$((rn + 1)); printf "%s" "$rn" > "$READY_COUNT"',
+      '      read -ra __rseq <<< "$READY_SEQUENCE"',
+      '      ridx=$((rn - 1)); [ "$ridx" -ge "${#__rseq[@]}" ] && ridx=$(( ${#__rseq[@]} - 1 ))',
+      '      case "${__rseq[$ridx]}" in',
+      '        empty) : ;;',
+      '        match) printf "%s\\n" "$READY_JSON" ;;',
+      '        env) printf "%s\\n" "$READY_JSON_ENV" ;;',
+      '        pending) printf "%s\\n" "$READY_JSON_PENDING" ;;',
+      '      esac',
+      '    elif [ -f "$LANDED" ]; then printf "%s\\n" "$READY_JSON"; else printf "%s\\n" "$READY_JSON_PENDING"; fi',
       "    ;;",
       '  *"secrets set"*)',
       '    if [ "${STAGE_FAIL:-0}" = "1" ]; then exit 1; fi',
@@ -554,7 +613,12 @@ function runProtected(opts: ProtectedOptions = {}): ProtectedResult {
     // Wrap in a one-shot loop so the branch's `continue` is meaningful (it ends
     // the loop, i.e. success), while any `exit 1` still aborts the whole run.
     "for __protected_iter in 1; do",
-    protectedBranch(opts.stripReadinessGuard),
+    protectedBranch({
+      stripReadinessGuard: opts.stripReadinessGuard,
+      stripFinalReadyCheck: opts.stripFinalReadyCheck,
+      readyRetryToOne: opts.readyRetryToOne,
+      stripConclusiveBreak: opts.stripConclusiveBreak,
+    }),
     "done",
     "",
   ].join("\n");
@@ -570,6 +634,9 @@ function runProtected(opts: ProtectedOptions = {}): ProtectedResult {
       INSTALL_JSON_BAD: installJsonBad,
       READY_JSON: readyJson,
       READY_JSON_PENDING: readyJsonPending,
+      READY_JSON_ENV: readyJsonEnv,
+      READY_COUNT: readyCount,
+      READY_SEQUENCE: opts.readySequence ?? "",
       MACHINES_JSON: machinesJson,
       INSTALL_BEHAVIOR: installBehavior,
       INSTALL_COUNT: installCount,
@@ -666,8 +733,9 @@ describe("sandbox egress rotation — protected apps get the receipt as a file, 
     // Bounded retries: three install attempts, not one.
     expect(result.installCalls.length).toBe(3);
     // Between attempts it re-reads /ready to detect a hung-but-landed install
-    // (attempts 2 and 3), but here nothing ever lands, so it fails loudly.
-    expect(result.readyCalls.length).toBe(2);
+    // (attempts 2 and 3), plus one final post-loop read, but here nothing ever
+    // lands, so it fails loudly.
+    expect(result.readyCalls.length).toBe(3);
     expect(result.recovery).toContain("protected_install_attempt_failed");
     expect(result.recovery).toContain("protected_install_failed");
     expect(result.stderr).toContain("after 3 attempts");
@@ -724,6 +792,92 @@ describe("sandbox egress rotation — protected apps get the receipt as a file, 
     expect(
       withoutGuard.status,
       `mutation: without the confirmation a source:env disagreement passes; stderr: ${withoutGuard.stderr}`,
+    ).toBe(0);
+  }, 60_000);
+
+  it("succeeds when the LAST install attempt hangs but actually landed (post-loop /ready read)", () => {
+    // The nit this PR came back for: after attempt 3, the loop did NOT re-read
+    // /ready, so an install that hung on the ssh connection but landed
+    // server-side failed loudly and paged (the #708 shape). The post-loop read
+    // catches it. Attempts 1 and 2 hang with nothing landed; attempt 3 hangs but
+    // the install completes, so the final /ready read confirms it.
+    const result = runProtected({ installBehavior: "hang hang hang-landed" });
+    expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+    expect(result.installCalls.length).toBe(3);
+    expect(result.recovery).toContain("protected_install_confirmed_after_hang");
+    expect(result.recovery).toContain("protected_file_delivery_ok");
+    // Still a protected file delivery: no restart, no containment.
+    expect(result.updateCalls).toEqual([]);
+    expect(result.stopCalls).toEqual([]);
+    expect(result.startCalls).toEqual([]);
+  }, 60_000);
+
+  it("(mutation) without the post-loop /ready read a landed attempt-3 hang fails loudly", () => {
+    // Control: with the post-loop read the same scenario succeeds (above).
+    const withCheck = runProtected({ installBehavior: "hang hang hang-landed" });
+    expect(withCheck.status, "control: post-loop read recovers the landed install").toBe(0);
+
+    // Mutation: strip the post-loop read and the landed install is never seen, so
+    // the run fails loudly -- exactly the false #708 alert this fix removes.
+    const withoutCheck = runProtected({
+      installBehavior: "hang hang hang-landed",
+      stripFinalReadyCheck: true,
+    });
+    expect(withoutCheck.status).not.toBe(0);
+    expect(withoutCheck.recovery).toContain("protected_install_failed");
+  }, 60_000);
+});
+
+/**
+ * The post-install readiness-confirmation loop (`for ready_attempt in 1 2 3`)
+ * retries /ready only WHILE the read is inconclusive (a hung/empty ssh read),
+ * and stops on the first conclusive answer. These behaviour tests kill two
+ * mutations that a source-text lock could not: E3 (cutting the retry from 3 to
+ * 1) and E4 (retrying past a conclusive answer). The install lands on attempt 1
+ * (`ok`), so the /ready sequence is consumed only by this loop.
+ */
+describe("sandbox egress rotation — readiness-confirmation retry is bounded and conclusive-aware", () => {
+  it("(E3) tolerates an inconclusive /ready then a matching one, across the 3 attempts", () => {
+    // First read is inconclusive (a hung ssh read produced nothing); the second
+    // serves the new file receipt. With three attempts the renewal confirms.
+    const result = runProtected({ readySequence: "empty match" });
+    expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+    expect(result.recovery).toContain("protected_file_delivery_ok");
+  }, 60_000);
+
+  it("(E3 mutation) cutting the /ready retry to a single attempt fails on the first inconclusive read", () => {
+    const withRetries = runProtected({ readySequence: "empty match" });
+    expect(withRetries.status, "control: 3 attempts confirm after an inconclusive read").toBe(0);
+
+    const oneAttempt = runProtected({ readySequence: "empty match", readyRetryToOne: true });
+    expect(
+      oneAttempt.status,
+      `mutation: a single attempt cannot recover from an inconclusive read; stderr: ${oneAttempt.stderr}`,
+    ).not.toBe(0);
+    expect(oneAttempt.recovery).toContain("readiness_disagreed");
+  }, 60_000);
+
+  it("(E4) does not retry past a conclusive DISAGREEING /ready read", () => {
+    // A conclusive env-sourced reading on the first attempt is a real
+    // disagreement; a later attempt that would serve the file receipt must NOT be
+    // consulted, so the run fails loudly on the definite answer.
+    const result = runProtected({ readySequence: "env match" });
+    expect(result.status).not.toBe(0);
+    expect(result.recovery).toContain("readiness_disagreed");
+  }, 60_000);
+
+  it("(E4 mutation) removing the conclusive break turns a real disagreement into a pass", () => {
+    // Control: the conclusive break stops on the first definite (env) answer.
+    const withBreak = runProtected({ readySequence: "env match" });
+    expect(withBreak.status, "control: a definite env disagreement fails loudly").not.toBe(0);
+
+    // Mutation: without the break, the loop keeps retrying past the definite env
+    // answer and catches the later matching read, turning a genuine disagreement
+    // into a green run -- the exact defect the break prevents.
+    const withoutBreak = runProtected({ readySequence: "env match", stripConclusiveBreak: true });
+    expect(
+      withoutBreak.status,
+      `mutation: retrying past a definite answer masks the disagreement; stderr: ${withoutBreak.stderr}`,
     ).toBe(0);
   }, 60_000);
 });

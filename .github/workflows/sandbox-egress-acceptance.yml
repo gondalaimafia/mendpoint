@@ -440,6 +440,22 @@ jobs:
                   "$app" "$install_attempt" \
                   >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
               done
+              # post-loop-landed-check (mutation strips this to prove the final
+              # /ready read is load-bearing): the LAST attempt may have hung on the
+              # flyctl ssh connection yet actually landed the install server-side.
+              # Do the same /ready read used between attempts before failing, so a
+              # landed install after attempt 3 counts as success instead of opening
+              # a false renewal-failure alert (the same hang shape as #708).
+              if [ "$install_confirmed" != true ]; then
+                read_egress_ready
+                if egress_ready_matches; then
+                  printf 'protected_install_confirmed_after_hang\tapp=%s\tattempt=final\n' \
+                    "$app" \
+                    >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                  install_confirmed=true
+                fi
+              fi
+              # post-loop-landed-check-end
               if [ "$install_confirmed" != true ]; then
                 printf 'protected_install_failed\tapp=%s\n' "$app" \
                   >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
