@@ -256,7 +256,6 @@ export interface GitHubAuthorityMatrix {
       owner: string;
       title: string;
       url: string;
-      updatedAt: string;
       requirementIds: string[];
     }>;
   };
@@ -475,11 +474,6 @@ function authorityRotationAttestation(body: string | null): {
     basePolicySha256: base[1],
     proposedPolicySha256: proposed[1],
   };
-}
-
-function canonicalGitHubTime(value: string): string | null {
-  const milliseconds = Date.parse(value);
-  return Number.isNaN(milliseconds) ? null : new Date(milliseconds).toISOString();
 }
 
 function add(
@@ -1584,13 +1578,19 @@ export async function verifyGitHubClosureAuthority(
       );
     for (const record of issuesToVerify) {
       const live = await client.getIssue(record.number);
+      // The volatile issue updated_at is deliberately NOT compared. It moves on
+      // any comment to an authority issue, so pinning it turned every such comment
+      // into an ISSUE_METADATA_MISMATCH on the push:main full-release-train scope,
+      // making main red until the pinned timestamp was refreshed. The semantic
+      // identity of an authority issue is its number, state, title, url, owner
+      // assignment, and requirement mapping (checked just below) -- none of which a
+      // comment changes -- so those are compared exactly and the timestamp is not.
       const metadataMatches =
         live.pull_request === undefined &&
         live.number === record.number &&
         live.state === record.state &&
         live.title === record.title &&
         live.html_url === record.url &&
-        canonicalGitHubTime(live.updated_at) === canonicalGitHubTime(record.updatedAt) &&
         live.assignees.some((assignee) => assignee.login === record.owner);
       if (!metadataMatches) {
         add(

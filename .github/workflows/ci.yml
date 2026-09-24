@@ -419,11 +419,24 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$FLY_API_TOKEN" || { echo "::error::FLY_API_TOKEN_CUSTOMER is empty; cannot deploy the customer app."; exit 1; }
-          if ! flyctl status --app mendpoint-fettler-production >/dev/null 2>&1; then
-            echo "::error::FLY_API_TOKEN_CUSTOMER cannot read mendpoint-fettler-production. Re-scope the FLY_API_TOKEN_CUSTOMER repository secret to that app; do not widen this job to the repository-wide FLY_API_TOKEN."
+          # Capture flyctl's own output (stdout+stderr) with its exit status rather
+          # than discarding it with `>/dev/null 2>&1`. The old form reported EVERY
+          # failure -- a network timeout, a Fly outage, a flyctl bug -- as a proven
+          # scope violation and printed the re-scope instruction, discarding the real
+          # error. That third state (flyctl could not answer) masquerading as "not
+          # scoped" is a defect: an authorization failure is proven only by an
+          # auth/401/403 signal in the output. Anything else is scope-UNDETERMINED,
+          # surfaced with the real error, and still fails the step closed.
+          if fly_authority_output="$(flyctl status --app mendpoint-fettler-production 2>&1)"; then
+            echo "Deploy credential has authority over mendpoint-fettler-production."
+          else
+            if printf '%s\n' "$fly_authority_output" | grep -qiE '(^|[^0-9])(401|403)([^0-9]|$)|unauthorized|not authorized|forbidden|authentication required|permission denied|not permitted'; then
+              echo "::error::FLY_API_TOKEN_CUSTOMER cannot read mendpoint-fettler-production. Re-scope the FLY_API_TOKEN_CUSTOMER repository secret to that app; do not widen this job to the repository-wide FLY_API_TOKEN."
+            else
+              echo "::error::Could not determine whether FLY_API_TOKEN_CUSTOMER can read mendpoint-fettler-production: flyctl status failed for a reason that is not an authorization error, so the token scope is undetermined rather than proven wrong. Do not re-scope the secret on this signal alone. flyctl output: ${fly_authority_output}"
+            fi
             exit 1
           fi
-          echo "Deploy credential has authority over mendpoint-fettler-production."
       # --config is required because fly.customer-warden.toml is the ONLY fly
       # config in this repo with no `app =` line (it is a reusable customer
       # profile), so the app name must be passed explicitly with --app.
