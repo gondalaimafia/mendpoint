@@ -818,6 +818,25 @@ describe("customer backup delivery controller workflow", () => {
     expect(result.stderr).not.toContain("customer_backup_delivery_successor_not_observed");
   });
 
+  it("still re-dispatches when a transient 502 is followed by a poll that shows no successor", () => {
+    // A single 502 must not suppress re-dispatch when a later poll succeeds and
+    // shows the successor is genuinely absent: that is main's re-dispatch case,
+    // not an API outage. Only an all-failed observation window skips re-dispatch.
+    const result = runController({
+      latestSuccess: new Date().toISOString(),
+      handoffRunId: "",
+      handoffFailTimes: "1",
+      deliveryObserveAttempts: "2",
+      deliveryHandoffAttempts: "2",
+    });
+    expect(result.status).not.toBe(0);
+    // Two dispatches: the transient 502 did not suppress the re-dispatch.
+    expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup-delivery.yml")))
+      .toHaveLength(2);
+    // A genuinely-absent successor is reported as not-observed, not lookup_failed.
+    expect(result.stderr).toContain("customer_backup_delivery_successor_not_observed");
+  });
+
   it("reports a final-lookup outage as lookup_failed, never as completion-missing", () => {
     // Every cycle sees an active backup, so the per-cycle history lookup is never
     // taken; the final reconciliation lookup then errors. That must read as a

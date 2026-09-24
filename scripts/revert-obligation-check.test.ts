@@ -269,6 +269,20 @@ describe("revert-obligation — analysis over real repositories", () => {
     expect(analysis.reason).not.toContain("no commits");
   });
 
+  it("fails closed as undetermined on a detached HEAD pinned at a nonexistent commit", () => {
+    const root = makeRepo(`detached-missing-${RUN_ID}`);
+    writeFile(root, "a.txt", "one\n");
+    commit(root, { message: "one", date: "2026-08-01T00:00:00Z", add: ["a.txt"] });
+    // Detach HEAD at a sha that does not exist. `rev-parse --verify HEAD` still
+    // exits 0 (it returns the raw sha without checking the object), so it is
+    // verifying `HEAD^{commit}` that makes this fail cleanly as undetermined
+    // instead of reading "present" and then crashing in `git log`.
+    writeFileSync(join(root, ".git", "HEAD"), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n");
+
+    expect(() => analyzeRepository({ root, now })).not.toThrow();
+    expect(analyzeRepository({ root, now }).status).toBe("undetermined");
+  });
+
   it("fails closed as could-not-determine on a shallow clone", () => {
     const source = makeRepo(`shallow-src-${RUN_ID}`);
     writeFile(source, "a.txt", "one\n");

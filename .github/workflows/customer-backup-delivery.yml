@@ -447,11 +447,15 @@ jobs:
             # `for x in $(gh run list ...)` does not fail closed: a failed list
             # yields an empty word list that reads as "successor not observed"
             # and re-dispatches. Capture the list with an explicit status check.
-            # A single failed poll is transient: record it and keep polling. If
-            # the whole observation window is exhausted by lookup failures, fail
-            # closed as a lookup failure WITHOUT re-dispatching — re-dispatching
-            # on an API outage would create a duplicate successor.
+            # A single failed poll is transient: record it and keep polling.
+            # `handoff_poll_succeeded` records whether ANY poll in this attempt
+            # returned a list: if at least one poll succeeded and showed no
+            # successor, the successor is genuinely absent, so keep main's
+            # re-dispatch. Only when EVERY poll errored (a pure API outage) do we
+            # fail closed without re-dispatching, since re-dispatching then would
+            # create a duplicate successor.
             handoff_lookup_failed=false
+            handoff_poll_succeeded=false
             for _ in $(seq 1 "$DELIVERY_OBSERVE_ATTEMPTS"); do
               successor_run_ids=""
               if ! successor_run_ids="$(gh run list --repo "$GH_REPO" --workflow "$DELIVERY_WORKFLOW" \
@@ -462,6 +466,8 @@ jobs:
                   --arg predecessor "$CONTROLLER_RUN_ID" --argjson attempt "$dispatch_attempt" \
                   '{at:$at,event:"backup_lookup_failed",predecessorRunId:$predecessor,attempt:$attempt,operation:"run_list_observe"}'
                 successor_run_ids=""
+              else
+                handoff_poll_succeeded=true
               fi
               for candidate_run_id in $successor_run_ids; do
                 candidate_metadata=""
@@ -491,10 +497,12 @@ jobs:
             done
             if [ -n "$successor_run_id" ]; then break; fi
 
-            # The observation window was exhausted by lookup failures (an API
-            # outage), not by a genuinely-absent successor. Do not re-dispatch a
-            # duplicate; fail closed as a lookup failure.
-            if [ "$handoff_lookup_failed" = true ]; then
+            # Every poll in this attempt errored and none succeeded: a pure API
+            # outage, not a genuinely-absent successor. Do not re-dispatch a
+            # duplicate; fail closed as a lookup failure. If at least one poll
+            # succeeded but showed no successor, fall through to main's
+            # re-dispatch below.
+            if [ "$handoff_lookup_failed" = true ] && [ "$handoff_poll_succeeded" = false ]; then
               echo "customer_backup_delivery_lookup_failed predecessor_run_id=$CONTROLLER_RUN_ID" >&2
               exit 1
             fi

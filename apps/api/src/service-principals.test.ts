@@ -397,21 +397,27 @@ describe("service principal administration", () => {
     )).toHaveLength(2);
   });
 
-  it("fails closed when the principal's expiry is malformed, treating it as expired", async () => {
+  it.each([
+    // A garbage expiry: `NaN <= now` is false, so the old check read it as
+    // "not expired" and issued a new key. Now fails closed.
+    { label: "malformed expiry", column: "expires_at", value: "not-a-timestamp" },
+    // A garbage created_at: `NaN > now` is false, so a naive future-dating guard
+    // read it as valid. activeTrustPrincipal requires a finite created_at <= now.
+    { label: "malformed created_at", column: "created_at", value: "not-a-timestamp" },
+    // A future created_at is not yet active and must never rotate.
+    { label: "future created_at", column: "created_at", value: "2099-01-01T00:00:00.000Z" },
+  ])("fails closed with no mutation when the principal has a $label", async ({ label, column, value }) => {
     const { app, db } = fixture();
     const created = await createPrincipal(app);
     const prior = created.payload.data.credential;
-    // Corrupt the principal's expiry to an unparseable value. Before the fix,
-    // `Date.parse("not-a-timestamp") <= now` is `NaN <= now` === false, so the
-    // rotation read a garbage expiry as "not expired" and issued a new key.
-    db.raw.prepare("UPDATE principals SET expires_at = ? WHERE id = ?")
-      .run("not-a-timestamp", created.payload.data.id);
+    db.raw.prepare(`UPDATE principals SET ${column} = ? WHERE id = ?`)
+      .run(value, created.payload.data.id);
 
     const rotation = await app.request(
       `/tenants/service-principals/${created.payload.data.id}/credentials/rotate`,
       {
         method: "POST",
-        headers: mutationHeaders("rotate-malformed-expiry"),
+        headers: mutationHeaders(`rotate-${label.replace(/\s+/g, "-")}`),
         body: JSON.stringify({ currentCredentialId: prior.id, scopes: ["graph:read"] }),
       },
     );
