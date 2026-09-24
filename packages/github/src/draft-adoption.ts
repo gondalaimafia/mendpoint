@@ -124,6 +124,34 @@ export type AdoptiveDraftInput = Readonly<{
   >;
 }>;
 
+/**
+ * Write-ahead artifact hook (D5). Invoked once, after the delivery commit's tree
+ * and commit objects are built (so treeSha is known) but BEFORE any ref/PR write,
+ * so the pipeline can persist {title, body, treeSha, parentSha, deliveryKey}
+ * keyed by its body digest before the branch or PR exists.
+ */
+export type AdoptiveDraftHooks = Readonly<{
+  persistArtifact?: (artifact: Readonly<{
+    deliveryKey: string;
+    title: string;
+    body: string;
+    bodyDigest: string;
+    treeSha: string;
+    parentSha: string;
+  }>) => void | Promise<void>;
+}>;
+
+/** Options for adoptive draft delivery through a GitHubDelivery transport. */
+export type AdoptiveDeliveryOptions = Readonly<{
+  /**
+   * Resolve the current PR body. Called per attempt so a re-delivery uses the
+   * freshly generated body; identity excludes the body and ADOPT converges it,
+   * so a different body every attempt is safe (no ledger digest conflict).
+   */
+  resolveBody: () => string;
+  hooks?: AdoptiveDraftHooks;
+}>;
+
 export type AdoptiveDraftResult = Readonly<{
   number: number;
   url: string;
@@ -469,6 +497,7 @@ async function buildCommit(
 export async function deliverAdoptiveDraftWithOctokit(
   octokit: AdoptiveOctokit,
   input: AdoptiveDraftInput,
+  hooks: AdoptiveDraftHooks = {},
 ): Promise<AdoptiveDraftResult> {
   if (input.body.length > MAX_ADOPTIVE_PR_BODY_CHARS) {
     throw new AdoptiveDraftBlockedError("github_delivery_pr_body_too_long");
@@ -477,6 +506,18 @@ export async function deliverAdoptiveDraftWithOctokit(
   // Build our commit up front (object writes only). Its tree sha is the content
   // bound into ours(); its sha is the commit createRef/updateRef will point at.
   const built = await buildCommit(octokit, input, bodyDigest);
+  // D5: persist the write-ahead artifact now — tree/commit objects exist, but no
+  // ref or PR has been written yet, so the artifact precedes every side effect.
+  if (hooks.persistArtifact) {
+    await hooks.persistArtifact({
+      deliveryKey: input.deliveryKey,
+      title: input.title,
+      body: input.body,
+      bodyDigest,
+      treeSha: built.treeSha,
+      parentSha: input.expectedBaseSha,
+    });
+  }
   let createdNewPull = false;
 
   for (let loop = 0; loop < MAX_REOBSERVE_LOOPS; loop += 1) {

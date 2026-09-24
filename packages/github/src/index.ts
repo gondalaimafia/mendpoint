@@ -26,6 +26,14 @@ import {
   type ScmDeliveryProvider,
 } from "./gitlab.js";
 import type { DeliveryOperationRetirement } from "./app-runtime.js";
+import {
+  deliverAdoptiveDraftWithOctokit,
+  type AdoptiveDraftInput,
+  type AdoptiveDraftResult,
+  type AdoptiveDeliveryOptions,
+  type AdoptiveOctokit,
+} from "./draft-adoption.js";
+import { FakeGitHub } from "./testing/fake-github.js";
 
 export type PullRequestResult = {
   number: number;
@@ -63,6 +71,17 @@ async function mapWithConcurrency<T, R>(
 
 export interface GitHubDelivery {
   deliverExactDraft(input: ExactDraftDeliveryInput): Promise<ExactDraftDeliveryResult>;
+  /**
+   * Adoptive draft delivery (PR #606): the branch is the source of truth and
+   * identity is (owner, repo, baseBranch, branch), so a delivery is one branch
+   * and one ledger operation forever. `body` is supplied by options.resolveBody
+   * per attempt. Optional so peripheral transports need not implement it; the
+   * App / mock / Octokit transports do.
+   */
+  deliverAdoptiveDraft?(
+    input: Omit<AdoptiveDraftInput, "body">,
+    options: AdoptiveDeliveryOptions,
+  ): Promise<AdoptiveDraftResult>;
   /**
    * Fail-closed remote branch-existence lookup used to decide whether an
    * anchored delivery base may be reused after a delivery failure. Resolves
@@ -109,6 +128,50 @@ export class MockGitHubDelivery implements GitHubDelivery {
   constructor(private rootDir = join(process.cwd(), ".mendpoint/mock-github")) {}
 
   private readonly remoteBranchHeads = new Map<string, string>();
+  // Adoptive delivery runs against an in-memory content-addressed fake GitHub so
+  // GITHUB_MODE=mock exercises the real adoption state machine (idempotent create,
+  // lost-response reconcile, foreign/ambiguous blocks) exactly like the App path.
+  private readonly adoptiveFake = new FakeGitHub();
+
+  async deliverAdoptiveDraft(
+    input: Omit<AdoptiveDraftInput, "body">,
+    options: AdoptiveDeliveryOptions,
+  ): Promise<AdoptiveDraftResult> {
+    // The pipeline's resolved base sha is a git/content digest, not a fake sha,
+    // so register it as a real base commit the adoption machine can build against.
+    this.adoptiveFake.registerBase({
+      owner: input.owner,
+      repo: input.repo,
+      branch: input.baseBranch,
+      sha: input.expectedBaseSha,
+    });
+    const result = await deliverAdoptiveDraftWithOctokit(
+      this.adoptiveFake as unknown as AdoptiveOctokit,
+      { ...input, body: options.resolveBody() },
+      options.hooks ?? {},
+    );
+    // Mirror the delivered PR to the filesystem store so GITHUB_MODE=mock is
+    // observable exactly like the pre-#606 deliverExactDraft path (dev/demo and
+    // fixture tests read pulls/<n>.json).
+    try {
+      const repoDir = this.repoDir(input.owner, input.repo);
+      const pullsDir = this.containedPathFrom(repoDir, "pulls");
+      mkdirSync(pullsDir, { recursive: true });
+      writeFileSync(join(pullsDir, `${result.number}.json`), JSON.stringify({
+        number: result.number,
+        url: result.url,
+        state: result.state === "draft" ? "open" : result.state,
+        draft: result.draft,
+        title: result.title,
+        body: result.body,
+        branch: input.branch,
+        base: input.baseBranch,
+        baseSha: result.deliveredBaseSha ?? input.expectedBaseSha,
+        commitSha: result.deliveredHeadSha ?? "",
+      }, null, 2), "utf8");
+    } catch { /* mirroring is best-effort observability, never a delivery failure */ }
+    return result;
+  }
 
   /**
    * Set the current remote head of a branch so exact-draft delivery enforces the
@@ -426,6 +489,17 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
     return deliverExactDraftWithOctokit(this.octokit, input);
   }
 
+  deliverAdoptiveDraft(
+    input: Omit<AdoptiveDraftInput, "body">,
+    options: AdoptiveDeliveryOptions,
+  ): Promise<AdoptiveDraftResult> {
+    return deliverAdoptiveDraftWithOctokit(
+      this.octokit as unknown as AdoptiveOctokit,
+      { ...input, body: options.resolveBody() },
+      options.hooks ?? {},
+    );
+  }
+
   async branchExists(owner: string, repo: string, branch: string): Promise<boolean> {
     try {
       await this.octokit.git.getRef({ owner, repo, ref: `heads/${branch}` });
@@ -711,6 +785,22 @@ export {
   type ExactDraftDeliveryInput,
   type ExactDraftDeliveryResult,
 } from "./exact-draft.js";
+
+export {
+  deliverAdoptiveDraftWithOctokit,
+  adoptiveBodyDigest,
+  AdoptiveDraftBlockedError,
+  AdoptiveDraftContentionError,
+  MAX_ADOPTIVE_PR_BODY_CHARS,
+  type AdoptiveOctokit,
+  type AdoptiveDraftInput,
+  type AdoptiveDraftResult,
+  type AdoptiveDraftBlocked,
+  type AdoptiveDraftHooks,
+  type AdoptiveDeliveryOptions,
+} from "./draft-adoption.js";
+
+export { adoptiveDraftOperationDigest } from "./app-runtime.js";
 
 export {
   parseWebhookHeaders,

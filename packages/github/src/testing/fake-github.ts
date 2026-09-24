@@ -198,6 +198,39 @@ export class FakeGitHub {
     return commitSha;
   }
 
+  /**
+   * Register a base commit at a caller-chosen sha (not content-addressed) and
+   * point a branch at it. Used by MockGitHubDelivery so the pipeline's resolved
+   * base sha (a git/content digest, not a fake sha) is a real commit the adoptive
+   * machine can build a tree and commit against. Idempotent.
+   */
+  registerBase(input: Readonly<{
+    owner: string;
+    repo: string;
+    branch: string;
+    sha: string;
+    content?: Readonly<Record<string, string>>;
+    date?: string;
+  }>): void {
+    const repo = this.repo(input.owner, input.repo);
+    if (!repo.objects.has(input.sha)) {
+      const entries: TreeEntry[] = Object.entries(input.content ?? {})
+        .map(([path, content]) => ({ path, mode: "100644", type: "blob" as const, sha: repo.store({ kind: "blob", content }) }))
+        .sort((a, b) => a.path.localeCompare(b.path));
+      const treeSha = repo.store({ kind: "tree", entries });
+      const identity = { name: "Base", email: "base@mendpoint.ai", date: input.date ?? this.clock() };
+      repo.objects.set(input.sha, {
+        kind: "commit",
+        message: "base",
+        treeSha,
+        parents: [],
+        author: identity,
+        committer: identity,
+      });
+    }
+    if (!repo.branches.has(input.branch)) repo.branches.set(input.branch, input.sha);
+  }
+
   /** Move the default (or any) branch head to a fresh commit; scheduler-driven. */
   moveBranch(input: Readonly<{
     owner: string;

@@ -31,6 +31,15 @@ import {
   type ExactDraftCleanupInput,
   type ExactHeadRefCompareAndDeleteAuthority,
 } from "./exact-draft-cleanup.js";
+import {
+  deliverAdoptiveDraftWithOctokit,
+  AdoptiveDraftBlockedError,
+  AdoptiveDraftContentionError,
+  type AdoptiveDraftInput,
+  type AdoptiveDraftResult,
+  type AdoptiveDeliveryOptions,
+  type AdoptiveOctokit,
+} from "./draft-adoption.js";
 
 const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
 const GITHUB_FILE_CONCURRENCY = 8;
@@ -83,6 +92,8 @@ export type GitHubDependencyOutageOperation<T> = Readonly<{
   expiresAt: string;
   leaseMs: number;
   authorityVersion: string;
+  /** Adoptive delivery semantics (PR #606): every attempt begins with lookup L. */
+  adoptive?: boolean;
   reconcile: () => Promise<Readonly<{ status: "missing" }> |
     Readonly<{ status: "resume" }> |
     Readonly<{ status: "completed"; value: T; completionDigest: string }>>;
@@ -212,6 +223,25 @@ export function exactDraftOperationId(
     baseSha: input.expectedBaseSha,
     lineage: input.deliveryLineage ?? 0,
   })}`;
+}
+
+/**
+ * Identity-only ledger digest for an adoptive draft (PR #606 §2, D9). It depends
+ * ONLY on (tenant, owner, repo, baseBranch, branch) — never the base sha, body,
+ * files, lineage or generation — so a delivery is one operation forever and a
+ * digest conflict is impossible. The operation id is `github-draft:` + digest.
+ */
+export function adoptiveDraftOperationDigest(
+  input: Readonly<{ tenantId: string; owner: string; repo: string; baseBranch: string; branch: string }>,
+): string {
+  return digest({
+    v: 2,
+    tenantId: input.tenantId,
+    owner: input.owner,
+    repo: input.repo,
+    baseBranch: input.baseBranch,
+    branch: input.branch,
+  });
 }
 
 function parseRetryAfter(raw: unknown, now: string): number | undefined {
@@ -932,6 +962,99 @@ export class GitHubAppDelivery implements GitHubDelivery {
       },
     }));
     if ("value" in result) return result.value;
+    throw new GitHubDependencyOutageError(result.status, result.decision);
+  }
+
+  /**
+   * Adoptive draft delivery under the durable ledger (PR #606). The ledger
+   * schedules attempts on an identity-only, tenant-scoped operation; every
+   * attempt runs the self-reconciling adoption state machine, so a lost response,
+   * crash, stalled writer or outage past expiry all recover on a later attempt.
+   * A blocked delivery (foreign branch, ambiguous PR, ...) surfaces its named
+   * code; a benign contention retries; everything else is classified as usual.
+   */
+  async deliverAdoptiveDraft(
+    input: Omit<AdoptiveDraftInput, "body">,
+    options: AdoptiveDeliveryOptions,
+  ): Promise<AdoptiveDraftResult> {
+    const build = (octokit: Octokit) => deliverAdoptiveDraftWithOctokit(
+      octokit as unknown as AdoptiveOctokit,
+      { ...input, body: options.resolveBody() },
+      options.hooks ?? {},
+    );
+    if (!this.dependencyOutage) {
+      return this.withAuthRetry(build);
+    }
+    const opts = this.dependencyOutage;
+    const now = (opts.now ?? (() => new Date().toISOString()))();
+    if (!OUTAGE_IDENTITY.test(opts.tenantId) || !OUTAGE_IDENTITY.test(opts.workerId) ||
+        !Number.isFinite(Date.parse(now)) || new Date(Date.parse(now)).toISOString() !== now ||
+        !Number.isSafeInteger(opts.retryBudget) || opts.retryBudget < 1 ||
+        !Number.isSafeInteger(opts.expiresInMs) || opts.expiresInMs < 1 ||
+        !Number.isSafeInteger(opts.leaseMs ?? 30_000) || (opts.leaseMs ?? 30_000) < 1 ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(opts.authorityVersion)) {
+      throw new Error("github_dependency_outage_configuration_invalid");
+    }
+    const operationDigest = adoptiveDraftOperationDigest({
+      tenantId: opts.tenantId,
+      owner: input.owner,
+      repo: input.repo,
+      baseBranch: input.baseBranch,
+      branch: input.branch,
+    });
+    const operationId = `github-draft:${operationDigest}`;
+    const expiresAt = new Date(Date.parse(now) + opts.expiresInMs).toISOString();
+    let blocked: AdoptiveDraftBlockedError | undefined;
+    const result = await opts.outage.run<AdoptiveDraftResult>(Object.freeze({
+      schemaVersion: 1,
+      tenantId: opts.tenantId,
+      dependencyKind: "scm",
+      providerId: "github",
+      operationId,
+      operationDigest,
+      workerId: opts.workerId,
+      retryBudget: opts.retryBudget,
+      expiresAt,
+      leaseMs: opts.leaseMs ?? 30_000,
+      authorityVersion: opts.authorityVersion,
+      adoptive: true,
+      reconcile: async () => Object.freeze({ status: "missing" as const }),
+      execute: async () => {
+        const value = await this.withAuthRetry(build);
+        return Object.freeze({ value, completionDigest: digest(value) });
+      },
+      classify: (error, context) => {
+        let failureKind: GitHubDependencyFailureKind;
+        let retryAfterMs: number | undefined;
+        if (error instanceof AdoptiveDraftContentionError) {
+          failureKind = "transient";
+        } else if (error instanceof AdoptiveDraftBlockedError) {
+          blocked = error;
+          failureKind = "permanent";
+        } else {
+          const evidence = classifyGitHubDependencyFailure(error, context.now);
+          failureKind = evidence.failureKind;
+          retryAfterMs = evidence.retryAfterMs;
+        }
+        return opts.decide({
+          tenantId: opts.tenantId,
+          dependencyKind: "scm",
+          providerId: "github",
+          operationDigest,
+          failureKind,
+          attempt: context.attempt,
+          retryBudget: context.retryBudget,
+          now: context.now,
+          expiresAt: context.expiresAt,
+          circuit: context.circuit,
+          ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+        });
+      },
+    }));
+    if ("value" in result) return result.value;
+    // A terminal blocked delivery surfaces its named code for the pipeline to
+    // record as delivery_blocked; otherwise the generic outage error.
+    if (blocked && result.status !== "deferred") throw blocked;
     throw new GitHubDependencyOutageError(result.status, result.decision);
   }
 

@@ -1077,7 +1077,13 @@ export function startIndependentWorkerLanes<TFeed, TJobs>(input: {
   };
 }
 
-export function classifyJobFailure(error: unknown): {
+/** ~7-day cap on retrying a stuck GitHub delivery before it abandons (D10). */
+export const GITHUB_DELIVERY_ABANDON_AFTER_MS = 7 * 24 * 60 * 60 * 1_000;
+
+export function classifyJobFailure(
+  error: unknown,
+  context: Readonly<{ attemptAgeMs?: number }> = {},
+): {
   message: string;
   errorCode: string;
   retryable: boolean;
@@ -1093,6 +1099,26 @@ export function classifyJobFailure(error: unknown): {
     /github_app_(?:credentials|token_(?:installation|invalid)|installation|repository|permissions|connection|delivery_mode|selected_repositories)/.test(
       normalized,
     );
+  // A GitHub delivery outage (adoptive contention, dependency-outage defer, or a
+  // transient exact-draft/delivery error) must keep retrying past the ordinary
+  // attempt budget under the backoff cap: the branch is the source of truth and a
+  // later attempt reconciles, so elapsed time alone must never dead-letter it
+  // (D10). It is bounded by a ~7-day age cap, after which it abandons into a
+  // visible terminal state the operator retry endpoint can reopen. A blocked
+  // delivery (foreign branch, ambiguous PR, ...) never reaches here: it is
+  // reported as delivery_blocked, not thrown.
+  const deliveryOutage = !authorizationFailure &&
+    /github_delivery_(?:contention|adoptive)|github_dependency_outage_|pipeline_delivery_failed|github_exact_draft_remote_side_effect/.test(
+      normalized,
+    );
+  if (deliveryOutage && (context.attemptAgeMs ?? 0) > GITHUB_DELIVERY_ABANDON_AFTER_MS) {
+    return {
+      message,
+      errorCode: "github_delivery_abandoned",
+      retryable: false,
+      retryPastMaxAttempts: false,
+    };
+  }
   // An uncertain remote side effect outlives the ordinary attempt budget so
   // reconciliation still runs. It never overrides the authorization exclusion:
   // a credential refused now is refused on every retry, so letting uncertainty
@@ -1104,10 +1130,11 @@ export function classifyJobFailure(error: unknown): {
   // ORDINARY attempt budget only: retryPastMaxAttempts stays false, so a fence
   // that never clears still terminates instead of spinning forever. The sibling
   // warden_ci_mutation_in_flight follows for the identical reason.
-  const retryPastMaxAttempts = remoteSideEffectUncertain && !authorizationFailure;
+  const retryPastMaxAttempts = (remoteSideEffectUncertain || deliveryOutage) && !authorizationFailure;
   const retryable =
     !authorizationFailure &&
     (remoteSideEffectUncertain ||
+    deliveryOutage ||
     /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|verifier_advisory_provider_retryable|mcu_(?:accounting|settlement)_persistence_failed|(?:mission_mutation_dispatch|warden_ci_mutation)_in_flight/.test(
         normalized,
       ));
@@ -4775,7 +4802,13 @@ if (job.type === "warden.candidate.cleanup") {
       console.log(`  done change=${report.changeId}`);
     } catch (error) {
       if (error instanceof WardenAtomicFinalizationError) throw error;
-      const classified = classifyJobFailure(error);
+      // The attempt age bounds a GitHub delivery outage's retries: after ~7 days
+      // it abandons into github_delivery_abandoned (D10) instead of retrying forever.
+      const createdAt = (job as { created_at?: string }).created_at;
+      const attemptAgeMs = createdAt && Number.isFinite(Date.parse(createdAt))
+        ? Date.now() - Date.parse(createdAt)
+        : undefined;
+      const classified = classifyJobFailure(error, attemptAgeMs === undefined ? {} : { attemptAgeMs });
       if (["warden.candidate.observe", "warden.candidate.repair", "warden.candidate.update"].includes(job.type)) {
         db.raw.exec("BEGIN IMMEDIATE");
         try {

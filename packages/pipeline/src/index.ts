@@ -19,7 +19,6 @@ import {
   insertMigrationPr,
   updateMigrationPrStatus,
   updateMigrationPrDelivery,
-  retireMigrationPrDeliveryAnchor,
   listConsumersForProvider,
   listFindingsForChange,
   listPrsForChange,
@@ -60,6 +59,7 @@ import {
   type RepositoryBaseRefresher,
 } from "@mendpoint/github";
 import { evaluatePolicy, type PolicyConfig } from "@mendpoint/policy";
+import { deliverConsumerDraft } from "./delivery.js";
 import { filterRepairEdits } from "./repair-policy.js";
 import {
   applyBrandPack,
@@ -2116,17 +2116,12 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     // rather than opening a duplicate. On the first attempt it anchors to the
     // row's own created_at; on a retry it comes back from the persisted row.
     const deliveryCreatedAt = retryablePr?.created_at ?? nowIso();
-    // A delivery attempt has already anchored and created a branch/commit for
-    // this pr iff a base sha was persisted. Replaying such a delivery must reuse
-    // the SAME anchored base and body so the reconstructed commit matches and the
-    // existing draft reconciles; a fresh delivery (no persisted base) re-anchors
-    // to the current head and regenerates its body.
-    const persistedDeliveryBaseSha = retryablePr?.delivery_base_sha ?? null;
-    const replayCreatedDelivery = persistedDeliveryBaseSha !== null;
-    // Retirement generation for the durable-queue operation id: each retire
-    // increments it so a base revisited after retirement (X to Y back to X) is
-    // a distinct lineage rather than a permanent digest conflict.
-    const deliveryLineage = retryablePr?.delivery_retirement_generation ?? 0;
+    // Adoptive delivery (PR #606): identity is the branch, not the base. A retry
+    // re-runs delivery from the persisted write-ahead artifact and the current
+    // body; there is no base re-anchoring, retirement generation or body replay.
+    // A row that already has a branch_name (a retry, incl. a main-era Date.now
+    // branch) delivers on THAT branch so lookup L adopts the PR already there (D8).
+    const deliveryBranchName = retryablePr?.branch_name ?? draft.branchName;
     const candidateContent = JSON.stringify({
       schemaVersion: 1,
       changeId,
@@ -2320,13 +2315,11 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         });
         const repositoryRevision = resolveRepositoryRevision(repo.local_path, snapshotIdentity);
         const { resolvedSha, revisionKind } = repositoryRevision;
-        // Replaying a delivery that already anchored: reuse the persisted base so
-        // the reconstructed commit matches even if the remote default branch has
-        // since moved. A fresh delivery anchors to the refreshed current head (a
-        // later remote move then drifts, retryably, at delivery).
-        deliveryExpectedBaseSha = replayCreatedDelivery
-          ? persistedDeliveryBaseSha
-          : (refreshedHeadSha ?? resolvedSha);
+        // Adoptive delivery always builds against the current base (the refreshed
+        // remote head when available, else the resolved local revision). A stale
+        // base is safe: the commit tree is built from that base's tree and lookup
+        // L reconciles or adopts whatever is on the branch (no re-anchoring).
+        deliveryExpectedBaseSha = refreshedHeadSha ?? resolvedSha;
         deliveryCommitDate = packageCreatedAt;
         deliveryRevisionKind = revisionKind;
         const snapshotManifest = {
@@ -2596,204 +2589,45 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     // Bound the fully assembled body before it is persisted or delivered, so a
     // large graph context never pushes PR creation past GitHub's hard limit.
     prBodyFinal = boundPrBody(prBodyFinal, graphEvidenceBlock);
-    // Reuse the persisted body ONLY when replaying a delivery that already
-    // created a branch/PR (lost-response replay): parts of the body (e.g. the
-    // graph blast-radius counts) drift as the learning graph accumulates state,
-    // and the existing draft was opened with the first body, so replaying it
-    // byte-identically lets exact-draft reconcile instead of diverging. A fresh
-    // delivery (including a prior attempt that failed BEFORE anchoring, e.g. a
-    // base-refresh failure, or a waiver that turns a gated candidate into a
-    // delivery) must regenerate the full current body (package section, current
-    // evidence ids), never a stale one.
-    if (replayCreatedDelivery && retryablePr?.body) prBodyFinal = retryablePr.body;
-    // Persist the anchored base on the delivery attempt that actually anchors and
-    // creates the commit (git-backed exact-draft only); COALESCE keeps the first.
-    const deliveryBaseShaToPersist =
-      shouldDeliver && deliveryRevisionKind === "git_commit" ? deliveryExpectedBaseSha : null;
-    if (retryablePr) {
-      updateMigrationPrDelivery(db, prId, {
-        status: shouldDeliver ? "delivery_pending" : status,
-        body: prBodyFinal,
-        ...(deliveryBaseShaToPersist ? { deliveryBaseSha: deliveryBaseShaToPersist } : {}),
-      });
-    } else {
-      insertMigrationPr(db, {
-        id: prId,
-        changeId,
-        consumerId: consumer.id,
-        title: draft.title,
-        body: prBodyFinal,
-        branchName: draft.branchName,
-        status: shouldDeliver ? "delivery_pending" : status,
-        risk: draft.risk,
-        patchUnified: draft.patch,
-        githubPrNumber: prNumber ?? null,
-        githubPrUrl: prUrl ?? null,
-        createdAt: deliveryCreatedAt,
-        resolvedAt: null,
-        // Persist the coverage/basis so the clean-vs-unknown distinction survives
-        // to the API and console even when there are zero findings (this row is
-        // written regardless of status, including low_confidence).
-        coverageJson: impactReport.coverage
-          ? JSON.stringify(impactReport.coverage)
-          : null,
-        deliveryBaseSha: deliveryBaseShaToPersist,
-      });
-    }
-    if (shouldDeliver) {
-      assertActive();
-      let resolution: ReturnType<typeof deliveryFor> | undefined;
-      try {
-        if (!deliveryExpectedBaseSha || !deliveryCommitDate) {
-          throw new Error("github_exact_draft_evidence_missing");
-        }
-        resolution = deliveryFor(consumer, repo);
-        await resolution.assertRepositoryIdentity?.();
-        updateMigrationPrDelivery(db, prId, {
-          status: "delivery_pending",
-          body: prBodyFinal,
-          ...(resolution.githubRepositoryId
-            ? { githubRepositoryId: resolution.githubRepositoryId }
-            : {}),
-          ...(resolution.githubInstallationId
-            ? { githubInstallationId: resolution.githubInstallationId }
-            : {}),
-          ...(resolution.githubAccountId
-            ? { githubAccountId: resolution.githubAccountId }
-            : {}),
-        });
-        // Exact-draft lost-response reconciliation anchors delivery to a real
-        // base commit, so it applies to git-backed repositories only. A
-        // repository with no git history resolves a content-manifest revision
-        // (a digest, not a commit); for those we keep main's pre-exact-draft
-        // delivery path (create branch, commit files, open pull request) with no
-        // git base-equality check, so their delivery behaviour never regresses.
-        let pr: { url: string; number: number };
-        if (deliveryRevisionKind === "content_manifest") {
-          const github = resolution.delivery;
-          await github.createBranch(
-            consumer.github_owner,
-            consumer.github_repo,
-            draft.branchName,
-            repo.default_branch,
-          );
-          assertActive();
-          await github.commitFiles(
-            consumer.github_owner,
-            consumer.github_repo,
-            draft.branchName,
-            draft.title,
-            decision.allowedEdits.map((e) => ({ path: e.path, content: e.updated })),
-          );
-          assertActive();
-          pr = await github.openPullRequest(
-            consumer.github_owner,
-            consumer.github_repo,
-            draft.branchName,
-            draft.title,
-            prBodyFinal,
-            repo.default_branch,
-          );
-        } else {
-          pr = await resolution.delivery.deliverExactDraft({
-            owner: consumer.github_owner,
-            repo: consumer.github_repo,
-            baseBranch: repo.default_branch,
-            expectedBaseSha: deliveryExpectedBaseSha,
-            branch: draft.branchName,
-            commitMessage: draft.title,
-            commitDate: deliveryCommitDate,
-            title: draft.title,
-            body: prBodyFinal,
-            files: decision.allowedEdits.map((edit) => ({
-              path: edit.path,
-              content: edit.updated,
-              mode: "100644" as const,
-            })),
-            deliveryLineage,
-          });
-        }
-        assertActive();
-        prUrl = pr.url;
-        prNumber = pr.number;
-        status = "draft";
-        updateMigrationPrDelivery(db, prId, {
-          status,
-          githubPrNumber: prNumber,
-          githubPrUrl: prUrl,
-          body: prBodyFinal,
-        });
-      } catch (error) {
-        status = "delivery_failed";
-        const originalError = error instanceof Error ? error.message : String(error);
-        deliveryError = originalError;
-        // Ledger-first anchor policy. The durable outage queue fingerprints the
-        // whole delivery input (base sha AND body) for a branch and rejects any
-        // changed digest for that operation, so a retry MUST replay the
-        // identical operation. The default is therefore to KEEP the anchor and
-        // body (the lost-response path). We re-anchor onto the refreshed head
-        // only when ALL hold:
-        //   (a) the remote default head actually moved away from the anchored
-        //       base (drift observed here, not merely a delivery failure),
-        //   (b) branchExists confirms the branch is absent (fail-closed: a
-        //       lookup failure keeps the anchor — never abandon on an unknown),
-        //   (c) the ledger proves no GitHub write happened and retires
-        //       (supersedes) the abandoned operation, so the re-anchored
-        //       delivery is a fresh operation, not a forbidden mutation of the
-        //       existing one.
-        // Only then do we clear the anchor; body reuse is gated on the anchor,
-        // so the next attempt re-anchors to the refreshed head and regenerates.
-        // Any lookup/retirement code is APPENDED to the original error so the
-        // original stays the primary cause the worker classifies on.
-        if (deliveryRevisionKind === "git_commit") {
-          const anchoredBase = deliveryExpectedBaseSha;
-          const driftObserved =
-            refreshedHeadSha !== null &&
-            anchoredBase !== null &&
-            refreshedHeadSha !== anchoredBase;
-          if (driftObserved && typeof resolution?.delivery.branchExists === "function") {
-            let branchAbsent = false;
-            let lookupResolved = false;
-            try {
-              branchAbsent = !(await resolution.delivery.branchExists(
-                consumer.github_owner,
-                consumer.github_repo,
-                draft.branchName,
-              ));
-              lookupResolved = true;
-            } catch {
-              deliveryError = `${originalError} | github_delivery_branch_existence_lookup_failed`;
-            }
-            if (lookupResolved && branchAbsent && anchoredBase) {
-              let mayReanchor = true;
-              if (typeof resolution.delivery.retireDeliveryOperation === "function") {
-                try {
-                  const retirement = await resolution.delivery.retireDeliveryOperation({
-                    owner: consumer.github_owner,
-                    repo: consumer.github_repo,
-                    branch: draft.branchName,
-                    baseSha: anchoredBase,
-                    lineage: deliveryLineage,
-                  });
-                  mayReanchor = retirement.superseded;
-                  if (!retirement.superseded) {
-                    deliveryError =
-                      `${originalError} | github_delivery_operation_retirement_declined:${retirement.reason}`;
-                  }
-                } catch {
-                  mayReanchor = false;
-                  deliveryError = `${originalError} | github_delivery_operation_retirement_failed`;
-                }
-              }
-              // Clears the anchor AND increments the retirement generation, so
-              // the next attempt re-anchors under a distinct lineage.
-              if (mayReanchor) retireMigrationPrDeliveryAnchor(db, prId);
-            }
-          }
-        }
-        updateMigrationPrDelivery(db, prId, { status });
-      }
-    }
+    // Deliver (or record) this consumer's draft: the pre-delivery write (D1 CAS),
+    // the adoptive delivery for git-backed repos or main's legacy create/commit/open
+    // path for content-manifest repos, and recording the adopted PR facts. Delivery
+    // identity is the branch, so there is no re-anchoring, retirement or body replay.
+    const deliveryOutcome = await deliverConsumerDraft({
+      db,
+      tenantId: input.tenantId,
+      prId,
+      changeId,
+      isRetry: Boolean(retryablePr),
+      consumer: {
+        id: consumer.id,
+        github_owner: consumer.github_owner,
+        github_repo: consumer.github_repo,
+      },
+      defaultBranch: repo.default_branch,
+      deliveryKey: `${changeId}:${consumer.id}`,
+      branchName: deliveryBranchName,
+      title: draft.title,
+      risk: draft.risk,
+      patch: draft.patch,
+      body: prBodyFinal,
+      files: decision.allowedEdits.map((edit) => ({ path: edit.path, content: edit.updated })),
+      baseSha: deliveryExpectedBaseSha,
+      commitDate: deliveryCommitDate,
+      revisionKind: deliveryRevisionKind,
+      shouldDeliver,
+      terminalStatus: status,
+      coverageJson: impactReport.coverage ? JSON.stringify(impactReport.coverage) : null,
+      createdAt: deliveryCreatedAt,
+      existingPrNumber: prNumber ?? null,
+      existingPrUrl: prUrl ?? null,
+      resolveDelivery: () => deliveryFor(consumer, repo),
+      assertActive,
+    });
+    status = deliveryOutcome.status;
+    if (deliveryOutcome.prNumber !== null) prNumber = deliveryOutcome.prNumber;
+    if (deliveryOutcome.prUrl !== null) prUrl = deliveryOutcome.prUrl;
+    if (deliveryOutcome.deliveryError) deliveryError = deliveryOutcome.deliveryError;
 
     recordAudit(db, {
       tenantId: input.tenantId,

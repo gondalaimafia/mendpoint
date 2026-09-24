@@ -13,6 +13,8 @@ import {
   listConsumers,
   listPrs,
   getPr,
+  updateMigrationPrStatus,
+  createDependencyOutageQueue,
   findPrByGitHubIdentityAndNumber,
   findWardenCandidateDeliveryByPrUrl,
   recordWardenCandidateDeliveryOutcome,
@@ -135,6 +137,7 @@ import {
   resolveGitHubInstallationTenant,
   resolveGitHubAccountTenantBinding,
   resolveGitHubTenantAccountBinding,
+  adoptiveDraftOperationDigest,
   createRepositoryBaseRefresher,
 } from "@mendpoint/github";
 import { wakeFettlerReviewFromWebhook } from "./warden-review-webhook.js";
@@ -2291,6 +2294,68 @@ app.post("/prs/:id/feedback", async (c) => {
     experiment: body.experiment ?? null,
     planId: body.planId ?? null,
   });
+});
+
+/**
+ * Operator retry of a stuck delivery (PR #606 D9). Tenant-scoped, admin-class
+ * only, and allowed only from delivery_failed / delivery_blocked — never on a row
+ * that already recorded a PR (I7). Flips the row back to delivery_failed so the
+ * next pipeline run re-attempts delivery, and reopens the durable ledger operation
+ * (operator_retry) so an abandoned/expired operation gets a fresh retry window.
+ */
+app.post("/migration-prs/:id/retry-delivery", (c) => {
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "authenticated_principal_required" }, 401);
+  if (principal.role !== "owner" && principal.role !== "admin") {
+    return c.json({ error: "admin_role_required" }, 403);
+  }
+  const tenantId = requestTenantId(c);
+  const pr = getPr(db, c.req.param("id"), tenantId);
+  if (!pr) return c.json({ error: "not found" }, 404);
+  if (pr.status !== "delivery_failed" && pr.status !== "delivery_blocked") {
+    return c.json({ error: "retry_delivery_not_allowed", status: pr.status }, 409);
+  }
+  if (pr.github_pr_number !== null) {
+    // A recorded PR is delivered; retrying would risk downgrading it (I7).
+    return c.json({ error: "retry_delivery_pr_recorded" }, 409);
+  }
+  // Reopen the durable ledger operation for this delivery, if one exists, so a
+  // terminal/expired operation gets a fresh window (best-effort: a missing or
+  // non-failed row is simply not reopened).
+  const consumer = getConsumer(db, pr.consumer_id, tenantId);
+  if (consumer) {
+    const repo = getConsumerRepo(db, consumer.id, tenantId);
+    const baseBranch = (repo as { default_branch?: string } | undefined)?.default_branch ?? "main";
+    const operationDigest = adoptiveDraftOperationDigest({
+      tenantId,
+      owner: consumer.github_owner,
+      repo: consumer.github_repo,
+      baseBranch,
+      branch: pr.branch_name,
+    });
+    try {
+      const now = new Date().toISOString();
+      createDependencyOutageQueue(db.raw).reopen(
+        {
+          tenantId,
+          dependencyKind: "scm",
+          providerId: "github",
+          operationId: `github-draft:${operationDigest}`,
+          operationDigest,
+        },
+        { reason: "operator_retry", expiresAt: new Date(Date.parse(now) + 60 * 60_000).toISOString(), now },
+      );
+    } catch { /* the operation row may not exist yet; the status flip still retries */ }
+  }
+  updateMigrationPrStatus(db, pr.id, "delivery_failed", null);
+  requestAudit(c, {
+    actor: "human",
+    action: "pr.retry_delivery",
+    resourceType: "migration_pr",
+    resourceId: pr.id,
+    metadata: { previousStatus: pr.status },
+  });
+  return c.json({ ok: true, id: pr.id, status: "delivery_failed" });
 });
 
 /** Phase D: advisory CI check body (and optional mock post) for a migration PR */
