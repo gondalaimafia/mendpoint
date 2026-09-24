@@ -20,6 +20,7 @@ import {
   generateKeyPair,
 } from "jose";
 import {
+  activeTrustPrincipal,
   createAuthMiddleware,
   createOidcVerifier,
   delegatedActorSignature,
@@ -97,6 +98,29 @@ async function oidcFixture() {
   };
   return { issuer, audience, verifier, token };
 }
+
+describe("activeTrustPrincipal", () => {
+  const now = Date.parse("2026-08-30T00:00:00.000Z");
+  const base = { created_at: "2026-08-01T00:00:00.000Z", expires_at: null, revoked_at: null };
+
+  it("accepts a live principal and rejects a revoked, expired, or future-dated one", () => {
+    expect(activeTrustPrincipal(base, now)).toBe(true);
+    expect(activeTrustPrincipal({ ...base, revoked_at: "2026-08-29T00:00:00.000Z" }, now)).toBe(false);
+    expect(activeTrustPrincipal({ ...base, expires_at: "2026-08-29T23:59:59.000Z" }, now)).toBe(false);
+    expect(activeTrustPrincipal({ ...base, expires_at: "2026-08-30T00:00:01.000Z" }, now)).toBe(true);
+    expect(activeTrustPrincipal({ ...base, created_at: "2026-08-30T00:00:01.000Z" }, now)).toBe(false);
+  });
+
+  it("fails closed on a malformed created_at or expires_at, never reading it as valid", () => {
+    // `NaN <= now` and `NaN > now` are both false, so a naive comparison would
+    // read a garbage timestamp as valid/not-expired. Every unparseable form is
+    // rejected.
+    for (const malformed of ["not-a-timestamp", "", "2026-13-45T99:99:99Z", "yesterday"]) {
+      expect(activeTrustPrincipal({ ...base, expires_at: malformed }, now)).toBe(false);
+      expect(activeTrustPrincipal({ ...base, created_at: malformed }, now)).toBe(false);
+    }
+  });
+});
 
 describe("API authentication identity", () => {
   it("attenuates minted API-key scopes to the current admin authority", () => {

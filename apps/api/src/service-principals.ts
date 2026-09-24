@@ -14,7 +14,7 @@ import { permissionsFor, type Permission } from "@mendpoint/platform";
 import { createHash } from "node:crypto";
 import type { Context } from "hono";
 import { Hono } from "hono";
-import type { ApiEnv } from "./auth.js";
+import { activeTrustPrincipal, type ApiEnv } from "./auth.js";
 import {
   claimedHumanManager,
   revalidateHumanManager,
@@ -291,7 +291,11 @@ export function createServicePrincipalRoutes(options: Options): Hono<ApiEnv> {
         if (principal.audience !== "mendpoint-scim" && grantedScopes.includes("identity:provision")) {
           throw new Error("service_principal_scim_audience_required");
         }
-        if (principal.revoked_at || (principal.expires_at && Date.parse(principal.expires_at) <= observedAt.getTime())) {
+        // Reuse the shared trust-principal liveness check the auth middleware
+        // uses: it fails closed on a revoked, expired, future-dated, OR malformed
+        // (unparseable) created_at/expires_at, so a garbage expiry can never read
+        // as "not expired".
+        if (!activeTrustPrincipal(principal, observedAt.getTime())) {
           throw new Error("service_principal_inactive_conflict");
         }
         const replay = listApiKeys(options.db, identity.tenantId).find((key) => key.id === nextCredentialId);

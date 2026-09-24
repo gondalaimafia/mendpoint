@@ -68,6 +68,14 @@ export interface LiveObservation {
   readonly healthzOk?: boolean;
 }
 
+/**
+ * The result of a `git merge-base --is-ancestor` test. `ancestor` and
+ * `not-ancestor` are the two definitive answers (git exit 0 and 1); everything
+ * else (a bad object, a git failure) is `undetermined` and must never collapse
+ * to `not-ancestor`.
+ */
+export type AncestryResult = "ancestor" | "not-ancestor" | "undetermined";
+
 export interface RefreshInput {
   /** Exact bytes of docs/PUBLIC_CLAIMS.json. */
   readonly registryText: string;
@@ -79,15 +87,21 @@ export interface RefreshInput {
   readonly versionBefore: string;
   /** GET /version `.revision` read AFTER the observations. */
   readonly versionAfter: string;
-  /** `git merge-base --is-ancestor <deployedRevision> origin/main` succeeded. */
-  readonly deployedRevisionIsAncestorOfMain: boolean;
   /**
-   * `git merge-base --is-ancestor <currentAuditedRevision> <deployedRevision>`
-   * succeeded. auditedRevision must only ever move forward: if the current
-   * audited revision is not an ancestor of the deployed one, advancing it would
-   * move the audit backward (or sideways), so this refuses.
+   * Whether `<deployedRevision>` is an ancestor of origin/main. `undetermined`
+   * (a git error rather than a definitive answer) must not be read as
+   * "not-ancestor"; it refuses with its own reason.
    */
-  readonly auditedRevisionIsAncestorOfDeployed: boolean;
+  readonly deployedRevisionIsAncestorOfMain: AncestryResult;
+  /**
+   * Whether `<currentAuditedRevision>` is an ancestor of `<deployedRevision>`.
+   * auditedRevision must only ever move forward: if the current audited revision
+   * is not an ancestor of the deployed one, advancing it would move the audit
+   * backward (or sideways), so this refuses. `undetermined` (a git error) is
+   * distinguished from a definitive `not-ancestor` and refuses with its own
+   * reason rather than the backward-move reason.
+   */
+  readonly auditedRevisionIsAncestorOfDeployed: AncestryResult;
   /** Now, for the future-observation and contract-validation checks. */
   readonly now: Date;
   /**
@@ -238,7 +252,12 @@ export function refreshLiveEvidence(input: RefreshInput): RefreshOutcome {
       `deployed revision ${input.deployedRevision} does not equal the revision /version served (${input.versionBefore})`,
     );
   }
-  if (!input.deployedRevisionIsAncestorOfMain) {
+  if (input.deployedRevisionIsAncestorOfMain === "undetermined") {
+    return refuse(
+      `could not determine whether deployed revision ${input.deployedRevision} is an ancestor of origin/main (git error)`,
+    );
+  }
+  if (input.deployedRevisionIsAncestorOfMain !== "ancestor") {
     return refuse(
       `deployed revision ${input.deployedRevision} is not an ancestor of origin/main`,
     );
@@ -246,10 +265,17 @@ export function refreshLiveEvidence(input: RefreshInput): RefreshOutcome {
   // auditedRevision must only ever move forward. If the deployed revision equals
   // the current auditedRevision there is nothing to move; otherwise the current
   // one must be a strict ancestor of the deployed one.
-  if (input.deployedRevision !== oldRevision && !input.auditedRevisionIsAncestorOfDeployed) {
-    return refuse(
-      `would move auditedRevision backward: ${oldRevision} is not an ancestor of the deployed revision ${input.deployedRevision}`,
-    );
+  if (input.deployedRevision !== oldRevision) {
+    if (input.auditedRevisionIsAncestorOfDeployed === "undetermined") {
+      return refuse(
+        `could not determine whether the current auditedRevision ${oldRevision} is an ancestor of the deployed revision ${input.deployedRevision} (git error)`,
+      );
+    }
+    if (input.auditedRevisionIsAncestorOfDeployed !== "ancestor") {
+      return refuse(
+        `would move auditedRevision backward: ${oldRevision} is not an ancestor of the deployed revision ${input.deployedRevision}`,
+      );
+    }
   }
 
   // Truthfulness: moving auditedRevision to the deployed revision only holds if
@@ -468,15 +494,24 @@ function git(repoRoot: string, args: readonly string[]): string {
   }).trim();
 }
 
-export function isAncestor(repoRoot: string, ancestor: string, descendant: string): boolean {
+export function isAncestor(
+  repoRoot: string,
+  ancestor: string,
+  descendant: string,
+): AncestryResult {
   try {
     execFileSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
       cwd: repoRoot,
       stdio: "ignore",
     });
-    return true;
-  } catch {
-    return false;
+    return "ancestor";
+  } catch (error) {
+    // `git merge-base --is-ancestor` exits 1 ONLY when the commit is definitively
+    // not an ancestor. Any other exit code (128 for a bad object, a git failure,
+    // or a spawn error with no status) leaves ancestry undetermined and must NOT
+    // be read as "not an ancestor".
+    const status = (error as { status?: number | null }).status;
+    return status === 1 ? "not-ancestor" : "undetermined";
   }
 }
 
@@ -709,9 +744,10 @@ export async function runRefresh(opts: RunRefreshOptions): Promise<RunRefreshRes
   const deployedRevision = versionBefore;
   const comparison = buildComparison(repoRoot, registry.auditedRevision, deployedRevision);
   const deployedRevisionIsAncestorOfMain = isAncestor(repoRoot, deployedRevision, "origin/main");
-  const auditedRevisionIsAncestorOfDeployed =
-    deployedRevision === registry.auditedRevision ||
-    isAncestor(repoRoot, registry.auditedRevision, deployedRevision);
+  const auditedRevisionIsAncestorOfDeployed: AncestryResult =
+    deployedRevision === registry.auditedRevision
+      ? "ancestor"
+      : isAncestor(repoRoot, registry.auditedRevision, deployedRevision);
 
   const outcome = refreshLiveEvidence({
     registryText,

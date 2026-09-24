@@ -22,6 +22,7 @@ import {
   type VerifierPricing,
   type VerifierProduct,
   type VerifierSourceInput,
+  type VerifierTelemetry,
 } from "@mendpoint/verifier";
 import { createVerifierAdvisoryRuntime } from "./verifier-shadow.js";
 
@@ -35,6 +36,28 @@ import { createVerifierAdvisoryRuntime } from "./verifier-shadow.js";
 export const VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE = "verifier-external-model-egress";
 export { REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE };
 export const RETRYABLE_VERIFIER_FAILURE_CODES = new Set(["api_failure", "logprob_failure"] as const);
+
+// A durable telemetry is the replay terminal: the provider result was already
+// recorded, so a rerun must not re-observe. But the RECORDED STATUS decides the
+// outcome — "telemetry exists" is not "verified". A verified telemetry (no
+// failure code) replays as an already-verified no-op (null). A telemetry that
+// durably recorded a definitive NON-verified outcome (a non-retryable failure
+// code) is surfaced as that non-verified result so the job re-fails, instead of
+// silently reading as already verified and handing off as "review passed".
+export function recoveredAdvisoryResult(
+  telemetry: VerifierTelemetry,
+): AgentVerifierResult | null {
+  if (telemetry.failureCode === null) return null;
+  return Object.freeze({
+    status: "failed",
+    recommendation: telemetry.recommendation,
+    failureCode: telemetry.failureCode,
+    suggestedCandidateId: telemetry.suggestedCandidateId,
+    effectiveCandidateId: telemetry.effectiveCandidateId,
+    behaviorChanged: telemetry.behaviorChanged,
+    telemetry,
+  });
+}
 
 type ProviderInvocationOutcome = {
   kind: "none" | "no_operation" | "attempted" | "settled" | "completed" | "unknown";
@@ -118,11 +141,12 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
   // terminal: only validated, durable telemetry proves the provider result was
   // recorded. This lets a queue retry after a timeout without permanently
   // suppressing the attempt that failed between intent and telemetry.
-  if (findVerifierTelemetry(input.db, {
+  const recoveredTelemetry = findVerifierTelemetry(input.db, {
     tenantId: input.completion.tenantId,
     verificationAttemptId,
     evidencePackDigest: pack.packDigest,
-  })) return null;
+  });
+  if (recoveredTelemetry) return recoveredAdvisoryResult(recoveredTelemetry);
   const now = input.now ?? (() => new Date().toISOString());
   const providerTransport = input.transport ?? createFetchVerifierTransport();
   const attemptedProviderOperationIds: string[] = [];

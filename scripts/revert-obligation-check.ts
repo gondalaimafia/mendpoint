@@ -124,10 +124,19 @@ export type Analysis = Readonly<{
   obligations: readonly RevertObligation[];
 }>;
 
+/**
+ * Whether HEAD resolves to a commit. `present` = HEAD names a commit;
+ * `empty` = the repository is provably an unborn branch with no commit reachable
+ * from any ref; `undetermined` = HEAD could not be resolved for any other reason
+ * (a HEAD pointing at a missing branch, a broken ref, or git being unavailable),
+ * which must NOT be read as an empty repository.
+ */
+export type CommitPresence = "present" | "empty" | "undetermined";
+
 /** A git binding narrow enough that tests can point it at a fixture repo. */
 export type GitEnv = Readonly<{
   isShallow: () => boolean;
-  hasCommits: () => boolean;
+  commitPresence: () => CommitPresence;
   /** Every commit reachable from HEAD, newest first. */
   log: () => readonly CommitMeta[];
   /** Insertions and deletions per commit sha (0/0 for merges), in one pass. */
@@ -150,12 +159,32 @@ function git(root: string, args: readonly string[]): string {
 function realGitEnv(root: string): GitEnv {
   return {
     isShallow: () => git(root, ["rev-parse", "--is-shallow-repository"]).trim() === "true",
-    hasCommits: () => {
+    commitPresence: () => {
       try {
-        git(root, ["rev-parse", "--verify", "HEAD"]);
-        return true;
+        // `HEAD^{commit}` dereferences HEAD to a commit object, so a detached
+        // HEAD pinned at a nonexistent sha fails here instead of crashing.
+        git(root, ["rev-parse", "--verify", "HEAD^{commit}"]);
+        return "present";
       } catch {
-        return false;
+        // HEAD did not resolve to a commit. That is a genuinely empty repository
+        // ONLY when it is an unborn branch (a symbolic HEAD) AND no commit is
+        // reachable from any ref. Any other failure — a HEAD pointing at a
+        // missing branch, a broken ref, git unavailable — leaves commit presence
+        // undetermined and must never be read as "no commits" (fail closed).
+        let unborn: boolean;
+        try {
+          git(root, ["symbolic-ref", "--quiet", "HEAD"]);
+          unborn = true;
+        } catch {
+          unborn = false;
+        }
+        let anyCommits: boolean;
+        try {
+          anyCommits = git(root, ["rev-list", "--all", "--count"]).trim() !== "0";
+        } catch {
+          return "undetermined";
+        }
+        return unborn && !anyCommits ? "empty" : "undetermined";
       }
     },
     log: () => {
@@ -365,7 +394,18 @@ export function analyzeRepository(options: {
     };
   }
 
-  if (!gitEnv.hasCommits()) {
+  const presence = gitEnv.commitPresence();
+  if (presence === "undetermined") {
+    return {
+      status: "undetermined",
+      reason:
+        "HEAD could not be resolved to a commit and the repository is not a provably " +
+        "empty unborn branch (rev-list --all is non-empty, or git was unavailable); " +
+        "commit history could not be certified, so failing closed",
+      obligations: [],
+    };
+  }
+  if (presence === "empty") {
     return { status: "pass", reason: "no commits", obligations: [] };
   }
 

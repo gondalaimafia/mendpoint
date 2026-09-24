@@ -211,6 +211,12 @@ function costInput(
     currency: "USD",
     actorPrincipalId: "principal-a",
     createdAt: "2026-08-01T12:02:00.000Z",
+    modelCostMeasured: true,
+    cacheCostMeasured: true,
+    gpuCostMeasured: true,
+    graphCostMeasured: true,
+    sandboxCostMeasured: true,
+    verificationCostMeasured: true,
     ...overrides,
   };
 }
@@ -250,6 +256,18 @@ function bindMissionJob(db: AppDb, jobId: string, missionId = "mission-a"): stri
 }
 
 describe("actual execution cost and gross margin", () => {
+  it("rejects an execution cost that omits a per-component measurement flag", () => {
+    const db = setupDb();
+    // An internal writer that did not state whether the model cost was measured.
+    // Before the fix, `?? true` silently read this omission as measured, so an
+    // unmeasured cost recorded as real. Now the omission is rejected outright.
+    const input = costInput();
+    delete (input as { modelCostMeasured?: boolean }).modelCostMeasured;
+    expect(() =>
+      recordActualExecutionCost(db, input as Parameters<typeof recordActualExecutionCost>[1]),
+    ).toThrow("execution_cost_model_measured_required");
+  });
+
   it("counts every retry and fallback exactly once and ties totals to both ledgers", () => {
     const db = setupDb();
     settle(db);

@@ -16,6 +16,7 @@ import {
 } from "@mendpoint/pipeline";
 import {
   resolveVerifierRuntimeConfig,
+  type AgentVerifierResult,
   type VerifierHttpTransport,
 } from "@mendpoint/verifier";
 import {
@@ -34,6 +35,27 @@ export type RunVerifierAdvisoryJobResult = Readonly<{
   jobId: string;
   telemetryDigest: string | null;
 }>;
+
+/**
+ * The advisory job may complete only as a verified or already-verified outcome.
+ * `null` means there was no new observation (a durable replay) → already
+ * verified. A result whose status is exactly "verified" → verified. Any other
+ * observed status — a non-retryable "failed" (for example a cache/identity
+ * mismatch), "no_eligible_candidates", or "disabled" — did NOT verify and must
+ * never be recorded as a verified completion or counted as succeeded, so it
+ * fails the job explicitly. (Retryable provider failures are thrown before this
+ * by the caller.) This is the third-state guard: a truthy-but-not-verified
+ * result must not read as "verified".
+ */
+export function resolveAdvisoryOutcomeStatus(
+  result: AgentVerifierResult | null,
+): "verified" | "already_verified" {
+  if (result === null) return "already_verified";
+  if (result.status === "verified") return "verified";
+  throw new Error(
+    `verifier_advisory_not_verified:${result.status}${result.failureCode ? `:${result.failureCode}` : ""}`,
+  );
+}
 
 export async function runVerifierAdvisoryJob(input: Readonly<{
   db: AppDb;
@@ -126,7 +148,7 @@ export async function runVerifierAdvisoryJob(input: Readonly<{
     throw new Error(`verifier_advisory_provider_retryable:${result.failureCode}`);
   }
   const outcome = Object.freeze({
-    status: result ? "verified" as const : "already_verified" as const,
+    status: resolveAdvisoryOutcomeStatus(result),
     jobId: input.job.id,
     telemetryDigest: result?.telemetry.telemetryDigest ?? null,
     policyEnvelopeId: authority.policyEnvelopeId,

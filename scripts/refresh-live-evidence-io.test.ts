@@ -98,8 +98,22 @@ describe("isAncestor (IO, real temp repo)", () => {
     git(repo, ["commit", "-m", "side"]);
     const sideTip = head(repo);
 
-    expect(isAncestor(repo, c1, mainTip)).toBe(true);
-    expect(isAncestor(repo, sideTip, mainTip)).toBe(false);
+    expect(isAncestor(repo, c1, mainTip)).toBe("ancestor");
+    expect(isAncestor(repo, sideTip, mainTip)).toBe("not-ancestor");
+  });
+
+  it("returns undetermined for a git error, never a definitive not-ancestor", () => {
+    const repo = initRepo();
+    writeFileSync(join(repo, "a.txt"), "1\n");
+    git(repo, ["add", "-A"]);
+    git(repo, ["commit", "-m", "c1"]);
+    const real = head(repo);
+    // A bad object makes `git merge-base --is-ancestor` exit 128 (not 1). That is
+    // undetermined, not a definitive "not an ancestor" — the exact third-state
+    // the fix closes.
+    const missing = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    expect(isAncestor(repo, missing, real)).toBe("undetermined");
+    expect(isAncestor(repo, real, missing)).toBe("undetermined");
   });
 });
 

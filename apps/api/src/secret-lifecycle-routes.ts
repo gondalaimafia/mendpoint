@@ -2,7 +2,7 @@ import { Hono, type Context, type Next } from "hono";
 import { getPrincipal, getTenantMembership, recordAudit, type AppDb } from "@mendpoint/db";
 import { createHash } from "node:crypto";
 import type { EnvelopeKeyLocator, KeyEncryptionKeyProvider } from "@mendpoint/platform";
-import type { ApiEnv } from "./auth.js";
+import { activeTrustPrincipal, type ApiEnv } from "./auth.js";
 import { mappedErrorResponse, type PublicErrorRule } from "./error-boundary.js";
 import {
   DurableSecretLifecycleService,
@@ -219,15 +219,18 @@ function currentAuthorityVersion(
   }>,
 ): Readonly<{ version: string }> {
   const now = Date.now();
+  // Reuse the shared trust-principal liveness check the auth middleware uses: it
+  // fails closed on a revoked, expired, future-dated, OR malformed (unparseable)
+  // created_at/expires_at. This is defense in depth: the auth middleware already
+  // rejects a malformed/expired AUTHENTICATED principal with 401, but this
+  // revalidation also covers a distinct credential principal and a concurrent
+  // authority change made mid-operation.
   const principal = getPrincipal(db, input.tenantId, input.actorId);
-  if (!principal || principal.revoked_at !== null || Date.parse(principal.created_at) > now ||
-      (principal.expires_at !== null && Date.parse(principal.expires_at) <= now)) {
+  if (!principal || !activeTrustPrincipal(principal, now)) {
     throw new Error("secret_lifecycle_authority_invalid");
   }
   const credentialPrincipal = getPrincipal(db, input.tenantId, input.credentialPrincipalId);
-  if (!credentialPrincipal || credentialPrincipal.revoked_at !== null ||
-      Date.parse(credentialPrincipal.created_at) > now ||
-      (credentialPrincipal.expires_at !== null && Date.parse(credentialPrincipal.expires_at) <= now)) {
+  if (!credentialPrincipal || !activeTrustPrincipal(credentialPrincipal, now)) {
     throw new Error("secret_lifecycle_authority_invalid");
   }
   let role: string | null = null;

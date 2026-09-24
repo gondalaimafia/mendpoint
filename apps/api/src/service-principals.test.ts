@@ -397,6 +397,39 @@ describe("service principal administration", () => {
     )).toHaveLength(2);
   });
 
+  it.each([
+    // A garbage expiry: `NaN <= now` is false, so the old check read it as
+    // "not expired" and issued a new key. Now fails closed.
+    { label: "malformed expiry", column: "expires_at", value: "not-a-timestamp" },
+    // A garbage created_at: `NaN > now` is false, so a naive future-dating guard
+    // read it as valid. activeTrustPrincipal requires a finite created_at <= now.
+    { label: "malformed created_at", column: "created_at", value: "not-a-timestamp" },
+    // A future created_at is not yet active and must never rotate.
+    { label: "future created_at", column: "created_at", value: "2099-01-01T00:00:00.000Z" },
+  ])("fails closed with no mutation when the principal has a $label", async ({ label, column, value }) => {
+    const { app, db } = fixture();
+    const created = await createPrincipal(app);
+    const prior = created.payload.data.credential;
+    db.raw.prepare(`UPDATE principals SET ${column} = ? WHERE id = ?`)
+      .run(value, created.payload.data.id);
+
+    const rotation = await app.request(
+      `/tenants/service-principals/${created.payload.data.id}/credentials/rotate`,
+      {
+        method: "POST",
+        headers: mutationHeaders(`rotate-${label.replace(/\s+/g, "-")}`),
+        body: JSON.stringify({ currentCredentialId: prior.id, scopes: ["graph:read"] }),
+      },
+    );
+    expect(rotation.status).toBe(409);
+    expect(await rotation.json()).toMatchObject({ error: "service_principal_inactive_conflict" });
+    // Fail closed with no mutation: the prior credential is not revoked and no
+    // replacement key was issued.
+    expect(listApiKeys(db, "tenant-a").filter(
+      (key) => key.principal_id === created.payload.data.id && !key.revoked_at,
+    ).map((key) => key.id)).toEqual([prior.id]);
+  });
+
   it("blocks delayed creation after manager membership revocation without state mutation", async () => {
     const { app, db } = fixture();
     const principalsBefore = db.raw.prepare("SELECT * FROM principals ORDER BY id").all();
