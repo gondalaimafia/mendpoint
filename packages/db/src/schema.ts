@@ -373,6 +373,12 @@ export type MigrationPrRow = {
    */
   delivered_base_sha: string | null;
   delivered_head_sha: string | null;
+  /**
+   * The originating fanout job's gate payload (reservation keys stripped), so a
+   * delivery-only retry that falls back to a full pipeline run replays the same
+   * gate inputs for the same change. Null for rows created outside a fanout.
+   */
+  origin_fanout_json: string | null;
 };
 
 export type AuditEvent = {

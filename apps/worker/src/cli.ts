@@ -4700,28 +4700,45 @@ if (job.type === "warden.candidate.cleanup") {
         if (outcome.fallbackToPipeline) {
           // No write-ahead artifact exists (the outage hit before the commit was
           // built, e.g. a base-refresh failure), so a delivery-only replay cannot
-          // reconstruct the change. Fall back to a full pipeline run for the change:
-          // it re-refreshes the base and regenerates, then re-delivers. Bounded by
-          // the same ~7-day cap already enforced inside retryConsumerDelivery before
-          // this branch. Complete this job (do not throw forever) and hand the change
-          // to a deduped, backed-off fanout so the two paths never spin against each
-          // other. If the change/provider is gone there is nothing to re-run.
+          // reconstruct the change. Fall back to a full pipeline run — but replaying
+          // the ORIGINATING fanout's gate payload (contract cases, security
+          // attestation, severity, notifications, repair commands) bound to the FAILED
+          // change's versions, not a bare re-run of the provider's latest change. A
+          // bare re-run would fail the gates (no attestation) into gates_failed and
+          // could target a newer change. The originating payload was persisted on the
+          // row (reservation keys stripped, so no double-charge — the original run
+          // already settled its hold). Bounded by the same ~7-day cap enforced inside
+          // retryConsumerDelivery before this branch. Complete this job (do not throw
+          // forever) and hand it to a deduped, backed-off fanout. If the
+          // change/provider/origin payload is gone there is nothing safe to re-run.
           const change = getChange(db, outcome.changeId!);
           const provider = change ? getProviderById(db, change.provider_id) : undefined;
-          if (provider) {
+          let fanoutEnqueued = false;
+          if (change && provider && outcome.originFanoutJson) {
+            const origin = JSON.parse(outcome.originFanoutJson) as Record<string, unknown>;
+            // Pin the exact failed change and narrow to the failed consumer; keep every
+            // gate/mode field from the original payload. Reservation keys were already
+            // stripped at persist time, so the replay carries no usage hold.
+            const fallbackPayload = {
+              ...origin,
+              consumerIds: [outcome.consumerId!],
+              fromVersionId: change.from_version_id,
+              toVersionId: change.to_version_id,
+            };
             enqueueOrResetJob(db, {
               id: `pipeline-delivery-fallback:${retryPayload.prId}`,
               tenantId: job.tenant_id,
               type: "pipeline.fanout",
-              payload: { providerSlug: provider.slug, consumerIds: [outcome.consumerId!] },
+              payload: fallbackPayload,
               maxAttempts: 50,
               createdAt: nowIso(),
               availableAt: new Date(Date.now() + 15 * 60_000).toISOString(),
             });
+            fanoutEnqueued = true;
           }
           db.raw.exec("BEGIN IMMEDIATE");
           try {
-            if (!completeJob(db, job.id, { prId: retryPayload.prId, status: outcome.status, fallback: "full_pipeline", fanoutEnqueued: Boolean(provider) }, nowIso(), fence)) {
+            if (!completeJob(db, job.id, { prId: retryPayload.prId, status: outcome.status, fallback: "full_pipeline", fanoutEnqueued }, nowIso(), fence)) {
               throw new Error("lease_lost_before_delivery_retry_completion");
             }
             db.raw.exec("COMMIT");
@@ -4730,7 +4747,7 @@ if (job.type === "warden.candidate.cleanup") {
             throw error;
           }
           result.succeeded++;
-          console.log(`  delivery-retry ${retryPayload.prId} -> fallback full pipeline (${provider ? "enqueued" : "no provider"})`);
+          console.log(`  delivery-retry ${retryPayload.prId} -> fallback full pipeline (${fanoutEnqueued ? "enqueued" : "no origin payload"})`);
           continue;
         }
         if (outcome.status === "delivery_failed") {
@@ -4764,6 +4781,13 @@ if (job.type === "warden.candidate.cleanup") {
         securityScanOk?: boolean;
         securityScanAttestation?: SecurityScanAttestation;
         repairVerifyCommands?: string[];
+        // A self-serve fanout that pins a specific change (the D10 no-artifact
+        // fallback replays the originating payload bound to the failed change's
+        // versions, not the provider's latest change).
+        fromVersionId?: string;
+        toVersionId?: string;
+        fromVersionLabel?: string;
+        toVersionLabel?: string;
       };
       console.log(`Job ${job.id} pipeline.fanout ${payload.providerSlug}`);
       const pipelineRunner = opts.pipelineRunner ?? runChangePipeline;
@@ -4772,6 +4796,13 @@ if (job.type === "warden.candidate.cleanup") {
         : undefined;
       const fettlerProductionIntent = fettlerProductionSource !== undefined;
       const legacyWardenPilot = payload.wardenPilot === true;
+      // Persist the originating gate payload (reservation keys stripped so a replay
+      // never double-charges — the original reservation is settled by THIS run) on
+      // each row this run creates, so a delivery-only retry that must fall back to a
+      // full pipeline run replays the same gates for the same change (D10).
+      const originFanoutPayload = JSON.parse(job.payload_json) as Record<string, unknown>;
+      delete originFanoutPayload[RUN_USAGE_RESERVATION_KEY];
+      delete originFanoutPayload[RUN_USAGE_RESERVED_MCU_KEY];
       const report = await pipelineRunner({
         tenantId: job.tenant_id,
         providerSlug: payload.providerSlug,
@@ -4779,12 +4810,19 @@ if (job.type === "warden.candidate.cleanup") {
         dependencyOutagePolicy: classifyDependencyOutage,
         refreshRepositoryBase: createRepositoryBaseRefresher(process.env),
         consumerIds: payload.consumerIds,
+        originFanoutPayloadJson: JSON.stringify(originFanoutPayload),
         ...(fettlerProductionIntent ? {
           fromVersionId: fettlerProductionSource.fromVersionId,
           fromVersionLabel: fettlerProductionSource.fromVersionLabel,
           toVersionId: fettlerProductionSource.toVersionId,
           toVersionLabel: fettlerProductionSource.toVersionLabel,
-        } : {}),
+        } : {
+          // A self-serve payload may pin a specific change (the fallback replay does).
+          ...(payload.fromVersionId ? { fromVersionId: payload.fromVersionId } : {}),
+          ...(payload.toVersionId ? { toVersionId: payload.toVersionId } : {}),
+          ...(payload.fromVersionLabel ? { fromVersionLabel: payload.fromVersionLabel } : {}),
+          ...(payload.toVersionLabel ? { toVersionLabel: payload.toVersionLabel } : {}),
+        }),
         severity: payload.severity,
         notificationsOnly: fettlerProductionIntent || legacyWardenPilot
           ? true

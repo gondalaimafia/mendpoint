@@ -75,15 +75,17 @@ import {
   upsertGitHubInstallation,
   getRepairSession,
   listJobs,
+  listPrs,
   missionTaskIdForJob,
   listActualExecutionCosts,
   listExecutionCostOutcomes,
   recordExecutionCostOutcome,
   verifyExecutionOutcomeIntegrity,
 } from "@mendpoint/db";
-import { nowIso } from "@mendpoint/shared";
+import { newId, nowIso } from "@mendpoint/shared";
 import type { AgentPlanner } from "@mendpoint/agent";
-import { ensureDefaultPolicyEnvelopeBinding, deliveryArtifactDigest, type PipelineReport } from "@mendpoint/pipeline";
+import { ensureDefaultPolicyEnvelopeBinding, deliveryArtifactDigest, runChangePipeline, type PipelineReport } from "@mendpoint/pipeline";
+import { openGraphLearnMemory, resetGraphLearnDbForTests } from "@mendpoint/graph-learn";
 import { canonicalPolicyEnvelopeJson, defaultPolicyEnvelope } from "@mendpoint/policy";
 import {
   GitHubAppDelivery,
@@ -1387,8 +1389,18 @@ describe("worker runtime", () => {
     insertApiChange(db, { id: "change-fallback", providerId: "provider-fallback", fromVersionId: "v1", toVersionId: "v2", risk: "breaking", summary: "s", diffJson: "{}", createdAt: nowIso() });
     insertConsumer(db, { id: consumerId, name: "Fallback Shop", githubOwner: "org", githubRepo: "fallback-shop", installationId: null, tenantId: "tenant-a", createdAt: nowIso() });
     insertConsumerRepo(db, { id: "repo-fallback", consumerId, localPath: dir, defaultBranch: "main", createdAt: nowIso() });
-    // A delivery_failed row with NO artifact persisted.
-    insertMigrationPr(db, { id: "pr-fallback", changeId: "change-fallback", consumerId, title: "Fallback", body: "b", branchName: "mendpoint/fallback", status: "delivery_failed", risk: "low", patchUnified: "diff", createdAt: nowIso() });
+    // A delivery_failed row with NO artifact persisted, carrying the ORIGINATING
+    // fanout gate payload on the row (reservation keys already stripped at persist).
+    insertMigrationPr(db, {
+      id: "pr-fallback", changeId: "change-fallback", consumerId, title: "Fallback", body: "b",
+      branchName: "mendpoint/fallback", status: "delivery_failed", risk: "low", patchUnified: "diff",
+      createdAt: nowIso(),
+      originFanoutJson: JSON.stringify({
+        providerSlug: "acme-fallback", severity: "required", securityScanAttested: true,
+        securityScanAttestation: { attestedBy: "human:owner", method: "manual" },
+        contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      }),
+    });
     enqueueJob(db, { id: "pipeline-delivery-retry:pr-fallback", tenantId: "tenant-a", type: "pipeline.delivery-retry", createdAt: nowIso(), payload: { prId: "pr-fallback" }, maxAttempts: 50 });
 
     await expect(processJobsOnce(db, {
@@ -1397,14 +1409,115 @@ describe("worker runtime", () => {
       deliveryRetryGithub: { deliverAdoptiveDraft: () => { throw new Error("delivery must not be attempted"); } } as unknown as GitHubDelivery,
     })).resolves.toMatchObject({ claimed: 1, succeeded: 1 });
 
-    // The retry job completed (no throw-forever), and a full pipeline fanout for the
-    // change's provider was enqueued for the failed consumer.
+    // The retry job completed (no throw-forever), and a full pipeline fanout was
+    // enqueued that REPLAYS the originating gate payload (attestation, contract cases,
+    // severity) bound to the FAILED change's versions and narrowed to the consumer —
+    // not a bare re-run that would fail the gates or target the latest change.
     expect(getJob(db, "pipeline-delivery-retry:pr-fallback", "tenant-a")?.status).toBe("done");
     const fallback = listJobs(db, 20, "tenant-a").find((j) => j.id === "pipeline-delivery-fallback:pr-fallback");
     expect(fallback, "a full pipeline fanout was enqueued as the fallback").toBeDefined();
     expect(fallback!.type).toBe("pipeline.fanout");
-    expect(JSON.parse(fallback!.payload_json)).toMatchObject({ providerSlug: "acme-fallback", consumerIds: [consumerId] });
+    const fallbackPayload = JSON.parse(fallback!.payload_json);
+    expect(fallbackPayload).toMatchObject({
+      providerSlug: "acme-fallback",
+      consumerIds: [consumerId],
+      fromVersionId: "v1",
+      toVersionId: "v2",
+      severity: "required",
+      securityScanAttested: true,
+      securityScanAttestation: { attestedBy: "human:owner", method: "manual" },
+    });
+    expect(fallbackPayload.contractCases).toHaveLength(1);
     db.raw.close();
+  });
+
+  it("no-artifact fallback replays the originating gate payload for the SAME change through the real pipeline (503 first, recover, one PR, gates pass)", async () => {
+    // End-to-end through the real worker loop AND the real pipeline: a production-shaped
+    // fanout (contract cases + security attestation) whose first GitHub call 503s (before
+    // the write-ahead artifact exists) must fall back to a full pipeline run that replays
+    // the SAME gate payload for the SAME change — even after a newer provider version
+    // lands — so exactly one PR delivers and the gates pass. A bare-payload fallback would
+    // fail the gates (gates_failed, 0 PRs); an unpinned one would target v2->v3.
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-fallback-e2e-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    const acme = join(fixturesRoot, "providers/acme-payments");
+    const shop = join(fixturesRoot, "consumers/shop-app");
+    const providerId = newId();
+    insertProvider(db, { id: providerId, slug: "acme-e2e", name: "Acme", website: null, createdAt: nowIso() });
+    const v1 = newId(); const v2 = newId();
+    insertApiVersion(db, { id: v1, providerId, versionLabel: "1.0.0", openapiJson: readFileSync(join(acme, "openapi-v1.json"), "utf8"), changelogMd: null, publishedAt: "2026-01-01T00:00:00.000Z" });
+    insertApiVersion(db, { id: v2, providerId, versionLabel: "2.0.0", openapiJson: readFileSync(join(acme, "openapi-v2.json"), "utf8"), changelogMd: null, publishedAt: "2026-07-01T00:00:00.000Z" });
+    const consumerId = newId();
+    insertConsumer(db, { id: consumerId, name: "E2E Shop", githubOwner: "org", githubRepo: "e2e-shop", installationId: null, tenantId: "tenant-a", createdAt: nowIso() });
+    insertConsumerRepo(db, { id: newId(), consumerId, localPath: shop, defaultBranch: "main", createdAt: nowIso() });
+    insertMonitoredApi(db, { id: newId(), consumerId, providerId, detectionSource: "manual" });
+
+    // First adoptive delivery 503s BEFORE the write-ahead artifact is persisted (the
+    // no-artifact case); later deliveries go through.
+    class FailFirstDelivery extends MockGitHubDelivery {
+      calls = 0;
+      override async deliverAdoptiveDraft(
+        input: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[0],
+        options: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[1],
+      ): ReturnType<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>> {
+        this.calls++;
+        if (this.calls === 1) throw new Error("github 503 on first call");
+        return super.deliverAdoptiveDraft(input, options);
+      }
+    }
+    const github = new FailFirstDelivery(join(dir, "mock-github"));
+    const graphDbs: Array<{ raw: { close: () => void } }> = [];
+    const runner: typeof runChangePipeline = (input) => {
+      const graphDb = openGraphLearnMemory();
+      graphDbs.push(graphDb);
+      return runChangePipeline({ ...input, github, graphDb, persistIndex: false });
+    };
+    // Production-shaped fanout payload (gates require both).
+    enqueueJob(db, {
+      id: "fanout-e2e", tenantId: "tenant-a", type: "pipeline.fanout", createdAt: nowIso(),
+      payload: {
+        providerSlug: "acme-e2e", severity: "required", securityScanAttested: true,
+        contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      },
+    });
+
+    try {
+      // Phase A: fanout runs, delivery 503s -> delivery_failed (no artifact), origin
+      // payload persisted on the row, delivery-retry job enqueued.
+      await expect(processJobsOnce(db, { tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false, pipelineRunner: runner }))
+        .resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+      const prs1 = listPrs(db, "tenant-a");
+      expect(prs1).toHaveLength(1);
+      expect(prs1[0]!.status).toBe("delivery_failed");
+      const prId = prs1[0]!.id;
+      const failedChangeId = prs1[0]!.change_id;
+
+      // A NEWER provider version lands before the retry runs.
+      insertApiVersion(db, { id: newId(), providerId, versionLabel: "3.0.0", openapiJson: readFileSync(join(acme, "openapi-v2.json"), "utf8").replace("2.0.0", "3.0.0"), changelogMd: null, publishedAt: "2026-09-01T00:00:00.000Z" });
+
+      // Phase B: delivery-retry finds no artifact -> enqueues ONE fallback fanout that
+      // replays the gate payload pinned to the failed change.
+      await expect(processJobsOnce(db, { tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false, pipelineRunner: runner }))
+        .resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+      const fallbackJobs = listJobs(db, 50, "tenant-a").filter((j) => j.id.startsWith("pipeline-delivery-fallback:"));
+      expect(fallbackJobs, "exactly one fallback fanout (two workers would still dedup)").toHaveLength(1);
+      // The fallback is scheduled with a backoff; make it available for the test.
+      db.raw.prepare("UPDATE jobs SET available_at = ? WHERE id = ?").run(nowIso(), fallbackJobs[0]!.id);
+
+      // Phase C: the fallback fanout runs -> GitHub recovers -> the SAME change delivers.
+      await expect(processJobsOnce(db, { tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false, pipelineRunner: runner }))
+        .resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+      const prs2 = listPrs(db, "tenant-a");
+      expect(prs2, "exactly one PR — the fallback did not target the newer v2->v3 change").toHaveLength(1);
+      expect(prs2[0]!.id).toBe(prId);
+      expect(prs2[0]!.change_id).toBe(failedChangeId);
+      expect(prs2[0]!.status, "gates passed and the SAME change delivered").toBe("draft");
+    } finally {
+      for (const g of graphDbs) { try { g.raw.close(); } catch { /* ignore */ } }
+      resetGraphLearnDbForTests();
+      db.raw.close();
+    }
   });
 
   it("restricts the coordinator advisory drain to verifier jobs", async () => {

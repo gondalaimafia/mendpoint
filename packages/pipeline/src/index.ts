@@ -437,6 +437,12 @@ export type PipelineInput = {
    */
   agenticRepair?: boolean;
   repairVerifyCommands?: string[];
+  /**
+   * The originating fanout job's gate payload (reservation keys stripped), stored on
+   * each migration_pr row this run creates so a later delivery-only retry that must
+   * fall back to a full pipeline run replays the same gate inputs for the same change.
+   */
+  originFanoutPayloadJson?: string;
   /** Recorded contract evidence required before PR delivery. */
   contractCases?: ContractCase[];
   /**
@@ -2642,6 +2648,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       createdAt: deliveryCreatedAt,
       existingPrNumber: prNumber ?? null,
       existingPrUrl: prUrl ?? null,
+      originFanoutJson: input.originFanoutPayloadJson ?? null,
       resolveDelivery: () => deliveryFor(consumer, repo),
       assertActive,
     });

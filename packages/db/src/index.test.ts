@@ -1825,6 +1825,43 @@ describe("db", () => {
     db.raw.close();
   });
 
+  it("enqueueOrResetJob: refuses to touch a job id owned by another tenant", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-enqueue-reset-tenant-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    // Tenant A owns a finished job under this id.
+    enqueueJob(db, { id: "shared-id", tenantId: "tenant-a", type: "pipeline.delivery-retry", payload: { prId: "pr-a" }, maxAttempts: 50, createdAt: "2026-01-01T00:00:00.000Z" });
+    db.raw.prepare("UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?").run("2026-01-01T00:01:00.000Z", "shared-id");
+    // Tenant B trying to enqueue/reset the same id is a hard error — never a
+    // cross-tenant reset that rewrites A's tenant/type/payload.
+    expect(() => enqueueOrResetJob(db, { id: "shared-id", tenantId: "tenant-b", type: "pipeline.fanout", payload: { prId: "pr-b" }, maxAttempts: 3, createdAt: "2026-01-01T00:02:00.000Z" }))
+      .toThrow("job_id_tenant_mismatch");
+    // A's job is untouched: still tenant-a, its type/payload/status unchanged.
+    const job = getJob(db, "shared-id");
+    expect(job).toMatchObject({ tenant_id: "tenant-a", type: "pipeline.delivery-retry", status: "done" });
+    expect(JSON.parse(job!.payload_json)).toEqual({ prId: "pr-a" });
+  });
+
+  it("enqueueOrResetJob: a claimed (running) job is left alone and never double-executed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-enqueue-reset-running-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    enqueueJob(db, { id: "retry-run", tenantId: "tenant-a", type: "pipeline.delivery-retry", payload: { prId: "pr-1" }, maxAttempts: 50, createdAt: "2026-01-01T00:00:00.000Z" });
+    // A worker claims it (status running, lease held, generation bumped).
+    const claimed = claimNextJob(db, ["pipeline.delivery-retry"], { tenantId: "tenant-a", workerId: "w1", leaseMs: 60_000 });
+    expect(claimed?.id).toBe("retry-run");
+    const genBefore = getJob(db, "retry-run", "tenant-a")!.lease_generation;
+    // A concurrent enqueue-or-reset must NOT reset it (that would let a second worker
+    // run the same job); it is already_active and the lease generation is unchanged.
+    expect(enqueueOrResetJob(db, { id: "retry-run", tenantId: "tenant-a", type: "pipeline.delivery-retry", payload: { prId: "pr-1" }, maxAttempts: 50, createdAt: "2026-01-01T00:03:00.000Z" }))
+      .toBe("already_active");
+    const after = getJob(db, "retry-run", "tenant-a")!;
+    expect(after.status).toBe("running");
+    expect(after.lease_owner).toBe("w1");
+    expect(after.lease_generation).toBe(genBefore);
+    db.raw.close();
+  });
+
   it("acknowledges a permanent dead letter without losing its failure evidence", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-jobs-acknowledge-"));
     dirs.push(dir);

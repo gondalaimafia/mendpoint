@@ -291,7 +291,12 @@ CREATE TABLE IF NOT EXISTS migration_prs (
   -- columns never reached main and are intentionally absent here; a DB that ran
   -- an intermediate head keeps them as unused columns.
   delivered_base_sha TEXT,
-  delivered_head_sha TEXT
+  delivered_head_sha TEXT,
+  -- The originating fanout job's gate payload (reservation keys stripped), persisted
+  -- so a delivery-only retry that must fall back to a full pipeline run replays the
+  -- SAME gate inputs (contract cases, security attestation, severity, ...) for the
+  -- SAME change instead of a bare re-run whose gates fail. Survives job resets.
+  origin_fanout_json TEXT
 );
 CREATE INDEX IF NOT EXISTS migration_prs_status_idx ON migration_prs(status);
 CREATE INDEX IF NOT EXISTS migration_prs_change_idx ON migration_prs(change_id);
@@ -3435,6 +3440,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "migration_prs", name: "github_account_id", sql: "TEXT" },
     { table: "migration_prs", name: "delivered_base_sha", sql: "TEXT" },
     { table: "migration_prs", name: "delivered_head_sha", sql: "TEXT" },
+    { table: "migration_prs", name: "origin_fanout_json", sql: "TEXT" },
     { table: "migration_delivery_artifacts", name: "files_json", sql: "TEXT" },
     {
       table: "regauge_adaptive_candidates",
@@ -4915,12 +4921,14 @@ export function insertMigrationPr(
     resolvedAt?: string | null;
     /** JSON-serialized ImpactCoverage for the analysis behind this PR. */
     coverageJson?: string | null;
+    /** The originating fanout gate payload (reservation-stripped) for D10 fallback. */
+    originFanoutJson?: string | null;
   },
 ) {
   run(
     db,
-    `INSERT INTO migration_prs (id, change_id, consumer_id, title, body, branch_name, status, risk, patch_unified, github_pr_number, github_pr_url, created_at, resolved_at, coverage_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO migration_prs (id, change_id, consumer_id, title, body, branch_name, status, risk, patch_unified, github_pr_number, github_pr_url, created_at, resolved_at, coverage_json, origin_fanout_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
       row.changeId,
@@ -4936,6 +4944,7 @@ export function insertMigrationPr(
       row.createdAt,
       row.resolvedAt ?? null,
       row.coverageJson ?? null,
+      row.originFanoutJson ?? null,
     ],
   );
 }
@@ -7285,13 +7294,19 @@ export function enqueueJob(
 
 /**
  * Enqueue a job, or revive one that already exists under the same (deterministic)
- * id. The deterministic id dedups a concurrent retry, but a job that already
- * reached a terminal state (done / dead_letter / failed / cancelled) would
- * otherwise collide on the primary key and strand the work behind a spent id. This
- * resets such a row back to pending atomically (fresh attempts, cleared lease and
- * outcome, bumped lease_generation so any stale in-flight fence loses), replacing
- * its payload and available_at. A row still pending or running is left untouched
- * (a retry is already queued). Returns what it did so the caller can report it.
+ * id FOR THIS TENANT. The deterministic id dedups a concurrent retry, but a job
+ * that already reached a terminal state (done / dead_letter / failed / cancelled)
+ * would otherwise collide on the primary key and strand the work behind a spent id.
+ * This resets such a row back to pending atomically (fresh attempts, cleared lease
+ * and outcome, bumped lease_generation so any stale in-flight fence loses),
+ * replacing its payload and available_at. A row still pending or running is left
+ * untouched (a retry is already queued). Returns what it did so the caller can
+ * report it.
+ *
+ * The id primary key is global, but jobs are tenant-owned: an existing row under a
+ * DIFFERENT tenant is a hard `job_id_tenant_mismatch` error, never a cross-tenant
+ * reset that would rewrite another tenant's job. The lookup, the reset WHERE and
+ * the enqueue all pin `tenant_id`.
  */
 export function enqueueOrResetJob(
   db: AppDb,
@@ -7310,12 +7325,16 @@ export function enqueueOrResetJob(
   }
   const existing = get(
     db,
-    "SELECT status FROM jobs WHERE id = ?",
+    "SELECT tenant_id, status FROM jobs WHERE id = ?",
     [row.id],
-  ) as { status: string } | undefined;
+  ) as { tenant_id: string; status: string } | undefined;
   if (!existing) {
     enqueueJob(db, row);
     return "enqueued";
+  }
+  // A job id owned by another tenant is never reset or rewritten from here.
+  if (existing.tenant_id !== row.tenantId) {
+    throw new Error("job_id_tenant_mismatch");
   }
   if (existing.status === "pending" || existing.status === "running") {
     return "already_active";
@@ -7323,19 +7342,19 @@ export function enqueueOrResetJob(
   run(
     db,
     `UPDATE jobs
-        SET tenant_id = ?, type = ?, payload_json = ?, status = 'pending', attempts = 0,
+        SET type = ?, payload_json = ?, status = 'pending', attempts = 0,
             max_attempts = ?, error = NULL, error_code = NULL, result_json = NULL,
             started_at = NULL, finished_at = NULL, dead_at = NULL, cancelled_at = NULL,
             last_error_at = NULL, lease_owner = NULL, lease_expires_at = NULL,
             available_at = ?, lease_generation = lease_generation + 1
-      WHERE id = ?`,
+      WHERE id = ? AND tenant_id = ?`,
     [
-      row.tenantId,
       row.type,
       JSON.stringify(row.payload),
       row.maxAttempts ?? 3,
       row.availableAt ?? row.createdAt,
       row.id,
+      row.tenantId,
     ],
   );
   return "reset";

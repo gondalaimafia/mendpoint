@@ -81,6 +81,12 @@ export type DeliverConsumerDraftParams = Readonly<{
   createdAt: string;
   existingPrNumber: number | null;
   existingPrUrl: string | null;
+  /**
+   * The originating fanout job's gate payload (reservation keys stripped), stored
+   * on the row (insert only) so a delivery-only retry that must fall back to a full
+   * pipeline run replays the SAME gate inputs for the SAME change. null outside a fanout.
+   */
+  originFanoutJson?: string | null;
   /** Resolve the delivery transport; called inside the delivery try so a resolver
    * error (mode mismatch, unauthorized repo, ...) becomes a retryable delivery_failed. */
   resolveDelivery: () => DeliveryResolution;
@@ -113,6 +119,7 @@ function persistRow(params: DeliverConsumerDraftParams, status: string): void {
       createdAt: params.createdAt,
       resolvedAt: null,
       coverageJson: params.coverageJson,
+      originFanoutJson: params.originFanoutJson ?? null,
     });
   }
 }
@@ -299,6 +306,9 @@ export type RetryConsumerDeliveryResult = Readonly<{
   fallbackToPipeline?: boolean;
   changeId?: string;
   consumerId?: string;
+  /** The row's persisted originating fanout gate payload (reservation-stripped), so
+   * the caller replays the same gates when it falls back to a full pipeline run. */
+  originFanoutJson?: string | null;
 }>;
 
 /**
@@ -341,6 +351,7 @@ export async function retryConsumerDelivery(
       fallbackToPipeline: true,
       changeId: pr.change_id,
       consumerId: consumer.id,
+      originFanoutJson: (pr as { origin_fanout_json?: string | null }).origin_fanout_json ?? null,
       status: pr.status,
       prNumber: pr.github_pr_number ?? null,
       prUrl: pr.github_pr_url ?? null,
