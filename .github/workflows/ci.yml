@@ -437,25 +437,99 @@ jobs:
             fi
             exit 1
           fi
-      # --config is required because fly.customer-warden.toml is the ONLY fly
-      # config in this repo with no `app =` line (it is a reusable customer
-      # profile), so the app name must be passed explicitly with --app.
+      # Build and push are split from the release deliberately. A single
+      # `flyctl deploy` builds, pushes and releases in one call, and on f1ce6a6b
+      # that whole call -- and main with it -- went red because the push to
+      # registry.fly.io hit a TLS handshake timeout: a transport blip, not a
+      # broken build or credential. The push is safe to retry (a fixed label is
+      # an idempotent registry tag); a release is NOT, because a partial release
+      # is possible, so it must run exactly once. Hence two steps: a bounded,
+      # transient-only push retry here, and a single no-retry release below.
+      #
+      # Both Depot and Fly's legacy remote builder require builder authority that
+      # the deliberately app-scoped deploy token does not carry. The GitHub runner
+      # already proves this exact Docker target in container-builds, so --local-only
+      # builds with its local Docker daemon and leaves the app-scoped token
+      # responsible only for registry upload. --config is required because
+      # fly.customer-warden.toml is the ONLY fly config in this repo with no
+      # `app =` line (it is a reusable customer profile), so the app name must be
+      # passed explicitly with --app.
+      - name: Build and push customer production image
+        id: build_push
+        if: steps.head.outputs.superseded != 'true'
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_CUSTOMER }}
+        run: |
+          set -euo pipefail
+          app=mendpoint-fettler-production
+          # A deterministic label derived from the immutable commit sha, so a
+          # retried push re-targets the byte-identical registry tag rather than a
+          # new one, and the release below can name the exact image that was
+          # pushed.
+          label="deploy-${{ github.sha }}"
+          image="registry.fly.io/${app}:${label}"
+          echo "image=${image}" >>"$GITHUB_OUTPUT"
+          # Retry ONLY the push, and ONLY on a transient registry/transport
+          # signal -- a TLS handshake timeout, a reset connection, an i/o
+          # timeout, a 5xx from the registry, or a half-rendered push status
+          # stream. At most three attempts with a short backoff. The build is
+          # deterministic (same source, same Dockerfile, same label), so a retry
+          # of `--build-only --push` rebuilds the identical image and re-pushes
+          # the identical tag: idempotent. Any OTHER failure -- a build error, an
+          # auth 401/403, a manifest or Dockerfile error -- does not match these
+          # signals and fails immediately with flyctl's real output; retrying
+          # those would only hide them.
+          transient='TLS handshake timeout|connection reset|error rendering push status stream|i/o timeout|5[0-9][0-9] (Service Unavailable|Bad Gateway|Gateway Time-?out|Internal Server Error)'
+          max=3
+          # Real backoff on CI; overridable to 0 so the workflow tests do not
+          # sleep. It only changes the delay between attempts, never the retry
+          # decision, so the shipped behaviour is identical.
+          backoff="${FLY_PUSH_RETRY_BACKOFF_SECONDS:-5}"
+          attempt=1
+          while :; do
+            set +e
+            push_output="$(flyctl deploy --build-only --push --local-only \
+              --image-label "${label}" \
+              --app "${app}" \
+              --config fly.customer-warden.toml 2>&1)"
+            push_status=$?
+            set -e
+            printf '%s\n' "${push_output}"
+            if [ "${push_status}" -eq 0 ]; then
+              echo "Built and pushed ${image} on attempt ${attempt}."
+              break
+            fi
+            if ! printf '%s\n' "${push_output}" | grep -qiE "${transient}"; then
+              echo "::error::Customer production image build or push failed with a non-transient error (not a registry/transport blip); not retrying. See the flyctl output above."
+              exit 1
+            fi
+            if [ "${attempt}" -ge "${max}" ]; then
+              echo "::error::registry_push_failed: pushing the customer production image to registry.fly.io failed after ${max} attempts on a transient registry/transport error. Production stays on its previous revision; re-run this workflow. See the flyctl output above."
+              exit 1
+            fi
+            echo "Push attempt ${attempt} of ${max} hit a transient registry/transport error; retrying after a short backoff."
+            sleep "$((attempt * backoff))"
+            attempt=$((attempt + 1))
+          done
+      # Release the exact image the step above pushed, once, with no retry: a
+      # release is not idempotent the way a push is, so a transient failure here
+      # is surfaced loudly rather than retried.
       # --ha=false is load-bearing, not cosmetic: the profile is bounded to
       # exactly one machine (MENDPOINT_CUSTOMER_MAX_MACHINES=1) and the app pins
       # itself to an approved machine id, so letting Fly add a second machine
       # would boot a node that fails closed.
+      # --config and --app are still required for the same reason as the push:
+      # fly.customer-warden.toml carries no `app =` line.
       # MENDPOINT_RELEASE_REVISION stamps the immutable git sha onto the running
       # app so /version reports exactly what is deployed; without it the revision
       # is null and the drift this job exists to fix stays invisible.
       - name: Deploy customer production
+        id: deploy
         if: steps.head.outputs.superseded != 'true'
-        # Both Depot and Fly's legacy remote builder require builder authority
-        # that the deliberately app-scoped deploy token does not carry. The
-        # GitHub runner already proves this exact Docker target in
-        # container-builds, so build with its local Docker daemon and leave the
-        # app-scoped token responsible only for registry upload and deployment.
         run: >-
-          flyctl deploy --local-only --ha=false --app mendpoint-fettler-production
+          flyctl deploy --image ${{ steps.build_push.outputs.image }}
+          --ha=false --app mendpoint-fettler-production
           --config fly.customer-warden.toml
           --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
         env:

@@ -48,17 +48,42 @@ describe("production closure CI deployment authority", () => {
     });
     expect(authority.run).toContain("flyctl status --app mendpoint-fettler-production");
 
+    // Build and push is its own step: local build, registry push, deterministic
+    // label from the commit sha, a bounded push retry, and a named failure.
+    const buildPush = steps.find(
+      (step) => step.name === "Build and push customer production image",
+    )!;
+    expect(buildPush.env).toEqual({
+      FLY_API_TOKEN: "${{ secrets.FLY_API_TOKEN_CUSTOMER }}",
+    });
+    expect(buildPush.shell).toBe("bash");
+    expect(buildPush.run).toContain("--build-only");
+    expect(buildPush.run).toContain("--push");
+    expect(buildPush.run).toContain("--local-only");
+    expect(buildPush.run).toContain('--image-label "${label}"');
+    expect(buildPush.run).toContain('label="deploy-${{ github.sha }}"');
+    expect(buildPush.run).toContain("--config fly.customer-warden.toml");
+    expect(buildPush.run).not.toContain("--remote-only");
+    expect(buildPush.run).not.toContain("--depot");
+    // The exhausted-push failure is named, and the release does not ride here.
+    expect(buildPush.run).toContain("registry_push_failed");
+    expect(buildPush.run).not.toContain("MENDPOINT_RELEASE_REVISION");
+
+    // The release is a separate no-retry step that names the exact pushed image;
+    // it neither rebuilds nor re-pushes.
     const deploy = steps.find((step) => step.name === "Deploy customer production")!;
     expect(deploy.env).toEqual({
       FLY_API_TOKEN: "${{ secrets.FLY_API_TOKEN_CUSTOMER }}",
     });
-    expect(deploy.run).toContain(
-      "flyctl deploy --local-only --ha=false --app mendpoint-fettler-production",
-    );
     expect(deploy.run.trimStart().startsWith("flyctl deploy ")).toBe(true);
-    expect(deploy.run).toContain("--local-only");
+    expect(deploy.run).toContain("--image ${{ steps.build_push.outputs.image }}");
+    expect(deploy.run).toContain("--ha=false --app mendpoint-fettler-production");
+    expect(deploy.run).not.toContain("--build-only");
+    expect(deploy.run).not.toContain("--push");
+    expect(deploy.run).not.toContain("--local-only");
     expect(deploy.run).not.toContain("--remote-only");
     expect(deploy.run).not.toContain("--depot");
+    expect(deploy.run).not.toContain("registry_push_failed");
     expect(deploy.run).toContain("--config fly.customer-warden.toml");
     expect(deploy.run).toContain("--env MENDPOINT_RELEASE_REVISION=${{ github.sha }}");
 
@@ -201,5 +226,246 @@ describe("Prove deploy authority — the shipped step under GitHub's shell", () 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("Deploy credential has authority over mendpoint-fettler-production.");
     expect(result.calls).toContain("status --app");
+  });
+});
+
+/**
+ * The SHIPPED build/push and release steps run under GitHub's own shell against a
+ * stubbed flyctl. A single `flyctl deploy` builds, pushes and releases with no
+ * retry, so one TLS handshake timeout on the push turned main red on f1ce6a6b for
+ * a transport blip. The push is now retried (bounded, transient-only, idempotent
+ * fixed label); the release runs exactly once with no retry, because a partial
+ * release is possible. These prove: a transient push error retries and then
+ * succeeds; a persistent transient error stops at three attempts with a named
+ * `registry_push_failed`; a non-transient error (auth 401, build failure) fails on
+ * the first attempt with the real output and never retries; the release runs once
+ * even when it fails; and the release names the exact pushed label and carries
+ * MENDPOINT_RELEASE_REVISION.
+ *
+ * GitHub substitutes `${{ ... }}` expressions before the shell sees the script;
+ * renderExpressions() reproduces exactly that substitution (the commit sha, and
+ * the release's reference to the push step's `image` output) so the bytes that run
+ * are the bytes that ship, with only the values GitHub would already have filled.
+ */
+const DEPLOY_SHA = "f1ce6a6b233455dcacaac297fc11f2736fef1e77";
+const PUSHED_IMAGE = `registry.fly.io/${CUSTOMER_APP}:deploy-${DEPLOY_SHA}`;
+
+/** flyctl push that fails once with a transient error, then succeeds. */
+const FLYCTL_PUSH_TRANSIENT_THEN_OK = [
+  "#!/bin/sh",
+  'printf "%s\\n" "$*" >> "$FLYCTL_CALL_LOG"',
+  'attempts="$(wc -l < "$FLYCTL_CALL_LOG")"',
+  'if [ "$1" = "deploy" ]; then',
+  '  if [ "$attempts" -le 1 ]; then',
+  '    echo "Error: failed to fetch an image or build from source: error rendering push status stream: Get \\"https://registry.fly.io/v2/\\": net/http: TLS handshake timeout" >&2',
+  "    exit 1",
+  "  fi",
+  '  echo "--> pushing image done"; exit 0',
+  "fi",
+  "exit 0",
+  "",
+].join("\n");
+
+/** flyctl push that always fails with a transient transport error. */
+const FLYCTL_PUSH_TRANSIENT_PERSISTENT = [
+  "#!/bin/sh",
+  'printf "%s\\n" "$*" >> "$FLYCTL_CALL_LOG"',
+  'if [ "$1" = "deploy" ]; then echo "Error: error rendering push status stream: Get \\"https://registry.fly.io/v2/\\": net/http: TLS handshake timeout" >&2; exit 1; fi',
+  "exit 0",
+  "",
+].join("\n");
+
+/** flyctl push that fails with an authorization error (token not scoped to push). */
+const FLYCTL_PUSH_UNAUTHORIZED = [
+  "#!/bin/sh",
+  'printf "%s\\n" "$*" >> "$FLYCTL_CALL_LOG"',
+  'if [ "$1" = "deploy" ]; then echo "Error: 401 Unauthorized: the deploy token is not authorized to push to this registry repository" >&2; exit 1; fi',
+  "exit 0",
+  "",
+].join("\n");
+
+/** flyctl push that fails with a build error before any push happens. */
+const FLYCTL_BUILD_ERROR = [
+  "#!/bin/sh",
+  'printf "%s\\n" "$*" >> "$FLYCTL_CALL_LOG"',
+  'if [ "$1" = "deploy" ]; then echo "Error: failed to build: Dockerfile parse error on line 3: unknown instruction" >&2; exit 1; fi',
+  "exit 0",
+  "",
+].join("\n");
+
+/** flyctl whose `deploy` succeeds and records its arguments. */
+const FLYCTL_DEPLOY_OK = [
+  "#!/bin/sh",
+  'printf "%s\\n" "$*" >> "$FLYCTL_CALL_LOG"',
+  'if [ "$1" = "deploy" ]; then echo "--> deploy done"; exit 0; fi',
+  "exit 0",
+  "",
+].join("\n");
+
+/** flyctl whose `deploy --image` release fails (no transient signal). */
+const FLYCTL_RELEASE_FAIL = [
+  "#!/bin/sh",
+  'printf "%s\\n" "$*" >> "$FLYCTL_CALL_LOG"',
+  'if [ "$1" = "deploy" ]; then echo "Error: release command failed: could not update machine 84e696a22eee68" >&2; exit 1; fi',
+  "exit 0",
+  "",
+].join("\n");
+
+function renderExpressions(run: string, values: { sha?: string; image?: string }): string {
+  let rendered = run;
+  if (values.sha !== undefined) rendered = rendered.split("${{ github.sha }}").join(values.sha);
+  if (values.image !== undefined) {
+    rendered = rendered.split("${{ steps.build_push.outputs.image }}").join(values.image);
+  }
+  return rendered;
+}
+
+function runDeploySplitStep(
+  stepName: string,
+  flyctlBody: string,
+  values: { sha?: string; image?: string } = {},
+): {
+  status: number | null;
+  stdout: string;
+  calls: string;
+  outputs: string;
+} {
+  const workflow = parse(readFileSync(".github/workflows/ci.yml", "utf8")) as Record<string, any>;
+  const customer = (workflow.jobs as Record<string, any>)["deploy-customer-production"];
+  const steps = customer.steps as Record<string, any>[];
+  const step = steps.find((candidate) => candidate.name === stepName)!;
+  // If a step ever stops running under bash, GITHUB_BASH_FLAGS are no longer the
+  // flags it runs under. `shell: bash` is explicit on the push step; the release
+  // step omits it and inherits the ubuntu runner's default, which is bash.
+  expect(step.shell === "bash" || step.shell === undefined).toBe(true);
+  const dir = mkdtempSync(join(tmpdir(), "deploy-split-"));
+  const callLog = join(dir, "flyctl-calls.log");
+  writeFileSync(callLog, "", "utf8");
+  const outputFile = join(dir, "github-output");
+  writeFileSync(outputFile, "", "utf8");
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  const flyctlPath = join(bin, "flyctl");
+  writeFileSync(flyctlPath, flyctlBody, "utf8");
+  chmodSync(flyctlPath, 0o755);
+  writeFileSync(join(dir, "step.sh"), renderExpressions(step.run, values), "utf8");
+  const result = spawnSync("bash", [...GITHUB_BASH_FLAGS, "-c", `
+    fixture_bin="$(cd "$1" && pwd)"
+    export PATH="$fixture_bin:$PATH"
+    hash -r
+    [[ "$(command -v flyctl)" == "$fixture_bin/flyctl" ]] || {
+      echo "fixture_tool_selection_failed:flyctl" >&2; exit 127;
+    }
+    source "$2"
+  `, "workflow-fixture", bin.replace(/\\/g, "/"), "./step.sh"], {
+    cwd: dir,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+      FLYCTL_CALL_LOG: callLog,
+      FLY_API_TOKEN: STUB_TOKEN,
+      GITHUB_OUTPUT: outputFile,
+      // Real backoff on CI; 0 here so the retry tests do not sleep.
+      FLY_PUSH_RETRY_BACKOFF_SECONDS: "0",
+    },
+  });
+  return {
+    status: result.status,
+    stdout: result.stdout ?? "",
+    calls: readFileSync(callLog, "utf8"),
+    outputs: readFileSync(outputFile, "utf8"),
+  };
+}
+
+const BUILD_PUSH_STEP = "Build and push customer production image";
+const RELEASE_STEP = "Deploy customer production";
+
+function deployCalls(calls: string): string[] {
+  return calls.split("\n").filter((line) => line.startsWith("deploy "));
+}
+
+describe("Build and push — the shipped step under GitHub's shell", () => {
+  it("retries a transient push error and then succeeds", () => {
+    const result = runDeploySplitStep(BUILD_PUSH_STEP, FLYCTL_PUSH_TRANSIENT_THEN_OK, {
+      sha: DEPLOY_SHA,
+    });
+    expect(result.status).toBe(0);
+    // Exactly two push attempts: one transient failure, one success.
+    expect(deployCalls(result.calls)).toHaveLength(2);
+    expect(result.stdout).toContain("retrying after a short backoff");
+    // The image reference is exported for the release step to consume.
+    expect(result.outputs).toContain(`image=${PUSHED_IMAGE}`);
+    expect(result.stdout).not.toContain("registry_push_failed");
+  });
+
+  it("stops at exactly three attempts on a persistent transient error and names the failure", () => {
+    const result = runDeploySplitStep(BUILD_PUSH_STEP, FLYCTL_PUSH_TRANSIENT_PERSISTENT, {
+      sha: DEPLOY_SHA,
+    });
+    expect(result.status).toBe(1);
+    expect(deployCalls(result.calls)).toHaveLength(3);
+    expect(result.stdout).toContain("::error::registry_push_failed:");
+    // The real flyctl output is preserved, not discarded.
+    expect(result.stdout).toContain("TLS handshake timeout");
+  });
+
+  it("fails immediately on an authorization error without retrying", () => {
+    const result = runDeploySplitStep(BUILD_PUSH_STEP, FLYCTL_PUSH_UNAUTHORIZED, {
+      sha: DEPLOY_SHA,
+    });
+    expect(result.status).toBe(1);
+    expect(deployCalls(result.calls)).toHaveLength(1);
+    expect(result.stdout).toContain("401 Unauthorized");
+    expect(result.stdout).toContain("non-transient error");
+    expect(result.stdout).not.toContain("registry_push_failed");
+  });
+
+  it("fails immediately on a build error without retrying", () => {
+    const result = runDeploySplitStep(BUILD_PUSH_STEP, FLYCTL_BUILD_ERROR, {
+      sha: DEPLOY_SHA,
+    });
+    expect(result.status).toBe(1);
+    expect(deployCalls(result.calls)).toHaveLength(1);
+    expect(result.stdout).toContain("Dockerfile parse error");
+    expect(result.stdout).not.toContain("registry_push_failed");
+  });
+
+  it("pushes the exact label it advertises to the release step (no label drift)", () => {
+    const result = runDeploySplitStep(BUILD_PUSH_STEP, FLYCTL_DEPLOY_OK, { sha: DEPLOY_SHA });
+    expect(result.status).toBe(0);
+    const pushCall = deployCalls(result.calls)[0];
+    expect(pushCall).toContain(`--image-label deploy-${DEPLOY_SHA}`);
+    expect(result.outputs.trim()).toBe(`image=${PUSHED_IMAGE}`);
+  });
+});
+
+describe("Release — the shipped step under GitHub's shell", () => {
+  it("releases the exact pushed image once, carrying MENDPOINT_RELEASE_REVISION", () => {
+    const result = runDeploySplitStep(RELEASE_STEP, FLYCTL_DEPLOY_OK, {
+      sha: DEPLOY_SHA,
+      image: PUSHED_IMAGE,
+    });
+    expect(result.status).toBe(0);
+    const releaseCalls = deployCalls(result.calls);
+    expect(releaseCalls).toHaveLength(1);
+    expect(releaseCalls[0]).toContain(`--image ${PUSHED_IMAGE}`);
+    expect(releaseCalls[0]).toContain(`--env MENDPOINT_RELEASE_REVISION=${DEPLOY_SHA}`);
+    expect(releaseCalls[0]).toContain("--ha=false");
+    expect(releaseCalls[0]).toContain("--config fly.customer-warden.toml");
+    // The release must not rebuild or re-push.
+    expect(releaseCalls[0]).not.toContain("--build-only");
+    expect(releaseCalls[0]).not.toContain("--push");
+  });
+
+  it("fails loudly on a release error and never retries", () => {
+    const result = runDeploySplitStep(RELEASE_STEP, FLYCTL_RELEASE_FAIL, {
+      sha: DEPLOY_SHA,
+      image: PUSHED_IMAGE,
+    });
+    expect(result.status).not.toBe(0);
+    const releaseCalls = deployCalls(result.calls);
+    expect(releaseCalls).toHaveLength(1);
+    expect(releaseCalls[0]).toContain(`--image ${PUSHED_IMAGE}`);
   });
 });
