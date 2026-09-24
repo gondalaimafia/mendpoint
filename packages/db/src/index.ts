@@ -4972,23 +4972,31 @@ export function updateMigrationPrStatus(
   ]);
 }
 
+// migration_prs carries no tenant_id of its own; it is scoped through its consumer.
+// A bare `WHERE id = ?` UPDATE would let one tenant's job (or a forged id) mutate
+// another tenant's row, so every write here also requires the row's consumer to
+// belong to the caller's tenant.
+const MIGRATION_PR_TENANT_SCOPE =
+  "consumer_id IN (SELECT id FROM consumers WHERE tenant_id = ?)";
+
 /**
  * Record a terminal delivery-blocked outcome (PR #606 D10): set status
  * delivery_blocked and the named code, but only when no PR was ever recorded (CAS on
- * github_pr_number IS NULL), so it can never downgrade a delivered draft. Returns
- * whether it applied.
+ * github_pr_number IS NULL), so it can never downgrade a delivered draft, and only
+ * for a row that belongs to the caller's tenant. Returns whether it applied.
  */
 export function recordMigrationPrDeliveryBlocked(
   db: AppDb,
   id: string,
   code: string,
+  tenantId: string,
 ): boolean {
   const result = db.raw
     .prepare(
       `UPDATE migration_prs SET status = 'delivery_blocked', delivery_error = ?
-       WHERE id = ? AND github_pr_number IS NULL`,
+       WHERE id = ? AND github_pr_number IS NULL AND ${MIGRATION_PR_TENANT_SCOPE}`,
     )
-    .run(code, id);
+    .run(code, id, tenantId);
   return result.changes > 0;
 }
 
@@ -4997,38 +5005,66 @@ export function recordMigrationPrDeliveryBlocked(
  * D10 replay dead-letter): a full-pipeline replay exhausted its retries, so the row
  * is already delivery_failed with no pending retry. Recording the code makes the row
  * self-describing rather than a silent delivery_failed. Scoped to rows that never
- * recorded a PR (github_pr_number IS NULL) so it can never relabel a delivered draft.
- * Returns whether it applied.
+ * recorded a PR (github_pr_number IS NULL) and that belong to the caller's tenant, so
+ * it can never relabel a delivered draft or another tenant's row. Idempotent: it only
+ * stamps a row whose delivery_error is still unset, so a first stamp wins and returns
+ * true and a re-run (both dead-letter paths, or a repeated sweep) is a no-op that
+ * returns false — which lets the caller audit exactly once. Returns whether it applied.
  */
 export function recordMigrationPrDeliveryErrorCode(
   db: AppDb,
   id: string,
   code: string,
+  tenantId: string,
 ): boolean {
   const result = db.raw
     .prepare(
       `UPDATE migration_prs SET delivery_error = ?
-       WHERE id = ? AND github_pr_number IS NULL`,
+       WHERE id = ? AND github_pr_number IS NULL AND delivery_error IS NULL
+         AND ${MIGRATION_PR_TENANT_SCOPE}`,
     )
-    .run(code, id);
+    .run(code, id, tenantId);
+  return result.changes > 0;
+}
+
+/**
+ * Clear a row's delivery_error (operator retry gives a fresh start): the retry re-opens
+ * the row as delivery_failed, so a stale terminal code must not linger. Scoped to the
+ * caller's tenant. Returns whether it applied.
+ */
+export function clearMigrationPrDeliveryError(
+  db: AppDb,
+  id: string,
+  tenantId: string,
+): boolean {
+  const result = db.raw
+    .prepare(
+      `UPDATE migration_prs SET delivery_error = NULL
+       WHERE id = ? AND ${MIGRATION_PR_TENANT_SCOPE}`,
+    )
+    .run(id, tenantId);
   return result.changes > 0;
 }
 
 /**
  * Increment a row's automatic-replay counter (D10 no-artifact fallback) and return
  * the new count, so the worker can cap replays. A row that recorded a PR is never
- * bumped (nothing to replay).
+ * bumped (nothing to replay), and only a row that belongs to the caller's tenant is
+ * touched or read.
  */
-export function bumpMigrationPrReplayCount(db: AppDb, id: string): number {
+export function bumpMigrationPrReplayCount(db: AppDb, id: string, tenantId: string): number {
   db.raw
     .prepare(
       `UPDATE migration_prs SET replay_count = replay_count + 1
-       WHERE id = ? AND github_pr_number IS NULL`,
+       WHERE id = ? AND github_pr_number IS NULL AND ${MIGRATION_PR_TENANT_SCOPE}`,
     )
-    .run(id);
-  const row = get(db, "SELECT replay_count FROM migration_prs WHERE id = ?", [id]) as
-    | { replay_count: number }
-    | undefined;
+    .run(id, tenantId);
+  const row = get(
+    db,
+    `SELECT replay_count FROM migration_prs
+     WHERE id = ? AND ${MIGRATION_PR_TENANT_SCOPE}`,
+    [id, tenantId],
+  ) as { replay_count: number } | undefined;
   return row?.replay_count ?? 0;
 }
 
@@ -7496,6 +7532,38 @@ export function recoverExpiredJobs(
     )
     .run(...(tenantId ? [now, now, now, now, now, tenantId] : [now, now, now, now, now]));
   return Number(result.changes);
+}
+
+/**
+ * List the no-artifact replay fallback jobs (pipeline-delivery-fallback:<prId>) that
+ * have dead-lettered but whose migration_prs row has NOT yet been finalized — the row
+ * recorded no PR and carries no delivery_error code. This is the set the worker must
+ * still stamp and release the usage hold for after recoverExpiredJobs lease-expiry
+ * dead-lettered them at max attempts (that transition never re-enters the job loop, so
+ * the per-job error boundary cannot finalize them). The delivery_error filter makes the
+ * result empty once a row is finalized, so a repeated drain sweep does no repeated work.
+ */
+export function listUnfinalizedDeadLetteredReplayFallbacks(
+  db: AppDb,
+  tenantId?: string,
+): JobRow[] {
+  assertTenantScope(tenantId);
+  const prefix = "pipeline-delivery-fallback:";
+  return all<JobRow>(
+    db,
+    `SELECT j.* FROM jobs j
+     JOIN migration_prs pr ON pr.id = substr(j.id, ?)
+     JOIN consumers c ON c.id = pr.consumer_id
+     WHERE j.status = 'dead_letter'
+       AND j.type = 'pipeline.fanout'
+       AND j.id LIKE ?
+       AND pr.github_pr_number IS NULL
+       AND pr.delivery_error IS NULL
+       ${tenantId ? "AND j.tenant_id = ? AND c.tenant_id = ?" : ""}`,
+    tenantId
+      ? [prefix.length + 1, `${prefix}%`, tenantId, tenantId]
+      : [prefix.length + 1, `${prefix}%`],
+  );
 }
 
 export function claimNextJob(

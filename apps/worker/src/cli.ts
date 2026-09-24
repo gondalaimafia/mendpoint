@@ -67,6 +67,7 @@ import {
   recordAudit,
   recordMigrationPrDeliveryBlocked,
   recordMigrationPrDeliveryErrorCode,
+  listUnfinalizedDeadLetteredReplayFallbacks,
   bumpMigrationPrReplayCount,
   updateMigrationPrStatus,
   releaseRunUsage,
@@ -2404,6 +2405,68 @@ function releaseFanoutRunUsage(
   }
 }
 
+const REPLAY_FALLBACK_JOB_PREFIX = "pipeline-delivery-fallback:";
+
+/**
+ * Finalize a dead-lettered no-artifact replay (pipeline-delivery-fallback:<prId>) from
+ * EITHER dead-letter path — the per-job error boundary and the lease-expiry sweep
+ * (recoverExpiredJobs dead-letters at max attempts without ever re-entering the job
+ * loop). It releases the run-usage hold (an infra failure burns no quota) and stamps
+ * the row's delivery_error with an audit event, so the terminal row is self-describing
+ * instead of a silent delivery_failed and the operator retry endpoint has a reason to
+ * show (#707). Idempotent: the release is keyed and the stamp only applies to a row
+ * whose delivery_error is still unset, so the audit fires exactly once across both
+ * paths and any repeated sweep. Best-effort — a failure here never masks the original
+ * job failure.
+ */
+function finalizeReplayFallbackDeadLetter(
+  db: AppDb,
+  input: { tenantId: string; jobId: string; payloadJson: string; errorCode: string },
+): void {
+  releaseFanoutRunUsage(db, input.tenantId, input.payloadJson, input.jobId);
+  const prId = input.jobId.slice(REPLAY_FALLBACK_JOB_PREFIX.length);
+  try {
+    const stamped = recordMigrationPrDeliveryErrorCode(
+      db,
+      prId,
+      "github_delivery_replay_failed",
+      input.tenantId,
+    );
+    if (stamped) {
+      recordAudit(db, {
+        tenantId: input.tenantId, actor: "system",
+        action: "pr.delivery_replay_failed", resourceType: "migration_pr", resourceId: prId,
+        metadata: { jobId: input.jobId, error: input.errorCode },
+      });
+    }
+  } catch (error) {
+    console.error(
+      `  replay dead-letter annotation skipped pr=${prId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+/**
+ * Reconcile fallback replays that lease-expiry dead-lettered inside claimNextJob's
+ * recoverExpiredJobs (which transitions them at max attempts without re-entering the
+ * job loop, so the per-job error boundary never sees them). Runs at drain start and
+ * finalizes each through the same helper the per-job path uses, so both dead-letter
+ * paths stamp the row, audit, and release the hold. The query returns only rows still
+ * needing finalization, so this is a no-op once they are done.
+ */
+function reconcileLeaseExpiredReplayFallbacks(db: AppDb, tenantId?: string): void {
+  for (const job of listUnfinalizedDeadLetteredReplayFallbacks(db, tenantId)) {
+    finalizeReplayFallbackDeadLetter(db, {
+      tenantId: job.tenant_id,
+      jobId: job.id,
+      payloadJson: job.payload_json,
+      errorCode: job.error_code ?? "lease_expired_max_attempts",
+    });
+  }
+}
+
 export function validateWorkerProductionEnv(
   env: NodeJS.ProcessEnv = process.env,
   onWarning?: (warning: string) => void,
@@ -3459,6 +3522,20 @@ async function processJobsOnceUnfenced(
         }`,
       );
     }
+  }
+  // Finalize fallback replays that lease-expiry dead-lettered inside claimNextJob's
+  // recoverExpiredJobs — that transition never re-enters this job loop, so the per-job
+  // error boundary cannot stamp the row or release the hold (#707). Idempotent and
+  // best-effort; runs regardless of Fettler maintenance so tests and lean workers still
+  // reconcile.
+  try {
+    reconcileLeaseExpiredReplayFallbacks(db, opts.tenantId);
+  } catch (error) {
+    console.error(
+      `  replay dead-letter reconciliation unavailable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
   const supportedTypes = ["pipeline.fanout", "pipeline.delivery-retry", "agent.run", "repair.run",
     "warden.candidate.deliver", "warden.candidate.observe", "warden.candidate.repair",
@@ -4744,7 +4821,7 @@ if (job.type === "warden.candidate.cleanup") {
           // delivery_blocked with a named code and audit it (never a silent no-op that
           // leaves it stuck delivery_failed). An operator must re-run the change.
           if (!change || !provider || !outcome.originFanoutJson) {
-            recordMigrationPrDeliveryBlocked(db, prId, "github_delivery_replay_unavailable");
+            recordMigrationPrDeliveryBlocked(db, prId, "github_delivery_replay_unavailable", job.tenant_id);
             recordAudit(db, {
               tenantId: job.tenant_id, actor: "system",
               action: "pr.delivery_replay_unavailable", resourceType: "migration_pr", resourceId: prId,
@@ -4801,13 +4878,13 @@ if (job.type === "warden.candidate.cleanup") {
               env: workerEnv,
             });
             if (admission.enforced && !admission.admitted) {
-              recordMigrationPrDeliveryBlocked(db, prId, "github_delivery_replay_quota_refused");
+              recordMigrationPrDeliveryBlocked(db, prId, "github_delivery_replay_quota_refused", job.tenant_id);
               recordAudit(db, {
                 tenantId: job.tenant_id, actor: "system",
                 action: "pr.delivery_replay_quota_refused", resourceType: "migration_pr", resourceId: prId,
                 metadata: { error: admission.body.error },
               });
-              if (!completeJob(db, job.id, { prId, status: "delivery_blocked", code: "github_delivery_replay_quota_refused" }, now, fence)) {
+              if (!completeJob(db, job.id, { prId, status: "delivery_blocked", code: "github_delivery_replay_quota_refused" }, nowIso(), fence)) {
                 throw new Error("lease_lost_before_delivery_retry_completion");
               }
               replayLog = "blocked (replay quota refused)";
@@ -4832,8 +4909,8 @@ if (job.type === "warden.candidate.cleanup") {
                 ...usageHold,
               };
               const backoffMs = FULL_PIPELINE_REPLAY_BASE_BACKOFF_MS * 2 ** priorReplays;
-              bumpMigrationPrReplayCount(db, prId);
-              enqueueOrResetJob(db, {
+              bumpMigrationPrReplayCount(db, prId, job.tenant_id);
+              const enqueueResult = enqueueOrResetJob(db, {
                 id: `pipeline-delivery-fallback:${prId}`,
                 tenantId: job.tenant_id,
                 type: "pipeline.fanout",
@@ -4842,7 +4919,16 @@ if (job.type === "warden.candidate.cleanup") {
                 createdAt: now,
                 availableAt: new Date(Date.parse(now) + backoffMs).toISOString(),
               });
-              if (!completeJob(db, job.id, { prId, status: outcome.status, fallback: "full_pipeline", replay: priorReplays + 1 }, now, fence)) {
+              // Defensive: the dedup check above already returns early when a fallback
+              // is pending/running, and this retry job is uniquely leased, so a live
+              // fallback here means an unexpected racing writer. Our reservation and bump
+              // are then for a job we did not create, so roll the whole transaction back
+              // rather than leave an orphaned hold — never commit a reserve+bump the
+              // enqueue did not back with our job.
+              if (enqueueResult === "already_active") {
+                throw new Error("delivery_replay_fallback_already_active");
+              }
+              if (!completeJob(db, job.id, { prId, status: outcome.status, fallback: "full_pipeline", replay: priorReplays + 1 }, nowIso(), fence)) {
                 throw new Error("lease_lost_before_delivery_retry_completion");
               }
               replayLog = `fallback replay ${priorReplays + 1}/${MAX_FULL_PIPELINE_REPLAYS}`;
@@ -5113,28 +5199,20 @@ if (job.type === "warden.candidate.cleanup") {
         failure.applied &&
         failure.status === "dead_letter"
       ) {
-        releaseFanoutRunUsage(db, job.tenant_id, job.payload_json, job.id);
-        // A dead-lettered no-artifact replay (pipeline-delivery-fallback:<prId>) has
-        // no pending retry, so the row must not be left a silent delivery_failed. Stamp
-        // a named delivery_error and audit it so the terminal state is self-describing
-        // and the operator retry endpoint has a reason to show (#707).
-        const replayFallbackPrefix = "pipeline-delivery-fallback:";
-        if (job.id.startsWith(replayFallbackPrefix)) {
-          const replayPrId = job.id.slice(replayFallbackPrefix.length);
-          try {
-            recordMigrationPrDeliveryErrorCode(db, replayPrId, "github_delivery_replay_failed");
-            recordAudit(db, {
-              tenantId: job.tenant_id, actor: "system",
-              action: "pr.delivery_replay_failed", resourceType: "migration_pr", resourceId: replayPrId,
-              metadata: { jobId: job.id, error: classified.errorCode },
-            });
-          } catch (error) {
-            console.error(
-              `  replay dead-letter annotation skipped pr=${replayPrId}: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
-          }
+        // A dead-lettered no-artifact replay (pipeline-delivery-fallback:<prId>) has no
+        // pending retry, so the row must not be left a silent delivery_failed: release
+        // the hold, stamp a named delivery_error and audit it through the shared helper
+        // that the lease-expiry sweep also uses (#707). Any other fanout dead-letter
+        // just releases its hold (infra failure burns no quota).
+        if (job.id.startsWith(REPLAY_FALLBACK_JOB_PREFIX)) {
+          finalizeReplayFallbackDeadLetter(db, {
+            tenantId: job.tenant_id,
+            jobId: job.id,
+            payloadJson: job.payload_json,
+            errorCode: classified.errorCode,
+          });
+        } else {
+          releaseFanoutRunUsage(db, job.tenant_id, job.payload_json, job.id);
         }
       }
       console.error(`  failed: ${classified.message}`);

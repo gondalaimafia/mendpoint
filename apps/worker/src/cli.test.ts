@@ -1638,43 +1638,163 @@ describe("worker runtime", () => {
     db.raw.close();
   });
 
-  it("(1) a crash between the replay reservation and the enqueue leaves no dangling reservation, and the replay retries clean (#707)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "mendpoint-replay-crash-"));
+  // A crash injected right AFTER each of the four writes the replay makes inside its
+  // one transaction — reserve, replay_count bump, enqueue, retry-job completion — must
+  // roll the whole unit back: no dangling reservation, no counter advance, no fallback
+  // job, and the retry job back on the queue (transient error) so the replay is not
+  // lost. Each installer throws a retryable error at the named point.
+  const crashScenarios: ReadonlyArray<{ after: string; install: () => { mockRestore: () => void } }> = [
+    {
+      after: "reserve",
+      install: () =>
+        vi.spyOn(dbModule, "bumpMigrationPrReplayCount").mockImplementation(() => {
+          throw new Error("sqlite_busy: crash after reserve");
+        }),
+    },
+    {
+      after: "bump",
+      install: () => {
+        const real = dbModule.enqueueOrResetJob;
+        return vi.spyOn(dbModule, "enqueueOrResetJob").mockImplementation((d, row) => {
+          if (row.id === "pipeline-delivery-fallback:pr-r") throw new Error("sqlite_busy: crash after bump");
+          return real(d, row);
+        });
+      },
+    },
+    {
+      after: "enqueue",
+      install: () =>
+        vi.spyOn(dbModule, "completeJob").mockImplementation(() => {
+          throw new Error("sqlite_busy: crash after enqueue");
+        }),
+    },
+    {
+      after: "the completeJob write",
+      install: () => {
+        const real = dbModule.completeJob;
+        return vi.spyOn(dbModule, "completeJob").mockImplementation((...args: Parameters<typeof real>) => {
+          real(...args);
+          throw new Error("sqlite_busy: crash after completeJob write");
+        });
+      },
+    },
+  ];
+
+  it.each(crashScenarios)(
+    "(1) a crash right after $after leaves no dangling reservation and the replay retries clean (#707)",
+    async ({ install }) => {
+      const dir = mkdtempSync(join(tmpdir(), "mendpoint-replay-crash-"));
+      dirs.push(dir);
+      const db = createDb(join(dir, "jobs.sqlite"));
+      seedReplayableFailedRow(db);
+      seedEntitlement(db, 100_000_000); // ample quota so admission is granted
+      const opts = {
+        tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false,
+        pipelineRunner: alwaysFailingRunner, wardenEnv: { MENDPOINT_USAGE_ENFORCEMENT: "1" },
+      };
+      enqueueJob(db, { id: "pipeline-delivery-retry:pr-r", tenantId: "tenant-a", type: "pipeline.delivery-retry", payload: { prId: "pr-r" }, maxAttempts: 50, createdAt: nowIso() });
+      const spy = install();
+      await processJobsOnce(db, opts);
+      spy.mockRestore();
+      // The whole reserve+bump+enqueue+complete unit rolled back: quota is not held, the
+      // counter did not advance, no fallback job exists, and the retry job is retryable.
+      expect(listUsageLedger(db, "tenant-a").filter((e) => e.entryType === "reservation")).toHaveLength(0);
+      expect(getPr(db, "pr-r", "tenant-a")?.replay_count).toBe(0);
+      expect(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")).toBeUndefined();
+      expect(getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")?.status).toBe("pending");
+      // Retry with no crash: the replay reserves, bumps and enqueues atomically this time.
+      db.raw.prepare("UPDATE jobs SET available_at = ? WHERE id = ?").run(nowIso(), "pipeline-delivery-retry:pr-r");
+      await processJobsOnce(db, opts);
+      expect(listUsageLedger(db, "tenant-a").filter((e) => e.entryType === "reservation")).toHaveLength(1);
+      expect(getPr(db, "pr-r", "tenant-a")?.replay_count).toBe(1);
+      expect(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")?.status).toBe("pending");
+      db.raw.close();
+    },
+  );
+
+  it("(1) the delivery_error stamp is tenant-scoped and never touches another tenant's row (#707)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-replay-tenant-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    seedReplayableFailedRow(db); // row belongs to tenant-a
+    // Another tenant's id must not update, stamp or bump this row.
+    expect(dbModule.recordMigrationPrDeliveryErrorCode(db, "pr-r", "github_delivery_replay_failed", "tenant-b")).toBe(false);
+    expect(dbModule.recordMigrationPrDeliveryBlocked(db, "pr-r", "github_delivery_replay_quota_refused", "tenant-b")).toBe(false);
+    expect(dbModule.bumpMigrationPrReplayCount(db, "pr-r", "tenant-b")).toBe(0);
+    let pr = getPr(db, "pr-r", "tenant-a");
+    expect(pr?.delivery_error ?? null).toBeNull();
+    expect(pr?.status).toBe("delivery_failed");
+    expect(pr?.replay_count).toBe(0);
+    // The owning tenant does update it.
+    expect(dbModule.recordMigrationPrDeliveryErrorCode(db, "pr-r", "github_delivery_replay_failed", "tenant-a")).toBe(true);
+    // Idempotent: a second stamp is a no-op (so the caller audits exactly once).
+    expect(dbModule.recordMigrationPrDeliveryErrorCode(db, "pr-r", "github_delivery_replay_failed", "tenant-a")).toBe(false);
+    pr = getPr(db, "pr-r", "tenant-a");
+    expect(pr?.delivery_error).toBe("github_delivery_replay_failed");
+    db.raw.close();
+  });
+
+  it("(3) a delivered row (github_pr_number set) is never stamped and gets no false replay-failed audit (#707)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-replay-delivered-"));
     dirs.push(dir);
     const db = createDb(join(dir, "jobs.sqlite"));
     seedReplayableFailedRow(db);
-    seedEntitlement(db, 100_000_000); // ample quota so admission is granted
+    seedEntitlement(db, 100_000_000);
+    const throwingRunner: typeof runChangePipeline = async () => {
+      throw new Error("replay pipeline crashed");
+    };
+    const opts = {
+      tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false,
+      pipelineRunner: throwingRunner, wardenEnv: { MENDPOINT_USAGE_ENFORCEMENT: "1" },
+    };
+    enqueueJob(db, { id: "pipeline-delivery-retry:pr-r", tenantId: "tenant-a", type: "pipeline.delivery-retry", payload: { prId: "pr-r" }, maxAttempts: 50, createdAt: nowIso() });
+    await processJobsOnce(db, opts); // fallback enqueued
+    // Simulate the row having recorded a PR by the time the fallback dead-letters (I7:
+    // a delivered draft must never be relabelled by a late dead-letter).
+    db.raw.prepare("UPDATE migration_prs SET github_pr_number = 4321 WHERE id = ?").run("pr-r");
+    db.raw.prepare("UPDATE jobs SET available_at = ? WHERE id = ?").run(nowIso(), "pipeline-delivery-fallback:pr-r");
+    await processJobsOnce(db, opts);
+    expect(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")?.status).toBe("dead_letter");
+    const pr = getPr(db, "pr-r", "tenant-a");
+    // The guard held: no code stamped on a delivered row, and no false audit.
+    expect(pr?.delivery_error ?? null).toBeNull();
+    expect(listAudit(db, "tenant-a").some((a) => a.action === "pr.delivery_replay_failed")).toBe(false);
+    db.raw.close();
+  });
+
+  it("(3) a fallback that lease-expiry dead-letters is finalized by the drain sweep: stamp, audit, hold released (#707)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-replay-leaseexpiry-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    seedReplayableFailedRow(db);
+    seedEntitlement(db, 100_000_000);
     const opts = {
       tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false,
       pipelineRunner: alwaysFailingRunner, wardenEnv: { MENDPOINT_USAGE_ENFORCEMENT: "1" },
     };
     enqueueJob(db, { id: "pipeline-delivery-retry:pr-r", tenantId: "tenant-a", type: "pipeline.delivery-retry", payload: { prId: "pr-r" }, maxAttempts: 50, createdAt: nowIso() });
-    // Inject a crash AFTER the replay reserves usage but BEFORE its fallback job is
-    // enqueued. Because the reservation, the replay_count bump and the enqueue are one
-    // transaction, the throw must roll the reservation back with them. The injected
-    // error is transient (retryable) so the retry job returns to the queue.
-    const realEnqueue = dbModule.enqueueOrResetJob;
-    const enqueueSpy = vi.spyOn(dbModule, "enqueueOrResetJob").mockImplementation((d, row) => {
-      if (row.id === "pipeline-delivery-fallback:pr-r") {
-        throw new Error("sqlite_busy: injected crash between reserve and enqueue");
-      }
-      return realEnqueue(d, row);
-    });
-    await processJobsOnce(db, opts);
-    enqueueSpy.mockRestore();
-    // Ledger balanced: the reservation rolled back, so the tenant's quota is not held.
-    expect(listUsageLedger(db, "tenant-a").filter((e) => e.entryType === "reservation")).toHaveLength(0);
-    // The bump rolled back and no fallback job was created.
-    expect(getPr(db, "pr-r", "tenant-a")?.replay_count).toBe(0);
-    expect(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")).toBeUndefined();
-    // The retry job did not complete: it is retryable (pending), so the replay is not lost.
-    expect(getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")?.status).toBe("pending");
-    // Retry with no crash: the replay reserves, bumps and enqueues atomically this time.
-    db.raw.prepare("UPDATE jobs SET available_at = ? WHERE id = ?").run(nowIso(), "pipeline-delivery-retry:pr-r");
-    await processJobsOnce(db, opts);
-    expect(listUsageLedger(db, "tenant-a").filter((e) => e.entryType === "reservation")).toHaveLength(1);
-    expect(getPr(db, "pr-r", "tenant-a")?.replay_count).toBe(1);
+    await processJobsOnce(db, opts); // fallback enqueued (pending, hold reserved)
     expect(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")?.status).toBe("pending");
+    // Simulate the fallback claimed then its lease expiring at max attempts, so
+    // recoverExpiredJobs dead-letters it WITHOUT it re-entering the job loop.
+    const past = new Date(Date.now() - 60_000).toISOString();
+    db.raw.prepare(
+      `UPDATE jobs SET status = 'running', attempts = 1, max_attempts = 1,
+         lease_owner = 'stale', lease_generation = 1, lease_expires_at = ?
+       WHERE id = ?`,
+    ).run(past, "pipeline-delivery-fallback:pr-r");
+    expect(dbModule.recoverExpiredJobs(db, nowIso(), "tenant-a")).toBeGreaterThanOrEqual(1);
+    expect(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")?.status).toBe("dead_letter");
+    // The row is not yet self-describing (the per-job boundary never saw this transition).
+    expect(getPr(db, "pr-r", "tenant-a")?.delivery_error ?? null).toBeNull();
+    // A drain runs the reconciliation sweep, which finalizes the lease-expired dead-letter.
+    await processJobsOnce(db, opts);
+    const pr = getPr(db, "pr-r", "tenant-a");
+    expect(pr?.delivery_error).toBe("github_delivery_replay_failed");
+    expect(listAudit(db, "tenant-a").some((a) => a.action === "pr.delivery_replay_failed")).toBe(true);
+    const ledger = listUsageLedger(db, "tenant-a");
+    expect(ledger.filter((e) => e.entryType === "reservation")).toHaveLength(1);
+    expect(ledger.filter((e) => e.entryType === "release")).toHaveLength(1);
     db.raw.close();
   });
 
