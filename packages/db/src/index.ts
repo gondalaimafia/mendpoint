@@ -4998,8 +4998,53 @@ export function listProviders(
   );
 }
 
-export function getProviderBySlug(db: AppDb, slug: string): Provider | undefined {
+/**
+ * Tenant-BLIND provider lookup. `providers.slug` is globally UNIQUE, so this resolves the one
+ * provider for a slug regardless of who owns it — including another tenant's private provider.
+ * It is therefore an existence/isolation hazard on any request path and is named to say so.
+ *
+ * Allowed callers, exhaustively (each re-establishes tenant safety another way):
+ *  - the change pipeline / feed poll engine, which act for a caller-supplied tenant and are
+ *    only ever reached with an already-authorized (tenant, provider) pair, then re-scope via
+ *    getVisibleProviderBySlug internally;
+ *  - provider-catalog MUTATION routes, whose authority is decided by decideCatalogMutation
+ *    (catalogMutationScope): a cross-tenant private provider is denied there, not read here;
+ *  - offline scripts/dogfood (seed, phase-a ship) with no request principal.
+ *
+ * Every REQUEST-path READ must use getVisibleProviderBySlug so a non-visible provider is
+ * indistinguishable from a nonexistent one.
+ */
+export function getProviderBySlugUnscopedForSystem(
+  db: AppDb,
+  slug: string,
+): Provider | undefined {
   return get(db, `SELECT * FROM providers WHERE slug = ?`, [slug]);
+}
+
+/**
+ * Tenant-scoped provider lookup: returns the provider for `slug` only when it is visible to
+ * `tenantId` — a shared/system provider (tenant_id IS NULL) or one owned by that tenant.
+ * Another tenant's private provider returns `undefined`, indistinguishable from a slug that
+ * does not exist (no existence oracle).
+ *
+ * `tenantId` follows the standard assertTenantScope convention: `undefined` is the explicit
+ * open/system read (auth off) and returns the provider regardless of owner, byte-identical to
+ * the tenant-blind lookup; a blank string is a hard error.
+ */
+export function getVisibleProviderBySlug(
+  db: AppDb,
+  tenantId: string | undefined,
+  slug: string,
+): Provider | undefined {
+  assertTenantScope(tenantId);
+  if (tenantId === undefined) {
+    return get(db, `SELECT * FROM providers WHERE slug = ?`, [slug]);
+  }
+  return get(
+    db,
+    `SELECT * FROM providers WHERE slug = ? AND (tenant_id IS NULL OR tenant_id = ?)`,
+    [slug, tenantId],
+  );
 }
 
 export function getProviderById(db: AppDb, id: string): Provider | undefined {
@@ -5053,6 +5098,34 @@ export function listChanges(
  */
 export function getChange(db: AppDb, id: string): ApiChange | undefined {
   return get(db, `SELECT * FROM api_changes WHERE id = ?`, [id]);
+}
+
+/**
+ * Tenant-scoped change-by-id read: returns the change only when its provider is visible to
+ * `tenantId` (shared provider, or one owned by that tenant). A change on another tenant's
+ * private provider returns `undefined`, indistinguishable from an unknown id (no oracle).
+ *
+ * `tenantId` follows the assertTenantScope convention: `undefined` is the explicit open/system
+ * read (returns the change regardless of owner, byte-identical to getChange); blank is a hard
+ * error. The LEFT JOIN preserves getChange's behavior for a change whose provider row is
+ * missing (it stays visible), only tightening the case where the provider is another tenant's.
+ */
+export function getVisibleChange(
+  db: AppDb,
+  tenantId: string | undefined,
+  id: string,
+): ApiChange | undefined {
+  assertTenantScope(tenantId);
+  if (tenantId === undefined) {
+    return get(db, `SELECT * FROM api_changes WHERE id = ?`, [id]);
+  }
+  return get(
+    db,
+    `SELECT c.* FROM api_changes c
+     LEFT JOIN providers p ON p.id = c.provider_id
+     WHERE c.id = ? AND (p.tenant_id IS NULL OR p.tenant_id = ?)`,
+    [id, tenantId],
+  );
 }
 
 export function listConsumers(

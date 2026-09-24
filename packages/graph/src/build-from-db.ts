@@ -5,10 +5,10 @@
 import { existsSync, statSync } from "node:fs";
 import {
   type AppDb,
-  getChange,
   getConsumer,
   getConsumerRepo,
-  getProviderBySlug,
+  getProviderBySlugUnscopedForSystem,
+  getVisibleChange,
   listFindingsForChange,
   listPrsForChange,
   listVersionsForProvider,
@@ -146,7 +146,10 @@ export function buildChangeImpactGraph(
   const cached = changeGraphCache.get(cacheKey) as ProductGraph | undefined;
   if (cached) return cached;
 
-  const change = getChange(db, changeId);
+  // Tenant isolation: a change on another tenant's private provider is 404 (null) for anyone
+  // but its owner, resolved at the read so the graph never materializes another tenant's
+  // change title or diff. `opts.tenantId` undefined is the open/system build (unchanged).
+  const change = getVisibleChange(db, opts?.tenantId, changeId);
   if (!change) return null;
 
   if (
@@ -257,7 +260,9 @@ export function buildChangeImpactGraph(
 }
 
 export function buildProviderApiGraph(db: AppDb, providerSlug: string): ProductGraph | null {
-  const p = getProviderBySlug(db, providerSlug);
+  // Trusted-system read: the only caller (GET /graph/api/:providerSlug) resolves and
+  // visibility-checks the provider via getVisibleProviderBySlug before calling here.
+  const p = getProviderBySlugUnscopedForSystem(db, providerSlug);
   if (!p) return null;
   const versions = listVersionsForProvider(db, p.id);
   if (versions.length < 2) {

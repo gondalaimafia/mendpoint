@@ -5,7 +5,7 @@ import {
   createDb,
   findMonorepoRoot,
   getConsumerRepo,
-  getProviderBySlug,
+  getProviderBySlugUnscopedForSystem,
   insertApiVersion,
   insertConsumer,
   insertConsumerRepo,
@@ -70,7 +70,7 @@ export function seedDatabase(opts: SeedOptions = {}): SeedResult {
       process.env.MENDPOINT_SEED_REPO_PATH ??
       join(root, "fixtures/consumers/shop-app"),
   );
-  let provider = getProviderBySlug(db, "acme-payments");
+  let provider = getProviderBySlugUnscopedForSystem(db, "acme-payments");
   if (!provider) {
     const providerId = newId();
     db.raw
@@ -85,7 +85,7 @@ export function seedDatabase(opts: SeedOptions = {}): SeedResult {
         "https://acme-payments.example",
         nowIso(),
       );
-    provider = getProviderBySlug(db, "acme-payments");
+    provider = getProviderBySlugUnscopedForSystem(db, "acme-payments");
     changed = true;
   }
   if (!provider) throw new Error("Could not seed Acme Payments provider");

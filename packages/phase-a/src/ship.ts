@@ -34,7 +34,7 @@ import {
   insertApiChange,
   insertApiVersion,
   recordAudit,
-  getProviderBySlug,
+  getProviderBySlugUnscopedForSystem,
 } from "@mendpoint/db";
 import { newId, nowIso } from "@mendpoint/shared";
 import { runHarness } from "./harness.js";
@@ -276,7 +276,7 @@ async function main() {
 
   // 7) Persist for dashboard (proper FK chain)
   const db = createDb();
-  const providerRow = getProviderBySlug(db, "acme-payments");
+  const providerRow = getProviderBySlugUnscopedForSystem(db, "acme-payments");
   const providerId = providerRow?.id ?? newId();
   if (!providerRow) {
     insertProvider(db, {
