@@ -31,3 +31,6 @@ test-results/
 .turbo/
 .vercel/
 *.tsbuildinfo
+
+# Nightly synthetic-eval run summary — a per-run artifact uploaded by the workflow, not committed.
+evals/reports/run-summary.json

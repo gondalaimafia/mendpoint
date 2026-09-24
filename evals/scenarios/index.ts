@@ -7,9 +7,10 @@
  * (expected findings, traps, difficulty) lives in the ground-truth JSON and is
  * loaded only by the grader, after the product has run.
  *
- * Corpus repos live OUTSIDE this git repo (default `C:/Users/Talal/dev`), so a
- * run cannot accidentally read a repo's own ground truth — there is none inside
- * the repo under test.
+ * Corpus repos live OUTSIDE this git repo (set via MENDPOINT_CORPUS_ROOT; absent
+ * means the corpus is unavailable — see corpus-root.ts), so a run cannot
+ * accidentally read a repo's own ground truth — there is none inside the repo
+ * under test.
  */
 import { resolve } from "node:path";
 import type { Product } from "../ground-truth/schema.js";
