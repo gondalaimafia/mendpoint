@@ -6,7 +6,7 @@ import {
   createDb,
   feedPollToApi,
   findMonorepoRoot,
-  getProviderBySlug,
+  getProviderBySlugUnscopedForSystem,
   insertProvider,
   listFeedPolls,
   listVersionsForProvider,
@@ -73,7 +73,7 @@ describe("run-poll", () => {
     );
     expect(r2.status).toBe("unchanged");
 
-    const p = getProviderBySlug(db, "acme-payments")!;
+    const p = getProviderBySlugUnscopedForSystem(db, "acme-payments")!;
     expect(listVersionsForProvider(db, p.id).length).toBeGreaterThanOrEqual(1);
     expect(feedPollToApi(listFeedPolls(db)[0]!)).toMatchObject({
       status: "unchanged",
@@ -118,7 +118,7 @@ describe("run-poll", () => {
         error: expect.stringContaining("not valid JSON"),
       },
     });
-    const provider = getProviderBySlug(db, "invalid-provider")!;
+    const provider = getProviderBySlugUnscopedForSystem(db, "invalid-provider")!;
     expect(listVersionsForProvider(db, provider.id)).toEqual([]);
   });
 
@@ -213,7 +213,7 @@ describe("run-poll", () => {
     });
     expect(retried.status).toBe("pipeline_ran");
     expect(retried.changeId).toBe("change-1");
-    const provider = getProviderBySlug(db, "retry")!;
+    const provider = getProviderBySlugUnscopedForSystem(db, "retry")!;
     expect(listVersionsForProvider(db, provider.id)).toHaveLength(2);
   });
 
@@ -422,7 +422,7 @@ describe("run-poll", () => {
       pollOneFeed(feed, { db: db2, tenantId: "tenant_default", runPipeline: false }),
     ]);
     expect(results.map((r) => r.status).sort()).toEqual(["new_version", "unchanged"]);
-    const provider = getProviderBySlug(db, "concurrent")!;
+    const provider = getProviderBySlugUnscopedForSystem(db, "concurrent")!;
     expect(listVersionsForProvider(db, provider.id)).toHaveLength(1);
   });
 });

@@ -1582,7 +1582,18 @@ exit 0
     // never answers /livez 200 within the readiness deadline. That is still an
     // outage: the read cannot succeed, so it is a named machine-down verdict, not
     // a silent pass. The livez it observed is recorded, and no machine is stopped.
-    const r = runEnsure({ initial: STOPPED_MACHINE, curlAfterStart: "503", readyDeadlineSeconds: "1" });
+    // A not-live path runs to the deadline, so the value is kept small to stay
+    // fast — but NOT 1. The loop bounds every call by `remaining = ready_deadline
+    // - $(date -u +%s)` in whole seconds, and with a 1s deadline a single
+    // second-boundary crossing between computing ready_deadline and the first
+    // `remaining > 0` check drives remaining to 0 and breaks BEFORE the first
+    // curl, leaving livez="" (the flake: `expected '' to be '503'`, ~1 in 3). A
+    // 3s deadline needs three whole-second boundaries to lapse between two
+    // adjacent shell statements to lose the first curl, which cannot happen, so
+    // it reads 503 deterministically. The not-live path then runs to the deadline
+    // via the real `sleep`, so this case is given a generous per-test timeout
+    // (below) rather than racing vitest's 5s default.
+    const r = runEnsure({ initial: STOPPED_MACHINE, curlAfterStart: "503", readyDeadlineSeconds: "3" });
     expect(r.status).toBe(1);
     expect(r.flyctlCalls.filter((call) => call.startsWith("machine start"))).toHaveLength(1);
     expect(r.output).toContain("outcome=production_machine_down");
@@ -1593,7 +1604,7 @@ exit 0
     expect(r.machineState.remediation.machineStart.livez).toBe("503");
     expect(r.machineState.remediation.machineStart.started).toContain("84e696a22eee68");
     expect(r.flyctlCalls.some((call) => call.startsWith("machine stop"))).toBe(false);
-  });
+  }, 20_000);
 
   it("(S6b) counts a start that lost the deploy's lease but came up as started, not down", () => {
     // `flyctl machine start` exits non-zero because the deploy that fired this

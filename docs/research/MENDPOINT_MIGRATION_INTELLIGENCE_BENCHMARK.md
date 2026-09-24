@@ -526,7 +526,7 @@ Also: on a GitHub-hosted runner, only the generated families run. The 21 hand-au
 scenarios — including the scale case and the language-support cases that produce the honest recall
 failure — require `MENDPOINT_CORPUS_ROOT` and are cleanly skipped, not failed
 (`.github/workflows/ci.yml:36-49`). A nightly job on a runner that has the corpus runs the full set
-(`.github/workflows/nightly-synthetic-eval.yml:33-39`).
+(`.github/workflows/nightly-synthetic-eval.yml`, the `synthetic-eval` job's "Run generated suite" step).
 
 ### 8.5 The committed artifact can be stale relative to HEAD
 
@@ -669,7 +669,7 @@ Every quantitative claim in this document, with its source.
 | Corpus root outside the repo | `evals/scenarios/index.ts:18-20` |
 | Seeds recorded in scenario notes | `evals/generators/families.ts:115,152,197` |
 | CI wiring; gate does not block | `.github/workflows/ci.yml:26-27,38-49`; `evals/runners/run-all.ts`; `package.json:42` |
-| Nightly full-corpus job | `.github/workflows/nightly-synthetic-eval.yml:33-39` |
+| Nightly job (corpus when present) | `.github/workflows/nightly-synthetic-eval.yml` (`synthetic-eval` job) |
 | Deferred graders (compilation, subject tests, graph edges, verification honesty, semantic rubrics) | `evals/graders/DEFERRED.md:8-65` |
 | 12 of 35 kinked cases product-wrong-eval-green; 4 signed exit-0 records; express 213 / next.js 31,220 files | `C:\Users\Talal\dev\oss-kinked\VALIDATION-REPORT.md:193,203-210`, §1 |
 | 10 of 12 fixed by #174, 2 open | PR #184 description; corroborated by the regenerated family gates |

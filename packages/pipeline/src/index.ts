@@ -6,7 +6,7 @@ import {
   getGitHubInstallationByInstallationId,
   getScmConnection,
   listConnectedRepositories,
-  getProviderBySlug,
+  getVisibleProviderBySlug,
   listMonitoredForProvider,
   listVersionsForProvider,
   getPoliciesMap,
@@ -765,7 +765,10 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     onDisplayNameChange: "relabel",
   });
 
-  const provider = getProviderBySlug(db, input.providerSlug);
+  // Tenant isolation: the pipeline only ever runs for a provider visible to the tenant it
+  // executes for (the worker passes the job row's tenant). A slug that resolves only to
+  // another tenant's private provider is treated as unknown, never operated on.
+  const provider = getVisibleProviderBySlug(db, input.tenantId, input.providerSlug);
   if (!provider) throw new Error(`Unknown provider: ${input.providerSlug}`);
 
   const versions = listVersionsForProvider(db, provider.id);
