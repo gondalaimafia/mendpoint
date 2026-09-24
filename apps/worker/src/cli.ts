@@ -39,15 +39,18 @@ import {
   createDb,
   createDependencyOutageQueue,
   enqueueJob,
+  enqueueOrResetJob,
   failJob,
   failWardenCiOperation,
   renewJobLease,
   findMonorepoRoot,
   findAuthorizedGitHubInstallationForRepository,
+  getChange,
   getConnectedRepository,
   getConsumer,
   getConsumerRepo,
   getJob,
+  getProviderById,
   getAgentRun,
   getAgentRunByJobId,
   getWardenCandidateDelivery,
@@ -3376,6 +3379,10 @@ async function processJobsOnceUnfenced(
     wardenPlanner?: AgentPlanner;
     wardenEnv?: NodeJS.ProcessEnv;
     pipelineRunner?: typeof runChangePipeline;
+    /** Delivery transport for the delivery-only retry path (D10). Tests inject a
+     * fake GitHub here so the retry runs against the real adoption state machine
+     * without App credentials; production leaves it unset and resolves the App. */
+    deliveryRetryGithub?: GitHubDelivery;
     transformerAdaptiveGithub?: GitHubDelivery;
     transformerAdaptiveRepositoryResolver?: ResolveTransformerAdaptiveRepository;
     wardenCandidateGithub?: GitHubDelivery;
@@ -3436,9 +3443,10 @@ async function processJobsOnceUnfenced(
       );
     }
   }
-  const supportedTypes = ["pipeline.fanout", "agent.run", "repair.run", "warden.candidate.deliver",
-    "warden.candidate.observe", "warden.candidate.repair", "warden.candidate.update",
-    "fettler.pr.review", "transformer.adaptive.deliver", LEARNING_OUTCOME_RESOLVE_JOB_TYPE];
+  const supportedTypes = ["pipeline.fanout", "pipeline.delivery-retry", "agent.run", "repair.run",
+    "warden.candidate.deliver", "warden.candidate.observe", "warden.candidate.repair",
+    "warden.candidate.update", "fettler.pr.review", "transformer.adaptive.deliver",
+    LEARNING_OUTCOME_RESOLVE_JOB_TYPE];
   if (workerEnv.DEEPSEEK_VERIFIER_ENABLED?.trim() === "true") {
     supportedTypes.push(VERIFIER_ADVISORY_JOB_TYPE);
   }
@@ -4675,10 +4683,12 @@ if (job.type === "warden.candidate.cleanup") {
         // into github_delivery_abandoned; a delivery_failed outcome re-throws so the
         // job retries (delivery-only) under the backoff cap.
         const retryPayload = JSON.parse(job.payload_json) as { prId: string };
-        const resolveDelivery = createPipelineDeliveryResolver(
-          { tenantId: job.tenant_id, providerSlug: "", db, dependencyOutagePolicy: classifyDependencyOutage },
-          db,
-        );
+        const resolveDelivery = opts.deliveryRetryGithub
+          ? () => ({ delivery: opts.deliveryRetryGithub! })
+          : createPipelineDeliveryResolver(
+              { tenantId: job.tenant_id, providerSlug: "", db, dependencyOutagePolicy: classifyDependencyOutage },
+              db,
+            );
         const outcome = await retryConsumerDelivery({
           db,
           tenantId: job.tenant_id,
@@ -4687,6 +4697,42 @@ if (job.type === "warden.candidate.cleanup") {
           refreshedHeadSha: null,
           now: nowIso(),
         });
+        if (outcome.fallbackToPipeline) {
+          // No write-ahead artifact exists (the outage hit before the commit was
+          // built, e.g. a base-refresh failure), so a delivery-only replay cannot
+          // reconstruct the change. Fall back to a full pipeline run for the change:
+          // it re-refreshes the base and regenerates, then re-delivers. Bounded by
+          // the same ~7-day cap already enforced inside retryConsumerDelivery before
+          // this branch. Complete this job (do not throw forever) and hand the change
+          // to a deduped, backed-off fanout so the two paths never spin against each
+          // other. If the change/provider is gone there is nothing to re-run.
+          const change = getChange(db, outcome.changeId!);
+          const provider = change ? getProviderById(db, change.provider_id) : undefined;
+          if (provider) {
+            enqueueOrResetJob(db, {
+              id: `pipeline-delivery-fallback:${retryPayload.prId}`,
+              tenantId: job.tenant_id,
+              type: "pipeline.fanout",
+              payload: { providerSlug: provider.slug, consumerIds: [outcome.consumerId!] },
+              maxAttempts: 50,
+              createdAt: nowIso(),
+              availableAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+            });
+          }
+          db.raw.exec("BEGIN IMMEDIATE");
+          try {
+            if (!completeJob(db, job.id, { prId: retryPayload.prId, status: outcome.status, fallback: "full_pipeline", fanoutEnqueued: Boolean(provider) }, nowIso(), fence)) {
+              throw new Error("lease_lost_before_delivery_retry_completion");
+            }
+            db.raw.exec("COMMIT");
+          } catch (error) {
+            if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+            throw error;
+          }
+          result.succeeded++;
+          console.log(`  delivery-retry ${retryPayload.prId} -> fallback full pipeline (${provider ? "enqueued" : "no provider"})`);
+          continue;
+        }
         if (outcome.status === "delivery_failed") {
           throw new Error(outcome.deliveryError ?? "pipeline_delivery_failed");
         }
@@ -4765,19 +4811,19 @@ if (job.type === "warden.candidate.cleanup") {
       // D10: a delivery failure does NOT re-run the whole pipeline (re-analysing).
       // Each failed consumer is handed to a delivery-only retry job that replays
       // the adoptive delivery from the persisted artifact under the backoff cap and
-      // the ~7-day abandon cap. A deterministic job id makes re-enqueue a no-op.
+      // the ~7-day abandon cap. The deterministic id dedups a concurrent retry but
+      // enqueueOrResetJob revives a terminal (dead-lettered/done) row so a failed
+      // consumer is never stranded behind a spent job id (never silently swallowed).
       for (const failed of report.consumers.filter((c) => c.prStatus === "delivery_failed")) {
         if (!failed.prId) continue;
-        try {
-          enqueueJob(db, {
-            id: `pipeline-delivery-retry:${failed.prId}`,
-            tenantId: job.tenant_id,
-            type: "pipeline.delivery-retry",
-            payload: { prId: failed.prId },
-            maxAttempts: 50,
-            createdAt: nowIso(),
-          });
-        } catch { /* a delivery-only retry for this pr is already queued */ }
+        enqueueOrResetJob(db, {
+          id: `pipeline-delivery-retry:${failed.prId}`,
+          tenantId: job.tenant_id,
+          type: "pipeline.delivery-retry",
+          payload: { prId: failed.prId },
+          maxAttempts: 50,
+          createdAt: nowIso(),
+        });
       }
       if (leaseLost) throw new Error("lease_lost_before_pipeline_completion");
       if (fettlerProductionIntent || legacyWardenPilot) {

@@ -54,9 +54,13 @@ import {
   getWardenCiCycle,
   getRoutingLedgerForJob,
   insertAgentRun,
+  insertApiChange,
   insertApiVersion,
   insertConsumer,
   insertConsumerRepo,
+  insertMigrationPr,
+  persistDeliveryArtifact,
+  getPr,
   insertConnectedRepository,
   insertMonitoredApi,
   insertProvider,
@@ -79,10 +83,11 @@ import {
 } from "@mendpoint/db";
 import { nowIso } from "@mendpoint/shared";
 import type { AgentPlanner } from "@mendpoint/agent";
-import { ensureDefaultPolicyEnvelopeBinding, type PipelineReport } from "@mendpoint/pipeline";
+import { ensureDefaultPolicyEnvelopeBinding, deliveryArtifactDigest, type PipelineReport } from "@mendpoint/pipeline";
 import { canonicalPolicyEnvelopeJson, defaultPolicyEnvelope } from "@mendpoint/policy";
 import {
   GitHubAppDelivery,
+  MockGitHubDelivery,
   OctokitGitHubDelivery,
   type ExactDraftDeliveryInput,
   type GitHubDelivery,
@@ -1319,6 +1324,86 @@ describe("worker runtime", () => {
       id: "job-drain-test",
       status: "pending",
     });
+    db.raw.close();
+  });
+
+  it("claims the pipeline.delivery-retry job the fanout enqueued and delivers from the artifact without re-running the pipeline", async () => {
+    // The fanout no longer throws on a delivery failure; it enqueues a delivery-only
+    // retry job. That job is worthless unless the worker's claim allowlist includes
+    // pipeline.delivery-retry. This drives the whole chain through the real worker
+    // loop (processJobsOnce): fanout delivery fails -> retry job enqueued -> worker
+    // claims it -> one PR delivered from the artifact, with NO pipeline re-run. It
+    // fails if the allowlist entry is removed (the "built but never called" defect).
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-delivery-retry-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+    const consumerId = "consumer-retry-e2e";
+    insertConsumer(db, { id: consumerId, name: "Retry E2E", githubOwner: "org", githubRepo: "retry-e2e", installationId: null, tenantId: "tenant-a", createdAt: nowIso() });
+    insertConsumerRepo(db, { id: "repo-retry-e2e", consumerId, localPath: dir, defaultBranch: "main", createdAt: nowIso() });
+    const deliveryKey = `change-e2e:${consumerId}`;
+    const baseSha = "b".repeat(40);
+    enqueueJob(db, { id: "fanout-retry-e2e", tenantId: "tenant-a", type: "pipeline.fanout", createdAt: nowIso(), payload: { providerSlug: "acme" } });
+
+    // A pipeline-runner double that mimics a fanout whose delivery failed transiently:
+    // it persists the delivery_failed row AND the write-ahead artifact (exactly as the
+    // real delivery does before the failing ref write), then reports the consumer failed.
+    const pipelineRunner = vi.fn(async (): Promise<PipelineReport> => {
+      insertMigrationPr(db, { id: "pr-e2e", changeId: "change-e2e", consumerId, title: "E2E candidate", body: "body", branchName: "mendpoint/e2e-abc", status: "delivery_failed", risk: "low", patchUnified: "diff", createdAt: nowIso() });
+      persistDeliveryArtifact(db, { tenantId: "tenant-a", artifactDigest: deliveryArtifactDigest(deliveryKey, "t".repeat(40), baseSha), deliveryKey, title: "E2E candidate", body: "body", treeSha: "t".repeat(40), parentSha: baseSha, filesJson: JSON.stringify([{ path: "src/a.ts", content: "changed\n" }]), createdAt: nowIso() });
+      return { changeId: "change-e2e", risk: "breaking", summary: "s", diff: { risk: "breaking", summary: "s", entries: [] }, surfaces: 1, consumers: [{ consumerId, name: "Retry E2E", findings: 1, candidates: 1, confirmed: 1, prId: "pr-e2e", prStatus: "delivery_failed" }] };
+    });
+
+    // Phase A: the fanout runs, delivery "fails", and a delivery-retry job is enqueued.
+    await expect(processJobsOnce(db, { tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false, pipelineRunner }))
+      .resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+    expect(pipelineRunner).toHaveBeenCalledTimes(1);
+    const retryJob = listJobs(db, 20, "tenant-a").find((j) => j.type === "pipeline.delivery-retry");
+    expect(retryJob, "the fanout enqueued a delivery-retry job").toBeDefined();
+    expect(retryJob!.status).toBe("pending");
+    expect(getPr(db, "pr-e2e", "tenant-a")?.status).toBe("delivery_failed");
+
+    // Phase B: the worker CLAIMS the delivery-retry job (allowlist) and delivers from
+    // the artifact. The pipeline is NOT re-run (pipelineRunner call count stays 1).
+    const retryGithub = new MockGitHubDelivery(join(dir, "mock-github"));
+    await expect(processJobsOnce(db, { tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false, pipelineRunner, deliveryRetryGithub: retryGithub }))
+      .resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+    expect(pipelineRunner, "the delivery-only retry must not re-run the pipeline").toHaveBeenCalledTimes(1);
+    expect(getPr(db, "pr-e2e", "tenant-a")?.status).toBe("draft");
+    expect(getJob(db, retryJob!.id, "tenant-a")?.status).toBe("done");
+    db.raw.close();
+  });
+
+  it("falls back to a full pipeline fanout when a delivery-retry job finds no write-ahead artifact", async () => {
+    // If the outage hit before the commit was built there is no artifact to replay.
+    // The worker must not re-throw forever: it completes the retry job and enqueues a
+    // full pipeline fanout for the change (bounded by the same 7-day cap).
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-delivery-fallback-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+    const consumerId = "consumer-fallback";
+    insertProvider(db, { id: "provider-fallback", slug: "acme-fallback", name: "Acme", website: null, createdAt: nowIso() });
+    insertApiChange(db, { id: "change-fallback", providerId: "provider-fallback", fromVersionId: "v1", toVersionId: "v2", risk: "breaking", summary: "s", diffJson: "{}", createdAt: nowIso() });
+    insertConsumer(db, { id: consumerId, name: "Fallback Shop", githubOwner: "org", githubRepo: "fallback-shop", installationId: null, tenantId: "tenant-a", createdAt: nowIso() });
+    insertConsumerRepo(db, { id: "repo-fallback", consumerId, localPath: dir, defaultBranch: "main", createdAt: nowIso() });
+    // A delivery_failed row with NO artifact persisted.
+    insertMigrationPr(db, { id: "pr-fallback", changeId: "change-fallback", consumerId, title: "Fallback", body: "b", branchName: "mendpoint/fallback", status: "delivery_failed", risk: "low", patchUnified: "diff", createdAt: nowIso() });
+    enqueueJob(db, { id: "pipeline-delivery-retry:pr-fallback", tenantId: "tenant-a", type: "pipeline.delivery-retry", createdAt: nowIso(), payload: { prId: "pr-fallback" }, maxAttempts: 50 });
+
+    await expect(processJobsOnce(db, {
+      tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false,
+      // The transport must never be reached (no artifact to deliver from).
+      deliveryRetryGithub: { deliverAdoptiveDraft: () => { throw new Error("delivery must not be attempted"); } } as unknown as GitHubDelivery,
+    })).resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+
+    // The retry job completed (no throw-forever), and a full pipeline fanout for the
+    // change's provider was enqueued for the failed consumer.
+    expect(getJob(db, "pipeline-delivery-retry:pr-fallback", "tenant-a")?.status).toBe("done");
+    const fallback = listJobs(db, 20, "tenant-a").find((j) => j.id === "pipeline-delivery-fallback:pr-fallback");
+    expect(fallback, "a full pipeline fanout was enqueued as the fallback").toBeDefined();
+    expect(fallback!.type).toBe("pipeline.fanout");
+    expect(JSON.parse(fallback!.payload_json)).toMatchObject({ providerSlug: "acme-fallback", consumerIds: [consumerId] });
     db.raw.close();
   });
 

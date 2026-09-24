@@ -38,6 +38,7 @@ import {
   exportAuditCsv,
   updateChangeSeverity,
   enqueueJob,
+  enqueueOrResetJob,
   listJobs,
   getJob,
   jobToApi,
@@ -2297,11 +2298,14 @@ app.post("/prs/:id/feedback", async (c) => {
 });
 
 /**
- * Operator retry of a stuck delivery (PR #606 D9). Tenant-scoped, admin-class
- * only, and allowed only from delivery_failed / delivery_blocked — never on a row
- * that already recorded a PR (I7). Flips the row back to delivery_failed so the
- * next pipeline run re-attempts delivery, and reopens the durable ledger operation
- * (operator_retry) so an abandoned/expired operation gets a fresh retry window.
+ * Operator retry of a stuck delivery (PR #606 D9/D10). Tenant-scoped, admin-class
+ * only, and allowed only from delivery_failed / delivery_blocked /
+ * github_delivery_abandoned — never on a row that already recorded a PR (I7).
+ * Flips the row back to delivery_failed so the next delivery re-attempts, reopens
+ * the durable ledger operation (operator_retry) so an abandoned/expired operation
+ * gets a fresh retry window, and re-queues the delivery-only retry job. The job id
+ * is deterministic per row, so a spent (dead-lettered/done) job is RESET to pending
+ * atomically rather than colliding on the id — the response reports what happened.
  */
 app.post("/migration-prs/:id/retry-delivery", (c) => {
   const principal = c.get("principal");
@@ -2312,7 +2316,11 @@ app.post("/migration-prs/:id/retry-delivery", (c) => {
   const tenantId = requestTenantId(c);
   const pr = getPr(db, c.req.param("id"), tenantId);
   if (!pr) return c.json({ error: "not found" }, 404);
-  if (pr.status !== "delivery_failed" && pr.status !== "delivery_blocked") {
+  if (
+    pr.status !== "delivery_failed" &&
+    pr.status !== "delivery_blocked" &&
+    pr.status !== "github_delivery_abandoned"
+  ) {
     return c.json({ error: "retry_delivery_not_allowed", status: pr.status }, 409);
   }
   if (pr.github_pr_number !== null) {
@@ -2349,26 +2357,27 @@ app.post("/migration-prs/:id/retry-delivery", (c) => {
   }
   updateMigrationPrStatus(db, pr.id, "delivery_failed", null);
   // Re-queue a delivery-only retry job (D10): it replays the adoptive delivery from
-  // the persisted artifact, not the whole pipeline. A deterministic id makes it a
-  // no-op if a retry is already queued.
-  try {
-    enqueueJob(db, {
-      id: `pipeline-delivery-retry:${pr.id}`,
-      tenantId,
-      type: "pipeline.delivery-retry",
-      payload: { prId: pr.id },
-      maxAttempts: 50,
-      createdAt: nowIso(),
-    });
-  } catch { /* a delivery-only retry for this pr is already queued */ }
+  // the persisted artifact, not the whole pipeline. The id is deterministic per row;
+  // enqueueOrResetJob enqueues a fresh row, or resets a spent (dead-lettered/done)
+  // one back to pending, so a prior dead-letter can never leave the endpoint
+  // reporting ok while nothing runs. The failure is never swallowed — a real enqueue
+  // error propagates to the caller.
+  const queueAction = enqueueOrResetJob(db, {
+    id: `pipeline-delivery-retry:${pr.id}`,
+    tenantId,
+    type: "pipeline.delivery-retry",
+    payload: { prId: pr.id },
+    maxAttempts: 50,
+    createdAt: nowIso(),
+  });
   requestAudit(c, {
     actor: "human",
     action: "pr.retry_delivery",
     resourceType: "migration_pr",
     resourceId: pr.id,
-    metadata: { previousStatus: pr.status },
+    metadata: { previousStatus: pr.status, queueAction },
   });
-  return c.json({ ok: true, id: pr.id, status: "delivery_failed" });
+  return c.json({ ok: true, id: pr.id, status: "delivery_failed", queued: queueAction });
 });
 
 /** Phase D: advisory CI check body (and optional mock post) for a migration PR */

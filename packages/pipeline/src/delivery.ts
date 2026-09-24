@@ -289,6 +289,16 @@ export type RetryConsumerDeliveryResult = Readonly<{
   prNumber: number | null;
   prUrl: string | null;
   deliveryError: string | null;
+  /**
+   * True when the row is still retryable but no write-ahead artifact exists (the
+   * outage hit before the commit was built), so a delivery-only replay is
+   * impossible and the caller must fall back to a full pipeline run for the
+   * change. `changeId`/`consumerId` identify that change. Distinct from the plain
+   * retried:false cases (not found, already terminal), which need no fallback.
+   */
+  fallbackToPipeline?: boolean;
+  changeId?: string;
+  consumerId?: string;
 }>;
 
 /**
@@ -321,10 +331,21 @@ export async function retryConsumerDelivery(
   const deliveryKey = `${pr.change_id}:${pr.consumer_id}`;
   const artifact = getLatestDeliveryArtifact(db, tenantId, deliveryKey);
   // No artifact means delivery never reached the commit build (e.g. a base-refresh
-  // failure or a content-manifest repo). Delivery-only cannot reconstruct it; the
-  // caller falls back to a full pipeline run.
+  // failure or a content-manifest repo). Delivery-only cannot reconstruct it, so
+  // signal the caller to fall back to a full pipeline run for the change (bounded
+  // by the same 7-day cap enforced above). This is distinct from the plain
+  // retried:false returns (not found, already terminal), which need no fallback.
   if (!artifact || !artifact.filesJson) {
-    return Object.freeze({ retried: false, status: pr.status, prNumber: pr.github_pr_number ?? null, prUrl: pr.github_pr_url ?? null, deliveryError: null });
+    return Object.freeze({
+      retried: false,
+      fallbackToPipeline: true,
+      changeId: pr.change_id,
+      consumerId: consumer.id,
+      status: pr.status,
+      prNumber: pr.github_pr_number ?? null,
+      prUrl: pr.github_pr_url ?? null,
+      deliveryError: null,
+    });
   }
   const files = JSON.parse(artifact.filesJson) as Array<{ path: string; content: string }>;
   const outcome = await deliverConsumerDraft({

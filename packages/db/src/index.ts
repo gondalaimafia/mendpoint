@@ -5043,11 +5043,26 @@ export type DeliveryArtifact = {
 };
 
 /**
+ * Upper bound on the serialized delivery file edits stored in an artifact,
+ * matching the exact-draft transport's own 10 MB file cap. A delivery whose files
+ * exceed it fails with a named error rather than writing an unbounded row.
+ */
+export const MAX_DELIVERY_ARTIFACT_FILES_BYTES = 10 * 1024 * 1024;
+
+/**
  * Persist the write-ahead delivery artifact (PR #606 D5) BEFORE any ref/PR write,
  * tenant-scoped and keyed by its content digest. Idempotent: the same digest for
- * the same tenant is a no-op (the content is identical by construction).
+ * the same tenant is a no-op (the content is identical by construction). The
+ * serialized files are capped at MAX_DELIVERY_ARTIFACT_FILES_BYTES (a named error
+ * beyond it) so the artifact row can never grow unbounded.
  */
 export function persistDeliveryArtifact(db: AppDb, artifact: DeliveryArtifact): void {
+  if (
+    artifact.filesJson &&
+    Buffer.byteLength(artifact.filesJson, "utf8") > MAX_DELIVERY_ARTIFACT_FILES_BYTES
+  ) {
+    throw new Error("delivery_artifact_files_too_large");
+  }
   run(
     db,
     `INSERT INTO migration_delivery_artifacts
@@ -5097,7 +5112,10 @@ function deliveryArtifactFromRow(row: DeliveryArtifactRow): DeliveryArtifact {
 /**
  * The most recently persisted delivery artifact for a delivery key, or null. A
  * delivery-only retry (D10) reconstructs the whole delivery (files, title, body)
- * from it without re-running analysis.
+ * from it without re-running analysis. Ordered by the insertion sequence (rowid),
+ * not created_at: two attempts can share a commit date, and rowid is the durable,
+ * monotonic order in which the artifacts were written (they are never deleted), so
+ * the newest shape wins deterministically without depending on a timestamp tie.
  */
 export function getLatestDeliveryArtifact(
   db: AppDb,
@@ -5108,7 +5126,7 @@ export function getLatestDeliveryArtifact(
     db,
     `SELECT tenant_id, artifact_digest, delivery_key, title, body, tree_sha, parent_sha, files_json, created_at
      FROM migration_delivery_artifacts WHERE tenant_id = ? AND delivery_key = ?
-     ORDER BY created_at DESC, artifact_digest DESC LIMIT 1`,
+     ORDER BY rowid DESC LIMIT 1`,
     [tenantId, deliveryKey],
   ) as DeliveryArtifactRow | undefined;
   return row ? deliveryArtifactFromRow(row) : null;
@@ -7263,6 +7281,64 @@ export function enqueueJob(
       row.availableAt ?? row.createdAt,
     ],
   );
+}
+
+/**
+ * Enqueue a job, or revive one that already exists under the same (deterministic)
+ * id. The deterministic id dedups a concurrent retry, but a job that already
+ * reached a terminal state (done / dead_letter / failed / cancelled) would
+ * otherwise collide on the primary key and strand the work behind a spent id. This
+ * resets such a row back to pending atomically (fresh attempts, cleared lease and
+ * outcome, bumped lease_generation so any stale in-flight fence loses), replacing
+ * its payload and available_at. A row still pending or running is left untouched
+ * (a retry is already queued). Returns what it did so the caller can report it.
+ */
+export function enqueueOrResetJob(
+  db: AppDb,
+  row: {
+    id: string;
+    tenantId: string;
+    type: string;
+    payload: unknown;
+    maxAttempts?: number;
+    createdAt: string;
+    availableAt?: string;
+  },
+): "enqueued" | "reset" | "already_active" {
+  if (typeof row.tenantId !== "string" || row.tenantId.trim() === "") {
+    throw new Error("tenant_id_required");
+  }
+  const existing = get(
+    db,
+    "SELECT status FROM jobs WHERE id = ?",
+    [row.id],
+  ) as { status: string } | undefined;
+  if (!existing) {
+    enqueueJob(db, row);
+    return "enqueued";
+  }
+  if (existing.status === "pending" || existing.status === "running") {
+    return "already_active";
+  }
+  run(
+    db,
+    `UPDATE jobs
+        SET tenant_id = ?, type = ?, payload_json = ?, status = 'pending', attempts = 0,
+            max_attempts = ?, error = NULL, error_code = NULL, result_json = NULL,
+            started_at = NULL, finished_at = NULL, dead_at = NULL, cancelled_at = NULL,
+            last_error_at = NULL, lease_owner = NULL, lease_expires_at = NULL,
+            available_at = ?, lease_generation = lease_generation + 1
+      WHERE id = ?`,
+    [
+      row.tenantId,
+      row.type,
+      JSON.stringify(row.payload),
+      row.maxAttempts ?? 3,
+      row.availableAt ?? row.createdAt,
+      row.id,
+    ],
+  );
+  return "reset";
 }
 
 export function recoverExpiredJobs(

@@ -6,9 +6,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
   getDeliveryArtifact,
+  getLatestDeliveryArtifact,
   insertMigrationPr,
   persistDeliveryArtifact,
   updateMigrationPrDelivery,
+  MAX_DELIVERY_ARTIFACT_FILES_BYTES,
   type AppDb,
 } from "./index.js";
 
@@ -136,6 +138,43 @@ describe("write-ahead delivery artifact (PR #606 D5)", () => {
     expect(getDeliveryArtifact(db, "tenant-b", "d".repeat(64))).toBeNull();
     const count = db.raw.prepare("SELECT COUNT(*) AS c FROM migration_delivery_artifacts").get() as { c: number };
     expect(count.c).toBe(1);
+  });
+
+  it("caps the serialized files with a named error beyond the 10 MB bound", () => {
+    const { db } = freshDb();
+    const oversized = "x".repeat(MAX_DELIVERY_ARTIFACT_FILES_BYTES + 1);
+    expect(() =>
+      persistDeliveryArtifact(db, {
+        tenantId: "tenant-a", artifactDigest: "a".repeat(64), deliveryKey: "change-1:consumer-1",
+        title: "t", body: "b", treeSha: "e".repeat(40), parentSha: "f".repeat(40),
+        filesJson: JSON.stringify([{ path: "src/a.ts", content: oversized }]),
+        createdAt: "2026-09-02T12:00:00.000Z",
+      }),
+    ).toThrow("delivery_artifact_files_too_large");
+    // Nothing was written on the rejection.
+    const count = db.raw.prepare("SELECT COUNT(*) AS c FROM migration_delivery_artifacts").get() as { c: number };
+    expect(count.c).toBe(0);
+  });
+
+  it("getLatestDeliveryArtifact returns the newest by insertion sequence, not created_at ties", () => {
+    const { db } = freshDb();
+    const tenantId = "tenant-a";
+    const deliveryKey = "change-1:consumer-1";
+    // Two artifacts persisted with the SAME created_at (a tie); the second inserted
+    // must win by insertion order (rowid), not an arbitrary created_at/digest tie.
+    persistDeliveryArtifact(db, {
+      tenantId, artifactDigest: "1".repeat(64), deliveryKey, title: "t", body: "b",
+      treeSha: "a".repeat(40), parentSha: "b".repeat(40), filesJson: "[]",
+      createdAt: "2026-09-02T12:00:00.000Z",
+    });
+    persistDeliveryArtifact(db, {
+      tenantId, artifactDigest: "0".repeat(64), deliveryKey, title: "t", body: "b",
+      treeSha: "c".repeat(40), parentSha: "d".repeat(40), filesJson: "[]",
+      createdAt: "2026-09-02T12:00:00.000Z",
+    });
+    // Digest "0..." sorts before "1..." lexically; ordering by rowid returns the
+    // one inserted last (digest "0..."), independent of the digest or timestamp.
+    expect(getLatestDeliveryArtifact(db, tenantId, deliveryKey)?.artifactDigest).toBe("0".repeat(64));
   });
 });
 

@@ -33,6 +33,7 @@ import {
   upsertGitHubInstallation,
   listGitHubInstallations,
   enqueueJob,
+  enqueueOrResetJob,
   claimNextJob,
   renewJobLease,
   completeJob,
@@ -1795,6 +1796,33 @@ describe("db", () => {
       }),
     ).toBe(true);
     expect(getJob(db, "job-reset")).toMatchObject({ status: "pending", result_json: null });
+  });
+
+  it("enqueueOrResetJob: enqueues when absent, resets a terminal id, and no-ops an active one", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-enqueue-or-reset-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    const row = {
+      id: "retry-1", tenantId: "tenant-a", type: "pipeline.delivery-retry",
+      payload: { prId: "pr-1" }, maxAttempts: 50, createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    // Absent -> enqueued as pending.
+    expect(enqueueOrResetJob(db, row)).toBe("enqueued");
+    expect(getJob(db, "retry-1", "tenant-a")).toMatchObject({ status: "pending", attempts: 0 });
+    // Pending/running -> no-op (dedups a concurrent retry).
+    expect(enqueueOrResetJob(db, row)).toBe("already_active");
+    // Dead-lettered -> reset to pending with cleared attempts and outcome (so a spent
+    // deterministic id never strands the work; the fixed-id collision bug is gone).
+    db.raw.prepare("UPDATE jobs SET status = 'dead_letter', attempts = 50, error = 'x', dead_at = ? WHERE id = ?")
+      .run("2026-01-01T00:05:00.000Z", "retry-1");
+    expect(enqueueOrResetJob(db, { ...row, createdAt: "2026-01-01T00:06:00.000Z" })).toBe("reset");
+    expect(getJob(db, "retry-1", "tenant-a")).toMatchObject({ status: "pending", attempts: 0, error: null });
+    // A completed job is likewise revivable.
+    db.raw.prepare("UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?")
+      .run("2026-01-01T00:07:00.000Z", "retry-1");
+    expect(enqueueOrResetJob(db, { ...row, createdAt: "2026-01-01T00:08:00.000Z" })).toBe("reset");
+    expect(getJob(db, "retry-1", "tenant-a")?.status).toBe("pending");
+    db.raw.close();
   });
 
   it("acknowledges a permanent dead letter without losing its failure evidence", () => {

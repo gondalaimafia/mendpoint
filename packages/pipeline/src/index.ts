@@ -61,9 +61,12 @@ import {
 import { evaluatePolicy, type PolicyConfig } from "@mendpoint/policy";
 import { deliverConsumerDraft } from "./delivery.js";
 export {
+  deliverConsumerDraft,
   deliveryArtifactDigest,
   retryConsumerDelivery,
   GITHUB_DELIVERY_ABANDON_AFTER_MS,
+  type DeliverConsumerDraftParams,
+  type DeliverConsumerDraftResult,
   type RetryConsumerDeliveryInput,
   type RetryConsumerDeliveryResult,
   type DeliveryResolution,
@@ -1117,6 +1120,11 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     // and skipped, never re-minted (which would throw an artifact-hash conflict).
     // The operator retry endpoint flips it to delivery_failed to re-attempt.
     "delivery_blocked",
+    // github_delivery_abandoned is the terminal state a delivery reaches after the
+    // ~7-day retry cap (D10). Like delivery_blocked it must not be re-minted by a
+    // rerun (that would throw the same artifact-hash conflict as blocker A); it is
+    // reported and skipped. The operator retry endpoint reopens it to delivery_failed.
+    "github_delivery_abandoned",
     ...(!replayNotificationOnly ? ["notification_only"] : []),
   ]);
   const existingPrByConsumer = new Map(

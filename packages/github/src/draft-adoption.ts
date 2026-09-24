@@ -595,6 +595,9 @@ export async function deliverAdoptiveDraftWithOctokit(
     const ours = await oursCommit(octokit, input, observation.head, built.treeSha, hooks.isOursArtifact);
     if (ours.verdict === "unknown") throw new AdoptiveDraftContentionError();
     if (ours.verdict === "ours") {
+      // Open the PR from the commit already on the branch. We never rewrite it, so an
+      // adopted main-era or prior-attempt commit keeps its own commit message; only the
+      // PR title/body are ours (title/body are the delivery's, the commit is untouched).
       try {
         await octokit.pulls.create({
           owner: input.owner,

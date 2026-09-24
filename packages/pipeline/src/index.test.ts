@@ -36,7 +36,8 @@ import {
   verifyDomainEventIntegrity,
 } from "@mendpoint/db";
 import { newId, nowIso } from "@mendpoint/shared";
-import { MockGitHubDelivery, GitHubAppDelivery, AdoptiveDraftBlockedError, type GitHubDelivery } from "@mendpoint/github";
+import { MockGitHubDelivery, GitHubAppDelivery, AdoptiveDraftBlockedError, deliverAdoptiveDraftWithOctokit, type AdoptiveOctokit, type GitHubDelivery } from "@mendpoint/github";
+import { FakeGitHub } from "@mendpoint/github/testing/fake-github";
 import { classifyDependencyOutage } from "@mendpoint/ops";
 import { analyzeImpactWithSoftwareGraph } from "@mendpoint/code-impact";
 import {
@@ -44,7 +45,7 @@ import {
   issueVerificationWaiver,
   type SecurityScanAttestation,
 } from "@mendpoint/contract";
-import { applyPrFeedback, createPipelineDeliveryResolver, runChangePipeline, retryConsumerDelivery, deliveryArtifactDigest } from "./index.js";
+import { applyPrFeedback, createPipelineDeliveryResolver, runChangePipeline, retryConsumerDelivery, deliverConsumerDraft, deliveryArtifactDigest } from "./index.js";
 import {
   getSoftwareGraphHead,
   openGraphLearnMemory,
@@ -597,6 +598,148 @@ describe("pipeline", () => {
     });
     expect(abandoned.status).toBe("github_delivery_abandoned");
     expect(getPr(db, "pr-retry-old", "tenant_default")?.status).toBe("github_delivery_abandoned");
+  });
+
+  it("D10 no-artifact: retryConsumerDelivery signals a full-pipeline fallback, never a silent no-op, when the row never anchored an artifact", async () => {
+    // The outage hit before the commit was built, so there is no write-ahead
+    // artifact to replay. Delivery-only cannot reconstruct the change; the result
+    // must tell the worker to fall back to a full pipeline run (and never attempt a
+    // delivery). Without the fallback signal the worker re-throws the delivery_failed
+    // status forever (the "built but never falls back" defect).
+    const db = seedProviderVersions();
+    const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+    const consumerId = addMonitoredConsumer(db, provider.id, { name: "No Artifact Shop", repo: "no-artifact-shop", localPath: shop });
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+    insertMigrationPr(db, {
+      id: "pr-na", changeId: "change-na", consumerId, title: "No artifact",
+      body: "b", branchName: "mendpoint/na", status: "delivery_failed", risk: "low",
+      patchUnified: "diff", createdAt: nowIso(),
+    });
+    const outcome = await retryConsumerDelivery({
+      db, tenantId: "tenant_default", prId: "pr-na",
+      deliveryFor: () => { throw new Error("delivery must not be attempted without an artifact"); },
+      refreshedHeadSha: null, now: nowIso(),
+    });
+    expect(outcome.retried).toBe(false);
+    expect(outcome.fallbackToPipeline).toBe(true);
+    expect(outcome.changeId).toBe("change-na");
+    expect(outcome.consumerId).toBe(consumerId);
+    // The row is untouched: no delivery attempted, and (within the 7-day cap) not abandoned.
+    expect(getPr(db, "pr-na", "tenant_default")?.status).toBe("delivery_failed");
+  });
+
+  it("3: a github_delivery_abandoned consumer is reported and skipped on rerun (never re-minted)", async () => {
+    // github_delivery_abandoned is terminal (the 7-day cap). A rerun must treat it
+    // like delivery_blocked: reported and skipped, never re-minted. If it were
+    // retryable, the rerun would re-deliver (flipping it off abandoned) or throw the
+    // artifact-hash conflict of blocker A.
+    const db = seedProviderVersions();
+    const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Abandoned Shop", repo: "abandoned-shop", localPath: shop });
+    const dir = join(tmpdir(), `mendpoint-pipe-abandoned-${Date.now()}-${Math.random()}`);
+    dirs.push(dir);
+    // Fail the first delivery so the row is delivery_failed (no PR number recorded);
+    // a later delivery would succeed. This lets us set the row to the terminal
+    // abandoned state without tripping the recorded-PR immutability trigger.
+    class FlakyOnce extends MockGitHubDelivery {
+      failed = false;
+      override async deliverAdoptiveDraft(
+        input: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[0],
+        options: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[1],
+      ): ReturnType<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>> {
+        if (!this.failed) { this.failed = true; throw new Error("SCM unavailable"); }
+        return super.deliverAdoptiveDraft(input, options);
+      }
+    }
+    const github = new FlakyOnce(dir);
+    const common = {
+      tenantId: "tenant_default", providerSlug: "acme-payments", db, github, persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+    };
+    // Run 1: delivery fails -> delivery_failed, no PR number recorded.
+    const first = await runChangePipeline({ ...common, graphDb: testGraphDb() });
+    const consumerId = first.consumers[0]!.consumerId;
+    expect(first.consumers[0]!.prStatus).toBe("delivery_failed");
+    // Force the row into the terminal abandoned state (the 7-day cap outcome). Only
+    // the status changes (github_pr_number is still NULL), so the identity trigger
+    // does not fire.
+    db.raw.prepare("UPDATE migration_prs SET status = 'github_delivery_abandoned'").run();
+    const before = listPrs(db, "tenant_default").length;
+    // Rerun must NOT throw and must NOT re-mint; the consumer is reported abandoned
+    // and skipped. If abandoned were retryable, the now-recovered delivery would
+    // flip it to draft.
+    const second = await runChangePipeline({ ...common, graphDb: testGraphDb() });
+    expect(new Map(second.consumers.map((c) => [c.consumerId, c.prStatus])).get(consumerId))
+      .toBe("github_delivery_abandoned");
+    expect(listPrs(db, "tenant_default")).toHaveLength(before);
+  });
+
+  it("B (production call site): deliverConsumerDraft keys the write-ahead artifact by commit shape, so identical-body base moves adopt our own commit", async () => {
+    // The model test uses its own artifact store, so keying delivery.ts by a body
+    // digest survives there. This drives the SAME two-base-move scenario THROUGH
+    // deliverConsumerDraft, exercising the production persistArtifact keying
+    // (deliveryArtifactDigest(key, tree, parent)). The body is identical every
+    // attempt: a body-keyed store would drop attempt 2's (tree, parent), and ours()
+    // would judge our own commit on Y foreign and block. Correct shape keying adopts it.
+    const db = seedProviderVersions();
+    const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+    const consumerId = addMonitoredConsumer(db, provider.id, { name: "Shape Shop", repo: "shape-shop", localPath: shop });
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+
+    let clock = "2026-09-02T12:00:00.000Z";
+    const fake = new FakeGitHub({ clock: () => clock });
+    let base = fake.seedDefaultBranch({ owner: "org", repo: "shape-shop", branch: "main", content: { "src/a.ts": "v0\n" }, date: clock });
+    let attempt = 0;
+    fake.setFaults(({ method }) => {
+      if (attempt === 1 && method === "git.createRef") return { kind: "fail-before", status: 503 };
+      if (attempt === 2 && method === "pulls.create") return { kind: "fail-before", status: 503 };
+      return { kind: "pass" };
+    });
+    const delivery = {
+      deliverAdoptiveDraft(
+        input: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[0],
+        options: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[1],
+      ) {
+        return deliverAdoptiveDraftWithOctokit(
+          fake as unknown as AdoptiveOctokit,
+          { ...input, body: options.resolveBody() },
+          options.hooks ?? {},
+        );
+      },
+    } as unknown as GitHubDelivery;
+    const body = "Identical body with the same package section every attempt";
+    const commonParams = {
+      db, tenantId: "tenant_default", changeId: "change-b5", prId: "pr-b5",
+      consumer: { id: consumerId, github_owner: "org", github_repo: "shape-shop" },
+      defaultBranch: "main", deliveryKey: `change-b5:${consumerId}`, branchName: "mendpoint/shape-abc",
+      title: "Shape candidate", risk: "low", patch: "diff", body,
+      files: [{ path: "src/a.ts", content: "changed\n" }],
+      commitDate: "2026-09-02T12:00:00.000Z", revisionKind: "git_commit" as const,
+      shouldDeliver: true, terminalStatus: "delivery_failed", coverageJson: null,
+      createdAt: "2026-09-02T12:00:00.000Z", existingPrNumber: null, existingPrUrl: null,
+      resolveDelivery: () => ({ delivery }), assertActive: () => {},
+    };
+
+    // Attempt 1 at base X: createRef 503 -> delivery_failed; artifact (tree, X) persisted.
+    attempt = 1;
+    const a1 = await deliverConsumerDraft({ ...commonParams, isRetry: false, baseSha: base });
+    expect(a1.status).toBe("delivery_failed");
+    // Base moves X -> Y.
+    clock = "2026-09-02T12:00:05.000Z";
+    base = fake.moveBranch({ owner: "org", repo: "shape-shop", branch: "main", content: { "src/a.ts": "v1\n" }, date: clock });
+    // Attempt 2 at base Y: createRef lands, pulls.create 503 -> delivery_failed; artifact (tree, Y) persisted; branch = our commit on Y.
+    attempt = 2;
+    const a2 = await deliverConsumerDraft({ ...commonParams, isRetry: true, baseSha: base });
+    expect(a2.status).toBe("delivery_failed");
+    // Base moves Y -> Z.
+    clock = "2026-09-02T12:00:10.000Z";
+    base = fake.moveBranch({ owner: "org", repo: "shape-shop", branch: "main", content: { "src/a.ts": "v2\n" }, date: clock });
+    // Attempt 3 at base Z: must adopt our own commit on Y (its (tree, parent) artifact was stored).
+    attempt = 3;
+    const a3 = await deliverConsumerDraft({ ...commonParams, isRetry: true, baseSha: base });
+    expect(a3.status, `attempt 3 must adopt our own commit; got ${a3.deliveryError ?? a3.status}`).toBe("draft");
+    expect(fake.openPulls("org", "shape-shop", "mendpoint/shape-abc")).toHaveLength(1);
   });
 
   it("delivers a no-history (content-manifest) repo through main's legacy path, not exact-draft", async () => {
