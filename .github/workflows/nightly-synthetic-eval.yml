@@ -62,26 +62,36 @@ jobs:
             echo "No run summary was produced (the eval did not complete). This run measured nothing." >>"$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          corpus_available="$(jq -r '.corpusAvailable' "$summary")"
+          status="$(jq -r '.corpusStatus' "$summary")"
           corpus_run="$(jq -r '.corpusScenariosRun' "$summary")"
           corpus_skipped="$(jq -r '.corpusScenariosSkipped' "$summary")"
+          corpus_total="$(jq -r '.corpusScenariosTotal' "$summary")"
+          skipped_ids="$(jq -r '.corpusSkippedScenarioIds | join(", ")' "$summary")"
           generated_run="$(jq -r '.generatedScenariosRun' "$summary")"
           suite_passed="$(jq -r '.suitePassed' "$summary")"
           suite_total="$(jq -r '.suiteTotal' "$summary")"
           readiness="$(jq -r '.readinessOverall' "$summary")"
           {
-            if [ "$corpus_available" = "true" ]; then
-              echo "## Nightly synthetic eval — full corpus + synthetic"
-              echo ""
-              echo "Corpus present: ran ${corpus_run} corpus scenario(s) alongside ${generated_run} generated scenario(s)."
-            else
-              echo "## Nightly synthetic eval — corpus unavailable, synthetic only"
-              echo ""
-              echo "MENDPOINT_CORPUS_ROOT is not set (or no corpus is present on this runner), so this run executed the ${generated_run} generated scenario(s) ONLY and skipped ${corpus_skipped} corpus scenario(s). It does NOT measure full-corpus readiness and is NOT a full-corpus pass."
-            fi
+            case "$status" in
+              full)
+                echo "## Nightly synthetic eval — full corpus + synthetic"
+                echo ""
+                echo "Corpus present: ran all ${corpus_run} corpus scenario(s) alongside ${generated_run} generated scenario(s)."
+                ;;
+              partial)
+                echo "## Nightly synthetic eval — partial corpus + synthetic"
+                echo ""
+                echo "Corpus only partially present: ran ${corpus_run} of ${corpus_total} corpus scenario(s) plus ${generated_run} generated, and SKIPPED ${corpus_skipped} (skipped: ${skipped_ids}). It does NOT measure full-corpus readiness and is NOT a full-corpus pass."
+                ;;
+              *)
+                echo "## Nightly synthetic eval — corpus unavailable, synthetic only"
+                echo ""
+                echo "MENDPOINT_CORPUS_ROOT is not set (or no corpus is present on this runner), so this run executed the ${generated_run} generated scenario(s) ONLY and skipped ${corpus_skipped} corpus scenario(s). It does NOT measure full-corpus readiness and is NOT a full-corpus pass."
+                ;;
+            esac
             echo ""
             echo "- Suite: ${suite_passed}/${suite_total} scenarios passed."
-            echo "- Readiness verdict (informational, does not gate): OVERALL ${readiness}. When the corpus is unavailable this is FAIL by construction — unmeasured capabilities cannot read as ready."
+            echo "- Readiness verdict (informational, does not gate): OVERALL ${readiness}. When the corpus is not fully present this is FAIL by construction — unmeasured capabilities cannot read as ready."
           } >>"$GITHUB_STEP_SUMMARY"
       - name: Upload readiness evidence
         if: always()
