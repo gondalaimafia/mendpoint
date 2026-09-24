@@ -25,7 +25,6 @@ import {
   type ReviewableChangeDelivery,
   type ScmDeliveryProvider,
 } from "./gitlab.js";
-import type { DeliveryOperationRetirement } from "./app-runtime.js";
 import {
   deliverAdoptiveDraftWithOctokit,
   type AdoptiveDraftInput,
@@ -82,30 +81,6 @@ export interface GitHubDelivery {
     input: Omit<AdoptiveDraftInput, "body">,
     options: AdoptiveDeliveryOptions,
   ): Promise<AdoptiveDraftResult>;
-  /**
-   * Fail-closed remote branch-existence lookup used to decide whether an
-   * anchored delivery base may be reused after a delivery failure. Resolves
-   * `true` when the ref exists remotely, `false` only when the transport
-   * confirms it is absent (a 404); ANY other error (network, auth, unknown)
-   * rejects so callers keep the anchor rather than clearing it on an unknown.
-   *
-   * Optional so peripheral transports (transformer, GitLab, eval harnesses)
-   * need not implement it; the real outage-core transports (mock, Octokit,
-   * App) all do. When a delivery lacks it, callers treat the branch state as
-   * unknown and keep the anchor (fail-closed), never clearing on an unknown.
-   */
-  branchExists?(owner: string, repo: string, branch: string): Promise<boolean>;
-  /**
-   * Retire the durable-queue operation for a delivery so the caller may abandon
-   * a stale anchored base and re-anchor under a fresh operation. Refused
-   * (superseded:false) when the ledger cannot prove no GitHub write happened, so
-   * the caller keeps the anchor. Optional: transports with no durable ledger
-   * (mock, Octokit) omit it, and for them re-anchoring is digest-safe (there is
-   * no operation row to conflict with), so the caller may re-anchor without it.
-   */
-  retireDeliveryOperation?(
-    input: Readonly<{ owner: string; repo: string; branch: string; baseSha: string; lineage?: number }>,
-  ): Promise<DeliveryOperationRetirement>;
   createBranch(owner: string, repo: string, branch: string, fromBranch?: string): Promise<void>;
   commitFiles(
     owner: string,
@@ -377,10 +352,6 @@ export class MockGitHubDelivery implements GitHubDelivery {
     });
   }
 
-  async branchExists(owner: string, repo: string, branch: string): Promise<boolean> {
-    return existsSync(this.branchDir(owner, repo, branch));
-  }
-
   async createBranch(owner: string, repo: string, branch: string): Promise<void> {
     const dir = this.branchDir(owner, repo, branch);
     mkdirSync(dir, { recursive: true });
@@ -500,15 +471,6 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
     );
   }
 
-  async branchExists(owner: string, repo: string, branch: string): Promise<boolean> {
-    try {
-      await this.octokit.git.getRef({ owner, repo, ref: `heads/${branch}` });
-      return true;
-    } catch (error) {
-      if (isNotFoundError(error)) return false;
-      throw error;
-    }
-  }
 
   private async refSha(owner: string, repo: string, ref: string): Promise<string> {
     const { data } = await this.octokit.git.getRef({
@@ -868,9 +830,6 @@ export {
   type GitHubDependencyOutagePort,
   type GitHubDependencyOutagePolicy,
   type GitHubDependencyOutageOptions,
-  type GitHubDependencyOutageSupersession,
-  type DeliveryOperationRetirement,
-  exactDraftOperationId,
 } from "./app-runtime.js";
 
 export {

@@ -117,39 +117,10 @@ export type GitHubDependencyOutageResult<T> =
     decision?: GitHubDependencyOutageDecision;
   }>;
 
-/**
- * Outcome of retiring (superseding) a ledger operation. Refused (never thrown)
- * when the row proves a GitHub write may have happened. Structurally matches the
- * db queue's DependencyOutageSupersession.
- */
-export type GitHubDependencyOutageSupersession =
-  | Readonly<{ superseded: true }>
-  | Readonly<{ superseded: false; reason: string }>;
-
 /** Structurally implemented by the durable db recovery queue without importing db here. */
 export interface GitHubDependencyOutagePort {
   run<T>(operation: GitHubDependencyOutageOperation<T>): Promise<GitHubDependencyOutageResult<T>>;
-  /**
-   * Retire the operation identified by its stable identity so a caller may
-   * abandon it and re-anchor under a fresh operation id. Optional: a port that
-   * cannot prove no write happened simply omits it, and callers then keep the
-   * anchor (never abandon on an unknown).
-   */
-  supersede?(
-    identity: Readonly<{
-      tenantId: string;
-      dependencyKind: "scm";
-      providerId: "github";
-      operationId: string;
-    }>,
-    options: Readonly<{ reason: string; now?: string }>,
-  ): GitHubDependencyOutageSupersession;
 }
-
-/** What the pipeline learns when it asks the transport to retire a delivery operation. */
-export type DeliveryOperationRetirement =
-  | Readonly<{ superseded: true }>
-  | Readonly<{ superseded: false; reason: string }>;
 
 export type GitHubDependencyOutagePolicy = (
   input: Readonly<{
@@ -189,40 +160,6 @@ function stable(value: unknown): string {
 
 function digest(value: unknown): string {
   return createHash("sha256").update(stable(value)).digest("hex");
-}
-
-/**
- * The durable-queue operation id for an exact-draft delivery. The anchored base
- * is part of the identity: the hash-chained history binds the operation digest
- * (which fingerprints the whole input, base included) into every event, and the
- * queue rejects a changed digest for an existing operation. A different base is
- * therefore a genuinely different delivery that must own a distinct ledger
- * lineage, so re-anchoring onto a moved base is a new operation (no digest
- * conflict) rather than a mutation of the existing one. Reusing the same base
- * (a lost-response retry) keeps the id stable so the identical operation
- * reconciles.
- *
- * A retirement generation (`deliveryLineage`, default 0) is folded in alongside
- * the base so a remote that returns to a previously retired base (X to Y back
- * to X) derives a fresh id under the higher generation instead of colliding
- * with the retired row's digest, which would wedge on a permanent conflict.
- */
-export function exactDraftOperationId(
-  input: Readonly<{
-    owner: string;
-    repo: string;
-    branch: string;
-    expectedBaseSha: string;
-    deliveryLineage?: number;
-  }>,
-): string {
-  return `github-draft:${digest({
-    owner: input.owner,
-    repo: input.repo,
-    branch: input.branch,
-    baseSha: input.expectedBaseSha,
-    lineage: input.deliveryLineage ?? 0,
-  })}`;
 }
 
 /**
@@ -315,191 +252,6 @@ export class GitHubDependencyOutageError extends Error {
   ) {
     super(`github_dependency_outage_${status}`);
     this.name = "GitHubDependencyOutageError";
-  }
-}
-
-type ExistingExactDraftState =
-  | Readonly<{ status: "missing" }>
-  | Readonly<{ status: "commit_ready"; commitSha: string }>
-  | Readonly<{ status: "completed"; value: ExactDraftDeliveryResult; completionDigest: string }>;
-
-function exactDraftResult(
-  pull: Readonly<{
-    number: number;
-    html_url: string;
-    state: string;
-    draft?: boolean | null;
-    title: string;
-    body?: string | null;
-    head: Readonly<{ ref: string; sha: string }>;
-    base: Readonly<{ ref: string; sha: string }>;
-  }>,
-  input: ExactDraftDeliveryInput,
-  commitSha: string,
-): ExactDraftDeliveryResult {
-  if (pull.state !== "open" || pull.draft !== true || pull.head.ref !== input.branch ||
-      pull.head.sha !== commitSha || pull.base.ref !== input.baseBranch ||
-      pull.title !== input.title || pull.body !== input.body) {
-    throw new Error("github_exact_draft_pull_request_diverged");
-  }
-  return Object.freeze({
-    number: pull.number,
-    url: pull.html_url,
-    branch: input.branch,
-    title: input.title,
-    draft: true,
-    baseBranch: input.baseBranch,
-    baseSha: input.expectedBaseSha,
-    commitSha,
-  });
-}
-
-async function exactDraftBranchHead(
-  octokit: Octokit,
-  input: ExactDraftDeliveryInput,
-): Promise<string | undefined> {
-  try {
-    const response = await octokit.git.getRef({
-      owner: input.owner,
-      repo: input.repo,
-      ref: `heads/${input.branch}`,
-    });
-    const sha = String(response.data.object.sha ?? "");
-    if (!EXACT_DRAFT_SHA.test(sha)) throw new Error("github_exact_draft_ref_invalid");
-    return sha;
-  } catch (error) {
-    if (isNotFoundError(error)) return undefined;
-    throw error;
-  }
-}
-
-async function inspectExistingExactDraft(
-  octokit: Octokit,
-  rawInput: ExactDraftDeliveryInput,
-): Promise<ExistingExactDraftState> {
-  const input = validateExactDraftDeliveryInput(rawInput);
-  const commitSha = await exactDraftBranchHead(octokit, input);
-  if (commitSha === undefined || commitSha === input.expectedBaseSha) {
-    return Object.freeze({ status: "missing" });
-  }
-
-  const commitResponse = await octokit.git.getCommit({
-    owner: input.owner,
-    repo: input.repo,
-    commit_sha: commitSha,
-  });
-  const commit = commitResponse.data;
-  const commitDate = Date.parse(input.commitDate);
-  const identityMatches = commit.message === input.commitMessage &&
-    commit.parents.length === 1 && commit.parents[0]?.sha === input.expectedBaseSha &&
-    commit.author?.name === "Mendpoint" && commit.author.email === "delivery@mendpoint.ai" &&
-    Date.parse(commit.author.date ?? "") === commitDate && commit.committer?.name === "Mendpoint" &&
-    commit.committer.email === "delivery@mendpoint.ai" &&
-    Date.parse(commit.committer.date ?? "") === commitDate;
-  if (commit.sha !== commitSha || !EXACT_DRAFT_SHA.test(String(commit.tree.sha ?? "")) || !identityMatches) {
-    throw new Error("github_exact_draft_branch_diverged");
-  }
-
-  const baseCommitResponse = await octokit.git.getCommit({
-    owner: input.owner,
-    repo: input.repo,
-    commit_sha: input.expectedBaseSha,
-  });
-  const baseTreeSha = String(baseCommitResponse.data.tree.sha ?? "");
-  if (!EXACT_DRAFT_SHA.test(baseTreeSha)) throw new Error("github_exact_draft_branch_diverged");
-  const [baseTreeResponse, treeResponse] = await Promise.all([
-    octokit.git.getTree({
-      owner: input.owner,
-      repo: input.repo,
-      tree_sha: baseTreeSha,
-      recursive: "true",
-    }),
-    octokit.git.getTree({
-      owner: input.owner,
-      repo: input.repo,
-      tree_sha: commit.tree.sha,
-      recursive: "true",
-    }),
-  ]);
-  if (baseTreeResponse.data.truncated === true || treeResponse.data.truncated === true) {
-    throw new Error("github_exact_draft_branch_diverged");
-  }
-  const leaves = (tree: typeof treeResponse.data.tree) => new Map(tree
-    .filter((item) => item.type !== "tree" && typeof item.path === "string")
-    .map((item) => [item.path!, `${item.mode}:${item.sha}`]));
-  const baseTreeByPath = leaves(baseTreeResponse.data.tree);
-  const treeByPath = new Map(treeResponse.data.tree.map((item) => [item.path, item]));
-  const headLeaves = leaves(treeResponse.data.tree);
-  const expectedPaths = new Set(input.files.map((file) => file.path));
-  for (const path of new Set([...baseTreeByPath.keys(), ...headLeaves.keys()])) {
-    if (baseTreeByPath.get(path) !== headLeaves.get(path) && !expectedPaths.has(path)) {
-      throw new Error("github_exact_draft_branch_diverged");
-    }
-  }
-  await mapWithConcurrency(input.files, GITHUB_FILE_CONCURRENCY, async (file) => {
-    const treeEntry = treeByPath.get(file.path);
-    if ("delete" in file) {
-      if (treeEntry !== undefined) {
-        throw new Error("github_exact_draft_branch_diverged");
-      }
-      return;
-    }
-    if (treeEntry?.type !== "blob" || treeEntry.mode !== file.mode) {
-      throw new Error("github_exact_draft_branch_diverged");
-    }
-    const contentResponse = await octokit.repos.getContent({
-      owner: input.owner,
-      repo: input.repo,
-      path: file.path,
-      ref: commitSha,
-    });
-    const content = contentResponse.data;
-    if (Array.isArray(content) || content.type !== "file" || content.encoding !== "base64" ||
-        Buffer.from(content.content, "base64").toString("utf8") !== file.content) {
-      throw new Error("github_exact_draft_branch_diverged");
-    }
-  });
-
-  const pulls = await octokit.pulls.list({
-    owner: input.owner,
-    repo: input.repo,
-    state: "all",
-    head: `${input.owner}:${input.branch}`,
-  });
-  if (pulls.data.length === 0) return Object.freeze({ status: "commit_ready", commitSha });
-  if (pulls.data.length !== 1) throw new Error("github_exact_draft_pull_request_diverged");
-  const value = exactDraftResult(pulls.data[0]!, input, commitSha);
-  return Object.freeze({ status: "completed", value, completionDigest: digest(value) });
-}
-
-async function deliverFromExistingExactCommit(
-  octokit: Octokit,
-  input: ExactDraftDeliveryInput,
-  commitSha: string,
-): Promise<ExactDraftDeliveryResult> {
-  try {
-    const created = await octokit.pulls.create({
-      owner: input.owner,
-      repo: input.repo,
-      title: input.title,
-      head: input.branch,
-      base: input.baseBranch,
-      body: input.body,
-      draft: true,
-    });
-    return exactDraftResult(created.data, input, commitSha);
-  } catch (error) {
-    try {
-      const recovered = await inspectExistingExactDraft(octokit, input);
-      if (recovered.status === "completed") return recovered.value;
-    } catch (recoveryError) {
-      if (recoveryError instanceof Error &&
-          recoveryError.message === "github_exact_draft_pull_request_diverged") {
-        throw recoveryError;
-      }
-      throw new ExactDraftRemoteSideEffectUncertainError(error);
-    }
-    throw new ExactDraftRemoteSideEffectUncertainError(error);
   }
 }
 
@@ -901,68 +653,13 @@ export class GitHubAppDelivery implements GitHubDelivery {
     }
   }
 
-  async deliverExactDraft(input: ExactDraftDeliveryInput): Promise<ExactDraftDeliveryResult> {
-    if (!this.dependencyOutage) {
-      return this.withAuthRetry((octokit) => deliverExactDraftWithOctokit(octokit, input));
-    }
-    const options = this.dependencyOutage;
-    const now = (options.now ?? (() => new Date().toISOString()))();
-    if (!OUTAGE_IDENTITY.test(options.tenantId) || !OUTAGE_IDENTITY.test(options.workerId) ||
-        !Number.isFinite(Date.parse(now)) || new Date(Date.parse(now)).toISOString() !== now ||
-        !Number.isSafeInteger(options.retryBudget) || options.retryBudget < 1 ||
-        !Number.isSafeInteger(options.expiresInMs) || options.expiresInMs < 1 ||
-        !Number.isSafeInteger(options.leaseMs ?? 30_000) || (options.leaseMs ?? 30_000) < 1 ||
-        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(options.authorityVersion)) {
-      throw new Error("github_dependency_outage_configuration_invalid");
-    }
-    const operationDigest = digest(input);
-    const operationId = exactDraftOperationId(input);
-    const expiresAt = new Date(Date.parse(now) + options.expiresInMs).toISOString();
-    let commitReadySha: string | undefined;
-    const result = await options.outage.run<ExactDraftDeliveryResult>(Object.freeze({
-      schemaVersion: 1,
-      tenantId: options.tenantId,
-      dependencyKind: "scm",
-      providerId: "github",
-      operationId,
-      operationDigest,
-      workerId: options.workerId,
-      retryBudget: options.retryBudget,
-      expiresAt,
-      leaseMs: options.leaseMs ?? 30_000,
-      authorityVersion: options.authorityVersion,
-      reconcile: async () => this.withAuthRetry(async (octokit) => {
-        const observed = await inspectExistingExactDraft(octokit, input);
-        commitReadySha = observed.status === "commit_ready" ? observed.commitSha : undefined;
-        return observed.status === "completed"
-          ? observed
-          : Object.freeze({ status: observed.status === "commit_ready" ? "resume" as const : "missing" as const });
-      }),
-      execute: async () => {
-        const value = await this.withAuthRetry((octokit) => commitReadySha === undefined
-          ? deliverExactDraftWithOctokit(octokit, input)
-          : deliverFromExistingExactCommit(octokit, input, commitReadySha));
-        return Object.freeze({ value, completionDigest: digest(value) });
-      },
-      classify: (error, context) => {
-        const evidence = classifyGitHubDependencyFailure(error, context.now);
-        return options.decide({
-          tenantId: options.tenantId,
-          dependencyKind: "scm",
-          providerId: "github",
-          operationDigest,
-          failureKind: evidence.failureKind,
-          attempt: context.attempt,
-          retryBudget: context.retryBudget,
-          now: context.now,
-          expiresAt: context.expiresAt,
-          circuit: context.circuit,
-          ...(evidence.retryAfterMs === undefined ? {} : { retryAfterMs: evidence.retryAfterMs }),
-        });
-      },
-    }));
-    if ("value" in result) return result.value;
-    throw new GitHubDependencyOutageError(result.status, result.decision);
+  /**
+   * Exact-draft delivery for the Fettler/transformer/warden callers — keeps main's
+   * replay-safe semantics with no durable ledger (PR #606 moved ledgered delivery
+   * to deliverAdoptiveDraft; the exact-draft callers were left untouched).
+   */
+  deliverExactDraft(input: ExactDraftDeliveryInput): Promise<ExactDraftDeliveryResult> {
+    return this.withAuthRetry((octokit) => deliverExactDraftWithOctokit(octokit, input));
   }
 
   /**
@@ -1056,60 +753,6 @@ export class GitHubAppDelivery implements GitHubDelivery {
     // record as delivery_blocked; otherwise the generic outage error.
     if (blocked && result.status !== "deferred") throw blocked;
     throw new GitHubDependencyOutageError(result.status, result.decision);
-  }
-
-  branchExists(owner: string, repo: string, branch: string): Promise<boolean> {
-    return this.withAuthRetry(async (octokit) => {
-      try {
-        await octokit.git.getRef({ owner, repo, ref: `heads/${branch}` });
-        return true;
-      } catch (error) {
-        if (isAuthenticationError(error)) throw error;
-        if (isNotFoundError(error)) return false;
-        throw error;
-      }
-    });
-  }
-
-  /**
-   * Retire the durable-queue operation for a delivery so the pipeline may
-   * abandon a stale anchored base and re-anchor under a fresh operation. The
-   * operation is keyed by (owner, repo, branch, baseSha) exactly as delivery
-   * enqueues it. Refused (superseded:false) when the ledger cannot prove no
-   * write happened (completed, in flight) so the caller keeps the anchor.
-   *
-   * When no outage ledger is configured, or the ledger exposes no supersede,
-   * there is no durable row to conflict with a re-anchored digest, so the
-   * retirement is a no-op success and the caller may re-anchor freely.
-   */
-  async retireDeliveryOperation(
-    input: Readonly<{ owner: string; repo: string; branch: string; baseSha: string; lineage?: number }>,
-  ): Promise<DeliveryOperationRetirement> {
-    const options = this.dependencyOutage;
-    if (!options || typeof options.outage.supersede !== "function") {
-      return Object.freeze({ superseded: true as const });
-    }
-    const operationId = exactDraftOperationId({
-      owner: input.owner,
-      repo: input.repo,
-      branch: input.branch,
-      expectedBaseSha: input.baseSha,
-      deliveryLineage: input.lineage ?? 0,
-    });
-    const result = options.outage.supersede(
-      {
-        tenantId: options.tenantId,
-        dependencyKind: "scm",
-        providerId: "github",
-        operationId,
-      },
-      { reason: "delivery_base_reanchored", now: (options.now ?? (() => new Date().toISOString()))() },
-    );
-    // A missing row cannot have written anything and cannot conflict with a
-    // re-anchored digest, so it is safe to re-anchor.
-    if (result.superseded) return Object.freeze({ superseded: true as const });
-    if (result.reason === "operation_missing") return Object.freeze({ superseded: true as const });
-    return Object.freeze({ superseded: false as const, reason: result.reason });
   }
 
   observeExactDraft(input: ExactDraftObservationInput): Promise<ExactDraftObservation> {

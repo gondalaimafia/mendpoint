@@ -467,6 +467,48 @@ describe("pipeline", () => {
     expect(github.sourceBranches).toEqual(["trunk"]);
   });
 
+  it("D8: a retry delivers on the row's stored (main-era) branch_name, adopting the existing PR", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Legacy Shop", repo: "legacy-shop", localPath: shop });
+
+    class BranchRecordingDelivery extends MockGitHubDelivery {
+      readonly branches: string[] = [];
+      failFirst = true;
+      override async deliverAdoptiveDraft(
+        input: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[0],
+        options: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[1],
+      ): ReturnType<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>> {
+        this.branches.push(input.branch);
+        if (this.failFirst) { this.failFirst = false; throw new Error("SCM unavailable"); }
+        return super.deliverAdoptiveDraft(input, options);
+      }
+    }
+    const dir = join(tmpdir(), `mendpoint-pipe-legacy-${Date.now()}-${Math.random()}`);
+    dirs.push(dir);
+    const github = new BranchRecordingDelivery(dir);
+    const common = {
+      tenantId: "tenant_default", providerSlug: "acme-payments", db, github, persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+    };
+    // Run 1 fails delivery, leaving a retryable row on the deterministic branch.
+    await runChangePipeline({ ...common, graphDb: testGraphDb() });
+    const deterministic = github.branches[0]!;
+    const row = db.raw.prepare("SELECT id, branch_name FROM migration_prs WHERE status = 'delivery_failed'").get() as
+      { id: string; branch_name: string };
+    expect(row.branch_name).toBe(deterministic);
+    // Rewrite the row to a main-era Date.now() branch (as origin/main would have left it).
+    const legacyBranch = "mendpoint/acme-payments-1700000000000";
+    db.raw.prepare("UPDATE migration_prs SET branch_name = ? WHERE id = ?").run(legacyBranch, row.id);
+    // Run 2: the retry must deliver on the STORED (legacy) branch, not the deterministic one.
+    const second = await runChangePipeline({ ...common, graphDb: testGraphDb() });
+    expect(github.branches[1]).toBe(legacyBranch);
+    expect(second.consumers.some((c) => c.prStatus === "draft")).toBe(true);
+    // No duplicate: one PR row for the consumer.
+    expect(listPrs(db, "tenant_default")).toHaveLength(1);
+  });
+
   it("delivers a no-history (content-manifest) repo through main's legacy path, not exact-draft", async () => {
     const db = seedProviderVersions();
     const provider = db.raw

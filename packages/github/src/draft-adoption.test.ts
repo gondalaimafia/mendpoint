@@ -166,6 +166,89 @@ describe("adoptive draft delivery state machine", () => {
     ).rejects.toMatchObject({ code: "github_delivery_pr_body_too_long" });
   });
 
+  it("classifies non-race 422s as named blocked codes, never contention (D2)", async () => {
+    // Only "Reference already exists" / "not a fast forward" / "pull request
+    // already exists" re-run L; every other 422 is a named, non-retryable block.
+    const cases: Array<[string, string]> = [
+      ["No commits between base and head", "github_delivery_base_invalid"],
+      ["Draft pull requests are not supported in this repository", "github_delivery_pull_unsupported"],
+      ["Body is too long (maximum is 65536 characters)", "github_delivery_pr_body_too_long"],
+      ["Repository rule violations found (ruleset enforcement)", "github_delivery_base_invalid"],
+      ["Base ref must be a branch; invalid base", "github_delivery_base_invalid"],
+    ];
+    for (const [message, code] of cases) {
+      let injected = false;
+      const { fake, baseSha } = seed(({ method }) => {
+        if (method === "pulls.create" && !injected) { injected = true; return { kind: "fail-before", status: 422, message }; }
+        return { kind: "pass" };
+      });
+      await expect(
+        deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha)),
+        message,
+      ).rejects.toMatchObject({ code });
+    }
+  });
+
+  it("blocks a non-fast-forward foreign push and never force-moves the ref (I3; forced updateRef)", async () => {
+    const { fake, baseSha } = seed();
+    // A human pushes a parentless commit onto B: it does not descend from our
+    // base, so no fast-forward is possible — only a force would move it.
+    fake.moveBranch({ owner: OWNER, repo: REPO, branch: BRANCH, content: { "hostile.ts": "x\n" } });
+    await expect(deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha))).rejects.toMatchObject({
+      code: "github_delivery_branch_foreign",
+    });
+    // I3: the ref only ever moved by create or fast-forward — never a force move.
+    for (const entry of fake.refLog(OWNER, REPO)) {
+      expect(entry.op === "create" || (entry.op === "update" && entry.fastForward)).toBe(true);
+    }
+    expect(fake.openPulls(OWNER, REPO, BRANCH)).toHaveLength(0);
+  });
+
+  it("adopts a pre-existing PR on the branch (as a main-era delivery left it), no duplicate (D8)", async () => {
+    // main opened a PR on this branch with its Date.now() name; a later adoptive
+    // delivery on the SAME branch must adopt that PR, not open a second one.
+    const { fake, baseSha } = seed();
+    const first = await deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha));
+    expect(first.state).toBe("draft");
+    const second = await deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha));
+    expect(second.number).toBe(first.number);
+    expect(fake.allPulls(OWNER, REPO)).toHaveLength(1);
+  });
+
+  it("close-late-duplicate: a PR opened after a human closed the original is closed and the original recorded (D7)", async () => {
+    const { fake, baseSha } = seed();
+    // Worker 1 is held just before its pulls.create (branch/commit already exist).
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let reached!: () => void;
+    const reachedP = new Promise<void>((r) => { reached = r; });
+    let held1 = false;
+    fake.setFaults(({ method }) => {
+      if (method === "pulls.create" && !held1) { held1 = true; reached(); return { kind: "hold", release: held }; }
+      return { kind: "pass" };
+    });
+    const p1 = deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha))
+      .then((r) => ({ ok: true as const, r }), (e) => ({ ok: false as const, e }));
+    await reachedP;
+    // Worker 2 creates and adopts P1; a human then closes P1.
+    fake.setFaults(() => ({ kind: "pass" }));
+    const p1Result = await deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha));
+    fake.humanClosePull(OWNER, REPO, p1Result.number);
+    // Release worker 1: its pulls.create opens a duplicate P2; D7 must close it and
+    // record P1's closed outcome (an OLDER closed PR exists for the branch).
+    release();
+    const w1 = await p1;
+    expect(w1.ok).toBe(true);
+    if (w1.ok) {
+      expect(w1.r.state).toBe("closed");
+      expect(w1.r.number).toBe(p1Result.number); // records the ORIGINAL, not the duplicate
+    }
+    // Exactly one PR remains open at most (I1); the duplicate was closed with a comment.
+    expect(fake.openPulls(OWNER, REPO, BRANCH).length).toBeLessThanOrEqual(0 + 1);
+    expect(fake.allPulls(OWNER, REPO).filter((p) => p.state === "closed").length).toBeGreaterThanOrEqual(1);
+    expect(fake.comments(OWNER, REPO).length).toBeGreaterThanOrEqual(1);
+  });
+
   it("exposes typed blocked and contention errors", () => {
     expect(new AdoptiveDraftBlockedError("github_delivery_branch_foreign").blocked).toBe(true);
     expect(new AdoptiveDraftContentionError().retryable).toBe(true);
