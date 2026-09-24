@@ -19,6 +19,7 @@ import {
   insertMigrationPr,
   updateMigrationPrStatus,
   updateMigrationPrDelivery,
+  clearMigrationPrDeliveryAnchor,
   listConsumersForProvider,
   listFindingsForChange,
   listPrsForChange,
@@ -2634,11 +2635,12 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     }
     if (shouldDeliver) {
       assertActive();
+      let resolution: ReturnType<typeof deliveryFor> | undefined;
       try {
         if (!deliveryExpectedBaseSha || !deliveryCommitDate) {
           throw new Error("github_exact_draft_evidence_missing");
         }
-        const resolution = deliveryFor(consumer, repo);
+        resolution = deliveryFor(consumer, repo);
         await resolution.assertRepositoryIdentity?.();
         updateMigrationPrDelivery(db, prId, {
           status: "delivery_pending",
@@ -2716,6 +2718,34 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       } catch (error) {
         status = "delivery_failed";
         deliveryError = error instanceof Error ? error.message : String(error);
+        // The persisted delivery_base_sha binds only once the delivery branch
+        // is known to exist remotely. On a git-backed delivery failure, ask the
+        // transport whether the branch exists (fail-closed): if it does NOT,
+        // this attempt failed before creating the branch, so reusing the
+        // anchored base would drift against a moved head forever — clear the
+        // anchor so the next attempt re-anchors to the refreshed head and
+        // regenerates the body (body reuse is gated on the anchor). If it
+        // EXISTS, keep the base for lost-response reconciliation. If the
+        // existence lookup itself fails (or the transport cannot answer), keep
+        // the base and surface a retryable lookup-failed code — never clear on
+        // an unknown.
+        if (
+          deliveryRevisionKind === "git_commit" &&
+          typeof resolution?.delivery.branchExists === "function"
+        ) {
+          try {
+            const exists = await resolution.delivery.branchExists(
+              consumer.github_owner,
+              consumer.github_repo,
+              draft.branchName,
+            );
+            if (!exists) {
+              clearMigrationPrDeliveryAnchor(db, prId);
+            }
+          } catch {
+            deliveryError = "github_delivery_branch_existence_lookup_failed";
+          }
+        }
         updateMigrationPrDelivery(db, prId, { status });
       }
     }

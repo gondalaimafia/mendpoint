@@ -4984,6 +4984,26 @@ export function updateMigrationPrDelivery(
 }
 
 /**
+ * Clear the anchored delivery base commit sha for a pull request row.
+ *
+ * The persisted `delivery_base_sha` binds set-once (COALESCE in
+ * updateMigrationPrDelivery) so lost-response retries reuse the same base. But
+ * that binding is only valid once the delivery branch is known to exist
+ * remotely: if an attempt anchored a base and failed BEFORE the branch was
+ * created, reusing that base forever drifts against a moved head and never
+ * recovers. When the transport confirms the branch does not exist, callers
+ * clear the anchor so the next attempt re-anchors to the refreshed head; the
+ * reused body is gated on the anchor being present, so clearing it also
+ * un-binds the body and the next attempt regenerates from scratch.
+ */
+export function clearMigrationPrDeliveryAnchor(db: AppDb, id: string): void {
+  const result = db.raw
+    .prepare(`UPDATE migration_prs SET delivery_base_sha = NULL WHERE id = ?`)
+    .run(id);
+  if (result.changes !== 1) throw new Error("migration_pr_delivery_identity_mismatch");
+}
+
+/**
  * List providers.
  *
  * `tenantId` follows the standard scope convention (assertTenantScope): `undefined` is the

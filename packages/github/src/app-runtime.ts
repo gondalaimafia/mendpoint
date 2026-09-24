@@ -876,6 +876,19 @@ export class GitHubAppDelivery implements GitHubDelivery {
     throw new GitHubDependencyOutageError(result.status, result.decision);
   }
 
+  branchExists(owner: string, repo: string, branch: string): Promise<boolean> {
+    return this.withAuthRetry(async (octokit) => {
+      try {
+        await octokit.git.getRef({ owner, repo, ref: `heads/${branch}` });
+        return true;
+      } catch (error) {
+        if (isAuthenticationError(error)) throw error;
+        if (isNotFoundError(error)) return false;
+        throw error;
+      }
+    });
+  }
+
   observeExactDraft(input: ExactDraftObservationInput): Promise<ExactDraftObservation> {
     return this.withAuthRetry((octokit) => observeExactDraftWithOctokit(octokit, input));
   }

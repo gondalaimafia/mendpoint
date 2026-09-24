@@ -696,6 +696,102 @@ describe("pipeline", () => {
     expect(row.delivery_base_sha).toBe(baseX);
   });
 
+  it("re-anchors and delivers one PR after a pre-creation failure when the remote base moves (clears the stale anchor)", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "precreate", localPath: shop, installationId: "12345" });
+    const baseX = "1".repeat(40);
+    const baseY = "2".repeat(40);
+
+    // Attempt 1 anchors to base X and persists it, but fails BEFORE the branch
+    // is created, so no remote branch exists. The remote default head then
+    // moves to Y, so the next refresh returns Y.
+    let refreshCalls = 0;
+    const refreshRepositoryBase = async () => {
+      refreshCalls += 1;
+      return { status: "refreshed" as const, headSha: refreshCalls === 1 ? baseX : baseY };
+    };
+    class PreCreateThenDeliver extends MockGitHubDelivery {
+      attempts = 0;
+      override async deliverExactDraft(
+        input: Parameters<MockGitHubDelivery["deliverExactDraft"]>[0],
+      ): ReturnType<MockGitHubDelivery["deliverExactDraft"]> {
+        this.attempts += 1;
+        if (this.attempts === 1) throw new Error("pre_create_failure");
+        return super.deliverExactDraft(input);
+      }
+    }
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-precreate-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    const github = new PreCreateThenDeliver(deliveryRoot);
+    github.setRemoteBranchHead("org", "precreate", "main", baseX);
+    const common = {
+      tenantId: "tenant_default", providerSlug: "acme-payments", db, graphDb: testGraphDb(),
+      github, persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true, refreshRepositoryBase,
+    };
+
+    const first = await runChangePipeline(common);
+    expect(first.consumers[0]?.prStatus).toBe("delivery_failed");
+    // The branch was never created, so the stale anchor must be cleared.
+    const afterFirst = db.raw.prepare("SELECT delivery_base_sha FROM migration_prs LIMIT 1")
+      .get() as { delivery_base_sha: string | null };
+    expect(afterFirst.delivery_base_sha).toBeNull();
+
+    // Remote moves to Y before the retry; with the anchor cleared, the next
+    // attempt re-anchors to the refreshed head Y and delivers exactly one PR.
+    github.setRemoteBranchHead("org", "precreate", "main", baseY);
+    const second = await runChangePipeline(common);
+    expect(second.consumers[0]?.prStatus, JSON.stringify(second.consumers[0])).toBe("draft");
+    const pulls = readdirSync(join(deliveryRoot, "org", "precreate", "pulls"))
+      .filter((name) => /^[1-9][0-9]*\.json$/.test(name));
+    expect(pulls).toHaveLength(1);
+    const row = db.raw.prepare("SELECT delivery_base_sha FROM migration_prs LIMIT 1")
+      .get() as { delivery_base_sha: string | null };
+    expect(row.delivery_base_sha).toBe(baseY);
+  });
+
+  it("keeps the anchor and surfaces a retryable code when the branch-existence lookup fails (never clears on unknown)", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "lookupfail", localPath: shop, installationId: "12345" });
+    const baseX = "3".repeat(40);
+    const refreshRepositoryBase = async () => ({ status: "refreshed" as const, headSha: baseX });
+
+    // Delivery fails, and the branch-existence lookup itself fails (the
+    // transport cannot answer), so the anchor must be kept — never cleared on
+    // an unknown — and a retryable lookup-failed code is surfaced.
+    class LookupUnavailable extends MockGitHubDelivery {
+      override async deliverExactDraft(): Promise<never> {
+        throw new Error("transient_delivery_failure");
+      }
+      override async branchExists(): Promise<boolean> {
+        throw new Error("branch_lookup_unavailable");
+      }
+    }
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-lookupfail-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    const github = new LookupUnavailable(deliveryRoot);
+    github.setRemoteBranchHead("org", "lookupfail", "main", baseX);
+    const report = await runChangePipeline({
+      tenantId: "tenant_default", providerSlug: "acme-payments", db, graphDb: testGraphDb(),
+      github, persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true, refreshRepositoryBase,
+    });
+    expect(report.consumers[0]?.prStatus).toBe("delivery_failed");
+    expect(report.consumers[0]?.deliveryError).toBe("github_delivery_branch_existence_lookup_failed");
+    // Fail-closed: the base anchored this attempt is kept, not cleared.
+    const row = db.raw.prepare("SELECT delivery_base_sha FROM migration_prs LIMIT 1")
+      .get() as { delivery_base_sha: string | null };
+    expect(row.delivery_base_sha).toBe(baseX);
+  });
+
   it("appends distinct status events for two delivery_failed attempts with different errors (no idempotency conflict)", async () => {
     const db = seedProviderVersions();
     const provider = db.raw
