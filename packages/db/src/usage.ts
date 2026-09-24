@@ -1261,7 +1261,13 @@ export function releaseUsageReservation(
     reservationId: string;
   },
 ): UsageLedgerEntry {
-  db.raw.exec("BEGIN IMMEDIATE");
+  // Nestable, matching reserveUsage/settleUsageReservation/signedUsageChange: when a
+  // caller has already opened a transaction (e.g. the worker releases a superseded
+  // prior-generation replay hold in the same unit that admits the new replay and enqueues
+  // its job, S2) this release joins that transaction instead of opening a second one —
+  // node:sqlite forbids nesting — so either the whole unit commits or none of it does.
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
     const existing = one<EntryRow>(
       db,
@@ -1284,10 +1290,10 @@ export function releaseUsageReservation(
     };
     prepareEntry(db, entry);
     const result = insertEntry(db, entry);
-    db.raw.exec("COMMIT");
+    if (owns) db.raw.exec("COMMIT");
     return result;
   } catch (error) {
-    db.raw.exec("ROLLBACK");
+    if (owns) db.raw.exec("ROLLBACK");
     throw error;
   }
 }

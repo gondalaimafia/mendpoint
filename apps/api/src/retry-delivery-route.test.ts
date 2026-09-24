@@ -8,7 +8,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 const NOW = "2026-09-23T12:00:00.000Z";
 
@@ -132,6 +132,31 @@ describe("POST /migration-prs/:id/retry-delivery", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, status: "delivery_failed" });
     expect(dbMod.getPr(db, "pr-exhausted", "tenant-a")?.replay_count).toBe(0);
+  });
+
+  it("atomic: an enqueue failure rolls back the status flip, error clear and generation advance (single transaction)", async () => {
+    seedPr("pr-atomic", "delivery_failed");
+    db.raw.prepare("UPDATE migration_prs SET delivery_error = 'github_delivery_replay_failed' WHERE id = ?").run("pr-atomic");
+    const before = dbMod.getPr(db, "pr-atomic", "tenant-a")!;
+    const genBefore = before.replay_generation;
+    // The reopen (status flip), the delivery_error clear, the generation advance, the
+    // counter reset and the job enqueue are ONE BEGIN IMMEDIATE transaction. If the enqueue
+    // throws and the wrapping transaction is removed, the earlier writes commit on their own
+    // and the row is left cleared + generation-advanced with no queued job. With the
+    // transaction, they all roll back.
+    const spy = vi.spyOn(dbMod, "enqueueOrResetJob").mockImplementation(() => {
+      throw new Error("enqueue exploded");
+    });
+    try {
+      const res = await app.request("/migration-prs/pr-atomic/retry-delivery", { method: "POST", headers: auth() });
+      expect(res.status).not.toBe(200);
+    } finally {
+      spy.mockRestore();
+    }
+    const after = dbMod.getPr(db, "pr-atomic", "tenant-a")!;
+    expect(after.delivery_error, "the stale error must survive a rolled-back retry").toBe("github_delivery_replay_failed");
+    expect(after.replay_generation, "the generation must not advance when the enqueue fails").toBe(genBefore);
+    expect(dbMod.getJob(db, "pipeline-delivery-retry:pr-atomic", "tenant-a")).toBeUndefined();
   });
 
   it("#717: an operator retry clears the stale delivery_error AND advances the replay generation", async () => {

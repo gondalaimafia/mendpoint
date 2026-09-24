@@ -6033,12 +6033,20 @@ describe("delivery-replay dead-letter finalization (PR #712, #717)", () => {
     db.raw.close();
   });
 
-  it("predicate — open hold: a dead-lettered fallback whose hold is CLOSED is not listed", async () => {
+  it("predicate — open hold: an already-stamped dead-letter is listed only while its hold is open", async () => {
     const db = newDb("pred-hold"); seedFk(db); entitle(db);
     await deadLetterWithOpenHold(db);
+    // Stamp the row so ONLY the open-hold branch can enumerate it (the generation-marker
+    // branch added for B1 requires delivery_error IS NULL). It is still listed because its
+    // hold is open. (The pre-B1 assertion "a CLOSED hold is not listed" no longer holds on
+    // its own: an unstamped no-hold dead-letter is still unfinalized — that is the whole
+    // point of B1 — so the open-hold filter is now proven against a row the marker branch
+    // cannot claim.)
+    db.raw.prepare("UPDATE migration_prs SET delivery_error = 'github_delivery_replay_failed' WHERE id = ?").run("pr-r");
     expect(dbModule.listUnfinalizedDeadLetteredReplayFallbacks(db, "tenant-a")).toHaveLength(1);
-    // Release the hold (close it): the finalized job must drop out of the sweep. If the
-    // open-hold filter is dropped, this row is still listed.
+    // Release the hold (close it): with the row already stamped, neither branch lists it.
+    // If OPEN_HOLD_PREDICATE is reverted to the always-true form, the closed-hold row stays
+    // listed and this dies.
     const reservationId = listUsageLedger(db, "tenant-a").find((e) => e.entryType === "reservation")!.id;
     dbModule.releaseRunUsage(db, { tenantId: "tenant-a", reservationId, reason: "test", createdAt: nowIso() });
     expect(dbModule.listUnfinalizedDeadLetteredReplayFallbacks(db, "tenant-a")).toHaveLength(0);
@@ -6095,6 +6103,128 @@ describe("delivery-replay dead-letter finalization (PR #712, #717)", () => {
     expect(getPr(db, "pr-r", "tenant-a")?.replay_count).toBe(0);
     expect(listAudit(db, "tenant-a").filter((a) => a.action.startsWith("pr.delivery_replay"))).toEqual([]);
     expect(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")).toBeUndefined();
+    db.raw.close();
+  });
+
+  // ---- Enforcement OFF (the production default) and the operator-retry race (B1/B2/S2) ----
+  // Every test above forces MENDPOINT_USAGE_ENFORCEMENT=1, which is NOT how production runs
+  // (usage-run.ts defaults it off, and no production app sets it). These exercise the
+  // enforcement-off finalization path and the operator-retry-during-backoff race.
+  function openHolds(db: TDb, t = "tenant-a"): string[] {
+    const l = listUsageLedger(db, t);
+    const closed = new Set(l.filter((e) => e.entryType !== "reservation").map((e) => e.reservationId));
+    return l.filter((e) => e.entryType === "reservation" && !closed.has(e.id)).map((e) => e.taskId);
+  }
+  const avail = (db: TDb, id: string) => db.raw.prepare("UPDATE jobs SET available_at = ? WHERE id = ?").run(nowIso(), id);
+  const park = (db: TDb, id: string) => db.raw.prepare("UPDATE jobs SET available_at = ? WHERE id = ?").run("2099-01-01T00:00:00.000Z", id);
+  const off = (runner: typeof runChangePipeline = throwingRunner) => ({
+    tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false, pipelineRunner: runner, wardenEnv: {} as NodeJS.ProcessEnv,
+  });
+
+  it("E1: a lease-expiry dead-letter with enforcement OFF is stamped and audited exactly once", async () => {
+    const db = newDb("e1-off"); seedFk(db); // no entitlement; enforcement off
+    enqRetry(db);
+    await processJobsOnce(db, off()); // retry admits (enforced:false, no hold) and enqueues the fallback
+    leaseExpire(db); // recoverExpiredJobs dead-letters it without re-entering the job loop
+    for (let i = 0; i < 3; i++) await processJobsOnce(db, off());
+    // No hold exists, so the hold-driven branch is blind; the (row, generation) marker
+    // branch finalizes it. Without B1 this row is a silent delivery_failed forever.
+    expect(getPr(db, "pr-r", "tenant-a")?.delivery_error, "must be stamped with enforcement off").toBe("github_delivery_replay_failed");
+    expect(auditCount(db)).toBe(1);
+    expect(dbModule.listUnfinalizedDeadLetteredReplayFallbacks(db, "tenant-a")).toHaveLength(0);
+    db.raw.close();
+  });
+
+  it("E1-legacy: a main-era payload (no replayGeneration) with enforcement OFF stays unstamped, as on main", async () => {
+    const db = newDb("e1-legacy"); seedFk(db);
+    enqRetry(db);
+    await processJobsOnce(db, off());
+    // Strip the replayGeneration key to mimic a pre-#712 (main-built) fallback payload.
+    const payload = JSON.parse(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")!.payload_json) as Record<string, unknown>;
+    delete payload.replayGeneration;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ?").run(JSON.stringify(payload), "pipeline-delivery-fallback:pr-r");
+    leaseExpire(db);
+    for (let i = 0; i < 3; i++) await processJobsOnce(db, off());
+    // No hold (enforcement off) and no generation marker (legacy payload) => not finalizable
+    // by the sweep, identical to main. Accepted per the re-review; the alternative (treating
+    // a missing key as generation 0) would falsely stamp an operator-retried main-era row (U2).
+    expect(getPr(db, "pr-r", "tenant-a")?.delivery_error ?? null).toBeNull();
+    db.raw.close();
+  });
+
+  for (const tag of ["on", "off"] as const) {
+    const drainOpts = (runner: typeof runChangePipeline = throwingRunner) =>
+      tag === "on" ? opts("tenant-a", runner) : off(runner);
+    it(`E2-${tag}: an operator retry during a previous-generation backoff ends stamped and audited`, async () => {
+      const db = newDb(`e2-${tag}`); seedFk(db); if (tag === "on") entitle(db);
+      enqRetry(db);
+      await processJobsOnce(db, drainOpts()); // gen0 fallback enqueued under its backoff
+      operatorRetry(db); // advances gen0 -> gen1, clears the error, re-queues the retry
+      await processJobsOnce(db, drainOpts()); // retry sees the pending gen0 fallback and DEFERS (retryable)
+      expect(getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")?.status, "the retry defers, it must not adopt the stale fallback or dead-letter").toBe("pending");
+      expect(getPr(db, "pr-r", "tenant-a")?.delivery_error ?? null).toBeNull();
+      avail(db, "pipeline-delivery-fallback:pr-r");
+      await processJobsOnce(db, drainOpts()); // gen0 fallback fails: its hold (if any) releases, stale gen => no stamp
+      expect(getPr(db, "pr-r", "tenant-a")?.delivery_error ?? null, "the stale generation-0 job must not stamp the re-opened row").toBeNull();
+      avail(db, "pipeline-delivery-retry:pr-r");
+      await processJobsOnce(db, drainOpts()); // retry re-runs: gen0 fallback now terminal => enqueue a fresh gen1 fallback
+      avail(db, "pipeline-delivery-fallback:pr-r");
+      await processJobsOnce(db, drainOpts()); // gen1 fallback fails via the per-job boundary => stamp + audit
+      expect(openHolds(db), "no hold may leak").toEqual([]);
+      expect(getPr(db, "pr-r", "tenant-a")?.delivery_error, "the retry's own generation failure must be self-describing").toBe("github_delivery_replay_failed");
+      expect(getPr(db, "pr-r", "tenant-a")?.replay_generation).toBe(1);
+      expect(auditCount(db)).toBe(1);
+      db.raw.close();
+    });
+  }
+
+  it("E3: a gen0 lease-expiry dead-letter and the operator retry share one claim; the gen0 hold is released (S2)", async () => {
+    const db = newDb("e3"); seedFk(db); entitle(db);
+    enqRetry(db);
+    await processJobsOnce(db, opts()); // gen0 fallback enqueued, reservation held
+    // Stale-lease the gen0 fallback at max attempts but do NOT recover it yet.
+    db.raw.prepare("UPDATE jobs SET status = 'running', attempts = 1, max_attempts = 1, lease_owner = 'stale', lease_generation = 1, lease_expires_at = ? WHERE id = ?")
+      .run(new Date(Date.now() - 60_000).toISOString(), "pipeline-delivery-fallback:pr-r");
+    operatorRetry(db); // gen0 -> gen1, re-queue the retry (available now)
+    // One drain: recoverExpiredJobs dead-letters the gen0 fallback, then the retry runs and
+    // enqueueOrResetJob RESETS it to gen1 before the drain-start sweep can finalize it. The
+    // gen0 hold leaks unless the retry transaction releases prior-generation holds (S2).
+    await processJobsOnce(db, opts("tenant-a", deliveringRunner));
+    avail(db, "pipeline-delivery-fallback:pr-r");
+    for (let i = 0; i < 3; i++) await processJobsOnce(db, opts("tenant-a", deliveringRunner)); // gen1 delivers and settles
+    expect(openHolds(db), "the superseded gen0 hold must be released by the retry transaction").toEqual([]);
+    db.raw.close();
+  });
+
+  it("E4: a stale gen0 job lease-expires after an operator retry (retry parked): hold released, never stamped", async () => {
+    const db = newDb("e4"); seedFk(db); entitle(db);
+    enqRetry(db);
+    await processJobsOnce(db, opts());
+    operatorRetry(db); park(db, "pipeline-delivery-retry:pr-r"); // gen1, retry parked so only the sweep runs
+    leaseExpire(db); // gen0 fallback -> dead_letter with its hold still open
+    for (let i = 0; i < 2; i++) await processJobsOnce(db, opts());
+    expect(openHolds(db), "gen0 hold released once").toEqual([]);
+    expect(getPr(db, "pr-r", "tenant-a")?.delivery_error ?? null, "a stale-generation dead-letter must not stamp the re-opened row").toBeNull();
+    expect(auditCount(db)).toBe(0);
+    db.raw.close();
+  });
+
+  it("717b: three generations fail in turn — one stamp+audit per generation, distinct keys, no open holds", async () => {
+    const db = newDb("717b"); seedFk(db); entitle(db);
+    for (let g = 0; g < 3; g++) {
+      if (g > 0) operatorRetry(db); else enqRetry(db);
+      await processJobsOnce(db, opts());
+      avail(db, "pipeline-delivery-fallback:pr-r");
+      await processJobsOnce(db, opts());
+    }
+    expect(openHolds(db)).toEqual([]);
+    expect(getPr(db, "pr-r", "tenant-a")?.replay_generation).toBe(2);
+    expect(getPr(db, "pr-r", "tenant-a")?.delivery_error).toBe("github_delivery_replay_failed");
+    // One audit per generation proves the fallback payload carries replayGeneration (dropping
+    // it makes every post-retry failure fail its generation guard and go unstamped).
+    expect(auditCount(db)).toBe(3);
+    const replayKeys = listUsageLedger(db, "tenant-a").filter((e) => e.entryType === "reservation").map((e) => e.taskId).sort();
+    expect(replayKeys).toEqual(["delivery-replay:pr-r:0:0", "delivery-replay:pr-r:1:0", "delivery-replay:pr-r:2:0"]);
     db.raw.close();
   });
 });

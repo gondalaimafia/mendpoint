@@ -3811,6 +3811,14 @@ function migrateProvidersFeedColumns(db: AppDb) {
     `CREATE INDEX IF NOT EXISTS jobs_due_idx
      ON jobs(tenant_id, status, available_at, created_at)`,
   );
+  // Bounds the jobs-driven branch of listUnfinalizedDeadLetteredReplayFallbacks (the
+  // enforcement-off replay-finalization sweep) to the small dead-lettered fanout set
+  // instead of scanning every job (B1/S1). Partial, additive and idempotent.
+  run(
+    db,
+    `CREATE INDEX IF NOT EXISTS jobs_dead_letter_fanout_idx
+     ON jobs(id) WHERE status = 'dead_letter' AND type = 'pipeline.fanout'`,
+  );
   // Ensure default tenant exists
   const t = get<{ id: string }>(db, `SELECT id FROM tenants WHERE slug = 'default'`);
   if (!t) {
@@ -7592,11 +7600,17 @@ const REPLAY_FALLBACK_JOB_ID_PREFIX = "pipeline-delivery-fallback:";
 
 // A reservation is still an OPEN hold when the signed reserved-MCU total across the
 // reservation row and every entry that closes it (release/settlement) is positive.
-const OPEN_HOLD_PREDICATE = `(
-  SELECT COALESCE(SUM(hold.reserved_mcu_micros_delta), 0)
+// Aggregated on reservation_id ALONE (never `hold.id = r.id OR ...`), so the subquery
+// seeks usage_ledger_reservation_idx(tenant_id, reservation_id) instead of scanning the
+// tenant's whole ledger once per replay reservation: the row's own delta is added
+// directly and only the closing entries (which carry reservation_id = r.id) are summed
+// (S1: 99.5 s -> 33 ms at 104k rows). Exported so a test can EXPLAIN QUERY PLAN the exact
+// production predicate and assert the index is used (delivery-replay-sweep.test.ts).
+export const OPEN_HOLD_PREDICATE = `r.reserved_mcu_micros_delta + COALESCE((
+  SELECT SUM(hold.reserved_mcu_micros_delta)
   FROM usage_ledger_entries hold
-  WHERE hold.tenant_id = r.tenant_id AND (hold.id = r.id OR hold.reservation_id = r.id)
-) > 0`;
+  WHERE hold.tenant_id = r.tenant_id AND hold.reservation_id = r.id
+), 0) > 0`;
 
 // Extract the prId from a delivery-replay admission task_id: the segment between the
 // first and second ':' (prId is colon-free, so this holds for both the pre-#712 3-part
@@ -7624,6 +7638,20 @@ const REPLAY_TASK_PR_ID = `substr(
  * never lists a row whose old job was already released (B1); and leading from open holds
  * (a handful) instead of scanning every pipeline.fanout job removes the unscoped scan.
  * github_pr_number IS NULL keeps a delivered draft out.
+ *
+ * The open-hold branch cannot see a replay that never HELD a reservation — which is
+ * every replay when usage enforcement is off, the production default. So a second branch
+ * (UNION) lists a dead-lettered fallback whose row is undelivered, still unstamped
+ * (delivery_error IS NULL), and whose payload replayGeneration equals the row's CURRENT
+ * replay_generation. That pair is a sound "not finalized" marker: the ONLY writer that
+ * clears delivery_error is the operator-retry route, which advances the generation in the
+ * same transaction, so a stale-generation job never matches this branch (it falls to the
+ * open-hold branch, which only releases its leaked hold and never re-stamps). Finalizing
+ * this branch stamps and audits once (the stamp's own delivery_error-IS-NULL guard is
+ * idempotent); its release is a no-op when the row held no reservation (B1). A legacy
+ * payload with no replayGeneration key never matches (json_extract is NULL, NULL = 0 is
+ * false), so an operator-retried main-era row is not falsely stamped (U2). The
+ * jobs-driven branch is bounded by the jobs_dead_letter_fanout_idx partial index.
  */
 export function listUnfinalizedDeadLetteredReplayFallbacks(
   db: AppDb,
@@ -7642,10 +7670,27 @@ export function listUnfinalizedDeadLetteredReplayFallbacks(
        AND j.type = 'pipeline.fanout'
        AND pr.github_pr_number IS NULL
        AND ${OPEN_HOLD_PREDICATE}
-       ${tenantId ? "AND r.tenant_id = ? AND j.tenant_id = ? AND c.tenant_id = ?" : ""}`,
+       ${tenantId ? "AND r.tenant_id = ? AND j.tenant_id = ? AND c.tenant_id = ?" : ""}
+     UNION
+     SELECT j.* FROM jobs j
+     JOIN migration_prs pr ON pr.id = substr(j.id, ?)
+     JOIN consumers c ON c.id = pr.consumer_id
+     WHERE j.status = 'dead_letter'
+       AND j.type = 'pipeline.fanout'
+       AND j.id LIKE ?
+       AND pr.github_pr_number IS NULL
+       AND pr.delivery_error IS NULL
+       AND json_extract(j.payload_json, '$.replayGeneration') = pr.replay_generation
+       ${tenantId ? "AND j.tenant_id = ? AND c.tenant_id = ?" : ""}`,
     tenantId
-      ? [REPLAY_FALLBACK_JOB_ID_PREFIX, `${REPLAY_RUN_ADMISSION_PREFIX}%`, tenantId, tenantId, tenantId]
-      : [REPLAY_FALLBACK_JOB_ID_PREFIX, `${REPLAY_RUN_ADMISSION_PREFIX}%`],
+      ? [
+          REPLAY_FALLBACK_JOB_ID_PREFIX, `${REPLAY_RUN_ADMISSION_PREFIX}%`, tenantId, tenantId, tenantId,
+          REPLAY_FALLBACK_JOB_ID_PREFIX.length + 1, `${REPLAY_FALLBACK_JOB_ID_PREFIX}%`, tenantId, tenantId,
+        ]
+      : [
+          REPLAY_FALLBACK_JOB_ID_PREFIX, `${REPLAY_RUN_ADMISSION_PREFIX}%`,
+          REPLAY_FALLBACK_JOB_ID_PREFIX.length + 1, `${REPLAY_FALLBACK_JOB_ID_PREFIX}%`,
+        ],
   );
 }
 

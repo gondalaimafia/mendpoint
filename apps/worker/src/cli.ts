@@ -1154,12 +1154,16 @@ export function classifyJobFailure(
   // ORDINARY attempt budget only: retryPastMaxAttempts stays false, so a fence
   // that never clears still terminates instead of spinning forever. The sibling
   // warden_ci_mutation_in_flight follows for the identical reason.
+  // delivery_replay_awaiting_previous_generation is transient in the same shape: an
+  // operator-retry replay job defers itself while the prior generation's fallback is
+  // still pending/running, and re-runs (within the ordinary attempt budget) once that
+  // fallback terminates — so it is retryable but not retryPastMaxAttempts (B2).
   const retryPastMaxAttempts = (remoteSideEffectUncertain || deliveryOutage) && !authorizationFailure;
   const retryable =
     !authorizationFailure &&
     (remoteSideEffectUncertain ||
     deliveryOutage ||
-    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|verifier_advisory_provider_retryable|mcu_(?:accounting|settlement)_persistence_failed|(?:mission_mutation_dispatch|warden_ci_mutation)_in_flight/.test(
+    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|delivery_replay_awaiting_previous_generation|verifier_advisory_provider_retryable|mcu_(?:accounting|settlement)_persistence_failed|(?:mission_mutation_dispatch|warden_ci_mutation)_in_flight/.test(
         normalized,
       ));
   const errorCode = explicitCode ?? (retryable
@@ -4893,6 +4897,22 @@ if (job.type === "warden.candidate.cleanup") {
           // double-count or double-run (dedup on the deterministic fallback id).
           const existingFallback = getJob(db, `pipeline-delivery-fallback:${prId}`, job.tenant_id);
           if (existingFallback && (existingFallback.status === "pending" || existingFallback.status === "running")) {
+            const currentGeneration = getPr(db, prId, job.tenant_id)?.replay_generation ?? 0;
+            if (replayGenerationFromPayload(existingFallback.payload_json) < currentGeneration) {
+              // B2: the pending/running fallback belongs to a PREVIOUS replay generation —
+              // the operator retried this row while that generation's replay was still in
+              // its backoff. Adopting it as already_scheduled would complete this
+              // current-generation retry, and when that stale fallback later fails, its
+              // generation guard skips the stamp: the row is left undelivered, unstamped,
+              // unaudited, with no live current-generation job (the silent third state).
+              // Defer this retry with a retryable code until the previous generation's
+              // fallback reaches a terminal state (its own dead-letter boundary releases
+              // that generation's hold and, being stale, never stamps). The next run then
+              // sees a terminal fallback and enqueues a fresh current-generation replay
+              // below. Rewriting the running job's generation is not safe: the per-job
+              // finalizer reads the payload captured at claim time.
+              throw new Error("delivery_replay_awaiting_previous_generation");
+            }
             settleFallback({ status: outcome.status, fallback: "already_scheduled" }, "fallback already scheduled");
             continue;
           }
@@ -4932,6 +4952,23 @@ if (job.type === "warden.candidate.cleanup") {
           let replayLog: string;
           db.raw.exec("BEGIN IMMEDIATE");
           try {
+            // S2: release any still-open replay hold from a PREVIOUS generation before
+            // admitting this one, inside the same transaction (releaseUsageReservation is
+            // nestable). A generation-N-1 fallback that lease-expiry dead-lettered in this
+            // very claim is reset to generation N by enqueueOrResetJob below before the
+            // drain-start sweep can finalize it, so its hold would otherwise leak forever.
+            // No current-generation hold exists yet (we admit it just below), so every
+            // still-open replay hold for this row belongs to a superseded generation and is
+            // safe to release here; releaseRunUsage is keyed, so it is a no-op if already
+            // released.
+            for (const staleReservationId of listOpenReplayRunReservationIds(db, job.tenant_id, prId)) {
+              releaseRunUsage(db, {
+                tenantId: job.tenant_id,
+                reservationId: staleReservationId,
+                reason: `superseded replay hold: pr ${prId}`,
+                createdAt: now,
+              });
+            }
             const admission = admitRunUsage(db, {
               tenantId: job.tenant_id,
               runId: `delivery-replay:${prId}:${replayGeneration}:${priorReplays}`,
