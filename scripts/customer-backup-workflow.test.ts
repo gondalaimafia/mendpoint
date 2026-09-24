@@ -309,7 +309,8 @@ describe("customer backup workflow — settle-then-backup and install resilience
  * settle window can be exercised deterministically; `ssh console` replays a
  * per-attempt output and exit status. Routed through the shared fixture-shell
  * helper so the host flyctl/jq can never shadow the stubs. `sleep` is neutered
- * by setting the poll interval to 0.
+ * by setting the poll interval to 0, unless `fakeClock` is set (see below), in
+ * which case a stubbed `sleep`/`date` advance a virtual clock deterministically.
  *
  * Release tokens (one word per `flyctl releases` call, last repeats):
  *   inflight       newest release running, created now (a deploy in progress)
@@ -319,12 +320,15 @@ describe("customer backup workflow — settle-then-backup and install resilience
  *                  proves the NEWEST-only check ignores a stale stuck release
  *   newer          newest release running at a HIGHER version (v11): a deploy
  *                  that started mid-backup
+ *   pending        newest release pending (v10), created now: a deploy starting
+ *   complete-noage newest complete (v10) with NO CreatedAt: the age is unknown
  *   stale-complete newest complete (v10) but created long ago: no deploy, so a
  *                  stopped machine here is the #659 shape
  *   none           empty listing
  *   fail           flyctl errors (unreadable)
  * Machine tokens (one word per `flyctl machine list` call): started | stopped | fail.
- * SSH tokens (one word per `flyctl ssh console` call): ok | severed | novm | crash.
+ * SSH tokens (one word per `flyctl ssh console` call):
+ *   ok | severed | novm | crash | partial-nomanifest | partA-fail | partB-ok.
  */
 const OK_BACKUP_OUTPUT =
   '{"backupId":"customer-x","manifestAuthentication":"abc","publication":{"prefix":"p"}}';
@@ -353,6 +357,8 @@ const FLYCTL_SETTLE = [
   '      settled-v11) printf \'[{"Version":11,"Status":"complete","CreatedAt":"%s"}]\' "$now" ;;',
   '      old-running) printf \'[{"Version":10,"Status":"complete","CreatedAt":"%s"},{"Version":2,"Status":"running","CreatedAt":"2020-01-01T00:00:00Z"}]\' "$now" ;;',
   '      newer) printf \'[{"Version":11,"Status":"running","CreatedAt":"%s"}]\' "$now" ;;',
+  '      pending) printf \'[{"Version":10,"Status":"pending","CreatedAt":"%s"}]\' "$now" ;;',
+  '      complete-noage) printf \'[{"Version":10,"Status":"complete"}]\' ;;',
   '      stale-complete) printf \'[{"Version":10,"Status":"complete","CreatedAt":"2020-01-01T00:00:00Z"}]\' ;;',
   '      none) printf \'[]\' ;;',
   '      fail) echo "Error: unauthorized" >&2; exit 1 ;;',
@@ -373,6 +379,14 @@ const FLYCTL_SETTLE = [
   '      severed) printf "ssh shell: wait: remote command exited without exit status or exit signal\\n"; exit 1 ;;',
   '      novm) printf "Error: app mendpoint-fettler-production has no started VMs\\n"; exit 1 ;;',
   '      crash) printf "Error: object store credentials rejected\\n"; exit 7 ;;',
+  // Prints backupId + publication but NO manifestAuthentication, exit 0: proves
+  // all three evidence greps must run (a single grep would pass this).
+  '      partial-nomanifest) printf \'{"backupId":"customer-x","publication":{"prefix":"p"}}\\n\'; exit 0 ;;',
+  // A first attempt that prints part of the manifest then DROPS (exit 1), paired
+  // with partB-ok on the retry: proves the evidence check reads only the current
+  // attempt, never the previous attempt appended to the shared evidence log.
+  '      partA-fail) printf \'{"backupId":"customer-x","publication":{"prefix":"p"}\\n\'; exit 1 ;;',
+  '      partB-ok) printf \'  "manifestAuthentication":"abc"}\\n\'; exit 0 ;;',
   "    esac",
   "    exit 0 ;;",
   "esac",
@@ -380,12 +394,51 @@ const FLYCTL_SETTLE = [
   "",
 ].join("\n");
 
+/**
+ * The real `date`, resolved once BEFORE the fixture bin is prepended, so the
+ * fake-clock `date` stub can delegate to it by absolute path without recursing
+ * into itself (it is named `date` on the fixture PATH).
+ */
+const REAL_DATE = (() => {
+  const found = spawnSync("bash", ["-c", "command -v date"], { encoding: "utf8" }).stdout.trim();
+  if (!found) {
+    throw new Error("real date not found on PATH; the fake-clock date stub cannot delegate to itself");
+  }
+  return found;
+})();
+
+/** Virtual-clock `date`: `+%s` reads the clock file; everything else is real. */
+const FAKE_DATE = [
+  "#!/usr/bin/env bash",
+  `for a in "$@"; do case "$a" in -d|-d*|--date*) exec "${REAL_DATE}" "$@";; esac; done`,
+  'if [ "${!#}" = "+%s" ]; then cat "$CLOCK_FILE"; exit 0; fi',
+  `exec "${REAL_DATE}" "$@"`,
+  "",
+].join("\n");
+
+/** Virtual-clock `sleep`: advances the clock file by N seconds, instantly. */
+const FAKE_SLEEP = [
+  "#!/usr/bin/env bash",
+  'c="$(cat "$CLOCK_FILE")"',
+  'printf "%s" "$((c + ${1%s}))" > "$CLOCK_FILE"',
+  "",
+].join("\n");
+
+const FAKE_CLOCK_START = "1700000000";
+
 function runBackupStep(options: {
   releasesSeq: string;
   machinesSeq: string;
   sshSeq: string;
   settleMaxSeconds?: string;
   settleRecentSeconds?: string;
+  settlePollSeconds?: string;
+  /**
+   * When set, install stubbed `date`/`sleep` that advance a virtual clock, so a
+   * settle deadline spanning hundreds of seconds is exercised deterministically
+   * and instantly rather than by real wall-clock sleeps.
+   */
+  fakeClock?: boolean;
 }): {
   status: number | null;
   stdout: string;
@@ -407,6 +460,20 @@ function runBackupStep(options: {
   const jqPath = join(bin, "jq");
   writeFileSync(jqPath, JQ_LF_WRAPPER, "utf8");
   chmodSync(jqPath, 0o755);
+  const guardTools = ["flyctl", "jq"];
+  const clockEnv: Record<string, string> = {};
+  if (options.fakeClock) {
+    const clockFile = join(dir, "clock");
+    writeFileSync(clockFile, FAKE_CLOCK_START, "utf8");
+    const datePath = join(bin, "date");
+    writeFileSync(datePath, FAKE_DATE, "utf8");
+    chmodSync(datePath, 0o755);
+    const sleepPath = join(bin, "sleep");
+    writeFileSync(sleepPath, FAKE_SLEEP, "utf8");
+    chmodSync(sleepPath, 0o755);
+    guardTools.push("date", "sleep");
+    clockEnv.CLOCK_FILE = clockFile;
+  }
   mkdirSync(join(dir, "test-results", "customer-backup"), { recursive: true });
   const scriptPath = join(dir, "step.sh");
   writeFileSync(scriptPath, run.run, "utf8");
@@ -414,7 +481,7 @@ function runBackupStep(options: {
     scriptPath,
     cwd: dir,
     fixtureBin: bin,
-    guardTools: ["flyctl", "jq"],
+    guardTools,
     env: {
       ...process.env,
       GITHUB_RUN_ID: "1",
@@ -430,9 +497,10 @@ function runBackupStep(options: {
       REL_COUNT: join(dir, "rel.count"),
       MACH_COUNT: join(dir, "mach.count"),
       SSH_COUNT: join(dir, "ssh.count"),
-      SETTLE_POLL_SECONDS: "0",
+      SETTLE_POLL_SECONDS: options.settlePollSeconds ?? "0",
       SETTLE_MAX_SECONDS: options.settleMaxSeconds ?? "300",
       SETTLE_RECENT_SECONDS: options.settleRecentSeconds ?? "300",
+      ...clockEnv,
     },
   });
   const calls = readFileSync(callLog, "utf8").split("\n").filter(Boolean);
@@ -485,8 +553,10 @@ describe("Run authenticated customer backup — settle wait under GitHub's shell
     });
     expect(result.status, result.stderr).toBe(0);
     expect(result.sshCalls.length).toBe(1);
-    // It did not spin waiting: only the settle read plus the pre-backup read.
-    expect(result.releasesCalls.length).toBe(2);
+    // It did not spin waiting, and it does NOT re-read after settling: the
+    // baseline version comes from settle's own final read, so a single settle
+    // read is the only releases call before the backup.
+    expect(result.releasesCalls.length).toBe(1);
   }, 60_000);
 
   it("fails loudly on a stopped machine with no deploy in progress (the #659 shape)", () => {
@@ -506,10 +576,11 @@ describe("Run authenticated customer backup — settle wait under GitHub's shell
 
   it("retries once, and succeeds, when the backup is dropped by a confirmed new deploy", () => {
     const result = runBackupStep({
-      // settle -> pre-read (v10); ssh severed; confirm sees a NEWER release (v11
-      // running); settle for v11 -> pre-read (v11); ssh ok.
-      releasesSeq: "settled settled newer settled-v11 settled-v11",
-      machinesSeq: "started started started started started",
+      // settle (v10, baseline from settle's own read); ssh severed; confirm sees
+      // a NEWER release (v11 running) -> confirmed; settle for v11; ssh ok. No
+      // separate pre-backup read, so three releases calls, not five.
+      releasesSeq: "settled newer settled-v11",
+      machinesSeq: "started started started",
       sshSeq: "severed ok",
     });
     expect(result.status, result.stderr).toBe(0);
@@ -558,6 +629,165 @@ describe("Run authenticated customer backup — settle wait under GitHub's shell
     expect(result.stdout).toContain("customer_backup_settle_flyctl_unreadable");
     expect(result.sshCalls.length).toBe(1);
   }, 60_000);
+
+  // --- Behaviour tests that kill the reviewer's surviving mutations R1-R4, R6,
+  // R8, plus the blocker (unknown baseline), the two-read race (item 3), the
+  // cross-attempt evidence read (item 2), and the single settle deadline (item 4).
+
+  it("BLOCKER: an unknown baseline plus a crash with no deploy fails loudly, never retries", () => {
+    // The third-state defect (FAILURE_MODES §1): a failed pre-backup read used to
+    // record version -1, indistinguishable from "no releases", so ANY readable
+    // post-failure version counted as "newer" and a crash retried into a green
+    // run. The baseline is now UNKNOWN, and an unknown baseline can never confirm
+    // a deploy. Settle falls open (flyctl unreadable), the backup crashes, and the
+    // now-readable v10 must NOT be read as a deploy that dropped the backup.
+    const result = runBackupStep({
+      releasesSeq: "fail settled",
+      machinesSeq: "fail started",
+      sshSeq: "crash",
+    });
+    expect(result.status).toBe(7);
+    expect(result.stderr).toContain("customer_backup_run_failed");
+    expect(result.stderr).toContain("no_deploy_confirmed");
+    // No retry: exactly one ssh attempt.
+    expect(result.sshCalls.length).toBe(1);
+  }, 60_000);
+
+  it("item 3: takes the baseline from settle's final read, not a second racing read", () => {
+    // A second read after settle could observe a deploy (v11) that began in the
+    // gap and record 11 as the baseline; the post-drop read would then see the
+    // SAME v11 and miss it, firing a false crash alert. The single read keeps the
+    // baseline at v10, so the v11 deploy that dropped the backup is confirmed and
+    // the retry succeeds. The retry log proves the baseline stayed v10.
+    const result = runBackupStep({
+      releasesSeq: "settled newer settled-v11",
+      machinesSeq: "started started started",
+      sshSeq: "severed ok",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.sshCalls.length).toBe(2);
+    expect(result.stdout).toContain("customer_backup_retry_after_confirmed_deploy pre_version=10");
+  }, 60_000);
+
+  it("item 2: judges each attempt on its OWN output, not both attempts appended", () => {
+    // Attempt 1 prints backupId + publication then drops (a confirmed deploy);
+    // attempt 2 exits 0 printing ONLY manifestAuthentication. Grepping the shared
+    // evidence log (both attempts) would find all three and pass; grepping the
+    // current attempt's output alone correctly fails the partial second attempt.
+    const result = runBackupStep({
+      releasesSeq: "settled newer settled-v11",
+      machinesSeq: "started started started",
+      sshSeq: "partA-fail partB-ok",
+    });
+    expect(result.status).not.toBe(0);
+    // Both attempts ran (a retry did happen), and the run still failed.
+    expect(result.sshCalls.length).toBe(2);
+  }, 60_000);
+
+  it("item 4: shares ONE deadline across both settle windows; the retry cannot buy a second budget", () => {
+    // First settle waits out an inflight deploy (one 50s poll) and settles on v10;
+    // the backup is dropped by a confirmed v11 deploy; the retry settle then finds
+    // v11 still in progress. With ONE shared 100s deadline the retry has no budget
+    // left and fails loudly; a per-call deadline would hand it a fresh 100s and let
+    // it settle and back up. Fake clock so the 100s budget is exercised instantly.
+    const result = runBackupStep({
+      releasesSeq: "inflight settled newer newer newer settled-v11",
+      machinesSeq: "started",
+      sshSeq: "severed ok",
+      settleMaxSeconds: "100",
+      settlePollSeconds: "50",
+      fakeClock: true,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_deploy_did_not_settle");
+    // The retry never reached a second ssh: the shared deadline was already spent.
+    expect(result.sshCalls.length).toBe(1);
+  }, 60_000);
+
+  it("R1: settles before the retry, so it never runs straight into the still-in-progress deploy", () => {
+    // Drop the settle_wait before the retry and the confirmed-but-still-running
+    // deploy is backed up into immediately. Here the deploy stays in progress and
+    // the budget is zero, so settling first fails loudly rather than retrying.
+    const result = runBackupStep({
+      releasesSeq: "settled newer newer",
+      machinesSeq: "started started started",
+      sshSeq: "severed ok",
+      settleMaxSeconds: "0",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_deploy_did_not_settle");
+    // The retry never reached a second ssh: it must settle first.
+    expect(result.sshCalls.length).toBe(1);
+  }, 60_000);
+
+  it("R2: waits for a just-booted machine (recent release) instead of failing it as #659", () => {
+    // A recent complete deploy whose machine is momentarily still starting must be
+    // waited out. Drop the recent-boot allowance and this booting machine is
+    // failed as a #659 stopped machine.
+    const result = runBackupStep({
+      releasesSeq: "settled settled",
+      machinesSeq: "stopped started",
+      sshSeq: "ok",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.sshCalls.length).toBe(1);
+    expect(result.stderr).not.toContain("customer_backup_machine_stopped_no_deploy");
+  }, 60_000);
+
+  it("R3: treats a pending release as a deploy in progress, so it does not back up mid-deploy", () => {
+    // Drop `pending` from release_in_progress and the step backs up during a
+    // pending deploy. Here the zero budget makes the correct behaviour fail loudly.
+    const result = runBackupStep({
+      releasesSeq: "pending",
+      machinesSeq: "started",
+      sshSeq: "ok",
+      settleMaxSeconds: "0",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_deploy_did_not_settle");
+    expect(result.sshCalls.length).toBe(0);
+  }, 60_000);
+
+  it("R4: treats an unknown release age as OLD, so a stopped machine with no readable age is a #659", () => {
+    // A complete release with no CreatedAt has an UNKNOWN age. Treat unknown as
+    // recent and a genuine #659 stopped machine becomes a settle-wait that times
+    // out; treat it as old (correct) and it fails immediately as the #659 it is.
+    const result = runBackupStep({
+      releasesSeq: "complete-noage",
+      machinesSeq: "stopped",
+      sshSeq: "ok",
+      settleMaxSeconds: "0",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_machine_stopped_no_deploy");
+    expect(result.stderr).not.toContain("customer_backup_deploy_did_not_settle");
+    expect(result.sshCalls.length).toBe(0);
+  }, 60_000);
+
+  it("R6: confirms a retry on an in-progress newest release even when the version did not advance", () => {
+    // Baseline v10 complete; ssh severed; the confirm read sees v10 now RUNNING (a
+    // restart of the same version -- version did not advance) which is a deploy in
+    // progress. Drop the in-progress confirmation and this fails as no_deploy.
+    const result = runBackupStep({
+      releasesSeq: "settled inflight settled",
+      machinesSeq: "started started started",
+      sshSeq: "severed ok",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.sshCalls.length).toBe(2);
+    expect(result.stdout).toContain("customer_backup_retry_after_confirmed_deploy");
+  }, 60_000);
+
+  it("R8: requires ALL of backupId, manifestAuthentication and publication in the attempt output", () => {
+    // ssh exits 0 but the output is missing manifestAuthentication. Cut the three
+    // evidence greps to one (backupId) and this partial output passes.
+    const result = runBackupStep({
+      releasesSeq: "settled",
+      machinesSeq: "started",
+      sshSeq: "partial-nomanifest",
+    });
+    expect(result.status).not.toBe(0);
+  }, 60_000);
 });
 
 /**
@@ -565,9 +795,10 @@ describe("Run authenticated customer backup — settle wait under GitHub's shell
  * `latest_successful_backup` filter and the execution-gate fence -- both key on
  * a `backup` job whose conclusion is `success`. With the deferred-green outcome
  * removed, the backup job reaches `success` ONLY after a verified backup; a
- * deploy-in-progress, a stopped machine, or a crash all end in `failure`. Run
- * the SHIPPED jq predicates against the job shapes this workflow now produces to
- * prove neither consumer can read a non-backup as a success.
+ * deploy-in-progress, a stopped machine, or a crash all end in `failure`. The
+ * test below EXTRACTS both filters from the shipped YAML and runs them against a
+ * conclusion DERIVED from actually running the shipped step, so neither the
+ * filter text nor the "a non-backup is a failure" claim is hand-written here.
  */
 function jqBool(filter: string, input: unknown): string {
   // Invoke jq through bash (as the workflow does) rather than spawning the binary
@@ -582,7 +813,7 @@ function jqBool(filter: string, input: unknown): string {
   return result.stdout.trim();
 }
 
-describe("backup-job shapes cannot be read as a success without a real backup", () => {
+describe("backup-job outcome, derived by running the shipped step, drives both consumers", () => {
   const deliverySource = readFileSync(
     resolve(root, ".github/workflows/customer-backup-delivery.yml"),
     "utf8",
@@ -591,43 +822,81 @@ describe("backup-job shapes cannot be read as a success without a real backup", 
     resolve(root, ".github/workflows/customer-backup.yml"),
     "utf8",
   );
-  // Extracted from the shipped filters so a future loosening re-runs this proof.
-  const deliveryFilter =
-    '[.jobs[] | select(.name == "backup" and .conclusion == "success")] | length';
-  const fenceFilter =
-    '[.jobs[] | select(.name == "backup" and .conclusion == "success" and .completedAt >= "2026-09-24T00:00:00Z")] | length';
 
-  it("both shipped filters still key on a backup job with conclusion success", () => {
-    // The delivery controller uses a single-quoted jq (plain quotes); the
-    // execution-gate fence uses a double-quoted jq (backslash-escaped quotes).
-    expect(deliverySource).toContain(
-      '.name == "backup" and .conclusion == "success"',
-    );
-    expect(backupSource).toContain(
-      '.name == \\"backup\\" and .conclusion == \\"success\\"',
-    );
+  /** The delivery controller's single-quoted jq that counts a successful backup job. */
+  function extractDeliveryFilter(): string {
+    const found = /--jq '(\[\.jobs\[\][^']*length)'/.exec(deliverySource);
+    if (!found) {
+      throw new Error("delivery backup-success filter not found in customer-backup-delivery.yml");
+    }
+    return found[1];
+  }
+
+  /**
+   * The execution-gate fence's double-quoted jq. Its embedded quotes are
+   * backslash-escaped and it interpolates the shell var $current_created_at, so
+   * unescape the quotes and bind the timestamp to a concrete floor to run it.
+   */
+  function extractFenceFilter(completedAtFloor: string): string {
+    const found = /--jq "(\[\.jobs\[\].*?length)"/.exec(backupSource);
+    if (!found) {
+      throw new Error("execution-gate fence filter not found in customer-backup.yml");
+    }
+    return found[1].replace(/\\"/g, '"').replace(/\$current_created_at/g, completedAtFloor);
+  }
+
+  /** GitHub derives a job's conclusion from its steps: a failed step -> failure. */
+  function conclusionOf(result: { status: number | null }): "success" | "failure" {
+    return result.status === 0 ? "success" : "failure";
+  }
+  const jobShape = (conclusion: string) => ({
+    jobs: [{ name: "backup", conclusion, completedAt: "2026-09-24T12:00:00Z" }],
   });
 
-  it("counts a genuine backup success, and never a non-backup outcome, as a backup", () => {
-    // A real verified backup: the only shape that now ends in success.
-    const realBackup = {
-      jobs: [{ name: "backup", conclusion: "success", completedAt: "2026-09-24T12:00:00Z" }],
-    };
-    // The shapes a non-backup cycle now produces: every one is a FAILURE, never a
-    // green-but-empty run.
-    const deployDidNotSettle = {
-      jobs: [{ name: "backup", conclusion: "failure", completedAt: "2026-09-24T12:00:00Z" }],
-    };
-    const stoppedMachine = {
-      jobs: [{ name: "backup", conclusion: "failure", completedAt: "2026-09-24T12:00:00Z" }],
-    };
-
-    expect(jqBool(deliveryFilter, realBackup)).toBe("1");
-    expect(jqBool(deliveryFilter, deployDidNotSettle)).toBe("0");
-    expect(jqBool(deliveryFilter, stoppedMachine)).toBe("0");
-
-    expect(jqBool(fenceFilter, realBackup)).toBe("1");
-    expect(jqBool(fenceFilter, deployDidNotSettle)).toBe("0");
-    expect(jqBool(fenceFilter, stoppedMachine)).toBe("0");
+  it("extracts non-empty backup-success filters from both shipped workflows", () => {
+    const delivery = extractDeliveryFilter();
+    const fence = extractFenceFilter("2026-09-24T00:00:00Z");
+    for (const filter of [delivery, fence]) {
+      expect(filter).toContain(".jobs[]");
+      expect(filter).toContain('.name == "backup"');
+      expect(filter).toContain('.conclusion == "success"');
+    }
+    // The fence adds the completedAt floor the delivery filter does not.
+    expect(fence).toContain(".completedAt >=");
+    expect(delivery).not.toContain(".completedAt");
   });
+
+  it("a real backup counts for both consumers; a non-backup cycle never does", () => {
+    // The conclusions are DERIVED by running the shipped backup step, not written
+    // by hand: a real verified backup (exit 0 -> success) and a #659 stopped-machine
+    // cycle that takes no backup (exit != 0 -> failure). If the non-backup path ever
+    // went green again (the deferred-green regression), conclusionOf would return
+    // "success" and both filters would count it -- exactly what these forbid.
+    const realBackup = runBackupStep({
+      releasesSeq: "settled",
+      machinesSeq: "started",
+      sshSeq: "ok",
+    });
+    expect(realBackup.status, realBackup.stderr).toBe(0);
+    const nonBackup = runBackupStep({
+      releasesSeq: "stale-complete",
+      machinesSeq: "stopped",
+      sshSeq: "ok",
+      settleMaxSeconds: "1",
+    });
+    expect(nonBackup.status).not.toBe(0);
+
+    const realConclusion = conclusionOf(realBackup);
+    const nonConclusion = conclusionOf(nonBackup);
+    expect(realConclusion).toBe("success");
+    expect(nonConclusion).toBe("failure");
+
+    const delivery = extractDeliveryFilter();
+    const fence = extractFenceFilter("2026-09-24T00:00:00Z");
+
+    expect(jqBool(delivery, jobShape(realConclusion))).toBe("1");
+    expect(jqBool(delivery, jobShape(nonConclusion))).toBe("0");
+    expect(jqBool(fence, jobShape(realConclusion))).toBe("1");
+    expect(jqBool(fence, jobShape(nonConclusion))).toBe("0");
+  }, 60_000);
 });
