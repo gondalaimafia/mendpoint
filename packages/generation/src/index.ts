@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { graphPathDisplay } from "@mendpoint/shared";
@@ -39,6 +40,13 @@ export type GenerateInput = {
   mode?: "migrate" | "adopt";
   /** Structured impact brief from hybrid analysis (preferred). */
   impactReport?: ImpactReport;
+  /**
+   * Stable idempotency key for the branch name. A retry after a lost delivery
+   * response must produce the SAME branch so exact-draft reconciles the existing
+   * draft instead of opening a duplicate PR. The pipeline passes change+consumer;
+   * callers that omit it fall back to a deterministic hash of the change content.
+   */
+  idempotencyKey?: string;
 };
 
 /**
@@ -394,7 +402,16 @@ export function generateMigration(input: GenerateInput): MigrationDraft {
   const short = change.summary.slice(0, 72);
   const verb = mode === "adopt" ? "adopt" : "migrate";
   const title = `mendpoint: ${verb} ${providerName} — ${risk}`;
-  const branchName = `mendpoint/${providerSlug}-${Date.now().toString(36)}`;
+  // Deterministic branch name: a retry (e.g. after a lost delivery response)
+  // must reuse the same branch so exact-draft reconciles the existing draft
+  // rather than opening a duplicate PR. Derive it from a stable idempotency key
+  // (the pipeline passes change+consumer); with no key, hash the change content.
+  const branchKey = input.idempotencyKey ?? JSON.stringify({
+    providerSlug,
+    summary: change.summary,
+    entries: change.entries,
+  });
+  const branchName = `mendpoint/${providerSlug}-${createHash("sha256").update(branchKey, "utf8").digest("hex").slice(0, 16)}`;
 
   // E-graph migration exploration (localized) for PR evidence
   const egraphNotes: string[] = [];

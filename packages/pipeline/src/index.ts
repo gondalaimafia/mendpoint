@@ -56,6 +56,7 @@ import {
   resolveGitHubTenantAccountBinding,
   type GitHubDelivery,
   type GitHubDependencyOutagePolicy,
+  type RepositoryBaseRefresher,
 } from "@mendpoint/github";
 import { evaluatePolicy, type PolicyConfig } from "@mendpoint/policy";
 import { filterRepairEdits } from "./repair-policy.js";
@@ -372,21 +373,7 @@ function persistJsonArtifact(
 }
 
 
-export type RepositoryBaseRefreshResult =
-  | Readonly<{ status: "refreshed"; headSha: string }>
-  | Readonly<{ status: "not_applicable" }>
-  | Readonly<{ status: "failed"; code: string }>;
-
-export type RepositoryBaseRefresher = (
-  input: Readonly<{
-    tenantId: string;
-    repoRoot: string;
-    owner: string;
-    repo: string;
-    defaultBranch: string;
-    installationId: string | null;
-  }>,
-) => Promise<RepositoryBaseRefreshResult>;
+export type { RepositoryBaseRefresher, RepositoryBaseRefreshResult } from "@mendpoint/github";
 
 export type PipelineInput = {
   /** Authenticated tenant boundary for all consumer reads and writes. */
@@ -1171,40 +1158,48 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     }
 
     // Refresh the git-backed clone to the current remote default head before
-    // generating any edits, so the draft is produced against a live base and
-    // exact-draft delivery anchors to it. A fetch failure is retryable: nothing
-    // is generated or delivered this attempt, and the next run retries from a
-    // fresh base. A repository with no git history is not applicable and
-    // proceeds to the content-manifest delivery path. There is no stale-base
-    // fallback.
-    if (input.refreshRepositoryBase) {
-      const refreshed = await input.refreshRepositoryBase({
-        tenantId: input.tenantId,
-        repoRoot: repo.local_path,
-        owner: consumer.github_owner,
-        repo: consumer.github_repo,
-        defaultBranch: repo.default_branch,
-        installationId: consumer.installation_id,
-      });
-      if (refreshed.status === "failed") {
+    // generating edits, so the draft is produced against a live base and
+    // exact-draft delivery anchors to it. This runs only for GitHub-App-bound
+    // consumers and reuses the delivery resolver's validated, repository-scoped
+    // identity so the fetch token carries the same tenant/account/suspension/
+    // repository checks and scope as delivery. Legacy-PAT consumers deliver as
+    // on main, and a repository with no git history, no commits, or no origin is
+    // not applicable (it delivers through the content-manifest path). A refresh
+    // failure never suppresses analysis: it is recorded now and, below, skips
+    // ONLY delivery with a retryable named code — never a stale-base fallback.
+    let baseRefreshFailedCode: string | null = null;
+    let refreshedHeadSha: string | null = null;
+    if (
+      input.refreshRepositoryBase &&
+      consumer.github_delivery_mode === "app" &&
+      consumer.installation_id
+    ) {
+      try {
+        const resolution = deliveryFor(consumer, repo);
+        await resolution.assertRepositoryIdentity?.();
+        const refreshed = await input.refreshRepositoryBase({
+          tenantId: input.tenantId,
+          repoRoot: repo.local_path,
+          owner: consumer.github_owner,
+          repo: consumer.github_repo,
+          defaultBranch: repo.default_branch,
+          installationId: consumer.installation_id,
+          repositoryId: resolution.githubRepositoryId ?? null,
+        });
+        if (refreshed.status === "failed") baseRefreshFailedCode = refreshed.code;
+        else if (refreshed.status === "refreshed") refreshedHeadSha = refreshed.headSha;
+      } catch (error) {
+        baseRefreshFailedCode = error instanceof Error ? error.message : String(error);
+      }
+      if (baseRefreshFailedCode) {
         recordAudit(db, {
           tenantId: input.tenantId,
           actor: "pipeline",
           action: "repository.base_refresh_failed",
           resourceType: "consumer",
           resourceId: consumer.id,
-          metadata: { code: refreshed.code },
+          metadata: { code: baseRefreshFailedCode },
         });
-        report.consumers.push({
-          consumerId: consumer.id,
-          name: consumer.name,
-          findings: 0,
-          candidates: 0,
-          confirmed: 0,
-          prStatus: "delivery_failed",
-          deliveryError: refreshed.code,
-        });
-        continue;
       }
     }
     assertActive();
@@ -1801,6 +1796,9 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       repoRoot: repo.local_path,
       impactReport,
       mode,
+      // Stable across retries for this change and consumer, so a lost-response
+      // retry reconciles the same draft branch instead of opening a duplicate.
+      idempotencyKey: `${changeId}:${consumer.id}`,
     });
 
     // Phase E: first-party branded packaging (optional)
@@ -2083,8 +2081,22 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       status = "low_confidence";
     }
 
+    // A base-refresh failure skips ONLY delivery: analysis and its findings are
+    // already recorded above, and this consumer is retried on the next run.
+    if (baseRefreshFailedCode && shouldDeliver) {
+      shouldDeliver = false;
+      status = "delivery_failed";
+      deliveryError = baseRefreshFailedCode;
+    }
+
     const retryablePr = retryablePrByConsumer.get(consumer.id);
     const prId = retryablePr?.id ?? newId();
+    // One stable creation timestamp for this pr across retries: it seeds the
+    // migration_pr row AND the exact-draft commit date, so a retry after a lost
+    // response reproduces the identical commit and reconciles the existing draft
+    // rather than opening a duplicate. On the first attempt it anchors to the
+    // row's own created_at; on a retry it comes back from the persisted row.
+    const deliveryCreatedAt = retryablePr?.created_at ?? nowIso();
     const candidateContent = JSON.stringify({
       schemaVersion: 1,
       changeId,
@@ -2231,8 +2243,17 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       waiverArtifactId ? `- Waiver artifact: \`${waiverArtifactId}\`` : "",
       `- Evidence record: \`${evidenceId}\``,
     ].filter(Boolean).join("\n");
+    // The branch name is deterministic, so a re-run of the same change/consumer
+    // reproduces the same candidate artifact id. The verification outcome can
+    // still change between runs (e.g. a later waiver flips a gated candidate to
+    // deliverable), so the candidate-recorded event is keyed by that outcome too
+    // — otherwise the same key would carry two different payloads and conflict.
+    const candidateVerificationPassed = deliveryEvidenceOk && !repairBlockedDelivery;
+    const candidateVerificationWaived =
+      !deliveryEvidenceOk && waiverEvaluation?.accepted === true && !repairBlockedDelivery;
+    const candidateEvidenceTag = `${candidateVerificationPassed ? "pass" : "fail"}:${candidateVerificationWaived ? "waived" : "unwaived"}`;
     appendDomainEvent(db, {
-      id: trustId("event", input.tenantId, prId, candidateArtifactId),
+      id: trustId("event", input.tenantId, prId, candidateArtifactId, candidateEvidenceTag),
       tenantId: input.tenantId,
       schemaVersion: 1,
       eventType: "migration_pr.candidate_recorded",
@@ -2241,14 +2262,13 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       actorPrincipalId: pipelinePrincipal.id,
       correlationId: changeId,
       causationId: trustId("event", input.tenantId, changeId, "normalized"),
-      idempotencyKey: `migration_pr:${prId}:candidate:${candidateArtifactId}`,
+      idempotencyKey: `migration_pr:${prId}:candidate:${candidateArtifactId}:evidence:${candidateEvidenceTag}`,
       payload: {
         candidateArtifactId,
         verificationArtifactId,
         evidenceId,
-        verificationPassed: deliveryEvidenceOk && !repairBlockedDelivery,
-        verificationWaived:
-          !deliveryEvidenceOk && waiverEvaluation?.accepted === true && !repairBlockedDelivery,
+        verificationPassed: candidateVerificationPassed,
+        verificationWaived: candidateVerificationWaived,
         waiverArtifactId,
       },
       createdAt: nowIso(),
@@ -2259,7 +2279,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     let deliveryRevisionKind: "git_commit" | "content_manifest" | null = null;
     if (shouldDeliver) {
       try {
-        const packageCreatedAt = retryablePr?.created_at ?? nowIso();
+        const packageCreatedAt = deliveryCreatedAt;
         const snapshotFiles = decision.allowedEdits
           .map((edit) => ({ path: edit.path, sha256: textDigest(edit.original) }))
           .sort((left, right) => left.path.localeCompare(right.path));
@@ -2270,7 +2290,10 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         });
         const repositoryRevision = resolveRepositoryRevision(repo.local_path, snapshotIdentity);
         const { resolvedSha, revisionKind } = repositoryRevision;
-        deliveryExpectedBaseSha = resolvedSha;
+        // After a successful refresh the clone HEAD is the current remote head;
+        // anchor delivery to that exact sha so the draft is based on the live
+        // default branch (and a later remote move drifts, retryably, at delivery).
+        deliveryExpectedBaseSha = refreshedHeadSha ?? resolvedSha;
         deliveryCommitDate = packageCreatedAt;
         deliveryRevisionKind = revisionKind;
         const snapshotManifest = {
@@ -2540,6 +2563,12 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     // Bound the fully assembled body before it is persisted or delivered, so a
     // large graph context never pushes PR creation past GitHub's hard limit.
     prBodyFinal = boundPrBody(prBodyFinal, graphEvidenceBlock);
+    // On a retry, deliver the exact body recorded on the first attempt. Parts of
+    // the body (e.g. the graph blast-radius counts) change as the learning graph
+    // accumulates state across runs; reusing the persisted body keeps the
+    // exact-draft delivery input byte-identical so a lost-response retry
+    // reconciles the existing pull request instead of diverging on its body.
+    if (retryablePr?.body) prBodyFinal = retryablePr.body;
     if (retryablePr) {
       updateMigrationPrDelivery(db, prId, {
         status: shouldDeliver ? "delivery_pending" : status,
@@ -2558,7 +2587,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         patchUnified: draft.patch,
         githubPrNumber: prNumber ?? null,
         githubPrUrl: prUrl ?? null,
-        createdAt: nowIso(),
+        createdAt: deliveryCreatedAt,
         resolvedAt: null,
         // Persist the coverage/basis so the clean-vs-unknown distinction survives
         // to the API and console even when there are zero findings (this row is
@@ -2686,8 +2715,14 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         deliveryError: deliveryError ?? null,
       },
     });
+    // The candidate artifact id is stable across retries (deterministic branch),
+    // so the same pr can reach the same status on more than one attempt with a
+    // different delivery outcome (e.g. a lost-response retry that then diverges).
+    // Discriminate the status event by that outcome so repeated attempts append
+    // distinct observations instead of colliding on one idempotency key.
+    const statusOutcomeTag = textDigest(`${prUrl ?? ""}\u0000${deliveryError ?? ""}`).slice(0, 16);
     appendDomainEvent(db, {
-      id: trustId("event", input.tenantId, prId, status, candidateArtifactId),
+      id: trustId("event", input.tenantId, prId, status, candidateArtifactId, statusOutcomeTag),
       tenantId: input.tenantId,
       schemaVersion: 1,
       eventType: `migration_pr.${status}`,
@@ -2696,7 +2731,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       actorPrincipalId: pipelinePrincipal.id,
       correlationId: changeId,
       causationId: trustId("event", input.tenantId, prId, candidateArtifactId),
-      idempotencyKey: `migration_pr:${prId}:status:${status}:candidate:${candidateArtifactId}`,
+      idempotencyKey: `migration_pr:${prId}:status:${status}:candidate:${candidateArtifactId}:outcome:${statusOutcomeTag}`,
       payload: {
         status,
         prUrl: prUrl ?? null,

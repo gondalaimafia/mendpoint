@@ -160,28 +160,6 @@ export class MockGitHubDelivery implements GitHubDelivery {
   async deliverExactDraft(rawInput: ExactDraftDeliveryInput): Promise<ExactDraftDeliveryResult> {
     const input = validateExactDraftDeliveryInput(rawInput);
     const repoDir = this.repoDir(input.owner, input.repo);
-    const stateDir = this.containedPathFrom(repoDir, "exact-drafts");
-    mkdirSync(stateDir, { recursive: true });
-    const baseKey = createHash("sha256").update(input.baseBranch, "utf8").digest("hex");
-    const basePath = this.containedPathFrom(stateDir, `base-${baseKey}.json`);
-    if (existsSync(basePath)) {
-      const current = JSON.parse(readFileSync(basePath, "utf8")) as { sha?: unknown };
-      if (current.sha !== input.expectedBaseSha) {
-        throw new Error("github_exact_draft_base_revision_drift");
-      }
-    } else {
-      // First creation must anchor to the current remote head, exactly as the
-      // real transport does (exact-draft.ts base-equality check). When a test
-      // has set the remote head, enforce it; otherwise record the expected base.
-      const remoteHead = this.remoteBranchHeads.get(
-        `${input.owner}\u0000${input.repo}\u0000${input.baseBranch}`,
-      );
-      if (remoteHead !== undefined && remoteHead !== input.expectedBaseSha) {
-        throw new Error("github_exact_draft_base_revision_drift");
-      }
-      writeFileSync(basePath, JSON.stringify({ branch: input.baseBranch, sha: input.expectedBaseSha }), "utf8");
-    }
-
     const branchDir = this.branchDir(input.owner, input.repo, input.branch);
     const metadataPath = this.containedPathFrom(branchDir, ".exact-draft.json");
     const treeDigest = createHash("sha256")
@@ -229,6 +207,16 @@ export class MockGitHubDelivery implements GitHubDelivery {
         }
       }
     } else {
+      // A new draft branch must anchor to the CURRENT remote head, exactly as
+      // the real transport does (exact-draft.ts checks refSha(baseBranch) on
+      // first creation). When a test has set the remote head, enforce it; a
+      // stale base drifts and a base matching the moved head is accepted.
+      const remoteHead = this.remoteBranchHeads.get(
+        `${input.owner}\u0000${input.repo}\u0000${input.baseBranch}`,
+      );
+      if (remoteHead !== undefined && remoteHead !== input.expectedBaseSha) {
+        throw new Error("github_exact_draft_base_revision_drift");
+      }
       mkdirSync(branchDir, { recursive: true });
       for (const file of input.files) {
         const path = this.containedPathFrom(branchDir, file.path);
@@ -711,6 +699,14 @@ export {
   type GitHubAppConfig,
   type MockInstallInput,
 } from "./app-install.js";
+
+export {
+  createRepositoryBaseRefresher,
+  type RepositoryBaseRefresher,
+  type RepositoryBaseRefreshResult,
+  type RepositoryBaseRefreshInput,
+  type RepositoryGitRunner,
+} from "./repository-base-refresh.js";
 
 export {
   createAppJwt,

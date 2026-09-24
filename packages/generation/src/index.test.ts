@@ -55,6 +55,30 @@ describe("generation", () => {
     expect(draft.body).toMatch(/Mendpoint/);
     expect(draft.risk).toBe("breaking");
   });
+
+  it("derives a deterministic branch name from the idempotency key so retries reconcile", () => {
+    const v1 = JSON.parse(readFileSync(join(providerDir, "openapi-v1.json"), "utf8"));
+    const v2 = JSON.parse(readFileSync(join(providerDir, "openapi-v2.json"), "utf8"));
+    const change = diffOpenApi(v1, v2);
+    const findings = analyzeRepo(consumerDir, change);
+    const gen = (idempotencyKey?: string) => generateMigration({
+      providerName: "Acme Payments",
+      providerSlug: "acme-payments",
+      change,
+      findings,
+      repoRoot: consumerDir,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    }).branchName;
+
+    // Same key (a retry of the same change+consumer) yields the same branch, so
+    // exact-draft reconciles the existing draft instead of opening a duplicate.
+    expect(gen("change-1:consumer-a")).toBe(gen("change-1:consumer-a"));
+    // A different job yields a different branch.
+    expect(gen("change-1:consumer-a")).not.toBe(gen("change-2:consumer-b"));
+    // No wall-clock in the name: two calls without a key still agree.
+    expect(gen()).toBe(gen());
+    expect(gen("change-1:consumer-a")).toMatch(/^mendpoint\/acme-payments-[a-f0-9]{16}$/);
+  });
 });
 
 describe("generation — FET-016 provider path in PR body", () => {

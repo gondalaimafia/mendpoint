@@ -138,6 +138,7 @@ import {
   resolveGitHubInstallationTenant,
   resolveGitHubAccountTenantBinding,
   resolveGitHubTenantAccountBinding,
+  createRepositoryBaseRefresher,
 } from "@mendpoint/github";
 import { wakeFettlerReviewFromWebhook } from "./warden-review-webhook.js";
 import { dispatchFettlerPrReviewFromWebhook } from "./fettler-pr-review-webhook.js";
@@ -1867,6 +1868,7 @@ app.post("/providers/:slug/publish", async (c) => {
       db,
       tenantId: requestTenantId(c),
       dependencyOutagePolicy: classifyDependencyOutage,
+      refreshRepositoryBase: createRepositoryBaseRefresher(process.env),
       consumerIds: requestConsumerIds(c),
       severity: body.severity,
       notificationsOnly: body.notificationsOnly,
@@ -2172,6 +2174,7 @@ app.post("/feeds/poll", async (c) => {
         db: d,
         tenantId: requestTenantId(c),
         dependencyOutagePolicy: classifyDependencyOutage,
+        refreshRepositoryBase: createRepositoryBaseRefresher(process.env),
         consumerIds: requestConsumerIds(c),
       });
       return { changeId: report.changeId };

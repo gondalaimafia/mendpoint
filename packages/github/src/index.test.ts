@@ -176,6 +176,28 @@ describe("github mock delivery", () => {
     expect(replay).toEqual(first);
   });
 
+  it("enforces the base against the current remote head per new branch, never a pinned first base", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-gh-base-"));
+    const gh = new MockGitHubDelivery(root);
+    const movedBase = "b".repeat(40);
+
+    // A first draft delivers against base X on its own branch.
+    gh.setRemoteBranchHead("acme", "shop", "main", BASE_SHA);
+    await expect(gh.deliverExactDraft(EXACT_DRAFT)).resolves.toMatchObject({ baseSha: BASE_SHA });
+
+    // The remote default branch then moves to Y. A stale delivery on a NEW
+    // branch drifts, and a delivery anchored to the current head Y is accepted:
+    // the mock checks the current head per new branch, it does not pin base X.
+    gh.setRemoteBranchHead("acme", "shop", "main", movedBase);
+    await expect(gh.deliverExactDraft({ ...EXACT_DRAFT, branch: "mendpoint/transformer/candidate-stale" }))
+      .rejects.toThrow("github_exact_draft_base_revision_drift");
+    await expect(gh.deliverExactDraft({
+      ...EXACT_DRAFT,
+      branch: "mendpoint/transformer/candidate-fresh",
+      expectedBaseSha: movedBase,
+    })).resolves.toMatchObject({ baseSha: movedBase });
+  });
+
   it("persists executable file mode evidence and replays it exactly", async () => {
     const root = mkdtempSync(join(tmpdir(), "mendpoint-gh-executable-"));
     const gh = new MockGitHubDelivery(root);

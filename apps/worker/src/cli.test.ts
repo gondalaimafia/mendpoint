@@ -1641,6 +1641,11 @@ describe("worker runtime", () => {
       toVersionId: "version-joined-fettler-v2",
       toVersionLabel: "2.0.0",
       notificationsOnly: true,
+      // The production queue path must wire the outage decision policy (else the
+      // resolver throws github_dependency_outage_policy_required and every App
+      // delivery breaks) and the base refresher. Removing either fails here.
+      dependencyOutagePolicy: expect.any(Function),
+      refreshRepositoryBase: expect.any(Function),
     }));
     expect(listJobs(db, 20, "tenant-a")).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: pipelineJobId, status: "done" }),

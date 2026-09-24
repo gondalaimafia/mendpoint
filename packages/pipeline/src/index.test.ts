@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -111,6 +111,7 @@ function addMonitoredConsumer(
     localPath: string;
     tenantId?: string;
     defaultBranch?: string;
+    installationId?: string | null;
   },
 ) {
   const consumerId = newId();
@@ -119,7 +120,7 @@ function addMonitoredConsumer(
     name: input.name,
     githubOwner: "org",
     githubRepo: input.repo,
-    installationId: null,
+    installationId: input.installationId ?? null,
     tenantId: input.tenantId ?? "tenant_default",
     createdAt: nowIso(),
   });
@@ -444,15 +445,57 @@ describe("pipeline", () => {
     expect(github.calls).toEqual(["createBranch", "commitFiles", "openPullRequest"]);
   });
 
-  it("refreshes the git-backed base before generation and delivers", async () => {
+  it("refreshes an App-bound git base before generation and anchors delivery to the refreshed head", async () => {
     const db = seedProviderVersions();
     const provider = db.raw
       .prepare("SELECT id FROM providers WHERE slug = ?")
       .get("acme-payments") as { id: string };
-    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop });
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop, installationId: "12345" });
     const deliveryRoot = join(tmpdir(), `mendpoint-pipe-refresh-ok-${Date.now()}-${Math.random()}`);
     dirs.push(deliveryRoot);
+    const refreshedHead = "c".repeat(40);
+    const github = new MockGitHubDelivery(deliveryRoot);
+    // The mock enforces the base against the current remote head on a new branch.
+    // Setting it to the refreshed head means delivery succeeds ONLY if the
+    // pipeline anchored to the refreshed head (headSha), not the stale clone head.
+    github.setRemoteBranchHead("org", "shop", "main", refreshedHead);
     const refreshCalls: Array<Record<string, unknown>> = [];
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github,
+      persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+      refreshRepositoryBase: async (input) => {
+        refreshCalls.push({ ...input });
+        return { status: "refreshed", headSha: refreshedHead };
+      },
+    });
+    expect(report.consumers[0]?.prStatus, JSON.stringify(report.consumers[0])).toBe("draft");
+    expect(refreshCalls).toHaveLength(1);
+    expect(refreshCalls[0]).toMatchObject({
+      tenantId: "tenant_default",
+      repoRoot: shop,
+      owner: "org",
+      repo: "shop",
+      defaultBranch: "main",
+      installationId: "12345",
+    });
+  });
+
+  it("skips the refresh for a non-App-bound consumer and still delivers", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    // No installation id => not GitHub-App-bound => refresh must not run.
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop, installationId: null });
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-refresh-skip-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    let refreshCalled = false;
     const report = await runChangePipeline({
       tenantId: "tenant_default",
       providerSlug: "acme-payments",
@@ -462,30 +505,18 @@ describe("pipeline", () => {
       persistIndex: false,
       contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
       securityScanAttested: true,
-      refreshRepositoryBase: async (input) => {
-        refreshCalls.push({ ...input });
-        return { status: "refreshed", headSha: "c".repeat(40) };
-      },
+      refreshRepositoryBase: async () => { refreshCalled = true; return { status: "not_applicable" }; },
     });
+    expect(refreshCalled).toBe(false);
     expect(report.consumers[0]?.prStatus, JSON.stringify(report.consumers[0])).toBe("draft");
-    // Called once, before generation, with the clone root and repository identity.
-    expect(refreshCalls).toHaveLength(1);
-    expect(refreshCalls[0]).toMatchObject({
-      tenantId: "tenant_default",
-      repoRoot: shop,
-      owner: "org",
-      repo: "shop",
-      defaultBranch: "main",
-      installationId: null,
-    });
   });
 
-  it("treats a base-refresh failure as a retryable delivery outcome and delivers nothing", async () => {
+  it("keeps analysis running and skips only delivery when the base refresh fails", async () => {
     const db = seedProviderVersions();
     const provider = db.raw
       .prepare("SELECT id FROM providers WHERE slug = ?")
       .get("acme-payments") as { id: string };
-    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop });
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop, installationId: "12345" });
 
     class NoDeliveryAllowed extends MockGitHubDelivery {
       override async deliverExactDraft(): Promise<never> {
@@ -509,14 +540,15 @@ describe("pipeline", () => {
       refreshRepositoryBase: async () => ({ status: "failed", code: "github_repository_base_refresh_fetch_failed" }),
     });
     const consumer = report.consumers[0];
+    // Analysis still ran: findings are produced (main would report ~20, not 0).
+    expect(consumer?.findings ?? 0).toBeGreaterThan(0);
+    // Only delivery was skipped, with the retryable named code and no PR.
     expect(consumer?.prStatus).toBe("delivery_failed");
     expect(consumer?.deliveryError).toBe("github_repository_base_refresh_fetch_failed");
     expect(consumer?.prUrl).toBeUndefined();
-    // Nothing was delivered: no migration_pr row exists, so the next run retries.
-    expect(listPrs(db)).toHaveLength(0);
   });
 
-  it("drifts (retryable) when the branch moved since connect, then delivers after the base is current", async () => {
+  it("drifts (retryable) when the mock base moved, then delivers after the base is current", async () => {
     const db = seedProviderVersions();
     const provider = db.raw
       .prepare("SELECT id FROM providers WHERE slug = ?")
@@ -544,11 +576,59 @@ describe("pipeline", () => {
     expect(first.consumers[0]?.prStatus).toBe("delivery_failed");
     expect(first.consumers[0]?.prUrl).toBeUndefined();
 
-    // Attempt 2: the base is now current (as if the clone was refreshed), so the
-    // retryable pr re-delivers successfully.
+    // Attempt 2: the base is now current, so the retryable pr re-delivers.
     github.setRemoteBranchHead("org", "shop", "main", cloneHead);
     const second = await runChangePipeline(common);
     expect(second.consumers[0]?.prStatus, JSON.stringify(second.consumers[0])).toBe("draft");
+  });
+
+  it("reconciles the same draft branch after a lost delivery response (one PR total)", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "lostshop", localPath: shop });
+
+    // Attempt 1 creates the branch and PR on the remote, then loses the response
+    // (the caller never learns it succeeded), so the pipeline records
+    // delivery_failed and retries.
+    class LostResponseDelivery extends MockGitHubDelivery {
+      attempts = 0;
+      override async deliverExactDraft(
+        input: Parameters<MockGitHubDelivery["deliverExactDraft"]>[0],
+      ): ReturnType<MockGitHubDelivery["deliverExactDraft"]> {
+        this.attempts += 1;
+        const result = await super.deliverExactDraft(input);
+        if (this.attempts === 1) throw new Error("lost_response_after_create");
+        return result;
+      }
+    }
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-lost-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    const github = new LostResponseDelivery(deliveryRoot);
+    const common = {
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github,
+      persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+    };
+
+    const first = await runChangePipeline(common);
+    expect(first.consumers[0]?.prStatus).toBe("delivery_failed");
+
+    const second = await runChangePipeline(common);
+    expect(second.consumers[0]?.prStatus, JSON.stringify(second.consumers[0])).toBe("draft");
+    expect(github.attempts).toBe(2);
+
+    // The deterministic branch let attempt 2 reconcile the existing draft: the
+    // remote holds exactly one pull request, not a duplicate.
+    const pullsDir = join(deliveryRoot, "org", "lostshop", "pulls");
+    const pulls = readdirSync(pullsDir).filter((name) => /^[1-9][0-9]*\.json$/.test(name));
+    expect(pulls).toHaveLength(1);
   });
 
   it("emits and persists a capability-adoption opportunity for an unused new capability", async () => {

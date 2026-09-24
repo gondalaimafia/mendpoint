@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRepositoryBaseRefresher } from "./repository-base-refresh.js";
+import { createRepositoryBaseRefresher } from "@mendpoint/github";
 import {
   runChangePipeline,
   VERIFIER_ADVISORY_JOB_TYPE,
@@ -4635,6 +4635,7 @@ if (job.type === "warden.candidate.cleanup") {
         tenantId: job.tenant_id,
         providerSlug: payload.providerSlug,
         db,
+        dependencyOutagePolicy: classifyDependencyOutage,
         refreshRepositoryBase: createRepositoryBaseRefresher(process.env),
         consumerIds: payload.consumerIds,
         ...(fettlerProductionIntent ? {
