@@ -58,16 +58,11 @@ import {
   getFeedScheduleHealth,
   updateProviderFeedUrls,
   BILLING_PLANS,
-  adjustUsage,
   createUsageEntitlement,
   createUsagePriceVersion,
-  creditUsage,
   getUsageSummary,
   listUsageLedger,
   reconcileUsageLedger,
-  releaseUsageReservation,
-  reserveUsage,
-  settleUsageReservation,
   provisionEntitlementForPlan,
   releaseRunUsage,
   RUN_USAGE_RESERVATION_KEY,
@@ -107,6 +102,7 @@ import {
 } from "@mendpoint/db";
 import { parseAuditExportLimit } from "./audit-export.js";
 import { createDependencyOutageRoutes } from "./dependency-outage-routes.js";
+import { mountBillingUsageRoutes } from "./billing-usage-routes.js";
 import { changeDetailBody } from "./change-detail.js";
 import {
   detectVendors,
@@ -249,6 +245,7 @@ import {
   createRbacMiddleware,
   attenuateApiKeyScopes,
   effectiveAuthMode,
+  requestTenantId,
   type ApiEnv,
 } from "./auth.js";
 import {
@@ -501,10 +498,29 @@ const USAGE_ERRORS = [
     "usage_reservation_mcu_micros_invalid",
     "usage_settlement_mcu_micros_invalid",
     "usage_adjustment_mcu_micros_invalid",
+    "usage_adjustment_invalid",
+    "usage_credit_invalid",
+    "usage_invoice_reference_required",
+    "usage_finance_authorization_id_invalid",
+    "usage_finance_authorization_digest_invalid",
+    "usage_finance_approved_by_principal_id_invalid",
+    "usage_finance_actor_principal_id_invalid",
+    "usage_finance_approved_at_invalid",
+    "usage_finance_expires_at_invalid",
+    "usage_finance_authorization_window_invalid",
+    "usage_finance_entry_type_invalid",
+    "usage_adjustment_allocation_entitlement_id_invalid",
+    "usage_adjustment_allocation_price_version_invalid",
     "usage_reservation_empty",
     "usage_plan_unknown",
     "usage_plan_seats_invalid",
     "usage_plan_quota_overflow",
+  ),
+  ...publicErrorRules(
+    403,
+    "usage_finance_owner_required",
+    "usage_finance_owner_inactive",
+    "usage_finance_actor_inactive",
   ),
   ...publicErrorRules(
     409,
@@ -516,6 +532,16 @@ const USAGE_ERRORS = [
     "usage_reservation_closed",
     "usage_settlement_exceeds_reservation",
     "usage_credit_exceeds_consumption",
+    "usage_credit_exceeds_invoice_allocation",
+    "usage_invoice_allocation_not_found",
+    "usage_adjustment_allocation_target_required",
+    "usage_adjustment_allocation_target_invalid",
+    "usage_credit_allocation_target_invalid",
+    "usage_finance_authorization_conflict",
+    "usage_finance_authorization_required",
+    "usage_finance_authorization_binding_invalid",
+    "usage_finance_authorization_expired",
+    "usage_finance_authorization_consumed",
   ),
   { internalCode: "usage_reservation_not_found", status: 404 },
 ] satisfies readonly PublicErrorRule[];
@@ -566,16 +592,6 @@ function requestAudit(
     apiKeyId: c.get("apiKeyId") ?? null,
     requestId: c.get("requestId") ?? null,
   });
-}
-
-function requestTenantId(c: Context<ApiEnv>): string {
-  const principal = c.get("principal");
-  if (!principal) throw new Error("authenticated_principal_required");
-  // A blank tenantId (e.g. an empty x-tenant-id header parsed into a principal) must
-  // never reach a tenant-scoped query, where the fail-open branch would drop the filter
-  // and read across tenants. Fail closed instead.
-  if (principal.tenantId.trim() === "") throw new Error("tenant_scope_required");
-  return principal.tenantId;
 }
 
 function requestListLimit(c: Context<ApiEnv>, fallback = 100, maximum = 200): number {
@@ -3533,153 +3549,12 @@ app.post("/billing/entitlements", async (c) => {
   }
 });
 
-app.post("/billing/usage/reservations", async (c) => {
-  const body = await c.req.json<{
-    idempotencyKey?: string;
-    taskId?: string;
-    campaignId?: string | null;
-    mcuMicros?: number;
-    reason?: string;
-  }>().catch(() => ({} as {
-    idempotencyKey?: string;
-    taskId?: string;
-    campaignId?: string | null;
-    mcuMicros?: number;
-    reason?: string;
-  }));
-  try {
-    const entry = reserveUsage(db, {
-      id: newId(),
-      tenantId: requestTenantId(c),
-      idempotencyKey: body.idempotencyKey ?? "",
-      taskId: body.taskId ?? "",
-      campaignId: body.campaignId,
-      mcuMicros: body.mcuMicros ?? -1,
-      reason: body.reason ?? "",
-      actorPrincipalId: c.get("trustPrincipalId"),
-      createdAt: nowIso(),
-    });
-    requestAudit(c, {
-      actor: c.get("principal")!.id,
-      action: "billing.usage_reserved",
-      resourceType: "usage_ledger_entry",
-      resourceId: entry.id,
-      metadata: { taskId: entry.taskId, mcuMicros: entry.reservedMcuMicrosDelta },
-    });
-    return c.json(entry, 201);
-  } catch (error) {
-    return mappedErrorResponse(c, error, USAGE_ERRORS);
-  }
-});
-
-app.post("/billing/usage/reservations/:id/settle", async (c) => {
-  const body = await c.req.json<{
-    idempotencyKey?: string;
-    actualMcuMicros?: number;
-    invoiceReference?: string | null;
-    reason?: string;
-  }>().catch(() => ({} as {
-    idempotencyKey?: string;
-    actualMcuMicros?: number;
-    invoiceReference?: string | null;
-    reason?: string;
-  }));
-  try {
-    const entry = settleUsageReservation(db, {
-      id: newId(),
-      tenantId: requestTenantId(c),
-      idempotencyKey: body.idempotencyKey ?? "",
-      reservationId: c.req.param("id"),
-      actualMcuMicros: body.actualMcuMicros ?? -1,
-      invoiceReference: body.invoiceReference,
-      reason: body.reason ?? "",
-      actorPrincipalId: c.get("trustPrincipalId"),
-      createdAt: nowIso(),
-    });
-    requestAudit(c, {
-      actor: c.get("principal")!.id,
-      action: "billing.usage_settled",
-      resourceType: "usage_ledger_entry",
-      resourceId: entry.id,
-      metadata: { reservationId: entry.reservationId, mcuMicros: entry.consumedMcuMicrosDelta },
-    });
-    return c.json(entry, 201);
-  } catch (error) {
-    return mappedErrorResponse(c, error, USAGE_ERRORS);
-  }
-});
-
-app.post("/billing/usage/reservations/:id/release", async (c) => {
-  const body = await c.req.json<{ idempotencyKey?: string; reason?: string }>()
-    .catch(() => ({} as { idempotencyKey?: string; reason?: string }));
-  try {
-    const entry = releaseUsageReservation(db, {
-      id: newId(),
-      tenantId: requestTenantId(c),
-      idempotencyKey: body.idempotencyKey ?? "",
-      reservationId: c.req.param("id"),
-      reason: body.reason ?? "",
-      actorPrincipalId: c.get("trustPrincipalId"),
-      createdAt: nowIso(),
-    });
-    requestAudit(c, {
-      actor: c.get("principal")!.id,
-      action: "billing.usage_released",
-      resourceType: "usage_ledger_entry",
-      resourceId: entry.id,
-      metadata: { reservationId: entry.reservationId },
-    });
-    return c.json(entry, 201);
-  } catch (error) {
-    return mappedErrorResponse(c, error, USAGE_ERRORS);
-  }
-});
-
-app.post("/billing/usage/:kind", async (c) => {
-  const kind = c.req.param("kind");
-  if (kind !== "adjustments" && kind !== "credits") {
-    return c.json({ error: "usage_entry_kind_invalid" }, 404);
-  }
-  const body = await c.req.json<{
-    idempotencyKey?: string;
-    taskId?: string;
-    campaignId?: string | null;
-    mcuMicrosDelta?: number;
-    invoiceReference?: string | null;
-    reason?: string;
-  }>().catch(() => ({} as {
-    idempotencyKey?: string;
-    taskId?: string;
-    campaignId?: string | null;
-    mcuMicrosDelta?: number;
-    invoiceReference?: string | null;
-    reason?: string;
-  }));
-  try {
-    const operation = kind === "credits" ? creditUsage : adjustUsage;
-    const entry = operation(db, {
-      id: newId(),
-      tenantId: requestTenantId(c),
-      idempotencyKey: body.idempotencyKey ?? "",
-      taskId: body.taskId ?? "",
-      campaignId: body.campaignId,
-      mcuMicrosDelta: body.mcuMicrosDelta ?? 0,
-      invoiceReference: body.invoiceReference,
-      reason: body.reason ?? "",
-      actorPrincipalId: c.get("trustPrincipalId"),
-      createdAt: nowIso(),
-    });
-    requestAudit(c, {
-      actor: c.get("principal")!.id,
-      action: `billing.usage_${entry.entryType}`,
-      resourceType: "usage_ledger_entry",
-      resourceId: entry.id,
-      metadata: { taskId: entry.taskId, mcuMicros: entry.consumedMcuMicrosDelta },
-    });
-    return c.json(entry, 201);
-  } catch (error) {
-    return mappedErrorResponse(c, error, USAGE_ERRORS);
-  }
+// Reserve/settle/release and finance routes are mounted under /billing/usage in a
+// load-bearing order (reservation before finance) centralized in mountBillingUsageRoutes.
+mountBillingUsageRoutes(app, {
+  db,
+  errors: USAGE_ERRORS,
+  audit: requestAudit,
 });
 
 app.get("/tenants", (c) => {
