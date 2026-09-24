@@ -54,9 +54,17 @@ import {
   getWardenCiCycle,
   getRoutingLedgerForJob,
   insertAgentRun,
+  insertApiChange,
   insertApiVersion,
   insertConsumer,
   insertConsumerRepo,
+  insertMigrationPr,
+  persistDeliveryArtifact,
+  getPr,
+  listAudit,
+  createUsagePriceVersion,
+  createUsageEntitlement,
+  listUsageLedger,
   insertConnectedRepository,
   insertMonitoredApi,
   insertProvider,
@@ -71,18 +79,21 @@ import {
   upsertGitHubInstallation,
   getRepairSession,
   listJobs,
+  listPrs,
   missionTaskIdForJob,
   listActualExecutionCosts,
   listExecutionCostOutcomes,
   recordExecutionCostOutcome,
   verifyExecutionOutcomeIntegrity,
 } from "@mendpoint/db";
-import { nowIso } from "@mendpoint/shared";
+import { newId, nowIso } from "@mendpoint/shared";
 import type { AgentPlanner } from "@mendpoint/agent";
-import { ensureDefaultPolicyEnvelopeBinding, type PipelineReport } from "@mendpoint/pipeline";
+import { ensureDefaultPolicyEnvelopeBinding, deliveryArtifactDigest, runChangePipeline, type PipelineReport } from "@mendpoint/pipeline";
+import { openGraphLearnMemory, resetGraphLearnDbForTests } from "@mendpoint/graph-learn";
 import { canonicalPolicyEnvelopeJson, defaultPolicyEnvelope } from "@mendpoint/policy";
 import {
   GitHubAppDelivery,
+  MockGitHubDelivery,
   OctokitGitHubDelivery,
   type ExactDraftDeliveryInput,
   type GitHubDelivery,
@@ -1322,6 +1333,310 @@ describe("worker runtime", () => {
     db.raw.close();
   });
 
+  it("claims the pipeline.delivery-retry job the fanout enqueued and delivers from the artifact without re-running the pipeline", async () => {
+    // The fanout no longer throws on a delivery failure; it enqueues a delivery-only
+    // retry job. That job is worthless unless the worker's claim allowlist includes
+    // pipeline.delivery-retry. This drives the whole chain through the real worker
+    // loop (processJobsOnce): fanout delivery fails -> retry job enqueued -> worker
+    // claims it -> one PR delivered from the artifact, with NO pipeline re-run. It
+    // fails if the allowlist entry is removed (the "built but never called" defect).
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-delivery-retry-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+    const consumerId = "consumer-retry-e2e";
+    insertConsumer(db, { id: consumerId, name: "Retry E2E", githubOwner: "org", githubRepo: "retry-e2e", installationId: null, tenantId: "tenant-a", createdAt: nowIso() });
+    insertConsumerRepo(db, { id: "repo-retry-e2e", consumerId, localPath: dir, defaultBranch: "main", createdAt: nowIso() });
+    const deliveryKey = `change-e2e:${consumerId}`;
+    const baseSha = "b".repeat(40);
+    enqueueJob(db, { id: "fanout-retry-e2e", tenantId: "tenant-a", type: "pipeline.fanout", createdAt: nowIso(), payload: { providerSlug: "acme" } });
+
+    // A pipeline-runner double that mimics a fanout whose delivery failed transiently:
+    // it persists the delivery_failed row AND the write-ahead artifact (exactly as the
+    // real delivery does before the failing ref write), then reports the consumer failed.
+    const pipelineRunner = vi.fn(async (): Promise<PipelineReport> => {
+      insertMigrationPr(db, { id: "pr-e2e", changeId: "change-e2e", consumerId, title: "E2E candidate", body: "body", branchName: "mendpoint/e2e-abc", status: "delivery_failed", risk: "low", patchUnified: "diff", createdAt: nowIso() });
+      persistDeliveryArtifact(db, { tenantId: "tenant-a", artifactDigest: deliveryArtifactDigest(deliveryKey, "t".repeat(40), baseSha), deliveryKey, title: "E2E candidate", body: "body", treeSha: "t".repeat(40), parentSha: baseSha, filesJson: JSON.stringify([{ path: "src/a.ts", content: "changed\n" }]), createdAt: nowIso() });
+      return { changeId: "change-e2e", risk: "breaking", summary: "s", diff: { risk: "breaking", summary: "s", entries: [] }, surfaces: 1, consumers: [{ consumerId, name: "Retry E2E", findings: 1, candidates: 1, confirmed: 1, prId: "pr-e2e", prStatus: "delivery_failed" }] };
+    });
+
+    // Phase A: the fanout runs, delivery "fails", and a delivery-retry job is enqueued.
+    await expect(processJobsOnce(db, { tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false, pipelineRunner }))
+      .resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+    expect(pipelineRunner).toHaveBeenCalledTimes(1);
+    const retryJob = listJobs(db, 20, "tenant-a").find((j) => j.type === "pipeline.delivery-retry");
+    expect(retryJob, "the fanout enqueued a delivery-retry job").toBeDefined();
+    expect(retryJob!.status).toBe("pending");
+    expect(getPr(db, "pr-e2e", "tenant-a")?.status).toBe("delivery_failed");
+
+    // Phase B: the worker CLAIMS the delivery-retry job (allowlist) and delivers from
+    // the artifact. The pipeline is NOT re-run (pipelineRunner call count stays 1).
+    const retryGithub = new MockGitHubDelivery(join(dir, "mock-github"));
+    await expect(processJobsOnce(db, { tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false, pipelineRunner, deliveryRetryGithub: retryGithub }))
+      .resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+    expect(pipelineRunner, "the delivery-only retry must not re-run the pipeline").toHaveBeenCalledTimes(1);
+    expect(getPr(db, "pr-e2e", "tenant-a")?.status).toBe("draft");
+    expect(getJob(db, retryJob!.id, "tenant-a")?.status).toBe("done");
+    db.raw.close();
+  });
+
+  it("falls back to a full pipeline fanout when a delivery-retry job finds no write-ahead artifact", async () => {
+    // If the outage hit before the commit was built there is no artifact to replay.
+    // The worker must not re-throw forever: it completes the retry job and enqueues a
+    // full pipeline fanout for the change (bounded by the same 7-day cap).
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-delivery-fallback-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+    const consumerId = "consumer-fallback";
+    insertProvider(db, { id: "provider-fallback", slug: "acme-fallback", name: "Acme", website: null, createdAt: nowIso() });
+    insertApiChange(db, { id: "change-fallback", providerId: "provider-fallback", fromVersionId: "v1", toVersionId: "v2", risk: "breaking", summary: "s", diffJson: "{}", createdAt: nowIso() });
+    insertConsumer(db, { id: consumerId, name: "Fallback Shop", githubOwner: "org", githubRepo: "fallback-shop", installationId: null, tenantId: "tenant-a", createdAt: nowIso() });
+    insertConsumerRepo(db, { id: "repo-fallback", consumerId, localPath: dir, defaultBranch: "main", createdAt: nowIso() });
+    // A delivery_failed row with NO artifact persisted, carrying the ORIGINATING
+    // fanout gate payload on the row (reservation keys already stripped at persist).
+    insertMigrationPr(db, {
+      id: "pr-fallback", changeId: "change-fallback", consumerId, title: "Fallback", body: "b",
+      branchName: "mendpoint/fallback", status: "delivery_failed", risk: "low", patchUnified: "diff",
+      createdAt: nowIso(),
+      originFanoutJson: JSON.stringify({
+        providerSlug: "acme-fallback", severity: "required", securityScanAttested: true,
+        securityScanAttestation: { attestedBy: "human:owner", method: "manual" },
+        contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      }),
+    });
+    enqueueJob(db, { id: "pipeline-delivery-retry:pr-fallback", tenantId: "tenant-a", type: "pipeline.delivery-retry", createdAt: nowIso(), payload: { prId: "pr-fallback" }, maxAttempts: 50 });
+
+    await expect(processJobsOnce(db, {
+      tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false,
+      // The transport must never be reached (no artifact to deliver from).
+      deliveryRetryGithub: { deliverAdoptiveDraft: () => { throw new Error("delivery must not be attempted"); } } as unknown as GitHubDelivery,
+    })).resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+
+    // The retry job completed (no throw-forever), and a full pipeline fanout was
+    // enqueued that REPLAYS the originating gate payload (attestation, contract cases,
+    // severity) bound to the FAILED change's versions and narrowed to the consumer —
+    // not a bare re-run that would fail the gates or target the latest change.
+    expect(getJob(db, "pipeline-delivery-retry:pr-fallback", "tenant-a")?.status).toBe("done");
+    const fallback = listJobs(db, 20, "tenant-a").find((j) => j.id === "pipeline-delivery-fallback:pr-fallback");
+    expect(fallback, "a full pipeline fanout was enqueued as the fallback").toBeDefined();
+    expect(fallback!.type).toBe("pipeline.fanout");
+    const fallbackPayload = JSON.parse(fallback!.payload_json);
+    expect(fallbackPayload).toMatchObject({
+      providerSlug: "acme-fallback",
+      consumerIds: [consumerId],
+      fromVersionId: "v1",
+      toVersionId: "v2",
+      severity: "required",
+      securityScanAttested: true,
+      securityScanAttestation: { attestedBy: "human:owner", method: "manual" },
+    });
+    expect(fallbackPayload.contractCases).toHaveLength(1);
+    db.raw.close();
+  });
+
+  it("no-artifact fallback replays the originating gate payload for the SAME change through the real pipeline (503 first, recover, one PR, gates pass)", async () => {
+    // End-to-end through the real worker loop AND the real pipeline: a production-shaped
+    // fanout (contract cases + security attestation) whose first GitHub call 503s (before
+    // the write-ahead artifact exists) must fall back to a full pipeline run that replays
+    // the SAME gate payload for the SAME change — even after a newer provider version
+    // lands — so exactly one PR delivers and the gates pass. A bare-payload fallback would
+    // fail the gates (gates_failed, 0 PRs); an unpinned one would target v2->v3.
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-fallback-e2e-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    const acme = join(fixturesRoot, "providers/acme-payments");
+    const shop = join(fixturesRoot, "consumers/shop-app");
+    const providerId = newId();
+    insertProvider(db, { id: providerId, slug: "acme-e2e", name: "Acme", website: null, createdAt: nowIso() });
+    const v1 = newId(); const v2 = newId();
+    insertApiVersion(db, { id: v1, providerId, versionLabel: "1.0.0", openapiJson: readFileSync(join(acme, "openapi-v1.json"), "utf8"), changelogMd: null, publishedAt: "2026-01-01T00:00:00.000Z" });
+    insertApiVersion(db, { id: v2, providerId, versionLabel: "2.0.0", openapiJson: readFileSync(join(acme, "openapi-v2.json"), "utf8"), changelogMd: null, publishedAt: "2026-07-01T00:00:00.000Z" });
+    const consumerId = newId();
+    insertConsumer(db, { id: consumerId, name: "E2E Shop", githubOwner: "org", githubRepo: "e2e-shop", installationId: null, tenantId: "tenant-a", createdAt: nowIso() });
+    insertConsumerRepo(db, { id: newId(), consumerId, localPath: shop, defaultBranch: "main", createdAt: nowIso() });
+    insertMonitoredApi(db, { id: newId(), consumerId, providerId, detectionSource: "manual" });
+
+    // First adoptive delivery 503s BEFORE the write-ahead artifact is persisted (the
+    // no-artifact case); later deliveries go through.
+    class FailFirstDelivery extends MockGitHubDelivery {
+      calls = 0;
+      override async deliverAdoptiveDraft(
+        input: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[0],
+        options: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[1],
+      ): ReturnType<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>> {
+        this.calls++;
+        if (this.calls === 1) throw new Error("github 503 on first call");
+        return super.deliverAdoptiveDraft(input, options);
+      }
+    }
+    const github = new FailFirstDelivery(join(dir, "mock-github"));
+    const graphDbs: Array<{ raw: { close: () => void } }> = [];
+    const runner: typeof runChangePipeline = (input) => {
+      const graphDb = openGraphLearnMemory();
+      graphDbs.push(graphDb);
+      return runChangePipeline({ ...input, github, graphDb, persistIndex: false });
+    };
+    // Production-shaped fanout payload (gates require both).
+    enqueueJob(db, {
+      id: "fanout-e2e", tenantId: "tenant-a", type: "pipeline.fanout", createdAt: nowIso(),
+      payload: {
+        providerSlug: "acme-e2e", severity: "required", securityScanAttested: true,
+        contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      },
+    });
+
+    try {
+      // Phase A: fanout runs, delivery 503s -> delivery_failed (no artifact), origin
+      // payload persisted on the row, delivery-retry job enqueued.
+      await expect(processJobsOnce(db, { tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false, pipelineRunner: runner }))
+        .resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+      const prs1 = listPrs(db, "tenant-a");
+      expect(prs1).toHaveLength(1);
+      expect(prs1[0]!.status).toBe("delivery_failed");
+      const prId = prs1[0]!.id;
+      const failedChangeId = prs1[0]!.change_id;
+
+      // A NEWER provider version lands before the retry runs.
+      insertApiVersion(db, { id: newId(), providerId, versionLabel: "3.0.0", openapiJson: readFileSync(join(acme, "openapi-v2.json"), "utf8").replace("2.0.0", "3.0.0"), changelogMd: null, publishedAt: "2026-09-01T00:00:00.000Z" });
+
+      // Phase B: delivery-retry finds no artifact -> enqueues ONE fallback fanout that
+      // replays the gate payload pinned to the failed change.
+      await expect(processJobsOnce(db, { tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false, pipelineRunner: runner }))
+        .resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+      const fallbackJobs = listJobs(db, 50, "tenant-a").filter((j) => j.id.startsWith("pipeline-delivery-fallback:"));
+      expect(fallbackJobs, "exactly one fallback fanout (two workers would still dedup)").toHaveLength(1);
+      // The fallback is scheduled with a backoff; make it available for the test.
+      db.raw.prepare("UPDATE jobs SET available_at = ? WHERE id = ?").run(nowIso(), fallbackJobs[0]!.id);
+
+      // Phase C: the fallback fanout runs -> GitHub recovers -> the SAME change delivers.
+      await expect(processJobsOnce(db, { tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false, pipelineRunner: runner }))
+        .resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+      const prs2 = listPrs(db, "tenant-a");
+      expect(prs2, "exactly one PR — the fallback did not target the newer v2->v3 change").toHaveLength(1);
+      expect(prs2[0]!.id).toBe(prId);
+      expect(prs2[0]!.change_id).toBe(failedChangeId);
+      expect(prs2[0]!.status, "gates passed and the SAME change delivered").toBe("draft");
+    } finally {
+      for (const g of graphDbs) { try { g.raw.close(); } catch { /* ignore */ } }
+      resetGraphLearnDbForTests();
+      db.raw.close();
+    }
+  });
+
+  // Seed a replayable delivery_failed row (no artifact) plus the provider/change/
+  // consumer the D10 fallback needs. `originFanoutJson: null` seeds a NON-replayable row.
+  function seedReplayableFailedRow(
+    db: ReturnType<typeof createDb>,
+    originFanoutJson: string | null = JSON.stringify({
+      providerSlug: "acme-r", securityScanAttested: true,
+      contractCases: [{ id: "f", name: "f", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+    }),
+  ): void {
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+    insertProvider(db, { id: "prov-r", slug: "acme-r", name: "Acme", website: null, createdAt: nowIso() });
+    insertApiChange(db, { id: "chg-r", providerId: "prov-r", fromVersionId: "va", toVersionId: "vb", risk: "breaking", summary: "s", diffJson: "{}", createdAt: nowIso() });
+    insertConsumer(db, { id: "con-r", name: "Shop", githubOwner: "org", githubRepo: "shop-r", installationId: null, tenantId: "tenant-a", createdAt: nowIso() });
+    insertConsumerRepo(db, { id: "repo-r", consumerId: "con-r", localPath: join(tmpdir(), "seed-r"), defaultBranch: "main", createdAt: nowIso() });
+    insertMigrationPr(db, {
+      id: "pr-r", changeId: "chg-r", consumerId: "con-r", title: "t", body: "b",
+      branchName: "mendpoint/r", status: "delivery_failed", risk: "low", patchUnified: "d",
+      createdAt: nowIso(), originFanoutJson,
+    });
+  }
+
+  // A pipeline runner double whose delivery always fails (no artifact) so each fallback
+  // fanout re-enqueues the next delivery-retry — a sustained outage.
+  const alwaysFailingRunner: typeof runChangePipeline = async () => ({
+    changeId: "chg-r", risk: "breaking", summary: "s",
+    diff: { risk: "breaking", summary: "s", entries: [] }, surfaces: 0,
+    consumers: [{ consumerId: "con-r", name: "Shop", findings: 1, candidates: 1, confirmed: 1, prId: "pr-r", prStatus: "delivery_failed" }],
+  });
+
+  function seedEntitlement(db: ReturnType<typeof createDb>, quotaMcuMicros: number): void {
+    createUsagePriceVersion(db, {
+      id: "price-r", tenantId: "tenant-a", formulaVersion: "mcu-v1", currency: "USD",
+      pricePerMcuMoneyMicros: 20_000, effectiveAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2027-01-01T00:00:00.000Z", contractReference: "contract-r", createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    createUsageEntitlement(db, {
+      id: "ent-r", tenantId: "tenant-a", priceVersionId: "price-r", quotaMcuMicros,
+      features: ["fettler"], contractReference: "contract-r",
+      periodStart: "2026-01-01T00:00:00.000Z", periodEnd: "2027-01-01T00:00:00.000Z", createdAt: "2026-01-01T00:00:00.000Z",
+    });
+  }
+
+  it("(1) a sustained no-artifact outage replays exactly 3 times, each admitted and settled, then abandons", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-replay-cap-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    seedReplayableFailedRow(db);
+    seedEntitlement(db, 100_000_000); // ample quota
+    const opts = {
+      tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false,
+      pipelineRunner: alwaysFailingRunner, wardenEnv: { MENDPOINT_USAGE_ENFORCEMENT: "1" },
+    };
+    enqueueJob(db, { id: "pipeline-delivery-retry:pr-r", tenantId: "tenant-a", type: "pipeline.delivery-retry", payload: { prId: "pr-r" }, maxAttempts: 50, createdAt: nowIso() });
+    // Drive delivery-retry -> fallback (admit + enqueue) -> fallback fanout (fail + settle
+    // + re-enqueue) cycles until the cap abandons the row.
+    for (let cycle = 0; cycle < 6; cycle++) {
+      await processJobsOnce(db, opts);
+      if (getPr(db, "pr-r", "tenant-a")?.status === "github_delivery_abandoned") break;
+      const fb = getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a");
+      if (fb && fb.status === "pending") {
+        db.raw.prepare("UPDATE jobs SET available_at = ? WHERE id = ?").run(nowIso(), fb.id);
+        await processJobsOnce(db, opts);
+      }
+    }
+    expect(getPr(db, "pr-r", "tenant-a")?.status).toBe("github_delivery_abandoned");
+    expect(getPr(db, "pr-r", "tenant-a")?.replay_count).toBe(3);
+    const ledger = listUsageLedger(db, "tenant-a");
+    expect(ledger.filter((e) => e.entryType === "reservation")).toHaveLength(3);
+    expect(ledger.filter((e) => e.entryType === "settlement")).toHaveLength(3);
+    db.raw.close();
+  });
+
+  it("(1) a replay refused by quota blocks the row (github_delivery_replay_quota_refused) with no run", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-replay-quota-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    seedReplayableFailedRow(db);
+    seedEntitlement(db, 1_000_000); // 1 MCU < the 2 MCU replay estimate -> refused
+    enqueueJob(db, { id: "pipeline-delivery-retry:pr-r", tenantId: "tenant-a", type: "pipeline.delivery-retry", payload: { prId: "pr-r" }, maxAttempts: 50, createdAt: nowIso() });
+    await expect(processJobsOnce(db, {
+      tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false,
+      pipelineRunner: alwaysFailingRunner, wardenEnv: { MENDPOINT_USAGE_ENFORCEMENT: "1" },
+    })).resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+    const pr = getPr(db, "pr-r", "tenant-a");
+    expect(pr?.status).toBe("delivery_blocked");
+    expect(pr?.delivery_error).toBe("github_delivery_replay_quota_refused");
+    // No replay was scheduled and no reservation was held (quota refusal is not a hold).
+    expect(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")).toBeUndefined();
+    expect(pr?.replay_count).toBe(0);
+    expect(listUsageLedger(db, "tenant-a").filter((e) => e.entryType === "reservation")).toHaveLength(0);
+    expect(listAudit(db, "tenant-a").some((a) => a.action === "pr.delivery_replay_quota_refused")).toBe(true);
+    db.raw.close();
+  });
+
+  it("(2) a no-artifact row with no origin payload is blocked (github_delivery_replay_unavailable), not silently done", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-replay-unavailable-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    seedReplayableFailedRow(db, null); // NULL origin payload (main-era / watch / feed / demo row)
+    enqueueJob(db, { id: "pipeline-delivery-retry:pr-r", tenantId: "tenant-a", type: "pipeline.delivery-retry", payload: { prId: "pr-r" }, maxAttempts: 50, createdAt: nowIso() });
+    await expect(processJobsOnce(db, {
+      tenantId: "tenant-a", maxJobs: 1, runWardenMaintenance: false, pipelineRunner: alwaysFailingRunner,
+    })).resolves.toMatchObject({ claimed: 1, succeeded: 1 });
+    const pr = getPr(db, "pr-r", "tenant-a");
+    expect(pr?.status).toBe("delivery_blocked");
+    expect(pr?.delivery_error).toBe("github_delivery_replay_unavailable");
+    // The retry job is done (not stuck), no fallback fanout was scheduled, and it is audited.
+    expect(getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")?.status).toBe("done");
+    expect(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")).toBeUndefined();
+    expect(listAudit(db, "tenant-a").some((a) => a.action === "pr.delivery_replay_unavailable")).toBe(true);
+    db.raw.close();
+  });
+
   it("restricts the coordinator advisory drain to verifier jobs", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-worker-job-filter-"));
     dirs.push(dir);
@@ -1641,6 +1956,11 @@ describe("worker runtime", () => {
       toVersionId: "version-joined-fettler-v2",
       toVersionLabel: "2.0.0",
       notificationsOnly: true,
+      // The production queue path must wire the outage decision policy (else the
+      // resolver throws github_dependency_outage_policy_required and every App
+      // delivery breaks) and the base refresher. Removing either fails here.
+      dependencyOutagePolicy: expect.any(Function),
+      refreshRepositoryBase: expect.any(Function),
     }));
     expect(listJobs(db, 20, "tenant-a")).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: pipelineJobId, status: "done" }),

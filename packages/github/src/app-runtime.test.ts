@@ -1,6 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
+  classifyGitHubDependencyFailure,
   createAppJwt,
   deliverToManyRepos,
   GitHubAppDelivery,
@@ -9,11 +10,120 @@ import {
   listInstallationRepositories,
   loadAppCredentials,
   mockInstallationRepositories,
+  type GitHubDependencyOutagePort,
 } from "./app-runtime.js";
 import { MockGitHubDelivery } from "./index.js";
 
 const EXACT_BASE_SHA = "a".repeat(40);
 const EXACT_COMMIT_SHA = "c".repeat(40);
+
+const RECONCILE_INPUT = Object.freeze({
+  owner: "acme",
+  repo: "shop",
+  baseBranch: "main",
+  expectedBaseSha: EXACT_BASE_SHA,
+  branch: "mendpoint/fettler/candidate-a",
+  commitMessage: "Open approved Fettler candidate",
+  commitDate: "2026-09-01T12:00:00.000Z",
+  title: "Fettler candidate",
+  body: "Exact candidate",
+  files: [{ path: "src/a.ts", content: "changed\n", mode: "100644" as const }],
+});
+
+function makeExactPull() {
+  return {
+    number: 23,
+    html_url: "https://github.com/acme/shop/pull/23",
+    state: "open",
+    draft: true,
+    title: "Fettler candidate",
+    body: "Exact candidate",
+    head: { ref: "mendpoint/fettler/candidate-a", sha: EXACT_COMMIT_SHA },
+    base: { ref: "main", sha: EXACT_BASE_SHA },
+  };
+}
+
+// A byte-for-byte matching lost-response draft: reconcile must recover it as
+// `completed` without any Git write. Divergence tests override exactly one
+// dimension so that a single verification is the only thing that rejects it.
+function baselineReconcileOctokit() {
+  return {
+    git: {
+      getRef: vi.fn(async ({ ref }: { ref: string }) => ({
+        data: { object: { sha: ref === "heads/main" ? EXACT_BASE_SHA : EXACT_COMMIT_SHA } },
+      })),
+      getCommit: vi.fn(async ({ commit_sha }: { commit_sha: string }) => ({
+        data: commit_sha === EXACT_BASE_SHA
+          ? { sha: EXACT_BASE_SHA, tree: { sha: "b".repeat(40) }, parents: [] }
+          : {
+            sha: EXACT_COMMIT_SHA,
+            tree: { sha: "d".repeat(40) },
+            parents: [{ sha: EXACT_BASE_SHA }],
+            message: "Open approved Fettler candidate",
+            author: { name: "Mendpoint", email: "delivery@mendpoint.ai", date: "2026-09-01T12:00:00.000Z" },
+            committer: { name: "Mendpoint", email: "delivery@mendpoint.ai", date: "2026-09-01T12:00:00.000Z" },
+          },
+      })),
+      getTree: vi.fn(async () => ({
+        data: {
+          truncated: false,
+          tree: [{ path: "src/a.ts", type: "blob", mode: "100644", sha: "blob-a" }],
+        },
+      })),
+      createBlob: vi.fn(async () => { throw new Error("duplicate_blob_write"); }),
+      createTree: vi.fn(async () => { throw new Error("duplicate_tree_write"); }),
+      createCommit: vi.fn(async () => { throw new Error("duplicate_commit_write"); }),
+      createRef: vi.fn(async () => { throw new Error("duplicate_ref_create"); }),
+      updateRef: vi.fn(async () => { throw new Error("duplicate_ref_write"); }),
+    },
+    repos: {
+      getContent: vi.fn(async () => ({
+        data: {
+          type: "file",
+          encoding: "base64",
+          content: Buffer.from("changed\n", "utf8").toString("base64"),
+        },
+      })),
+    },
+    pulls: {
+      list: vi.fn(async () => ({ data: [makeExactPull()] })),
+      create: vi.fn(async () => { throw new Error("duplicate_pull_write"); }),
+    },
+  };
+}
+
+function reconcileOnlyDelivery(octokit: unknown): GitHubAppDelivery {
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const outage: GitHubDependencyOutagePort = {
+    async run<T>(operation: Parameters<GitHubDependencyOutagePort["run"]>[0]) {
+      const observed = await operation.reconcile();
+      if (observed.status === "completed") {
+        return { status: "recovered" as const, value: observed.value as T };
+      }
+      const executed = await operation.execute();
+      return { status: "completed" as const, value: executed.value as T };
+    },
+  };
+  const delivery = new GitHubAppDelivery(
+    { appId: "99", privateKeyPem: pem },
+    42,
+    undefined,
+    [77],
+    {
+      tenantId: "tenant-acme",
+      outage,
+      decide: () => { throw new Error("decision_not_expected"); },
+      retryBudget: 5,
+      expiresInMs: 60_000,
+      workerId: "worker-1",
+      authorityVersion: "installation-v1",
+      now: () => "2026-09-01T12:00:10.000Z",
+    },
+  );
+  (delivery as unknown as { octokit: () => Promise<unknown> }).octokit = async () => octokit;
+  return delivery;
+}
 
 describe("github app runtime", () => {
   it("creates a verifiable RS256 JWT shape", () => {
@@ -468,4 +578,42 @@ describe("github app runtime", () => {
     expect(results).toHaveLength(2);
     expect(results.every((r) => r.pr?.number)).toBe(true);
   });
+
+  it("classifies authentication, permission, throttle, timeout, provider, and lost-response failures distinctly", () => {
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("bad credentials"), { status: 401 })))
+      .toEqual({ failureKind: "authentication" });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("forbidden"), { status: 403 })))
+      .toEqual({ failureKind: "permission" });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("slow down"), {
+      status: 429,
+      response: { headers: { "retry-after": "30" } },
+    }), "2026-09-01T12:00:00.000Z")).toEqual({
+      failureKind: "throttled",
+      retryAfterMs: 30_000,
+    });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("API rate limit exceeded"), {
+      status: 403,
+      response: { headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1788264030" } },
+    }), "2026-09-01T12:00:00.000Z")).toEqual({
+      failureKind: "throttled",
+      retryAfterMs: 30_000,
+    });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("secondary rate limit"), {
+      status: 403,
+      response: { headers: { "retry-after": "45" } },
+    }), "2026-09-01T12:00:00.000Z")).toEqual({
+      failureKind: "throttled",
+      retryAfterMs: 45_000,
+    });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("timed out"), { code: "ETIMEDOUT" })))
+      .toEqual({ failureKind: "timeout" });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("unavailable"), { status: 503 })))
+      .toEqual({ failureKind: "transient" });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("response lost"), {
+      remoteSideEffectUncertain: true,
+    }))).toEqual({ failureKind: "completed" });
+    expect(classifyGitHubDependencyFailure(Object.assign(new Error("validation"), { status: 422 })))
+      .toEqual({ failureKind: "permanent" });
+  });
+
 });

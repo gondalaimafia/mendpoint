@@ -1,7 +1,8 @@
 import { newId } from "@mendpoint/shared";
 import type { AppDb } from "./index.js";
-import type { SettlementConsumption, UsageLedgerEntry } from "./usage.js";
+import type { SettlementConsumption, UsageLedgerEntry, UsageSummary } from "./usage.js";
 import {
+  getUsageSummary,
   releaseUsageReservation,
   reserveUsage,
   settleUsageReservation,
@@ -125,6 +126,81 @@ export function settleRunUsage(
     consumption: input.consumption,
     createdAt: input.createdAt,
   });
+}
+
+/**
+ * Run-admission quota enforcement (relocated from apps/api so both the API and the
+ * worker admit through one implementation).
+ *
+ * Default-OFF: gated on MENDPOINT_USAGE_ENFORCEMENT === "1". When the flag is unset
+ * or "0" admission is a no-op ({ enforced: false }) and the caller proceeds unchanged.
+ * When on, a run reserves its deterministic MCU estimate before work is admitted; a
+ * tenant over quota (or without an active plan) is refused, carrying the current usage
+ * summary. Any other ledger error is re-thrown for the caller's error boundary.
+ */
+export const USAGE_ENFORCEMENT_FLAG = "MENDPOINT_USAGE_ENFORCEMENT";
+
+export function usageEnforcementEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[USAGE_ENFORCEMENT_FLAG] === "1";
+}
+
+export type RunUsageRejection = "usage_quota_exceeded" | "usage_entitlement_required";
+
+export type RunUsageAdmission =
+  | Readonly<{ enforced: false }>
+  | Readonly<{ enforced: true; admitted: true; reservationId: string; reservedMcuMicros: number }>
+  | Readonly<{
+      enforced: true;
+      admitted: false;
+      status: 402;
+      body: Readonly<{ error: RunUsageRejection; summary: UsageSummary }>;
+    }>;
+
+export function admitRunUsage(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    runId: string;
+    mcuMicros: number;
+    reason: string;
+    campaignId?: string | null;
+    actorPrincipalId?: string | null;
+    createdAt: string;
+    env?: NodeJS.ProcessEnv;
+  },
+): RunUsageAdmission {
+  if (!usageEnforcementEnabled(input.env)) return Object.freeze({ enforced: false });
+  try {
+    const entry = reserveRunUsage(db, {
+      tenantId: input.tenantId,
+      runId: input.runId,
+      mcuMicros: input.mcuMicros,
+      reason: input.reason,
+      campaignId: input.campaignId ?? null,
+      actorPrincipalId: input.actorPrincipalId ?? null,
+      createdAt: input.createdAt,
+    });
+    return Object.freeze({
+      enforced: true,
+      admitted: true,
+      reservationId: entry.id,
+      reservedMcuMicros: entry.reservedMcuMicrosDelta,
+    });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "";
+    if (code === "usage_quota_exceeded" || code === "usage_entitlement_required") {
+      return Object.freeze({
+        enforced: true,
+        admitted: false,
+        status: 402,
+        body: Object.freeze({
+          error: code,
+          summary: getUsageSummary(db, input.tenantId, input.createdAt),
+        }),
+      });
+    }
+    throw error;
+  }
 }
 
 /** Release a run's outstanding hold (infra failure or cancel: burns no quota). */

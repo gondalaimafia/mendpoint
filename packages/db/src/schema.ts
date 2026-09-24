@@ -365,6 +365,24 @@ export type MigrationPrRow = {
    * column existed.
    */
   coverage_json: string | null;
+  /**
+   * The base commit the adopted delivery commit descends from, and the delivery-
+   * branch head sha at adoption (PR #606). Written once by ADOPT; null until a
+   * delivery is adopted. Delivery identity is the branch, so these are recorded
+   * facts, never a re-anchoring anchor.
+   */
+  delivered_base_sha: string | null;
+  delivered_head_sha: string | null;
+  /**
+   * The originating fanout job's gate payload (reservation keys stripped), so a
+   * delivery-only retry that falls back to a full pipeline run replays the same
+   * gate inputs for the same change. Null for rows created outside a fanout.
+   */
+  origin_fanout_json: string | null;
+  /** Automatic full-pipeline replays scheduled for this row (D10), capped. */
+  replay_count: number;
+  /** Named delivery/blocked code for a stuck row (delivery_blocked / abandoned). */
+  delivery_error: string | null;
 };
 
 export type AuditEvent = {

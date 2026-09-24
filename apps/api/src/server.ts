@@ -13,6 +13,11 @@ import {
   listConsumers,
   listPrs,
   getPr,
+  updateMigrationPrStatus,
+  getLatestDeliveryArtifact,
+  resetMigrationPrReplayCount,
+  recordMigrationPrDeliveryBlocked,
+  createDependencyOutageQueue,
   findPrByGitHubIdentityAndNumber,
   findWardenCandidateDeliveryByPrUrl,
   recordWardenCandidateDeliveryOutcome,
@@ -36,6 +41,7 @@ import {
   exportAuditCsv,
   updateChangeSeverity,
   enqueueJob,
+  enqueueOrResetJob,
   listJobs,
   getJob,
   jobToApi,
@@ -102,6 +108,7 @@ import {
   registrySummaryMarkdown,
 } from "@mendpoint/db";
 import { parseAuditExportLimit } from "./audit-export.js";
+import { createDependencyOutageRoutes } from "./dependency-outage-routes.js";
 import { mountBillingUsageRoutes } from "./billing-usage-routes.js";
 import { changeDetailBody } from "./change-detail.js";
 import {
@@ -134,6 +141,8 @@ import {
   resolveGitHubInstallationTenant,
   resolveGitHubAccountTenantBinding,
   resolveGitHubTenantAccountBinding,
+  adoptiveDraftOperationDigest,
+  createRepositoryBaseRefresher,
 } from "@mendpoint/github";
 import { wakeFettlerReviewFromWebhook } from "./warden-review-webhook.js";
 import { dispatchFettlerPrReviewFromWebhook } from "./fettler-pr-review-webhook.js";
@@ -257,6 +266,7 @@ import {
   isProduction,
   flushTelemetry,
   isTelemetryEnabled,
+  classifyDependencyOutage,
 } from "@mendpoint/ops";
 import {
   requestIdMiddleware,
@@ -973,6 +983,7 @@ app.route("/platform/sandbox", createPlatformSandboxRoutes());
 app.route("/learning", createLearningConsentRoutes({ db }));
 app.route("/organization-memory", createOrganizationMemoryRoutes({ db }));
 app.route("/audit-governance", createAuditGovernanceRoutes({ db }));
+app.route("/dependency-outages", createDependencyOutageRoutes({ db }));
 
 // Persist alerts under data/
 try {
@@ -1911,6 +1922,8 @@ app.post("/providers/:slug/publish", async (c) => {
       providerSlug: c.req.param("slug"),
       db,
       tenantId: requestTenantId(c),
+      dependencyOutagePolicy: classifyDependencyOutage,
+      refreshRepositoryBase: createRepositoryBaseRefresher(process.env),
       consumerIds: requestConsumerIds(c),
       severity: body.severity,
       notificationsOnly: body.notificationsOnly,
@@ -1918,6 +1931,17 @@ app.post("/providers/:slug/publish", async (c) => {
       contractCases: body.contractCases,
       securityScanAttested: body.securityScanAttested ?? body.securityScanOk,
       securityScanAttestation: body.securityScanAttestation,
+      // Persist the gate inputs on each row this synchronous run creates so a later
+      // operator retry whose delivery lost its artifact can replay the same gates for
+      // the same change (D10), rather than ending github_delivery_replay_unavailable.
+      originFanoutPayloadJson: JSON.stringify({
+        providerSlug: c.req.param("slug"),
+        severity: body.severity,
+        notificationsOnly: body.notificationsOnly,
+        contractCases: body.contractCases,
+        securityScanAttested: body.securityScanAttested ?? body.securityScanOk,
+        securityScanAttestation: body.securityScanAttestation,
+      }),
     });
     invalidateGraphCaches();
     void notifyWardenEvent(
@@ -2220,6 +2244,8 @@ app.post("/feeds/poll", async (c) => {
         providerSlug: slug,
         db: d,
         tenantId: requestTenantId(c),
+        dependencyOutagePolicy: classifyDependencyOutage,
+        refreshRepositoryBase: createRepositoryBaseRefresher(process.env),
         consumerIds: requestConsumerIds(c),
       });
       return { changeId: report.changeId };
@@ -2283,6 +2309,119 @@ app.post("/prs/:id/feedback", async (c) => {
     experiment: body.experiment ?? null,
     planId: body.planId ?? null,
   });
+});
+
+/**
+ * Operator retry of a stuck delivery (PR #606 D9/D10). Tenant-scoped, admin-class
+ * only, and allowed only from delivery_failed / delivery_blocked /
+ * github_delivery_abandoned — never on a row that already recorded a PR (I7).
+ * Flips the row back to delivery_failed so the next delivery re-attempts, reopens
+ * the durable ledger operation (operator_retry) so an abandoned/expired operation
+ * gets a fresh retry window, and re-queues the delivery-only retry job. The job id
+ * is deterministic per row, so a spent (dead-lettered/done) job is RESET to pending
+ * atomically rather than colliding on the id — the response reports what happened.
+ */
+app.post("/migration-prs/:id/retry-delivery", (c) => {
+  const principal = c.get("principal");
+  if (!principal) return c.json({ error: "authenticated_principal_required" }, 401);
+  if (principal.role !== "owner" && principal.role !== "admin") {
+    return c.json({ error: "admin_role_required" }, 403);
+  }
+  const tenantId = requestTenantId(c);
+  const pr = getPr(db, c.req.param("id"), tenantId);
+  if (!pr) return c.json({ error: "not found" }, 404);
+  if (
+    pr.status !== "delivery_failed" &&
+    pr.status !== "delivery_blocked" &&
+    pr.status !== "github_delivery_abandoned"
+  ) {
+    return c.json({ error: "retry_delivery_not_allowed", status: pr.status }, 409);
+  }
+  if (pr.github_pr_number !== null) {
+    // A recorded PR is delivered; retrying would risk downgrading it (I7).
+    return c.json({ error: "retry_delivery_pr_recorded" }, 409);
+  }
+  // Replayability: an operator retry re-runs delivery from the write-ahead artifact,
+  // or (if none) falls back to a full pipeline run that replays the row's persisted
+  // origin gate payload. A row with NEITHER (a main-era row, or a run that never
+  // carried a gate payload) has nothing to replay — a retry would only end
+  // delivery_blocked. Tell the operator to re-run the change instead of reporting
+  // "queued", and mark the row so its state is honest.
+  const deliveryKey = `${pr.change_id}:${pr.consumer_id}`;
+  const replayable = getLatestDeliveryArtifact(db, tenantId, deliveryKey) !== null ||
+    (pr as { origin_fanout_json?: string | null }).origin_fanout_json != null;
+  if (!replayable) {
+    recordMigrationPrDeliveryBlocked(db, pr.id, "github_delivery_replay_unavailable");
+    requestAudit(c, {
+      actor: "human",
+      action: "pr.delivery_replay_unavailable",
+      resourceType: "migration_pr",
+      resourceId: pr.id,
+      metadata: { previousStatus: pr.status, reason: "no_replayable_artifact_or_payload" },
+    });
+    return c.json({
+      ok: false,
+      id: pr.id,
+      status: "delivery_blocked",
+      error: "github_delivery_replay_unavailable",
+      action: "rerun_change_required",
+      message: "This delivery has no write-ahead artifact or origin payload to replay; re-run the change for this provider to regenerate and deliver it.",
+    }, 409);
+  }
+  // Reopen the durable ledger operation for this delivery, if one exists, so a
+  // terminal/expired operation gets a fresh window (best-effort: a missing or
+  // non-failed row is simply not reopened).
+  const consumer = getConsumer(db, pr.consumer_id, tenantId);
+  if (consumer) {
+    const repo = getConsumerRepo(db, consumer.id, tenantId);
+    const baseBranch = (repo as { default_branch?: string } | undefined)?.default_branch ?? "main";
+    const operationDigest = adoptiveDraftOperationDigest({
+      tenantId,
+      owner: consumer.github_owner,
+      repo: consumer.github_repo,
+      baseBranch,
+      branch: pr.branch_name,
+    });
+    try {
+      const now = new Date().toISOString();
+      createDependencyOutageQueue(db.raw).reopen(
+        {
+          tenantId,
+          dependencyKind: "scm",
+          providerId: "github",
+          operationId: `github-draft:${operationDigest}`,
+          operationDigest,
+        },
+        { reason: "operator_retry", expiresAt: new Date(Date.parse(now) + 60 * 60_000).toISOString(), now },
+      );
+    } catch { /* the operation row may not exist yet; the status flip still retries */ }
+  }
+  updateMigrationPrStatus(db, pr.id, "delivery_failed", null);
+  // Reopening gives the row a fresh automatic-replay budget (the cap counts only
+  // consecutive automatic replays; an operator retry is a deliberate fresh start).
+  resetMigrationPrReplayCount(db, pr.id);
+  // Re-queue a delivery-only retry job (D10): it replays the adoptive delivery from
+  // the persisted artifact, not the whole pipeline. The id is deterministic per row;
+  // enqueueOrResetJob enqueues a fresh row, or resets a spent (dead-lettered/done)
+  // one back to pending, so a prior dead-letter can never leave the endpoint
+  // reporting ok while nothing runs. The failure is never swallowed — a real enqueue
+  // error propagates to the caller.
+  const queueAction = enqueueOrResetJob(db, {
+    id: `pipeline-delivery-retry:${pr.id}`,
+    tenantId,
+    type: "pipeline.delivery-retry",
+    payload: { prId: pr.id },
+    maxAttempts: 50,
+    createdAt: nowIso(),
+  });
+  requestAudit(c, {
+    actor: "human",
+    action: "pr.retry_delivery",
+    resourceType: "migration_pr",
+    resourceId: pr.id,
+    metadata: { previousStatus: pr.status, queueAction },
+  });
+  return c.json({ ok: true, id: pr.id, status: "delivery_failed", queued: queueAction });
 });
 
 /** Phase D: advisory CI check body (and optional mock post) for a migration PR */

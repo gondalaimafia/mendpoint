@@ -1,19 +1,28 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
+  createDependencyOutageQueue,
   getPrincipalBySubject,
   insertPrincipal,
   insertProvider,
   insertApiVersion,
   insertConsumer,
   insertConsumerRepo,
+  insertConnectedRepository,
+  upsertScmConnection,
+  upsertGitHubInstallation,
   insertMonitoredApi,
   insertPolicy,
   getConsumerRepo,
+  insertMigrationPr,
+  persistDeliveryArtifact,
+  getPr,
   listCapabilityAdoptionOpportunities,
   listPrs,
   listChanges,
@@ -27,14 +36,16 @@ import {
   verifyDomainEventIntegrity,
 } from "@mendpoint/db";
 import { newId, nowIso } from "@mendpoint/shared";
-import { MockGitHubDelivery } from "@mendpoint/github";
+import { MockGitHubDelivery, GitHubAppDelivery, AdoptiveDraftBlockedError, deliverAdoptiveDraftWithOctokit, type AdoptiveOctokit, type GitHubDelivery } from "@mendpoint/github";
+import { FakeGitHub } from "@mendpoint/github/testing/fake-github";
+import { classifyDependencyOutage } from "@mendpoint/ops";
 import { analyzeImpactWithSoftwareGraph } from "@mendpoint/code-impact";
 import {
   changeSubjectDigest,
   issueVerificationWaiver,
   type SecurityScanAttestation,
 } from "@mendpoint/contract";
-import { applyPrFeedback, runChangePipeline } from "./index.js";
+import { applyPrFeedback, createPipelineDeliveryResolver, runChangePipeline, retryConsumerDelivery, deliverConsumerDraft, deliveryArtifactDigest } from "./index.js";
 import {
   getSoftwareGraphHead,
   openGraphLearnMemory,
@@ -109,6 +120,7 @@ function addMonitoredConsumer(
     localPath: string;
     tenantId?: string;
     defaultBranch?: string;
+    installationId?: string | null;
   },
 ) {
   const consumerId = newId();
@@ -117,7 +129,7 @@ function addMonitoredConsumer(
     name: input.name,
     githubOwner: "org",
     githubRepo: input.repo,
-    installationId: null,
+    installationId: input.installationId ?? null,
     tenantId: input.tenantId ?? "tenant_default",
     createdAt: nowIso(),
   });
@@ -167,7 +179,109 @@ afterEach(() => {
 });
 
 
+// A stateful fake GitHub for the REAL production transport (GitHubAppDelivery +
+// durable queue + production classifier). It stores the branch ref and the one
+// pull, echoes the dynamic title/body the pipeline generates so the exact-draft
+// verification accepts the PR, and exposes controls to fail branch creation for
+// a base, move the default head, and delete the branch.
+function outageOctokit(control: { base: () => string; createRefBlockedFor?: () => string | null }) {
+  const COMMIT = "c".repeat(40);
+  const BASE_TREE = "1".repeat(40);
+  const HEAD_TREE = "2".repeat(40);
+  let branchHead: string | null = null;
+  let pull: Record<string, unknown> | null = null;
+  const octokit = {
+    git: {
+      getRef: async ({ ref }: { ref: string }) => {
+        if (ref === "heads/main") return { data: { object: { sha: control.base() } } };
+        if (branchHead === null) throw Object.assign(new Error("not_found"), { status: 404 });
+        return { data: { object: { sha: branchHead } } };
+      },
+      getCommit: async ({ commit_sha }: { commit_sha: string }) => ({
+        data: commit_sha === COMMIT
+          ? { sha: COMMIT, tree: { sha: HEAD_TREE }, parents: [{ sha: control.base() }] }
+          : { sha: commit_sha, tree: { sha: BASE_TREE }, parents: [] },
+      }),
+      getTree: async ({ tree_sha }: { tree_sha: string }) => ({
+        data: { truncated: false, tree: [{ path: "src/a.ts", type: "blob", mode: "100644", sha: tree_sha === BASE_TREE ? "3".repeat(40) : "4".repeat(40) }] },
+      }),
+      createBlob: async () => ({ data: { sha: "4".repeat(40) } }),
+      createTree: async () => ({ data: { sha: HEAD_TREE } }),
+      createCommit: async () => ({ data: { sha: COMMIT } }),
+      createRef: async ({ sha }: { sha: string }) => {
+        if (control.createRefBlockedFor?.() === sha) {
+          throw Object.assign(new Error("service_unavailable"), { status: 503 });
+        }
+        branchHead = sha;
+        return {};
+      },
+      updateRef: async ({ sha }: { sha: string }) => { branchHead = sha; return { data: { object: { sha } } }; },
+    },
+    repos: {
+      getContent: async () => ({ data: { type: "file", encoding: "base64", content: Buffer.from("x", "utf8").toString("base64") } }),
+    },
+    pulls: {
+      list: async () => ({ data: pull ? [pull] : [] }),
+      create: async (args: { title: string; body: string; head: string; base: string }) => {
+        pull = { number: 24, html_url: "https://github.com/org/repo/pull/24", state: "open", draft: true, title: args.title, body: args.body, head: { ref: args.head, sha: COMMIT }, base: { ref: args.base, sha: control.base() } };
+        return { data: pull };
+      },
+    },
+  };
+  return {
+    octokit,
+    deleteBranch: () => { branchHead = null; },
+    pullCount: () => (pull ? 1 : 0),
+  };
+}
+
+function outageAppDelivery(db: ReturnType<typeof createDb>, octokit: unknown, now: () => string): GitHubAppDelivery {
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const delivery = new GitHubAppDelivery({ appId: "99", privateKeyPem: pem }, 42, undefined, [77], {
+    tenantId: "tenant_default",
+    outage: createDependencyOutageQueue(db.raw, { now }),
+    decide: classifyDependencyOutage,
+    retryBudget: 5,
+    expiresInMs: 60 * 60_000,
+    workerId: "pipeline-test",
+    authorityVersion: "installation-v1",
+    now,
+  });
+  (delivery as unknown as { octokit: () => Promise<unknown> }).octokit = async () => octokit;
+  return delivery;
+}
+
 describe("pipeline", () => {
+  it("composes the durable outage queue over the primary production database", () => {
+    const db = seedProviderVersions();
+    const prior = {
+      mode: process.env.GITHUB_MODE,
+      appId: process.env.GITHUB_APP_ID,
+      key: process.env.GITHUB_APP_PRIVATE_KEY,
+    };
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    process.env.GITHUB_MODE = "real";
+    process.env.GITHUB_APP_ID = "4718395";
+    process.env.GITHUB_APP_PRIVATE_KEY = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    try {
+      expect(createPipelineDeliveryResolver({
+        tenantId: "tenant_default",
+        providerSlug: "acme-payments",
+        dependencyOutagePolicy: () => { throw new Error("decision_not_expected"); },
+      }, db)).toBeTypeOf("function");
+      expect(db.raw.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dependency_outage_operations'",
+      ).get()).toEqual({ name: "dependency_outage_operations" });
+    } finally {
+      if (prior.mode === undefined) delete process.env.GITHUB_MODE;
+      else process.env.GITHUB_MODE = prior.mode;
+      if (prior.appId === undefined) delete process.env.GITHUB_APP_ID;
+      else process.env.GITHUB_APP_ID = prior.appId;
+      if (prior.key === undefined) delete process.env.GITHUB_APP_PRIVATE_KEY;
+      else process.env.GITHUB_APP_PRIVATE_KEY = prior.key;
+    }
+  });
   it("rejects an explicitly requested version that does not exist", async () => {
     const db = seedProviderVersions();
     await expect(
@@ -308,14 +422,24 @@ describe("pipeline", () => {
     class RecordingDelivery extends MockGitHubDelivery {
       readonly sourceBranches: Array<string | undefined> = [];
 
-      override async createBranch(
-        owner: string,
-        repo: string,
-        branch: string,
-        fromBranch?: string,
-      ): Promise<void> {
-        this.sourceBranches.push(fromBranch);
-        await super.createBranch(owner, repo, branch);
+      override async deliverAdoptiveDraft(
+        input: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[0],
+        options: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[1],
+      ): ReturnType<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>> {
+        this.sourceBranches.push(input.baseBranch);
+        return super.deliverAdoptiveDraft(input, options);
+      }
+
+      override async createBranch(): Promise<void> {
+        throw new Error("legacy_create_branch_bypassed_outage_queue");
+      }
+
+      override async commitFiles(): Promise<void> {
+        throw new Error("legacy_commit_files_bypassed_outage_queue");
+      }
+
+      override async openPullRequest(): Promise<never> {
+        throw new Error("legacy_open_pull_request_bypassed_outage_queue");
       }
     }
 
@@ -343,8 +467,477 @@ describe("pipeline", () => {
       securityScanAttested: true,
     });
 
-    expect(report.consumers[0]?.prStatus).toBe("draft");
+    expect(report.consumers[0]?.prStatus, JSON.stringify(report.consumers[0])).toBe("draft");
     expect(github.sourceBranches).toEqual(["trunk"]);
+  });
+
+  it("D8: a retry delivers on the row's stored (main-era) branch_name, adopting the existing PR", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Legacy Shop", repo: "legacy-shop", localPath: shop });
+
+    class BranchRecordingDelivery extends MockGitHubDelivery {
+      readonly branches: string[] = [];
+      failFirst = true;
+      override async deliverAdoptiveDraft(
+        input: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[0],
+        options: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[1],
+      ): ReturnType<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>> {
+        this.branches.push(input.branch);
+        if (this.failFirst) { this.failFirst = false; throw new Error("SCM unavailable"); }
+        return super.deliverAdoptiveDraft(input, options);
+      }
+    }
+    const dir = join(tmpdir(), `mendpoint-pipe-legacy-${Date.now()}-${Math.random()}`);
+    dirs.push(dir);
+    const github = new BranchRecordingDelivery(dir);
+    const common = {
+      tenantId: "tenant_default", providerSlug: "acme-payments", db, github, persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+    };
+    // Run 1 fails delivery, leaving a retryable row on the deterministic branch.
+    await runChangePipeline({ ...common, graphDb: testGraphDb() });
+    const deterministic = github.branches[0]!;
+    const row = db.raw.prepare("SELECT id, branch_name FROM migration_prs WHERE status = 'delivery_failed'").get() as
+      { id: string; branch_name: string };
+    expect(row.branch_name).toBe(deterministic);
+    // Rewrite the row to a main-era Date.now() branch (as origin/main would have left it).
+    const legacyBranch = "mendpoint/acme-payments-1700000000000";
+    db.raw.prepare("UPDATE migration_prs SET branch_name = ? WHERE id = ?").run(legacyBranch, row.id);
+    // Run 2: the retry must deliver on the STORED (legacy) branch, not the deterministic one.
+    const second = await runChangePipeline({ ...common, graphDb: testGraphDb() });
+    expect(github.branches[1]).toBe(legacyBranch);
+    expect(second.consumers.some((c) => c.prStatus === "draft")).toBe(true);
+    // No duplicate: one PR row for the consumer.
+    expect(listPrs(db, "tenant_default")).toHaveLength(1);
+  });
+
+  it("A: a blocked consumer is reported and skipped on rerun; a sibling still delivers; no artifact conflict", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Blocked Shop", repo: "blocked-shop", localPath: shop });
+    addMonitoredConsumer(db, provider.id, { name: "Flaky Shop", repo: "flaky-shop", localPath: shop });
+
+    class MixedDelivery extends MockGitHubDelivery {
+      flakyFailed = false;
+      override async deliverAdoptiveDraft(
+        input: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[0],
+        options: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[1],
+      ): ReturnType<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>> {
+        if (input.repo === "blocked-shop") throw new AdoptiveDraftBlockedError("github_delivery_branch_foreign");
+        if (input.repo === "flaky-shop" && !this.flakyFailed) { this.flakyFailed = true; throw new Error("SCM unavailable"); }
+        return super.deliverAdoptiveDraft(input, options);
+      }
+    }
+    const dir = join(tmpdir(), `mendpoint-pipe-blocked-${Date.now()}-${Math.random()}`);
+    dirs.push(dir);
+    const github = new MixedDelivery(dir);
+    const common = {
+      tenantId: "tenant_default", providerSlug: "acme-payments", db, github, persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+    };
+    // Run 1: blocked-shop -> delivery_blocked; flaky-shop -> delivery_failed.
+    const first = await runChangePipeline({ ...common, graphDb: testGraphDb() });
+    const firstStatuses = new Map(first.consumers.map((c) => [c.consumerId, c.prStatus]));
+    // Run 2 must NOT throw (a blocked rerun previously minted a new row and threw
+    // an artifact-hash conflict). The blocked consumer is reported and skipped; the
+    // flaky sibling now delivers.
+    const second = await runChangePipeline({ ...common, graphDb: testGraphDb() });
+    const byConsumer = new Map(second.consumers.map((c) => [c.consumerId, c.prStatus]));
+    const blockedId = [...firstStatuses].find(([, s]) => s === "delivery_blocked")?.[0];
+    const flakyId = [...firstStatuses].find(([, s]) => s === "delivery_failed")?.[0];
+    expect(blockedId, "run 1 produced a delivery_blocked consumer").toBeDefined();
+    expect(flakyId, "run 1 produced a delivery_failed consumer").toBeDefined();
+    expect(byConsumer.get(blockedId!)).toBe("delivery_blocked"); // reported, skipped
+    expect(byConsumer.get(flakyId!)).toBe("draft"); // sibling delivered
+    // No duplicate rows minted for the blocked consumer.
+    expect(listPrs(db, "tenant_default")).toHaveLength(2);
+  });
+
+  it("F (D10): a delivery-only retry replays from the artifact (no re-analysis); the 7-day cap abandons", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+    const consumerId = addMonitoredConsumer(db, provider.id, { name: "Retry Shop", repo: "retry-shop", localPath: shop });
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+    const deliveryKey = `change-x:${consumerId}`;
+    const baseSha = "b".repeat(40);
+    // A delivery_failed row plus its persisted write-ahead artifact (files + base).
+    insertMigrationPr(db, {
+      id: "pr-retry-1", changeId: "change-x", consumerId, title: "Retry candidate",
+      body: "body with the package section", branchName: "mendpoint/retry-abc",
+      status: "delivery_failed", risk: "low", patchUnified: "diff", createdAt: nowIso(),
+    });
+    persistDeliveryArtifact(db, {
+      tenantId: "tenant_default", artifactDigest: deliveryArtifactDigest(deliveryKey, "t".repeat(40), baseSha),
+      deliveryKey, title: "Retry candidate", body: "body with the package section",
+      treeSha: "t".repeat(40), parentSha: baseSha,
+      filesJson: JSON.stringify([{ path: "src/a.ts", content: "changed\n" }]), createdAt: nowIso(),
+    });
+    const dir = join(tmpdir(), `mendpoint-retry-${Date.now()}-${Math.random()}`);
+    dirs.push(dir);
+    const github = new MockGitHubDelivery(dir);
+    // Delivery-only retry: reconstructs from the artifact and delivers, no analysis.
+    const outcome = await retryConsumerDelivery({
+      db, tenantId: "tenant_default", prId: "pr-retry-1",
+      deliveryFor: () => ({ delivery: github }), refreshedHeadSha: null, now: nowIso(),
+    });
+    expect(outcome.retried).toBe(true);
+    expect(outcome.status).toBe("draft");
+    expect(getPr(db, "pr-retry-1", "tenant_default")?.status).toBe("draft");
+    // 7-day cap: a row older than the cap abandons into a visible terminal state.
+    insertMigrationPr(db, {
+      id: "pr-retry-old", changeId: "change-y", consumerId, title: "Old", body: "b",
+      branchName: "mendpoint/old", status: "delivery_failed", risk: "low", patchUnified: "diff",
+      createdAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+    const abandoned = await retryConsumerDelivery({
+      db, tenantId: "tenant_default", prId: "pr-retry-old",
+      deliveryFor: () => ({ delivery: github }), refreshedHeadSha: null, now: nowIso(),
+    });
+    expect(abandoned.status).toBe("github_delivery_abandoned");
+    expect(getPr(db, "pr-retry-old", "tenant_default")?.status).toBe("github_delivery_abandoned");
+  });
+
+  it("D10 no-artifact: retryConsumerDelivery signals a full-pipeline fallback, never a silent no-op, when the row never anchored an artifact", async () => {
+    // The outage hit before the commit was built, so there is no write-ahead
+    // artifact to replay. Delivery-only cannot reconstruct the change; the result
+    // must tell the worker to fall back to a full pipeline run (and never attempt a
+    // delivery). Without the fallback signal the worker re-throws the delivery_failed
+    // status forever (the "built but never falls back" defect).
+    const db = seedProviderVersions();
+    const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+    const consumerId = addMonitoredConsumer(db, provider.id, { name: "No Artifact Shop", repo: "no-artifact-shop", localPath: shop });
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+    insertMigrationPr(db, {
+      id: "pr-na", changeId: "change-na", consumerId, title: "No artifact",
+      body: "b", branchName: "mendpoint/na", status: "delivery_failed", risk: "low",
+      patchUnified: "diff", createdAt: nowIso(),
+    });
+    const outcome = await retryConsumerDelivery({
+      db, tenantId: "tenant_default", prId: "pr-na",
+      deliveryFor: () => { throw new Error("delivery must not be attempted without an artifact"); },
+      refreshedHeadSha: null, now: nowIso(),
+    });
+    expect(outcome.retried).toBe(false);
+    expect(outcome.fallbackToPipeline).toBe(true);
+    expect(outcome.changeId).toBe("change-na");
+    expect(outcome.consumerId).toBe(consumerId);
+    // The row is untouched: no delivery attempted, and (within the 7-day cap) not abandoned.
+    expect(getPr(db, "pr-na", "tenant_default")?.status).toBe("delivery_failed");
+  });
+
+  it("3: a github_delivery_abandoned consumer is reported and skipped on rerun (never re-minted)", async () => {
+    // github_delivery_abandoned is terminal (the 7-day cap). A rerun must treat it
+    // like delivery_blocked: reported and skipped, never re-minted. If it were
+    // retryable, the rerun would re-deliver (flipping it off abandoned) or throw the
+    // artifact-hash conflict of blocker A.
+    const db = seedProviderVersions();
+    const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Abandoned Shop", repo: "abandoned-shop", localPath: shop });
+    const dir = join(tmpdir(), `mendpoint-pipe-abandoned-${Date.now()}-${Math.random()}`);
+    dirs.push(dir);
+    // Fail the first delivery so the row is delivery_failed (no PR number recorded);
+    // a later delivery would succeed. This lets us set the row to the terminal
+    // abandoned state without tripping the recorded-PR immutability trigger.
+    class FlakyOnce extends MockGitHubDelivery {
+      failed = false;
+      override async deliverAdoptiveDraft(
+        input: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[0],
+        options: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[1],
+      ): ReturnType<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>> {
+        if (!this.failed) { this.failed = true; throw new Error("SCM unavailable"); }
+        return super.deliverAdoptiveDraft(input, options);
+      }
+    }
+    const github = new FlakyOnce(dir);
+    const common = {
+      tenantId: "tenant_default", providerSlug: "acme-payments", db, github, persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+    };
+    // Run 1: delivery fails -> delivery_failed, no PR number recorded.
+    const first = await runChangePipeline({ ...common, graphDb: testGraphDb() });
+    const consumerId = first.consumers[0]!.consumerId;
+    expect(first.consumers[0]!.prStatus).toBe("delivery_failed");
+    // Force the row into the terminal abandoned state (the 7-day cap outcome). Only
+    // the status changes (github_pr_number is still NULL), so the identity trigger
+    // does not fire.
+    db.raw.prepare("UPDATE migration_prs SET status = 'github_delivery_abandoned'").run();
+    const before = listPrs(db, "tenant_default").length;
+    // Rerun must NOT throw and must NOT re-mint; the consumer is reported abandoned
+    // and skipped. If abandoned were retryable, the now-recovered delivery would
+    // flip it to draft.
+    const second = await runChangePipeline({ ...common, graphDb: testGraphDb() });
+    expect(new Map(second.consumers.map((c) => [c.consumerId, c.prStatus])).get(consumerId))
+      .toBe("github_delivery_abandoned");
+    expect(listPrs(db, "tenant_default")).toHaveLength(before);
+  });
+
+  it("B (production call site): deliverConsumerDraft keys the write-ahead artifact by commit shape, so identical-body base moves adopt our own commit", async () => {
+    // The model test uses its own artifact store, so keying delivery.ts by a body
+    // digest survives there. This drives the SAME two-base-move scenario THROUGH
+    // deliverConsumerDraft, exercising the production persistArtifact keying
+    // (deliveryArtifactDigest(key, tree, parent)). The body is identical every
+    // attempt: a body-keyed store would drop attempt 2's (tree, parent), and ours()
+    // would judge our own commit on Y foreign and block. Correct shape keying adopts it.
+    const db = seedProviderVersions();
+    const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+    const consumerId = addMonitoredConsumer(db, provider.id, { name: "Shape Shop", repo: "shape-shop", localPath: shop });
+    db.raw.exec("PRAGMA foreign_keys = OFF");
+
+    let clock = "2026-09-02T12:00:00.000Z";
+    const fake = new FakeGitHub({ clock: () => clock });
+    let base = fake.seedDefaultBranch({ owner: "org", repo: "shape-shop", branch: "main", content: { "src/a.ts": "v0\n" }, date: clock });
+    let attempt = 0;
+    fake.setFaults(({ method }) => {
+      if (attempt === 1 && method === "git.createRef") return { kind: "fail-before", status: 503 };
+      if (attempt === 2 && method === "pulls.create") return { kind: "fail-before", status: 503 };
+      return { kind: "pass" };
+    });
+    const delivery = {
+      deliverAdoptiveDraft(
+        input: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[0],
+        options: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[1],
+      ) {
+        return deliverAdoptiveDraftWithOctokit(
+          fake as unknown as AdoptiveOctokit,
+          { ...input, body: options.resolveBody() },
+          options.hooks ?? {},
+        );
+      },
+    } as unknown as GitHubDelivery;
+    const body = "Identical body with the same package section every attempt";
+    const commonParams = {
+      db, tenantId: "tenant_default", changeId: "change-b5", prId: "pr-b5",
+      consumer: { id: consumerId, github_owner: "org", github_repo: "shape-shop" },
+      defaultBranch: "main", deliveryKey: `change-b5:${consumerId}`, branchName: "mendpoint/shape-abc",
+      title: "Shape candidate", risk: "low", patch: "diff", body,
+      files: [{ path: "src/a.ts", content: "changed\n" }],
+      commitDate: "2026-09-02T12:00:00.000Z", revisionKind: "git_commit" as const,
+      shouldDeliver: true, terminalStatus: "delivery_failed", coverageJson: null,
+      createdAt: "2026-09-02T12:00:00.000Z", existingPrNumber: null, existingPrUrl: null,
+      resolveDelivery: () => ({ delivery }), assertActive: () => {},
+    };
+
+    // Attempt 1 at base X: createRef 503 -> delivery_failed; artifact (tree, X) persisted.
+    attempt = 1;
+    const a1 = await deliverConsumerDraft({ ...commonParams, isRetry: false, baseSha: base });
+    expect(a1.status).toBe("delivery_failed");
+    // Base moves X -> Y.
+    clock = "2026-09-02T12:00:05.000Z";
+    base = fake.moveBranch({ owner: "org", repo: "shape-shop", branch: "main", content: { "src/a.ts": "v1\n" }, date: clock });
+    // Attempt 2 at base Y: createRef lands, pulls.create 503 -> delivery_failed; artifact (tree, Y) persisted; branch = our commit on Y.
+    attempt = 2;
+    const a2 = await deliverConsumerDraft({ ...commonParams, isRetry: true, baseSha: base });
+    expect(a2.status).toBe("delivery_failed");
+    // Base moves Y -> Z.
+    clock = "2026-09-02T12:00:10.000Z";
+    base = fake.moveBranch({ owner: "org", repo: "shape-shop", branch: "main", content: { "src/a.ts": "v2\n" }, date: clock });
+    // Attempt 3 at base Z: must adopt our own commit on Y (its (tree, parent) artifact was stored).
+    attempt = 3;
+    const a3 = await deliverConsumerDraft({ ...commonParams, isRetry: true, baseSha: base });
+    expect(a3.status, `attempt 3 must adopt our own commit; got ${a3.deliveryError ?? a3.status}`).toBe("draft");
+    expect(fake.openPulls("org", "shape-shop", "mendpoint/shape-abc")).toHaveLength(1);
+  });
+
+  it("delivers a no-history (content-manifest) repo through main's legacy path, not exact-draft", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    // A clone with no git history resolves a content-manifest revision (a
+    // digest, not a commit). Copy the fixture into a tmp dir outside any git
+    // repository so `git rev-parse HEAD` fails and revisionKind is content_manifest.
+    const cmRepo = join(tmpdir(), `mendpoint-cm-repo-${Date.now()}-${Math.random()}`);
+    dirs.push(cmRepo);
+    cpSync(shop, cmRepo, { recursive: true });
+    rmSync(join(cmRepo, ".git"), { recursive: true, force: true });
+    addMonitoredConsumer(db, provider.id, { name: "No-git Shop", repo: "nogit-shop", localPath: cmRepo });
+
+    class LegacyRecordingDelivery extends MockGitHubDelivery {
+      readonly calls: string[] = [];
+      override async deliverExactDraft(): Promise<never> {
+        throw new Error("exact_draft_used_for_content_manifest_repo");
+      }
+      override async createBranch(...args: Parameters<MockGitHubDelivery["createBranch"]>): Promise<void> {
+        this.calls.push("createBranch");
+        return super.createBranch(...args);
+      }
+      override async commitFiles(...args: Parameters<MockGitHubDelivery["commitFiles"]>): Promise<void> {
+        this.calls.push("commitFiles");
+        return super.commitFiles(...args);
+      }
+      override async openPullRequest(
+        ...args: Parameters<MockGitHubDelivery["openPullRequest"]>
+      ): ReturnType<MockGitHubDelivery["openPullRequest"]> {
+        this.calls.push("openPullRequest");
+        return super.openPullRequest(...args);
+      }
+    }
+
+    const deliveryRoot = join(tmpdir(), `mendpoint-cm-delivery-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    const github = new LegacyRecordingDelivery(deliveryRoot);
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github,
+      persistIndex: false,
+      contractCases: [
+        { id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } },
+      ],
+      securityScanAttested: true,
+    });
+
+    const consumer = report.consumers.find((c) => c.name === "No-git Shop");
+    expect(consumer?.prStatus, JSON.stringify(consumer)).toBe("draft");
+    // Delivered exactly as on main: legacy branch/commit/PR, never exact-draft.
+    expect(github.calls).toEqual(["createBranch", "commitFiles", "openPullRequest"]);
+  });
+
+  it("refreshes an App-bound git base before generation and anchors delivery to the refreshed head", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop, installationId: "12345" });
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-refresh-ok-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    const refreshedHead = "c".repeat(40);
+    const github = new MockGitHubDelivery(deliveryRoot);
+    // The mock enforces the base against the current remote head on a new branch.
+    // Setting it to the refreshed head means delivery succeeds ONLY if the
+    // pipeline anchored to the refreshed head (headSha), not the stale clone head.
+    github.setRemoteBranchHead("org", "shop", "main", refreshedHead);
+    const refreshCalls: Array<Record<string, unknown>> = [];
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github,
+      persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+      refreshRepositoryBase: async (input) => {
+        refreshCalls.push({ ...input });
+        return { status: "refreshed", headSha: refreshedHead };
+      },
+    });
+    expect(report.consumers[0]?.prStatus, JSON.stringify(report.consumers[0])).toBe("draft");
+    expect(refreshCalls).toHaveLength(1);
+    expect(refreshCalls[0]).toMatchObject({
+      tenantId: "tenant_default",
+      repoRoot: shop,
+      owner: "org",
+      repo: "shop",
+      defaultBranch: "main",
+      installationId: "12345",
+    });
+  });
+
+  it("skips the refresh for a non-App-bound consumer and still delivers", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    // No installation id => not GitHub-App-bound => refresh must not run.
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop, installationId: null });
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-refresh-skip-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    let refreshCalled = false;
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github: new MockGitHubDelivery(deliveryRoot),
+      persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+      refreshRepositoryBase: async () => { refreshCalled = true; return { status: "not_applicable" }; },
+    });
+    expect(refreshCalled).toBe(false);
+    expect(report.consumers[0]?.prStatus, JSON.stringify(report.consumers[0])).toBe("draft");
+  });
+
+  it("keeps analysis running and skips only delivery when the base refresh fails", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop, installationId: "12345" });
+
+    class NoDeliveryAllowed extends MockGitHubDelivery {
+      override async deliverExactDraft(): Promise<never> {
+        throw new Error("delivery_attempted_after_refresh_failure");
+      }
+      override async createBranch(): Promise<never> {
+        throw new Error("delivery_attempted_after_refresh_failure");
+      }
+    }
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-refresh-fail-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github: new NoDeliveryAllowed(deliveryRoot),
+      persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+      refreshRepositoryBase: async () => ({ status: "failed", code: "github_repository_base_refresh_fetch_failed" }),
+    });
+    const consumer = report.consumers[0];
+    // Analysis still ran: findings are produced (main would report ~20, not 0).
+    expect(consumer?.findings ?? 0).toBeGreaterThan(0);
+    // Only delivery was skipped, with the retryable named code and no PR.
+    expect(consumer?.prStatus).toBe("delivery_failed");
+    expect(consumer?.deliveryError).toBe("github_repository_base_refresh_fetch_failed");
+    expect(consumer?.prUrl).toBeUndefined();
+  });
+
+  it("regenerates the full body (with the package section) when a base-refresh failure is followed by success", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "refreshshop", localPath: shop, installationId: "12345" });
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-refresh2s-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    const github = new MockGitHubDelivery(deliveryRoot);
+    let refreshCalls = 0;
+    const common = {
+      tenantId: "tenant_default", providerSlug: "acme-payments", db, graphDb: testGraphDb(),
+      github, persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+      refreshRepositoryBase: async () => {
+        refreshCalls += 1;
+        return refreshCalls === 1
+          ? { status: "failed" as const, code: "github_repository_base_refresh_fetch_failed" }
+          : { status: "not_applicable" as const };
+      },
+    };
+
+    // Attempt 1: refresh fails → delivery skipped, no branch/PR, no persisted base.
+    const first = await runChangePipeline(common);
+    expect(first.consumers[0]?.prStatus).toBe("delivery_failed");
+
+    // Attempt 2: refresh not applicable → fresh delivery, full body regenerated.
+    const second = await runChangePipeline(common);
+    expect(second.consumers[0]?.prStatus, JSON.stringify(second.consumers[0])).toBe("draft");
+    const pullFile = readdirSync(join(deliveryRoot, "org", "refreshshop", "pulls"))
+      .find((name) => /^[1-9][0-9]*\.json$/.test(name))!;
+    const body = (JSON.parse(readFileSync(join(deliveryRoot, "org", "refreshshop", "pulls", pullFile), "utf8")) as { body: string }).body;
+    // The delivered body is the freshly regenerated one, including the required
+    // structured package section — never the attempt-1 body that lacked it.
+    expect(body).toContain("Structured package artifact:");
   });
 
   it("emits and persists a capability-adoption opportunity for an unused new capability", async () => {
@@ -1594,17 +2187,13 @@ describe("pipeline", () => {
     class SelectiveFailureDelivery extends MockGitHubDelivery {
       readonly opened: string[] = [];
 
-      override async openPullRequest(
-        owner: string,
-        repo: string,
-        branch: string,
-        title: string,
-        body: string,
-        base?: string,
-      ) {
-        this.opened.push(repo);
-        if (repo === "b-shop") throw new Error("SCM unavailable");
-        return super.openPullRequest(owner, repo, branch, title, body, base);
+      override async deliverAdoptiveDraft(
+        input: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[0],
+        options: Parameters<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>>[1],
+      ): ReturnType<NonNullable<MockGitHubDelivery["deliverAdoptiveDraft"]>> {
+        this.opened.push(input.repo);
+        if (input.repo === "b-shop") throw new Error("SCM unavailable");
+        return super.deliverAdoptiveDraft(input, options);
       }
     }
 

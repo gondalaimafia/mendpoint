@@ -13,8 +13,11 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRepositoryBaseRefresher } from "@mendpoint/github";
 import {
   runChangePipeline,
+  createPipelineDeliveryResolver,
+  retryConsumerDelivery,
   VERIFIER_ADVISORY_JOB_TYPE,
   type DelegatedPrCandidateOperationDependencies,
   type DelegatedPrVerificationDependencies,
@@ -34,16 +37,23 @@ import {
   claimNextJob,
   completeJob,
   createDb,
+  createDependencyOutageQueue,
   enqueueJob,
+  enqueueOrResetJob,
   failJob,
   failWardenCiOperation,
   renewJobLease,
   findMonorepoRoot,
   findAuthorizedGitHubInstallationForRepository,
+  admitRunUsage,
+  estimateRunMcuMicros,
+  getChange,
   getConnectedRepository,
   getConsumer,
   getConsumerRepo,
   getJob,
+  getPr,
+  getProviderById,
   getAgentRun,
   getAgentRunByJobId,
   getWardenCandidateDelivery,
@@ -54,6 +64,10 @@ import {
   getScmConnection,
   insertAgentRun,
   recordAgentRunMeter,
+  recordAudit,
+  recordMigrationPrDeliveryBlocked,
+  bumpMigrationPrReplayCount,
+  updateMigrationPrStatus,
   releaseRunUsage,
   replayPendingWardenCandidateDeliveryMergedOutcomes,
   settleRunUsage,
@@ -113,6 +127,7 @@ import {
   flushTelemetry,
   isTelemetryEnabled,
   recordCounter,
+  classifyDependencyOutage,
 } from "@mendpoint/ops";
 import { checkAuditIntegrityForAllTenants } from "./audit-integrity.js";
 import { createWardenCheckpointJobJournal } from "./warden-checkpoint-journal.js";
@@ -1074,7 +1089,22 @@ export function startIndependentWorkerLanes<TFeed, TJobs>(input: {
   };
 }
 
-export function classifyJobFailure(error: unknown): {
+/** ~7-day cap on retrying a stuck GitHub delivery before it abandons (D10). */
+export const GITHUB_DELIVERY_ABANDON_AFTER_MS = 7 * 24 * 60 * 60 * 1_000;
+
+/**
+ * Cap on automatic full-pipeline replays of a delivery whose write-ahead artifact is
+ * missing (D10 no-artifact fallback). After the cap the row is abandoned (terminal,
+ * operator-reopenable). Prevents a sustained outage from replaying forever.
+ */
+export const MAX_FULL_PIPELINE_REPLAYS = 3;
+/** Base backoff between full-pipeline replays; doubles each replay (15m, 30m, 60m). */
+export const FULL_PIPELINE_REPLAY_BASE_BACKOFF_MS = 15 * 60_000;
+
+export function classifyJobFailure(
+  error: unknown,
+  context: Readonly<{ attemptAgeMs?: number }> = {},
+): {
   message: string;
   errorCode: string;
   retryable: boolean;
@@ -1090,6 +1120,26 @@ export function classifyJobFailure(error: unknown): {
     /github_app_(?:credentials|token_(?:installation|invalid)|installation|repository|permissions|connection|delivery_mode|selected_repositories)/.test(
       normalized,
     );
+  // A GitHub delivery outage (adoptive contention, dependency-outage defer, or a
+  // transient exact-draft/delivery error) must keep retrying past the ordinary
+  // attempt budget under the backoff cap: the branch is the source of truth and a
+  // later attempt reconciles, so elapsed time alone must never dead-letter it
+  // (D10). It is bounded by a ~7-day age cap, after which it abandons into a
+  // visible terminal state the operator retry endpoint can reopen. A blocked
+  // delivery (foreign branch, ambiguous PR, ...) never reaches here: it is
+  // reported as delivery_blocked, not thrown.
+  const deliveryOutage = !authorizationFailure &&
+    /github_delivery_(?:contention|adoptive)|github_dependency_outage_|pipeline_delivery_failed|github_exact_draft_remote_side_effect/.test(
+      normalized,
+    );
+  if (deliveryOutage && (context.attemptAgeMs ?? 0) > GITHUB_DELIVERY_ABANDON_AFTER_MS) {
+    return {
+      message,
+      errorCode: "github_delivery_abandoned",
+      retryable: false,
+      retryPastMaxAttempts: false,
+    };
+  }
   // An uncertain remote side effect outlives the ordinary attempt budget so
   // reconciliation still runs. It never overrides the authorization exclusion:
   // a credential refused now is refused on every retry, so letting uncertainty
@@ -1101,10 +1151,11 @@ export function classifyJobFailure(error: unknown): {
   // ORDINARY attempt budget only: retryPastMaxAttempts stays false, so a fence
   // that never clears still terminates instead of spinning forever. The sibling
   // warden_ci_mutation_in_flight follows for the identical reason.
-  const retryPastMaxAttempts = remoteSideEffectUncertain && !authorizationFailure;
+  const retryPastMaxAttempts = (remoteSideEffectUncertain || deliveryOutage) && !authorizationFailure;
   const retryable =
     !authorizationFailure &&
     (remoteSideEffectUncertain ||
+    deliveryOutage ||
     /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|verifier_advisory_provider_retryable|mcu_(?:accounting|settlement)_persistence_failed|(?:mission_mutation_dispatch|warden_ci_mutation)_in_flight/.test(
         normalized,
       ));
@@ -2829,6 +2880,8 @@ async function demo() {
   try {
     const report = await runChangePipeline({
       tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
+      dependencyOutagePolicy: classifyDependencyOutage,
+      refreshRepositoryBase: createRepositoryBaseRefresher(process.env),
       providerSlug: "acme-payments",
     });
     console.log(JSON.stringify(report, null, 2));
@@ -2875,6 +2928,8 @@ async function watch(intervalMs = 30_000) {
         const report = await runUnseenVersion(seen, key, () =>
           runChangePipeline({
             tenantId: loopTenantId,
+            dependencyOutagePolicy: classifyDependencyOutage,
+            refreshRepositoryBase: createRepositoryBaseRefresher(process.env),
             providerSlug: provider.slug,
             db,
           }),
@@ -2924,6 +2979,8 @@ async function runFeedPollUnfenced(opts: {
       : async (slug, database) => {
           const report = await runChangePipeline({
             tenantId,
+            dependencyOutagePolicy: classifyDependencyOutage,
+            refreshRepositoryBase: createRepositoryBaseRefresher(process.env),
             providerSlug: slug,
             db: database,
           });
@@ -3338,6 +3395,10 @@ async function processJobsOnceUnfenced(
     wardenPlanner?: AgentPlanner;
     wardenEnv?: NodeJS.ProcessEnv;
     pipelineRunner?: typeof runChangePipeline;
+    /** Delivery transport for the delivery-only retry path (D10). Tests inject a
+     * fake GitHub here so the retry runs against the real adoption state machine
+     * without App credentials; production leaves it unset and resolves the App. */
+    deliveryRetryGithub?: GitHubDelivery;
     transformerAdaptiveGithub?: GitHubDelivery;
     transformerAdaptiveRepositoryResolver?: ResolveTransformerAdaptiveRepository;
     wardenCandidateGithub?: GitHubDelivery;
@@ -3398,9 +3459,10 @@ async function processJobsOnceUnfenced(
       );
     }
   }
-  const supportedTypes = ["pipeline.fanout", "agent.run", "repair.run", "warden.candidate.deliver",
-    "warden.candidate.observe", "warden.candidate.repair", "warden.candidate.update",
-    "fettler.pr.review", "transformer.adaptive.deliver", LEARNING_OUTCOME_RESOLVE_JOB_TYPE];
+  const supportedTypes = ["pipeline.fanout", "pipeline.delivery-retry", "agent.run", "repair.run",
+    "warden.candidate.deliver", "warden.candidate.observe", "warden.candidate.repair",
+    "warden.candidate.update", "fettler.pr.review", "transformer.adaptive.deliver",
+    LEARNING_OUTCOME_RESOLVE_JOB_TYPE];
   if (workerEnv.DEEPSEEK_VERIFIER_ENABLED?.trim() === "true") {
     supportedTypes.push(VERIFIER_ADVISORY_JOB_TYPE);
   }
@@ -4018,6 +4080,7 @@ if (job.type === "warden.candidate.cleanup") {
           Date.parse(storage.expiresAt),
           Date.parse(binding.expiresAt),
         )).toISOString();
+        const modelOutageQueue = createDependencyOutageQueue(db.raw);
         // Durable, policy-routed production execution. The shared router is the
         // dispatcher: it decides (execute vs mandatory human handoff), the
         // Fettler attempt is the registered executor, and every decision +
@@ -4138,6 +4201,18 @@ if (job.type === "warden.candidate.cleanup") {
                       Math.max(1_000, Math.floor(leaseMs * 2 / 3)),
                     ),
                     signal: leaseAbort.signal,
+                    ...(modelSourcePolicy ? {
+                      modelOutage: {
+                        outage: modelOutageQueue,
+                        inspect: (scope: Parameters<typeof modelOutageQueue.get>[0]) =>
+                          modelOutageQueue.get(scope),
+                        decide: classifyDependencyOutage,
+                        workerId: fence.workerId,
+                        retryBudget: jobModelCalls,
+                        expiresAt: candidateExpiresAt,
+                        leaseMs: Math.min(60_000, Math.max(1_000, leaseMs)),
+                      },
+                    } : {}),
                   }
                 : undefined;
               // Resume with the compiled envelope via resolveResumeContext so
@@ -4618,6 +4693,165 @@ if (job.type === "warden.candidate.cleanup") {
         continue;
       }
 
+      if (job.type === "pipeline.delivery-retry") {
+        // D10: delivery-only retry — replay the adoptive delivery from the persisted
+        // artifact, no re-analysis. retryConsumerDelivery enforces the ~7-day cap
+        // into github_delivery_abandoned; a delivery_failed outcome re-throws so the
+        // job retries (delivery-only) under the backoff cap.
+        const retryPayload = JSON.parse(job.payload_json) as { prId: string };
+        const resolveDelivery = opts.deliveryRetryGithub
+          ? () => ({ delivery: opts.deliveryRetryGithub! })
+          : createPipelineDeliveryResolver(
+              { tenantId: job.tenant_id, providerSlug: "", db, dependencyOutagePolicy: classifyDependencyOutage },
+              db,
+            );
+        const outcome = await retryConsumerDelivery({
+          db,
+          tenantId: job.tenant_id,
+          prId: retryPayload.prId,
+          deliveryFor: (consumer, repo) => resolveDelivery(consumer, repo),
+          refreshedHeadSha: null,
+          now: nowIso(),
+        });
+        if (outcome.fallbackToPipeline) {
+          // No write-ahead artifact exists (the outage hit before the commit was
+          // built, e.g. a base-refresh failure), so a delivery-only replay cannot
+          // reconstruct the change. Fall back to a full pipeline run that REPLAYS the
+          // originating gate payload bound to the FAILED change (see below), under a
+          // re-admission + replay cap so a sustained outage cannot run forever.
+          const prId = retryPayload.prId;
+          const change = getChange(db, outcome.changeId!);
+          const provider = change ? getProviderById(db, change.provider_id) : undefined;
+          const settleFallback = (resultBody: Record<string, unknown>, log: string) => {
+            db.raw.exec("BEGIN IMMEDIATE");
+            try {
+              if (!completeJob(db, job.id, { prId, ...resultBody }, nowIso(), fence)) {
+                throw new Error("lease_lost_before_delivery_retry_completion");
+              }
+              db.raw.exec("COMMIT");
+            } catch (error) {
+              if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+              throw error;
+            }
+            result.succeeded++;
+            console.log(`  delivery-retry ${prId} -> ${log}`);
+          };
+
+          // (2) No replayable payload — main-era rows, or watch/feed/demo runs that
+          // call runChangePipeline without an origin payload, or a vanished
+          // change/provider. A bare re-run would fail the gates, so end the row
+          // delivery_blocked with a named code and audit it (never a silent no-op that
+          // leaves it stuck delivery_failed). An operator must re-run the change.
+          if (!change || !provider || !outcome.originFanoutJson) {
+            recordMigrationPrDeliveryBlocked(db, prId, "github_delivery_replay_unavailable");
+            recordAudit(db, {
+              tenantId: job.tenant_id, actor: "system",
+              action: "pr.delivery_replay_unavailable", resourceType: "migration_pr", resourceId: prId,
+              metadata: { changeId: outcome.changeId, reason: "no_replayable_origin_payload" },
+            });
+            settleFallback({ status: "delivery_blocked", code: "github_delivery_replay_unavailable" }, "blocked (replay unavailable)");
+            continue;
+          }
+
+          // A replay already scheduled/running for this row: don't double-admit,
+          // double-count or double-run (dedup on the deterministic fallback id).
+          const existingFallback = getJob(db, `pipeline-delivery-fallback:${prId}`, job.tenant_id);
+          if (existingFallback && (existingFallback.status === "pending" || existingFallback.status === "running")) {
+            settleFallback({ status: outcome.status, fallback: "already_scheduled" }, "fallback already scheduled");
+            continue;
+          }
+
+          // (1b) Cap automatic replays. After the cap, abandon (terminal, non-retryable;
+          // the operator endpoint reopens it and resets the counter).
+          const priorReplays = getPr(db, prId, job.tenant_id)?.replay_count ?? 0;
+          if (priorReplays >= MAX_FULL_PIPELINE_REPLAYS) {
+            updateMigrationPrStatus(db, prId, "github_delivery_abandoned", null);
+            recordAudit(db, {
+              tenantId: job.tenant_id, actor: "system",
+              action: "pr.delivery_replay_abandoned", resourceType: "migration_pr", resourceId: prId,
+              metadata: { replays: priorReplays, cap: MAX_FULL_PIPELINE_REPLAYS },
+            });
+            settleFallback({ status: "github_delivery_abandoned", replays: priorReplays }, `abandoned (replay cap ${MAX_FULL_PIPELINE_REPLAYS})`);
+            continue;
+          }
+
+          // (1a) Re-admit usage for this replay (tenant-scoped, same admission the API
+          // uses). A distinct runId per replay keeps the reservation idempotency key
+          // unique so each replay reserves and settles its own hold. Quota refusal
+          // blocks the row (visible, operator-retryable) with no run.
+          const now = nowIso();
+          const admission = admitRunUsage(db, {
+            tenantId: job.tenant_id,
+            runId: `delivery-replay:${prId}:${priorReplays}`,
+            mcuMicros: estimateRunMcuMicros({ targetCount: 1 }),
+            reason: `delivery replay: ${provider.slug}`,
+            createdAt: now,
+            env: workerEnv,
+          });
+          if (admission.enforced && !admission.admitted) {
+            recordMigrationPrDeliveryBlocked(db, prId, "github_delivery_replay_quota_refused");
+            recordAudit(db, {
+              tenantId: job.tenant_id, actor: "system",
+              action: "pr.delivery_replay_quota_refused", resourceType: "migration_pr", resourceId: prId,
+              metadata: { error: admission.body.error },
+            });
+            settleFallback({ status: "delivery_blocked", code: "github_delivery_replay_quota_refused" }, "blocked (replay quota refused)");
+            continue;
+          }
+
+          // Admitted (or enforcement off): replay the ORIGINATING gate payload
+          // (contract cases, security attestation, severity, ...) bound to the FAILED
+          // change's versions and narrowed to the consumer — not a bare re-run of the
+          // provider's latest change. Carry the reservation so the fanout settles it.
+          const origin = JSON.parse(outcome.originFanoutJson) as Record<string, unknown>;
+          const usageHold = admission.enforced && admission.admitted
+            ? {
+                [RUN_USAGE_RESERVATION_KEY]: admission.reservationId,
+                [RUN_USAGE_RESERVED_MCU_KEY]: admission.reservedMcuMicros,
+              }
+            : {};
+          const fallbackPayload = {
+            ...origin,
+            consumerIds: [outcome.consumerId!],
+            fromVersionId: change.from_version_id,
+            toVersionId: change.to_version_id,
+            ...usageHold,
+          };
+          const backoffMs = FULL_PIPELINE_REPLAY_BASE_BACKOFF_MS * 2 ** priorReplays;
+          bumpMigrationPrReplayCount(db, prId);
+          enqueueOrResetJob(db, {
+            id: `pipeline-delivery-fallback:${prId}`,
+            tenantId: job.tenant_id,
+            type: "pipeline.fanout",
+            payload: fallbackPayload,
+            maxAttempts: 50,
+            createdAt: now,
+            availableAt: new Date(Date.parse(now) + backoffMs).toISOString(),
+          });
+          settleFallback(
+            { status: outcome.status, fallback: "full_pipeline", replay: priorReplays + 1 },
+            `fallback replay ${priorReplays + 1}/${MAX_FULL_PIPELINE_REPLAYS}`,
+          );
+          continue;
+        }
+        if (outcome.status === "delivery_failed") {
+          throw new Error(outcome.deliveryError ?? "pipeline_delivery_failed");
+        }
+        db.raw.exec("BEGIN IMMEDIATE");
+        try {
+          if (!completeJob(db, job.id, { prId: retryPayload.prId, status: outcome.status }, nowIso(), fence)) {
+            throw new Error("lease_lost_before_delivery_retry_completion");
+          }
+          db.raw.exec("COMMIT");
+        } catch (error) {
+          if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+          throw error;
+        }
+        result.succeeded++;
+        console.log(`  delivery-retry ${retryPayload.prId} -> ${outcome.status}`);
+        continue;
+      }
+
       const payload = JSON.parse(job.payload_json) as {
         providerSlug: string;
         consumerIds?: string[];
@@ -4631,6 +4865,13 @@ if (job.type === "warden.candidate.cleanup") {
         securityScanOk?: boolean;
         securityScanAttestation?: SecurityScanAttestation;
         repairVerifyCommands?: string[];
+        // A self-serve fanout that pins a specific change (the D10 no-artifact
+        // fallback replays the originating payload bound to the failed change's
+        // versions, not the provider's latest change).
+        fromVersionId?: string;
+        toVersionId?: string;
+        fromVersionLabel?: string;
+        toVersionLabel?: string;
       };
       console.log(`Job ${job.id} pipeline.fanout ${payload.providerSlug}`);
       const pipelineRunner = opts.pipelineRunner ?? runChangePipeline;
@@ -4639,17 +4880,33 @@ if (job.type === "warden.candidate.cleanup") {
         : undefined;
       const fettlerProductionIntent = fettlerProductionSource !== undefined;
       const legacyWardenPilot = payload.wardenPilot === true;
+      // Persist the originating gate payload (reservation keys stripped so a replay
+      // never double-charges — the original reservation is settled by THIS run) on
+      // each row this run creates, so a delivery-only retry that must fall back to a
+      // full pipeline run replays the same gates for the same change (D10).
+      const originFanoutPayload = JSON.parse(job.payload_json) as Record<string, unknown>;
+      delete originFanoutPayload[RUN_USAGE_RESERVATION_KEY];
+      delete originFanoutPayload[RUN_USAGE_RESERVED_MCU_KEY];
       const report = await pipelineRunner({
         tenantId: job.tenant_id,
         providerSlug: payload.providerSlug,
         db,
+        dependencyOutagePolicy: classifyDependencyOutage,
+        refreshRepositoryBase: createRepositoryBaseRefresher(process.env),
         consumerIds: payload.consumerIds,
+        originFanoutPayloadJson: JSON.stringify(originFanoutPayload),
         ...(fettlerProductionIntent ? {
           fromVersionId: fettlerProductionSource.fromVersionId,
           fromVersionLabel: fettlerProductionSource.fromVersionLabel,
           toVersionId: fettlerProductionSource.toVersionId,
           toVersionLabel: fettlerProductionSource.toVersionLabel,
-        } : {}),
+        } : {
+          // A self-serve payload may pin a specific change (the fallback replay does).
+          ...(payload.fromVersionId ? { fromVersionId: payload.fromVersionId } : {}),
+          ...(payload.toVersionId ? { toVersionId: payload.toVersionId } : {}),
+          ...(payload.fromVersionLabel ? { fromVersionLabel: payload.fromVersionLabel } : {}),
+          ...(payload.toVersionLabel ? { toVersionLabel: payload.toVersionLabel } : {}),
+        }),
         severity: payload.severity,
         notificationsOnly: fettlerProductionIntent || legacyWardenPilot
           ? true
@@ -4673,18 +4930,22 @@ if (job.type === "warden.candidate.cleanup") {
       ) {
         throw new Error("fettler_provider_change_execution_binding_mismatch");
       }
-      const deliveryFailures = report.consumers.filter(
-        (consumer) => consumer.prStatus === "delivery_failed",
-      );
-      if (deliveryFailures.length) {
-        throw new Error(
-          `pipeline_delivery_failed:${deliveryFailures
-            .map(
-              (consumer) =>
-                `${consumer.consumerId}:${consumer.deliveryError ?? "unknown delivery error"}`,
-            )
-            .join("|")}`,
-        );
+      // D10: a delivery failure does NOT re-run the whole pipeline (re-analysing).
+      // Each failed consumer is handed to a delivery-only retry job that replays
+      // the adoptive delivery from the persisted artifact under the backoff cap and
+      // the ~7-day abandon cap. The deterministic id dedups a concurrent retry but
+      // enqueueOrResetJob revives a terminal (dead-lettered/done) row so a failed
+      // consumer is never stranded behind a spent job id (never silently swallowed).
+      for (const failed of report.consumers.filter((c) => c.prStatus === "delivery_failed")) {
+        if (!failed.prId) continue;
+        enqueueOrResetJob(db, {
+          id: `pipeline-delivery-retry:${failed.prId}`,
+          tenantId: job.tenant_id,
+          type: "pipeline.delivery-retry",
+          payload: { prId: failed.prId },
+          maxAttempts: 50,
+          createdAt: nowIso(),
+        });
       }
       if (leaseLost) throw new Error("lease_lost_before_pipeline_completion");
       if (fettlerProductionIntent || legacyWardenPilot) {
@@ -4751,7 +5012,13 @@ if (job.type === "warden.candidate.cleanup") {
       console.log(`  done change=${report.changeId}`);
     } catch (error) {
       if (error instanceof WardenAtomicFinalizationError) throw error;
-      const classified = classifyJobFailure(error);
+      // The attempt age bounds a GitHub delivery outage's retries: after ~7 days
+      // it abandons into github_delivery_abandoned (D10) instead of retrying forever.
+      const createdAt = (job as { created_at?: string }).created_at;
+      const attemptAgeMs = createdAt && Number.isFinite(Date.parse(createdAt))
+        ? Date.now() - Date.parse(createdAt)
+        : undefined;
+      const classified = classifyJobFailure(error, attemptAgeMs === undefined ? {} : { attemptAgeMs });
       if (["warden.candidate.observe", "warden.candidate.repair", "warden.candidate.update"].includes(job.type)) {
         db.raw.exec("BEGIN IMMEDIATE");
         try {

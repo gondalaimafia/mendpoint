@@ -9,6 +9,7 @@ import { assertTenantScope } from "./tenant-scope.js";
 import { createTenantMembership, getTenantMembership } from "./identity.js";
 import { insertPrincipal } from "./trust.js";
 import { ensureAuditGovernanceSchema } from "./audit-governance-store.js";
+import { ensureDependencyOutageSchema } from "./dependency-outage-queue.js";
 import type {
   ApiChange,
   ApiKeyRow,
@@ -282,11 +283,51 @@ CREATE TABLE IF NOT EXISTS migration_prs (
   github_account_id TEXT,
   created_at TEXT NOT NULL,
   resolved_at TEXT,
-  coverage_json TEXT
+  coverage_json TEXT,
+  -- Adoptive delivery (PR #606): the base commit the adopted PR's delivery
+  -- commit descends from, and the delivery-branch head sha at adoption. Written
+  -- once by ADOPT; never a re-anchoring anchor (delivery identity is the branch,
+  -- not the base). The pre-#606 delivery_base_sha/delivery_retirement_generation
+  -- columns never reached main and are intentionally absent here; a DB that ran
+  -- an intermediate head keeps them as unused columns.
+  delivered_base_sha TEXT,
+  delivered_head_sha TEXT,
+  -- The originating fanout job's gate payload (reservation keys stripped), persisted
+  -- so a delivery-only retry that must fall back to a full pipeline run replays the
+  -- SAME gate inputs (contract cases, security attestation, severity, ...) for the
+  -- SAME change instead of a bare re-run whose gates fail. Survives job resets.
+  origin_fanout_json TEXT,
+  -- How many automatic full-pipeline replays (D10 no-artifact fallback) this row has
+  -- scheduled. Capped so a sustained outage cannot replay forever; the operator retry
+  -- endpoint resets it to 0 for a fresh budget.
+  replay_count INTEGER NOT NULL DEFAULT 0,
+  -- The named delivery error/blocked code for a delivery_blocked / abandoned row
+  -- (e.g. github_delivery_replay_unavailable, github_delivery_replay_quota_refused),
+  -- so an operator can see WHY a delivery is stuck without reading the audit log.
+  delivery_error TEXT
 );
 CREATE INDEX IF NOT EXISTS migration_prs_status_idx ON migration_prs(status);
 CREATE INDEX IF NOT EXISTS migration_prs_change_idx ON migration_prs(change_id);
 CREATE INDEX IF NOT EXISTS migration_prs_consumer_idx ON migration_prs(consumer_id);
+-- Write-ahead delivery artifact (PR #606 D5): the {title, body, treeSha,
+-- parentSha, deliveryKey} for an adoptive draft, persisted BEFORE any ref/PR
+-- write and keyed by its content digest, tenant-scoped. The delivery commit's
+-- Mendpoint-Body trailer references this digest; ours() is bound to treeSha and
+-- parentSha, so the artifact is unforgeable without a DB write. Kept permanently.
+CREATE TABLE IF NOT EXISTS migration_delivery_artifacts (
+  tenant_id TEXT NOT NULL,
+  artifact_digest TEXT NOT NULL,
+  delivery_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  tree_sha TEXT NOT NULL,
+  parent_sha TEXT NOT NULL,
+  -- The delivery file edits (path + content), so a delivery-only retry (D10) can
+  -- reconstruct the whole delivery from the artifact without re-analysing.
+  files_json TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, artifact_digest)
+);
 CREATE INDEX IF NOT EXISTS impact_findings_consumer_idx ON impact_findings(consumer_id);
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY,
@@ -2683,6 +2724,7 @@ export function createDb(urlOrPath?: string): AppDb {
     installFettlerCandidateDeliveryPrecursorIndex({ raw });
     migrateWardenCiAwaitingReview({ raw });
     installTrustImmutability({ raw });
+    ensureDependencyOutageSchema(raw);
     return { raw };
   } catch (error) {
     raw.close();
@@ -3404,6 +3446,12 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "migration_prs", name: "github_repository_id", sql: "TEXT" },
     { table: "migration_prs", name: "github_installation_id", sql: "TEXT" },
     { table: "migration_prs", name: "github_account_id", sql: "TEXT" },
+    { table: "migration_prs", name: "delivered_base_sha", sql: "TEXT" },
+    { table: "migration_prs", name: "delivered_head_sha", sql: "TEXT" },
+    { table: "migration_prs", name: "origin_fanout_json", sql: "TEXT" },
+    { table: "migration_prs", name: "replay_count", sql: "INTEGER NOT NULL DEFAULT 0" },
+    { table: "migration_prs", name: "delivery_error", sql: "TEXT" },
+    { table: "migration_delivery_artifacts", name: "files_json", sql: "TEXT" },
     {
       table: "regauge_adaptive_candidates",
       name: "base_branch",
@@ -4883,12 +4931,14 @@ export function insertMigrationPr(
     resolvedAt?: string | null;
     /** JSON-serialized ImpactCoverage for the analysis behind this PR. */
     coverageJson?: string | null;
+    /** The originating fanout gate payload (reservation-stripped) for D10 fallback. */
+    originFanoutJson?: string | null;
   },
 ) {
   run(
     db,
-    `INSERT INTO migration_prs (id, change_id, consumer_id, title, body, branch_name, status, risk, patch_unified, github_pr_number, github_pr_url, created_at, resolved_at, coverage_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO migration_prs (id, change_id, consumer_id, title, body, branch_name, status, risk, patch_unified, github_pr_number, github_pr_url, created_at, resolved_at, coverage_json, origin_fanout_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
       row.changeId,
@@ -4904,6 +4954,7 @@ export function insertMigrationPr(
       row.createdAt,
       row.resolvedAt ?? null,
       row.coverageJson ?? null,
+      row.originFanoutJson ?? null,
     ],
   );
 }
@@ -4921,6 +4972,49 @@ export function updateMigrationPrStatus(
   ]);
 }
 
+/**
+ * Record a terminal delivery-blocked outcome (PR #606 D10): set status
+ * delivery_blocked and the named code, but only when no PR was ever recorded (CAS on
+ * github_pr_number IS NULL), so it can never downgrade a delivered draft. Returns
+ * whether it applied.
+ */
+export function recordMigrationPrDeliveryBlocked(
+  db: AppDb,
+  id: string,
+  code: string,
+): boolean {
+  const result = db.raw
+    .prepare(
+      `UPDATE migration_prs SET status = 'delivery_blocked', delivery_error = ?
+       WHERE id = ? AND github_pr_number IS NULL`,
+    )
+    .run(code, id);
+  return result.changes > 0;
+}
+
+/**
+ * Increment a row's automatic-replay counter (D10 no-artifact fallback) and return
+ * the new count, so the worker can cap replays. A row that recorded a PR is never
+ * bumped (nothing to replay).
+ */
+export function bumpMigrationPrReplayCount(db: AppDb, id: string): number {
+  db.raw
+    .prepare(
+      `UPDATE migration_prs SET replay_count = replay_count + 1
+       WHERE id = ? AND github_pr_number IS NULL`,
+    )
+    .run(id);
+  const row = get(db, "SELECT replay_count FROM migration_prs WHERE id = ?", [id]) as
+    | { replay_count: number }
+    | undefined;
+  return row?.replay_count ?? 0;
+}
+
+/** Reset a row's replay counter to 0 (operator retry gives a fresh replay budget). */
+export function resetMigrationPrReplayCount(db: AppDb, id: string): void {
+  run(db, `UPDATE migration_prs SET replay_count = 0 WHERE id = ?`, [id]);
+}
+
 export function updateMigrationPrDelivery(
   db: AppDb,
   id: string,
@@ -4932,8 +5026,20 @@ export function updateMigrationPrDelivery(
     githubRepositoryId?: string;
     githubInstallationId?: string;
     githubAccountId?: string;
+    /** The base sha the adopted delivery commit descends from (set-once by ADOPT). */
+    deliveredBaseSha?: string | null;
+    /** The delivery-branch head sha at adoption (set-once by ADOPT). */
+    deliveredHeadSha?: string | null;
   },
 ) {
+  // D1 (PR #606): a pre-delivery or failure write — one that does NOT itself
+  // record a PR number — must never downgrade a row that already recorded a
+  // draft. Guard such writes with compare-and-set on `github_pr_number IS NULL`.
+  // The forward write that records the PR (it carries a github_pr_number) is the
+  // legitimate transition to draft and is exempt.
+  const downgradeableStatuses = new Set(["delivery_pending", "delivery_failed", "delivery_blocked"]);
+  const casGuard = (row.githubPrNumber === undefined || row.githubPrNumber === null) &&
+    downgradeableStatuses.has(row.status);
   const result = db.raw.prepare(
     `UPDATE migration_prs
      SET status = ?,
@@ -4942,12 +5048,15 @@ export function updateMigrationPrDelivery(
          body = COALESCE(?, body),
          github_repository_id = COALESCE(?, github_repository_id),
          github_installation_id = COALESCE(?, github_installation_id),
-         github_account_id = COALESCE(?, github_account_id)
+         github_account_id = COALESCE(?, github_account_id),
+         delivered_base_sha = COALESCE(delivered_base_sha, ?),
+         delivered_head_sha = COALESCE(delivered_head_sha, ?)
      WHERE id = ?
        AND (? IS NULL OR github_pr_number IS NULL OR github_pr_number = ?)
        AND (? IS NULL OR github_repository_id IS NULL OR github_repository_id = ?)
        AND (? IS NULL OR github_installation_id IS NULL OR github_installation_id = ?)
-       AND (? IS NULL OR github_account_id IS NULL OR github_account_id = ?)`,
+       AND (? IS NULL OR github_account_id IS NULL OR github_account_id = ?)
+       ${casGuard ? "AND github_pr_number IS NULL" : ""}`,
   ).run(
       row.status,
       row.githubPrNumber ?? null,
@@ -4956,6 +5065,8 @@ export function updateMigrationPrDelivery(
       row.githubRepositoryId ?? null,
       row.githubInstallationId ?? null,
       row.githubAccountId ?? null,
+      row.deliveredBaseSha ?? null,
+      row.deliveredHeadSha ?? null,
       id,
       row.githubPrNumber ?? null,
       row.githubPrNumber ?? null,
@@ -4966,7 +5077,157 @@ export function updateMigrationPrDelivery(
       row.githubAccountId ?? null,
       row.githubAccountId ?? null,
   );
-  if (result.changes !== 1) throw new Error("migration_pr_delivery_identity_mismatch");
+  if (result.changes !== 1) {
+    // A CAS-guarded downgrade that matched no row because a PR is already
+    // recorded is the I7 invariant working: the recorded draft wins. Return
+    // silently — this is not an identity mismatch.
+    if (casGuard) {
+      const recorded = db.raw.prepare(
+        "SELECT github_pr_number FROM migration_prs WHERE id = ?",
+      ).get(id) as { github_pr_number: number | null } | undefined;
+      if (recorded && recorded.github_pr_number !== null) return;
+    }
+    throw new Error("migration_pr_delivery_identity_mismatch");
+  }
+}
+
+export type DeliveryArtifact = {
+  tenantId: string;
+  artifactDigest: string;
+  deliveryKey: string;
+  title: string;
+  body: string;
+  treeSha: string;
+  parentSha: string;
+  /** JSON of the delivery file edits ([{path, content}]) for a delivery-only retry (D10). */
+  filesJson?: string | null;
+  createdAt: string;
+};
+
+/**
+ * Upper bound on the serialized delivery file edits stored in an artifact,
+ * matching the exact-draft transport's own 10 MB file cap. A delivery whose files
+ * exceed it fails with a named error rather than writing an unbounded row.
+ */
+export const MAX_DELIVERY_ARTIFACT_FILES_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Persist the write-ahead delivery artifact (PR #606 D5) BEFORE any ref/PR write,
+ * tenant-scoped and keyed by its content digest. Idempotent: the same digest for
+ * the same tenant is a no-op (the content is identical by construction). The
+ * serialized files are capped at MAX_DELIVERY_ARTIFACT_FILES_BYTES (a named error
+ * beyond it) so the artifact row can never grow unbounded.
+ */
+export function persistDeliveryArtifact(db: AppDb, artifact: DeliveryArtifact): void {
+  if (
+    artifact.filesJson &&
+    Buffer.byteLength(artifact.filesJson, "utf8") > MAX_DELIVERY_ARTIFACT_FILES_BYTES
+  ) {
+    throw new Error("delivery_artifact_files_too_large");
+  }
+  run(
+    db,
+    `INSERT INTO migration_delivery_artifacts
+       (tenant_id, artifact_digest, delivery_key, title, body, tree_sha, parent_sha, files_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (tenant_id, artifact_digest) DO NOTHING`,
+    [
+      artifact.tenantId,
+      artifact.artifactDigest,
+      artifact.deliveryKey,
+      artifact.title,
+      artifact.body,
+      artifact.treeSha,
+      artifact.parentSha,
+      artifact.filesJson ?? null,
+      artifact.createdAt,
+    ],
+  );
+}
+
+type DeliveryArtifactRow = {
+  tenant_id: string;
+  artifact_digest: string;
+  delivery_key: string;
+  title: string;
+  body: string;
+  tree_sha: string;
+  parent_sha: string;
+  files_json: string | null;
+  created_at: string;
+};
+
+function deliveryArtifactFromRow(row: DeliveryArtifactRow): DeliveryArtifact {
+  return {
+    tenantId: row.tenant_id,
+    artifactDigest: row.artifact_digest,
+    deliveryKey: row.delivery_key,
+    title: row.title,
+    body: row.body,
+    treeSha: row.tree_sha,
+    parentSha: row.parent_sha,
+    filesJson: row.files_json,
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * The most recently persisted delivery artifact for a delivery key, or null. A
+ * delivery-only retry (D10) reconstructs the whole delivery (files, title, body)
+ * from it without re-running analysis. Ordered by the insertion sequence (rowid),
+ * not created_at: two attempts can share a commit date, and rowid is the durable,
+ * monotonic order in which the artifacts were written (they are never deleted), so
+ * the newest shape wins deterministically without depending on a timestamp tie.
+ */
+export function getLatestDeliveryArtifact(
+  db: AppDb,
+  tenantId: string,
+  deliveryKey: string,
+): DeliveryArtifact | null {
+  const row = get(
+    db,
+    `SELECT tenant_id, artifact_digest, delivery_key, title, body, tree_sha, parent_sha, files_json, created_at
+     FROM migration_delivery_artifacts WHERE tenant_id = ? AND delivery_key = ?
+     ORDER BY rowid DESC LIMIT 1`,
+    [tenantId, deliveryKey],
+  ) as DeliveryArtifactRow | undefined;
+  return row ? deliveryArtifactFromRow(row) : null;
+}
+
+/**
+ * True when a write-ahead artifact with this (treeSha, parentSha) was persisted
+ * for this tenant + delivery (D5). Lets ours() recognise our own commit from a
+ * prior attempt after the base moved — its tree/parent differ from the current
+ * attempt's but match an artifact we persisted before writing it (unforgeable).
+ */
+export function hasDeliveryArtifactByContent(
+  db: AppDb,
+  tenantId: string,
+  deliveryKey: string,
+  treeSha: string,
+  parentSha: string,
+): boolean {
+  return get(
+    db,
+    `SELECT 1 AS present FROM migration_delivery_artifacts
+     WHERE tenant_id = ? AND delivery_key = ? AND tree_sha = ? AND parent_sha = ? LIMIT 1`,
+    [tenantId, deliveryKey, treeSha, parentSha],
+  ) !== undefined;
+}
+
+/** Read a persisted delivery artifact by tenant + digest, or null when absent. */
+export function getDeliveryArtifact(
+  db: AppDb,
+  tenantId: string,
+  artifactDigest: string,
+): DeliveryArtifact | null {
+  const row = get(
+    db,
+    `SELECT tenant_id, artifact_digest, delivery_key, title, body, tree_sha, parent_sha, files_json, created_at
+     FROM migration_delivery_artifacts WHERE tenant_id = ? AND artifact_digest = ?`,
+    [tenantId, artifactDigest],
+  ) as DeliveryArtifactRow | undefined;
+  return row ? deliveryArtifactFromRow(row) : null;
 }
 
 /**
@@ -5719,10 +5980,15 @@ export {
   RUN_MCU_ESTIMATE,
   RUN_USAGE_RESERVATION_KEY,
   RUN_USAGE_RESERVED_MCU_KEY,
+  USAGE_ENFORCEMENT_FLAG,
   estimateRunMcuMicros,
   reserveRunUsage,
   settleRunUsage,
   releaseRunUsage,
+  admitRunUsage,
+  usageEnforcementEnabled,
+  type RunUsageAdmission,
+  type RunUsageRejection,
 } from "./usage-run.js";
 export {
   USAGE_PLAN_CATALOG,
@@ -7082,6 +7348,74 @@ export function enqueueJob(
       row.availableAt ?? row.createdAt,
     ],
   );
+}
+
+/**
+ * Enqueue a job, or revive one that already exists under the same (deterministic)
+ * id FOR THIS TENANT. The deterministic id dedups a concurrent retry, but a job
+ * that already reached a terminal state (done / dead_letter / failed / cancelled)
+ * would otherwise collide on the primary key and strand the work behind a spent id.
+ * This resets such a row back to pending atomically (fresh attempts, cleared lease
+ * and outcome, bumped lease_generation so any stale in-flight fence loses),
+ * replacing its payload and available_at. A row still pending or running is left
+ * untouched (a retry is already queued). Returns what it did so the caller can
+ * report it.
+ *
+ * The id primary key is global, but jobs are tenant-owned: an existing row under a
+ * DIFFERENT tenant is a hard `job_id_tenant_mismatch` error, never a cross-tenant
+ * reset that would rewrite another tenant's job. The lookup, the reset WHERE and
+ * the enqueue all pin `tenant_id`.
+ */
+export function enqueueOrResetJob(
+  db: AppDb,
+  row: {
+    id: string;
+    tenantId: string;
+    type: string;
+    payload: unknown;
+    maxAttempts?: number;
+    createdAt: string;
+    availableAt?: string;
+  },
+): "enqueued" | "reset" | "already_active" {
+  if (typeof row.tenantId !== "string" || row.tenantId.trim() === "") {
+    throw new Error("tenant_id_required");
+  }
+  const existing = get(
+    db,
+    "SELECT tenant_id, status FROM jobs WHERE id = ?",
+    [row.id],
+  ) as { tenant_id: string; status: string } | undefined;
+  if (!existing) {
+    enqueueJob(db, row);
+    return "enqueued";
+  }
+  // A job id owned by another tenant is never reset or rewritten from here.
+  if (existing.tenant_id !== row.tenantId) {
+    throw new Error("job_id_tenant_mismatch");
+  }
+  if (existing.status === "pending" || existing.status === "running") {
+    return "already_active";
+  }
+  run(
+    db,
+    `UPDATE jobs
+        SET type = ?, payload_json = ?, status = 'pending', attempts = 0,
+            max_attempts = ?, error = NULL, error_code = NULL, result_json = NULL,
+            started_at = NULL, finished_at = NULL, dead_at = NULL, cancelled_at = NULL,
+            last_error_at = NULL, lease_owner = NULL, lease_expires_at = NULL,
+            available_at = ?, lease_generation = lease_generation + 1
+      WHERE id = ? AND tenant_id = ?`,
+    [
+      row.type,
+      JSON.stringify(row.payload),
+      row.maxAttempts ?? 3,
+      row.availableAt ?? row.createdAt,
+      row.id,
+      row.tenantId,
+    ],
+  );
+  return "reset";
 }
 
 export function recoverExpiredJobs(
@@ -9400,3 +9734,26 @@ export function listRoutingLedgerForRun(
     [tenantId, runId],
   );
 }
+
+export {
+  createDependencyOutageQueue,
+  ensureDependencyOutageSchema,
+  DependencyOutageQueue,
+  type DependencyOutageCircuitSnapshot,
+  type DependencyOutageCircuitState,
+  type DependencyOutageClaim,
+  type DependencyOutageFailureDecision,
+  type DependencyOutageHistoryEvent,
+  type DependencyOutageHealthOperation,
+  type DependencyOutageKind,
+  type DependencyOutageRecord,
+  type DependencyOutageReconciliation,
+  type DependencyOutageReopen,
+  type DependencyOutageReopenReason,
+  type DependencyOutageRunOperation,
+  type DependencyOutageRunResult,
+  type DependencyOutageScope,
+  type DependencyOutageStanding,
+  type DependencyOutageStatus,
+  type DependencyOutageTenantHealth,
+} from "./dependency-outage-queue.js";
