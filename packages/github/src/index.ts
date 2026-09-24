@@ -251,6 +251,15 @@ export class MockGitHubDelivery implements GitHubDelivery {
     if (existsSync(branchDir)) {
       if (!existsSync(metadataPath)) throw new Error("github_exact_draft_branch_diverged");
       const existing = JSON.parse(readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
+      // A re-delivery of THIS branch against a different approved base is base drift,
+      // not content divergence: the branch's own recorded base moved. Report it as
+      // base_revision_drift (distinct from a content change), keyed to the delivery
+      // branch's own base — not a pinned first base per base branch, so a genuinely
+      // moved default head still delivers on a fresh branch (see the per-new-branch
+      // remote-head check below).
+      if (existing.baseSha !== input.expectedBaseSha) {
+        throw new Error("github_exact_draft_base_revision_drift");
+      }
       if (JSON.stringify(existing) !== JSON.stringify(expectedMetadata)) {
         throw new Error("github_exact_draft_branch_diverged");
       }
