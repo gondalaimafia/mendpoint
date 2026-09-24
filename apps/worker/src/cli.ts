@@ -2855,8 +2855,13 @@ async function watch(intervalMs = 30_000) {
   const fenceEnabled = process.env.MENDPOINT_DEPLOYMENT_PROFILE === "customer" ||
     Boolean(process.env.MENDPOINT_BACKUP_FENCE_ROOT?.trim());
   const fenceRoot = resolveMutationFenceRoot();
+  // The loop runs the pipeline as a single tenant, and runChangePipeline resolves the provider
+  // through that tenant's visibility. Scope the sweep to the same tenant (shared providers plus
+  // that tenant's own private ones) so another tenant's private provider is skipped up front,
+  // rather than attempted every cycle and logged as "Unknown provider".
+  const loopTenantId = process.env.MENDPOINT_TENANT_ID ?? "tenant_default";
   for (;;) {
-    for (const provider of listProviders(db)) {
+    for (const provider of listProviders(db, undefined, 0, loopTenantId)) {
       const versions = listVersionsForProvider(db, provider.id);
       if (versions.length < 2) continue;
       const key = `${provider.slug}:${versions.map((version) => version.version_label).join(">")}`;
@@ -2869,7 +2874,7 @@ async function watch(intervalMs = 30_000) {
       try {
         const report = await runUnseenVersion(seen, key, () =>
           runChangePipeline({
-            tenantId: process.env.MENDPOINT_TENANT_ID ?? "tenant_default",
+            tenantId: loopTenantId,
             providerSlug: provider.slug,
             db,
           }),

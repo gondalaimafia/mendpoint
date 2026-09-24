@@ -5,7 +5,7 @@ import {
   getConsumerRepo,
   getJob,
   getPrincipal,
-  getProviderBySlug,
+  getVisibleProviderBySlug,
   getRepositorySnapshotPolicy,
   getTenantMembership,
   listMonitoredForConsumer,
@@ -172,7 +172,7 @@ export function createWardenPilotIntakeRoutes(options: WardenPilotIntakeOptions)
 
       const consumer = getConsumer(options.db, input.consumerId, tenantId);
       if (!consumer) throw new Error("warden_pilot_consumer_not_found");
-      const provider = getProviderBySlug(options.db, input.providerSlug);
+      const provider = getVisibleProviderBySlug(options.db, tenantId, input.providerSlug);
       if (!provider) throw new Error("warden_pilot_provider_not_found");
       if (!listMonitoredForConsumer(options.db, consumer.id)
         .some((monitor) => monitor.provider_id === provider.id)) {

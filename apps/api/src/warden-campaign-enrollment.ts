@@ -7,7 +7,7 @@ import {
   createWardenCampaign,
   fettlerCampaignMissionTaskId,
   getPrincipal,
-  getProviderBySlug,
+  getVisibleProviderBySlug,
   getScmConnection,
   getTenantMembership,
   getWardenCampaign,
@@ -519,8 +519,9 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
       if (connection.provider !== "github") throw new Error("warden_enroll_connection_not_github");
       if (connection.revoked_at) throw new Error("warden_enroll_connection_revoked");
       const installationId = connection.external_account_id;
-      // Validate the campaign and provider exist for this tenant before crawling.
-      if (!getProviderBySlug(options.db, input.providerSlug)) {
+      // Validate the campaign and provider exist for this tenant before crawling. A provider
+      // not visible to this tenant (another tenant's private one) is treated as unknown.
+      if (!getVisibleProviderBySlug(options.db, tenantId, input.providerSlug)) {
         throw new Error("warden_org_provider_unknown");
       }
 
@@ -649,7 +650,7 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
         // Never create a graph file. Multi-repo campaigns stay unbound.
         const enrolledRepos = listWardenCampaignTargets(options.db, tenantId, campaignId)
           .map((target) => target.repositoryId);
-        const provider = getProviderBySlug(options.db, result.providerSlug);
+        const provider = getVisibleProviderBySlug(options.db, tenantId, result.providerSlug);
         pinPublishedGraphVersionForSingleRepository(options.db, {
           tenantId,
           missionId,

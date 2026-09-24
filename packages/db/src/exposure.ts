@@ -29,21 +29,30 @@ function riskRank(risk: string): number {
   return RISK_RANK[risk.toLowerCase()] ?? 5;
 }
 
-export function buildExposureReport(db: AppDb, consumerId: string): ExposureReport | null {
+export function buildExposureReport(
+  db: AppDb,
+  consumerId: string,
+  tenantId?: string,
+): ExposureReport | null {
   const consumer = db.raw
     .prepare(`SELECT id, name FROM consumers WHERE id = ?`)
     .get(consumerId) as { id: string; name: string } | undefined;
   if (!consumer) return null;
 
+  // Tenant isolation: never surface a provider (its slug/name) that is not visible to the
+  // caller's tenant, even if a stale monitored_apis row links this consumer to another
+  // tenant's private provider. `tenantId` undefined is the open/system read (no filter).
+  const scoped = tenantId !== undefined && tenantId !== null;
   const monitoredRows = db.raw
     .prepare(
       `SELECT p.slug as provider_slug, p.name as provider_name, m.provider_id as provider_id
        FROM monitored_apis m
        JOIN providers p ON p.id = m.provider_id
        WHERE m.consumer_id = ?
+         ${scoped ? "AND (p.tenant_id IS NULL OR p.tenant_id = ?)" : ""}
        ORDER BY p.slug`,
     )
-    .all(consumerId) as Array<{
+    .all(...(scoped ? [consumerId, tenantId] : [consumerId])) as Array<{
     provider_slug: string;
     provider_name: string;
     provider_id: string;

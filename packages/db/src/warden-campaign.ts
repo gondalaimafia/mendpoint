@@ -368,7 +368,13 @@ export function autoEnrollWardenCampaignOrg(db: AppDb, input: {
   const campaign = one<CampaignRow>(db, `SELECT * FROM fettler_campaigns WHERE id = ? AND tenant_id = ?`, [campaignId, input.tenantId]);
   if (!campaign) throw new Error("warden_campaign_not_found");
   if (campaign.status !== "draft") throw new Error("warden_campaign_not_draft");
-  const provider = one<{ id: string }>(db, `SELECT id FROM providers WHERE slug = ?`, [providerSlug]);
+  // Tenant isolation: resolve the slug only among providers visible to this tenant (shared or
+  // its own private one), never another tenant's private provider that squats the global slug.
+  const provider = one<{ id: string }>(
+    db,
+    `SELECT id FROM providers WHERE slug = ? AND (tenant_id IS NULL OR tenant_id = ?)`,
+    [providerSlug, input.tenantId],
+  );
   if (!provider) throw new Error("warden_org_provider_unknown");
   // Bind the scan to a tenant-owned, non-revoked GitHub installation connection.
   const connection = one<{ id: string }>(db,
