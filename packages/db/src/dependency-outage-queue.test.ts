@@ -1458,4 +1458,56 @@ describe("durable dependency outage queue", () => {
     )).toEqual({ superseded: false, reason: "operation_missing" });
     db.close();
   });
+
+  it("refuses to supersede a claimed operation AFTER its lease expires (a stalled worker may still land its write)", () => {
+    const db = new DatabaseSync(":memory:");
+    let now = "2026-09-02T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    queue.enqueue({
+      ...SCOPE,
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      nextAttemptAt: now,
+      standing: "degraded_retrying",
+      authorityVersion: "model-authority-v1",
+    }, now);
+    // Worker 1 claims and then stalls mid-delivery (never completes or fails).
+    expect(queue.claim({ ...SCOPE, workerId: "worker-1", now, leaseMs: 30_000, authorityVersion: "model-authority-v1" })).not.toBeNull();
+    // 31s later the lease has expired, but worker 1 can still land a
+    // createRef/commit/PR. Worker 2 must NOT retire it (round-7 refused only
+    // NON-expired claims, which fenced worker 1 out and lost its PR).
+    now = "2026-09-02T12:00:31.000Z";
+    expect(queue.supersede(
+      { tenantId: SCOPE.tenantId, dependencyKind: SCOPE.dependencyKind, providerId: SCOPE.providerId, operationId: SCOPE.operationId },
+      { reason: "delivery_base_reanchored", now },
+    )).toEqual({ superseded: false, reason: "operation_in_flight" });
+    // The row stays claimed (not retired), so the next attempt reclaims and
+    // settles it — worker 1's write is recorded, never fenced out.
+    expect(queue.get(SCOPE)?.status).toBe("claimed");
+    db.close();
+  });
+
+  it("refuses to supersede an operation whose history recorded a reconciliation-required write", () => {
+    const db = new DatabaseSync(":memory:");
+    const now = "2026-09-02T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    queue.enqueue({
+      ...SCOPE,
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      nextAttemptAt: now,
+      standing: "degraded_retrying",
+      authorityVersion: "model-authority-v1",
+    }, now);
+    const claim = queue.claim({ ...SCOPE, workerId: "worker-1", now, leaseMs: 30_000, authorityVersion: "model-authority-v1" })!;
+    // A remote-side-effect-uncertain failure records a reconciliation_required
+    // transition: a write may have landed and awaits reconciliation.
+    queue.fail(claim, decisionForAction("reconcile"), "2026-09-02T12:00:01.000Z");
+    expect(queue.history(SCOPE).some((event) => event.kind === "reconciliation_required")).toBe(true);
+    expect(queue.supersede(
+      { tenantId: SCOPE.tenantId, dependencyKind: SCOPE.dependencyKind, providerId: SCOPE.providerId, operationId: SCOPE.operationId },
+      { reason: "delivery_base_reanchored", now: "2026-09-02T12:00:02.000Z" },
+    )).toEqual({ superseded: false, reason: "operation_write_uncertain" });
+    db.close();
+  });
 });

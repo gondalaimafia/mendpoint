@@ -48,10 +48,20 @@ export function createDependencyOutageRoutes(input: Readonly<{ db: AppDb }>): Ho
       if (!principal) return c.json({ error: "authentication_required" }, 401);
       const active = ensureQueue();
       if (!active) return c.json({ error: "dependency_outage_unavailable" }, 503);
-      return c.json(active.tenantHealth({
+      const health = active.tenantHealth({
         tenantId: principal.tenantId,
         limit: boundedLimit(c.req.query("limit")),
-      }));
+      });
+      // Retired (superseded) operations carry status `failed` for the CHECK
+      // constraint but are not an active failure; expose a derived `state` so
+      // consumers can distinguish them without reading the last-transition kind.
+      return c.json({
+        ...health,
+        operations: health.operations.map((op) => ({
+          ...op,
+          state: op.lastTransition?.kind === "superseded" ? "superseded" : op.status,
+        })),
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : "dependency_outage_query_failed";
       if (message === "dependency_outage_list_limit_invalid") {

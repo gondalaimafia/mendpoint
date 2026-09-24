@@ -2,6 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   classifyGitHubDependencyFailure,
+  exactDraftOperationId,
   createAppJwt,
   deliverToManyRepos,
   GitHubAppDelivery,
@@ -700,6 +701,20 @@ describe("github app runtime", () => {
     });
     expect(run.mock.calls[1]![0].operationId).toBe(run.mock.calls[0]![0].operationId);
     expect(run.mock.calls[1]![0].operationDigest).not.toBe(run.mock.calls[0]![0].operationDigest);
+  });
+
+  it("derives a distinct operation id per base and per retirement generation", () => {
+    const base = { owner: "acme", repo: "shop", branch: "mendpoint/x", expectedBaseSha: "a".repeat(40) };
+    const idX0 = exactDraftOperationId(base);
+    // Same base, default generation is stable (a lost-response retry reconciles).
+    expect(exactDraftOperationId(base)).toBe(idX0);
+    expect(exactDraftOperationId({ ...base, deliveryLineage: 0 })).toBe(idX0);
+    // A different base is a distinct operation (re-anchoring never conflicts).
+    expect(exactDraftOperationId({ ...base, expectedBaseSha: "b".repeat(40) })).not.toBe(idX0);
+    // The SAME base under a higher retirement generation is distinct: a remote
+    // that returns to a retired base does not collide with the retired digest.
+    expect(exactDraftOperationId({ ...base, deliveryLineage: 1 })).not.toBe(idX0);
+    expect(idX0).toMatch(/^github-draft:[a-f0-9]{64}$/);
   });
 
   it("reconciles an exact lost-response draft before every Git write", async () => {

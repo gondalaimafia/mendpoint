@@ -154,4 +154,46 @@ describe("dependency outage routes", () => {
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ error: "dependency_outage_unavailable" });
   });
+
+  it("surfaces a derived state of `superseded` for retired operations (status stays `failed`)", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "dependency-outage-api-"));
+    const db = createDb(join(directory, "app.sqlite"));
+    opened.push({ db, directory });
+    const now = "2026-09-02T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db.raw, { now: () => now });
+    const scope = {
+      tenantId: "tenant-a",
+      dependencyKind: "scm" as const,
+      providerId: "github",
+      operationId: "github-draft:retired",
+      operationDigest: "a".repeat(64),
+    };
+    queue.enqueue({
+      ...scope,
+      retryBudget: 3,
+      expiresAt: "2026-09-02T14:00:00.000Z",
+      nextAttemptAt: "2026-09-02T12:01:00.000Z",
+      standing: "degraded_retrying",
+      authorityVersion: "authority-v1",
+    });
+    queue.supersede(
+      { tenantId: scope.tenantId, dependencyKind: scope.dependencyKind, providerId: scope.providerId, operationId: scope.operationId },
+      { reason: "delivery_base_reanchored" },
+    );
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("principal", { id: "human:owner", tenantId: "tenant-a", role: "owner" });
+      c.set("requestId", "request-1");
+      await next();
+    });
+    app.route("/dependency-outages", createDependencyOutageRoutes({ db }));
+    const response = await app.request("/dependency-outages");
+    expect(response.status).toBe(200);
+    const body = await response.json() as { operations: Array<{ status: string; state: string }> };
+    expect(body.operations).toHaveLength(1);
+    // The CHECK-constrained status stays `failed`, but the derived state
+    // distinguishes an intentional retirement from a real failure.
+    expect(body.operations[0]?.status).toBe("failed");
+    expect(body.operations[0]?.state).toBe("superseded");
+  });
 });

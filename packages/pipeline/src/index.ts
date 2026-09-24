@@ -19,7 +19,7 @@ import {
   insertMigrationPr,
   updateMigrationPrStatus,
   updateMigrationPrDelivery,
-  clearMigrationPrDeliveryAnchor,
+  retireMigrationPrDeliveryAnchor,
   listConsumersForProvider,
   listFindingsForChange,
   listPrsForChange,
@@ -2123,6 +2123,10 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     // to the current head and regenerates its body.
     const persistedDeliveryBaseSha = retryablePr?.delivery_base_sha ?? null;
     const replayCreatedDelivery = persistedDeliveryBaseSha !== null;
+    // Retirement generation for the durable-queue operation id: each retire
+    // increments it so a base revisited after retirement (X to Y back to X) is
+    // a distinct lineage rather than a permanent digest conflict.
+    const deliveryLineage = retryablePr?.delivery_retirement_generation ?? 0;
     const candidateContent = JSON.stringify({
       schemaVersion: 1,
       changeId,
@@ -2706,6 +2710,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
               content: edit.updated,
               mode: "100644" as const,
             })),
+            deliveryLineage,
           });
         }
         assertActive();
@@ -2768,6 +2773,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
                     repo: consumer.github_repo,
                     branch: draft.branchName,
                     baseSha: anchoredBase,
+                    lineage: deliveryLineage,
                   });
                   mayReanchor = retirement.superseded;
                   if (!retirement.superseded) {
@@ -2779,7 +2785,9 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
                   deliveryError = `${originalError} | github_delivery_operation_retirement_failed`;
                 }
               }
-              if (mayReanchor) clearMigrationPrDeliveryAnchor(db, prId);
+              // Clears the anchor AND increments the retirement generation, so
+              // the next attempt re-anchors under a distinct lineage.
+              if (mayReanchor) retireMigrationPrDeliveryAnchor(db, prId);
             }
           }
         }

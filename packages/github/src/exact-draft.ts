@@ -17,6 +17,13 @@ export type ExactDraftDeliveryInput = Readonly<{
   title: string;
   body: string;
   files: readonly ExactDraftFileChange[];
+  /**
+   * Retirement generation for the durable-queue operation id (see
+   * exactDraftOperationId). It never affects the delivered commit, branch, or
+   * PR — only the ledger lineage — so a re-anchor after a proven-no-write
+   * retirement is a distinct operation. Optional; defaults to 0.
+   */
+  deliveryLineage?: number;
 }>;
 
 export type ExactDraftFileChange =

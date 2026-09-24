@@ -284,7 +284,8 @@ CREATE TABLE IF NOT EXISTS migration_prs (
   created_at TEXT NOT NULL,
   resolved_at TEXT,
   coverage_json TEXT,
-  delivery_base_sha TEXT
+  delivery_base_sha TEXT,
+  delivery_retirement_generation INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS migration_prs_status_idx ON migration_prs(status);
 CREATE INDEX IF NOT EXISTS migration_prs_change_idx ON migration_prs(change_id);
@@ -3408,6 +3409,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "migration_prs", name: "github_installation_id", sql: "TEXT" },
     { table: "migration_prs", name: "github_account_id", sql: "TEXT" },
     { table: "migration_prs", name: "delivery_base_sha", sql: "TEXT" },
+    { table: "migration_prs", name: "delivery_retirement_generation", sql: "INTEGER NOT NULL DEFAULT 0" },
     {
       table: "regauge_adaptive_candidates",
       name: "base_branch",
@@ -4984,21 +4986,24 @@ export function updateMigrationPrDelivery(
 }
 
 /**
- * Clear the anchored delivery base commit sha for a pull request row.
+ * Retire the anchored delivery base for a pull request row: clear
+ * `delivery_base_sha` and increment `delivery_retirement_generation`.
  *
  * The persisted `delivery_base_sha` binds set-once (COALESCE in
  * updateMigrationPrDelivery) so lost-response retries reuse the same base. But
- * that binding is only valid once the delivery branch is known to exist
- * remotely: if an attempt anchored a base and failed BEFORE the branch was
- * created, reusing that base forever drifts against a moved head and never
- * recovers. When the transport confirms the branch does not exist, callers
- * clear the anchor so the next attempt re-anchors to the refreshed head; the
- * reused body is gated on the anchor being present, so clearing it also
- * un-binds the body and the next attempt regenerates from scratch.
+ * that binding is only valid until a proven-no-write retirement: when a retry
+ * observes drift (the remote head moved off the anchored base), the branch is
+ * absent, and the durable queue proves no write happened, the anchor is cleared
+ * so the next attempt re-anchors to the refreshed head; the reused body is
+ * gated on the anchor, so clearing it un-binds the body and the next attempt
+ * regenerates from scratch. The generation bump makes each re-anchoring lineage
+ * distinct so a remote that returns to a previously retired base derives a new
+ * operation id instead of colliding with the retired row's digest.
  */
-export function clearMigrationPrDeliveryAnchor(db: AppDb, id: string): void {
+export function retireMigrationPrDeliveryAnchor(db: AppDb, id: string): void {
   const result = db.raw
-    .prepare(`UPDATE migration_prs SET delivery_base_sha = NULL WHERE id = ?`)
+    .prepare(`UPDATE migration_prs SET delivery_base_sha = NULL,
+       delivery_retirement_generation = delivery_retirement_generation + 1 WHERE id = ?`)
     .run(id);
   if (result.changes !== 1) throw new Error("migration_pr_delivery_identity_mismatch");
 }

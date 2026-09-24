@@ -85,7 +85,7 @@ export interface GitHubDelivery {
    * no operation row to conflict with), so the caller may re-anchor without it.
    */
   retireDeliveryOperation?(
-    input: Readonly<{ owner: string; repo: string; branch: string; baseSha: string }>,
+    input: Readonly<{ owner: string; repo: string; branch: string; baseSha: string; lineage?: number }>,
   ): Promise<DeliveryOperationRetirement>;
   createBranch(owner: string, repo: string, branch: string, fromBranch?: string): Promise<void>;
   commitFiles(

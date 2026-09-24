@@ -316,20 +316,23 @@ describe("dependency outage producer-to-consumer recovery", () => {
       },
       pulls: {
         list: vi.fn(async () => ({ data: pull ? [pull] : [] })),
-        create: vi.fn(async () => {
+        create: vi.fn(async (args: { title: string; body: string; head: string; base: string }) => {
           pullsCreateCall += 1;
           if ((opts?.onPullsCreate?.(pullsCreateCall) ?? "ok") === "econnreset") {
             throw Object.assign(new Error("response_lost"), { code: "ECONNRESET" });
           }
+          // Echo the requested title/body/head/base so the exact-draft
+          // verification (which requires byte-equality) accepts the created PR
+          // whatever dynamic body the caller sends.
           pull = {
             number: 24,
             html_url: "https://github.com/acme/shop/pull/24",
             state: "open",
             draft: true,
-            title: "Fettler candidate",
-            body: "Exact candidate",
-            head: { ref: "mendpoint/fettler/candidate-a", sha: COMMIT_SHA },
-            base: { ref: "main", sha: baseHead() },
+            title: args.title,
+            body: args.body,
+            head: { ref: args.head, sha: COMMIT_SHA },
+            base: { ref: args.base, sha: baseHead() },
           };
           return { data: pull };
         }),
@@ -491,6 +494,33 @@ describe("dependency outage producer-to-consumer recovery", () => {
     await expect(delivery.branchExists("acme", "shop", "mendpoint/x")).resolves.toBe(true);
     mode = "error";
     await expect(delivery.branchExists("acme", "shop", "mendpoint/x")).rejects.toMatchObject({ status: 503 });
+    db.close();
+  });
+
+  it("(wedge) a base revisited after retirement delivers under a higher generation with no permanent digest conflict", async () => {
+    const db = new DatabaseSync(":memory:");
+    const now = "2026-09-02T12:00:00.000Z";
+    const queue = createDependencyOutageQueue(db, { now: () => now });
+    // The remote head never leaves base X here; branch creation fails once so
+    // the generation-0 operation is retired before any write.
+    const { octokit } = deliveryHarness({ onCreateRef: (_sha, call) => (call === 1 ? "503" : "ok") });
+    const delivery = harnessDelivery(queue, octokit, () => now);
+    const branch = "mendpoint/fettler/candidate-a";
+
+    await expect(delivery.deliverExactDraft(draftInput())).rejects.toMatchObject({ status: "deferred" });
+    expect(await delivery.retireDeliveryOperation({ owner: "acme", repo: "shop", branch, baseSha: BASE_SHA, lineage: 0 }))
+      .toEqual({ superseded: true });
+
+    // The remote returns to base X and the pipeline regenerates the body. With a
+    // base-only id (round 7) this would collide with the retired row's digest
+    // and wedge on dependency_outage_operation_digest_conflict forever...
+    await expect(
+      delivery.deliverExactDraft({ ...draftInput(), body: "Regenerated body", deliveryLineage: 0 }),
+    ).rejects.toThrow("dependency_outage_operation_digest_conflict");
+    // ...but generation 1 is a distinct operation, so it delivers one PR.
+    await expect(
+      delivery.deliverExactDraft({ ...draftInput(), body: "Regenerated body", deliveryLineage: 1 }),
+    ).resolves.toMatchObject({ number: 24, draft: true });
     db.close();
   });
 });

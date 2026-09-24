@@ -140,16 +140,20 @@ export type DependencyOutageRunResult<T> =
   }>;
 
 /**
- * Outcome of retiring an operation. Superseding is refused (never thrown) when
- * the row proves a GitHub write may have happened — a completed operation (its
- * effect landed) or a claim still active (a write may be in flight) — so a
- * caller can never abandon and re-anchor away from a delivery that wrote.
+ * Outcome of retiring an operation. Superseding is refused (never thrown)
+ * unless the row is settled with a history that PROVES no GitHub write
+ * happened. It is refused for a completed operation (its effect landed), for
+ * ANY claimed row (a lease can expire mid-write and the stalled worker can
+ * still land a createRef/commit/PR — expiry is not proof the write did not
+ * happen), and for any row whose history records a reconciliation-required or
+ * completed transition (a remote-side-effect-uncertain failure, so a write may
+ * have landed). Only then can a caller abandon and re-anchor.
  */
 export type DependencyOutageSupersession =
   | Readonly<{ superseded: true; record: DependencyOutageRecord }>
   | Readonly<{
     superseded: false;
-    reason: "operation_missing" | "operation_completed" | "operation_in_flight";
+    reason: "operation_missing" | "operation_completed" | "operation_in_flight" | "operation_write_uncertain";
   }>;
 
 type OutageRow = {
@@ -980,9 +984,23 @@ export class DependencyOutageQueue {
       if (current.status === "completed") {
         return Object.freeze({ superseded: false as const, reason: "operation_completed" as const });
       }
-      if (current.status === "claimed" && current.claim_expires_at !== null &&
-          current.claim_expires_at > observedAt) {
+      // ANY claimed row is refused, expired lease included: a stalled worker can
+      // still land a createRef/commit/PR after its lease expires, so retiring it
+      // would fence out that write and lose the PR. The next attempt reclaims and
+      // settles the row before it can be retired.
+      if (current.status === "claimed") {
         return Object.freeze({ superseded: false as const, reason: "operation_in_flight" as const });
+      }
+      // Only a history that PROVES no write happened may be retired. A
+      // reconciliation-required transition (a remote-side-effect-uncertain
+      // failure) or a completed transition means a write may have/did land, so
+      // refuse even if the row later expired to `failed`.
+      const priorWrite = this.db.prepare(`SELECT 1 FROM dependency_outage_history
+        WHERE tenant_id = ? AND dependency_kind = ? AND provider_id = ? AND operation_id = ?
+          AND event_kind IN ('reconciliation_required', 'completed') LIMIT 1`)
+        .get(identity.tenantId, identity.dependencyKind, identity.providerId, identity.operationId);
+      if (priorWrite) {
+        return Object.freeze({ superseded: false as const, reason: "operation_write_uncertain" as const });
       }
       const scope: DependencyOutageScope = {
         tenantId: current.tenant_id,

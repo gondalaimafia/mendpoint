@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
+  createDependencyOutageQueue,
   getPrincipalBySubject,
   insertPrincipal,
   insertProvider,
@@ -32,7 +33,8 @@ import {
   verifyDomainEventIntegrity,
 } from "@mendpoint/db";
 import { newId, nowIso } from "@mendpoint/shared";
-import { MockGitHubDelivery, type GitHubDelivery } from "@mendpoint/github";
+import { MockGitHubDelivery, GitHubAppDelivery, type GitHubDelivery } from "@mendpoint/github";
+import { classifyDependencyOutage } from "@mendpoint/ops";
 import { analyzeImpactWithSoftwareGraph } from "@mendpoint/code-impact";
 import {
   changeSubjectDigest,
@@ -172,6 +174,79 @@ afterEach(() => {
   }
 });
 
+
+// A stateful fake GitHub for the REAL production transport (GitHubAppDelivery +
+// durable queue + production classifier). It stores the branch ref and the one
+// pull, echoes the dynamic title/body the pipeline generates so the exact-draft
+// verification accepts the PR, and exposes controls to fail branch creation for
+// a base, move the default head, and delete the branch.
+function outageOctokit(control: { base: () => string; createRefBlockedFor?: () => string | null }) {
+  const COMMIT = "c".repeat(40);
+  const BASE_TREE = "1".repeat(40);
+  const HEAD_TREE = "2".repeat(40);
+  let branchHead: string | null = null;
+  let pull: Record<string, unknown> | null = null;
+  const octokit = {
+    git: {
+      getRef: async ({ ref }: { ref: string }) => {
+        if (ref === "heads/main") return { data: { object: { sha: control.base() } } };
+        if (branchHead === null) throw Object.assign(new Error("not_found"), { status: 404 });
+        return { data: { object: { sha: branchHead } } };
+      },
+      getCommit: async ({ commit_sha }: { commit_sha: string }) => ({
+        data: commit_sha === COMMIT
+          ? { sha: COMMIT, tree: { sha: HEAD_TREE }, parents: [{ sha: control.base() }] }
+          : { sha: commit_sha, tree: { sha: BASE_TREE }, parents: [] },
+      }),
+      getTree: async ({ tree_sha }: { tree_sha: string }) => ({
+        data: { truncated: false, tree: [{ path: "src/a.ts", type: "blob", mode: "100644", sha: tree_sha === BASE_TREE ? "3".repeat(40) : "4".repeat(40) }] },
+      }),
+      createBlob: async () => ({ data: { sha: "4".repeat(40) } }),
+      createTree: async () => ({ data: { sha: HEAD_TREE } }),
+      createCommit: async () => ({ data: { sha: COMMIT } }),
+      createRef: async ({ sha }: { sha: string }) => {
+        if (control.createRefBlockedFor?.() === sha) {
+          throw Object.assign(new Error("service_unavailable"), { status: 503 });
+        }
+        branchHead = sha;
+        return {};
+      },
+      updateRef: async ({ sha }: { sha: string }) => { branchHead = sha; return { data: { object: { sha } } }; },
+    },
+    repos: {
+      getContent: async () => ({ data: { type: "file", encoding: "base64", content: Buffer.from("x", "utf8").toString("base64") } }),
+    },
+    pulls: {
+      list: async () => ({ data: pull ? [pull] : [] }),
+      create: async (args: { title: string; body: string; head: string; base: string }) => {
+        pull = { number: 24, html_url: "https://github.com/org/repo/pull/24", state: "open", draft: true, title: args.title, body: args.body, head: { ref: args.head, sha: COMMIT }, base: { ref: args.base, sha: control.base() } };
+        return { data: pull };
+      },
+    },
+  };
+  return {
+    octokit,
+    deleteBranch: () => { branchHead = null; },
+    pullCount: () => (pull ? 1 : 0),
+  };
+}
+
+function outageAppDelivery(db: ReturnType<typeof createDb>, octokit: unknown, now: () => string): GitHubAppDelivery {
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const delivery = new GitHubAppDelivery({ appId: "99", privateKeyPem: pem }, 42, undefined, [77], {
+    tenantId: "tenant_default",
+    outage: createDependencyOutageQueue(db.raw, { now }),
+    decide: classifyDependencyOutage,
+    retryBudget: 5,
+    expiresInMs: 60 * 60_000,
+    workerId: "pipeline-test",
+    authorityVersion: "installation-v1",
+    now,
+  });
+  (delivery as unknown as { octokit: () => Promise<unknown> }).octokit = async () => octokit;
+  return delivery;
+}
 
 describe("pipeline", () => {
   it("composes the durable outage queue over the primary production database", () => {
@@ -844,6 +919,95 @@ describe("pipeline", () => {
     const row = db.raw.prepare("SELECT delivery_base_sha FROM migration_prs LIMIT 1")
       .get() as { delivery_base_sha: string | null };
     expect(row.delivery_base_sha).toBe(baseX);
+  });
+
+  it("real transport: retires the abandoned operation and re-anchors, leaving the tenant healthy", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop, installationId: "42" });
+    const baseX = "a".repeat(40);
+    const baseY = "b".repeat(40);
+    let now = "2026-09-02T12:00:00.000Z";
+    let currentBase = baseX;
+    let refreshCalls = 0;
+    const refreshRepositoryBase = async () => {
+      refreshCalls += 1;
+      return { status: "refreshed" as const, headSha: refreshCalls === 1 ? baseX : baseY };
+    };
+    // Branch creation fails for base X (pre-creation failure); base Y succeeds.
+    const gh = outageOctokit({ base: () => currentBase, createRefBlockedFor: () => baseX });
+    const delivery = outageAppDelivery(db, gh.octokit, () => now);
+    const common = {
+      tenantId: "tenant_default", providerSlug: "acme-payments", db, graphDb: testGraphDb(),
+      github: delivery, persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true, refreshRepositoryBase,
+    };
+    // Attempt 1: anchors base X, createRef 503, branch never created (no drift).
+    await runChangePipeline(common);
+    // Remote moves to Y.
+    currentBase = baseY;
+    now = "2026-09-02T12:05:00.000Z";
+    // Attempt 2: replays base X, drifts (Y != X), branch absent -> retire base X.
+    await runChangePipeline(common);
+    now = "2026-09-02T12:10:00.000Z";
+    // Attempt 3: re-anchors to Y under generation 1 -> delivers one PR.
+    const third = await runChangePipeline(common);
+    expect(third.consumers[0]?.prStatus, JSON.stringify(third.consumers[0])).toBe("draft");
+    expect(gh.pullCount()).toBe(1);
+    // The abandoned base-X operation was retired (superseded), so the tenant is
+    // healthy, not a lingering degraded_failed outage. Deleting the pipeline
+    // retire call leaves base X degraded_failed and no superseded transition.
+    const health = createDependencyOutageQueue(db.raw, { now: () => now })
+      .tenantHealth({ tenantId: "tenant_default" });
+    expect(health.standing).toBe("healthy");
+    expect(health.operations.some((op) => op.lastTransition?.kind === "superseded")).toBe(true);
+  });
+
+  it("real transport: a declined retirement keeps the anchor (pipeline respects the no-write refusal)", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw.prepare("SELECT id FROM providers WHERE slug = ?").get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop, installationId: "42" });
+    const baseX = "a".repeat(40);
+    const baseY = "b".repeat(40);
+    let now = "2026-09-02T12:00:00.000Z";
+    let currentBase = baseX;
+    let refreshCalls = 0;
+    const refreshRepositoryBase = async () => {
+      refreshCalls += 1;
+      return { status: "refreshed" as const, headSha: refreshCalls === 1 ? baseX : baseY };
+    };
+    const gh = outageOctokit({ base: () => currentBase, createRefBlockedFor: () => baseX });
+    const real = outageAppDelivery(db, gh.octokit, () => now);
+    // Wrap the real transport so retirement is DECLINED, modelling a concurrent
+    // worker that holds an active claim (operation_in_flight): the pipeline must
+    // KEEP the anchor and never re-anchor away from a possible in-flight write.
+    const github: GitHubDelivery = {
+      deliverExactDraft: (i) => real.deliverExactDraft(i),
+      branchExists: (o, r, b) => real.branchExists!(o, r, b),
+      retireDeliveryOperation: async () => ({ superseded: false, reason: "operation_in_flight" }),
+      createBranch: (...a) => real.createBranch(...a),
+      commitFiles: (...a) => real.commitFiles(...a),
+      openPullRequest: (...a) => real.openPullRequest(...a),
+    };
+    const common = {
+      tenantId: "tenant_default", providerSlug: "acme-payments", db, graphDb: testGraphDb(),
+      github, persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true, refreshRepositoryBase,
+    };
+    // Attempt 1: anchors base X, createRef 503, no drift -> keep.
+    await runChangePipeline(common);
+    currentBase = baseY;
+    now = "2026-09-02T12:05:00.000Z";
+    // Attempt 2: drift + branch absent -> retire attempted -> DECLINED -> keep.
+    const second = await runChangePipeline(common);
+    expect(second.consumers[0]?.prStatus).toBe("delivery_failed");
+    // The anchor is kept (ignoring the decline would clear it and re-anchor).
+    const row = db.raw.prepare("SELECT delivery_base_sha FROM migration_prs LIMIT 1")
+      .get() as { delivery_base_sha: string | null };
+    expect(row.delivery_base_sha).toBe(baseX);
+    expect(gh.pullCount()).toBe(0);
   });
 
   it("appends distinct status events for two delivery_failed attempts with different errors (no idempotency conflict)", async () => {

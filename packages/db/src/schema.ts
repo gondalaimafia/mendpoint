@@ -374,6 +374,15 @@ export type MigrationPrRow = {
    * has anchored yet (a fresh delivery re-anchors to the current remote head).
    */
   delivery_base_sha: string | null;
+  /**
+   * How many times a delivery operation for this PR has been retired
+   * (superseded). It is folded into the durable-queue operation id alongside
+   * the anchored base so each re-anchoring lineage is distinct: a remote that
+   * returns to a previously retired base (X to Y back to X) derives a fresh
+   * operation id under the higher generation instead of colliding with the
+   * retired row's digest. Starts at 0 and increments on each successful retire.
+   */
+  delivery_retirement_generation: number;
 };
 
 export type AuditEvent = {

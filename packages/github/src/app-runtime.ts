@@ -190,15 +190,27 @@ function digest(value: unknown): string {
  * conflict) rather than a mutation of the existing one. Reusing the same base
  * (a lost-response retry) keeps the id stable so the identical operation
  * reconciles.
+ *
+ * A retirement generation (`deliveryLineage`, default 0) is folded in alongside
+ * the base so a remote that returns to a previously retired base (X to Y back
+ * to X) derives a fresh id under the higher generation instead of colliding
+ * with the retired row's digest, which would wedge on a permanent conflict.
  */
 export function exactDraftOperationId(
-  input: Readonly<{ owner: string; repo: string; branch: string; expectedBaseSha: string }>,
+  input: Readonly<{
+    owner: string;
+    repo: string;
+    branch: string;
+    expectedBaseSha: string;
+    deliveryLineage?: number;
+  }>,
 ): string {
   return `github-draft:${digest({
     owner: input.owner,
     repo: input.repo,
     branch: input.branch,
     baseSha: input.expectedBaseSha,
+    lineage: input.deliveryLineage ?? 0,
   })}`;
 }
 
@@ -948,7 +960,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
    * retirement is a no-op success and the caller may re-anchor freely.
    */
   async retireDeliveryOperation(
-    input: Readonly<{ owner: string; repo: string; branch: string; baseSha: string }>,
+    input: Readonly<{ owner: string; repo: string; branch: string; baseSha: string; lineage?: number }>,
   ): Promise<DeliveryOperationRetirement> {
     const options = this.dependencyOutage;
     if (!options || typeof options.outage.supersede !== "function") {
@@ -959,6 +971,7 @@ export class GitHubAppDelivery implements GitHubDelivery {
       repo: input.repo,
       branch: input.branch,
       expectedBaseSha: input.baseSha,
+      deliveryLineage: input.lineage ?? 0,
     });
     const result = options.outage.supersede(
       {
