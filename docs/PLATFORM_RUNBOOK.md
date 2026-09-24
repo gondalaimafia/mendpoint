@@ -102,6 +102,32 @@ Query: `{ "op": "outcomes_for_pattern", "pattern": "amount" }`
 - Dogfood thin → freeze features, fix harness  
 - Outcome pipeline flaky → ship without learned signal  
 
+## Self-serve provider slugs (reservation + namespacing)
+
+`providers.slug` is globally UNIQUE. Under self-serve (`MENDPOINT_SELF_SERVE_WARDEN` /
+`MENDPOINT_SELF_SERVE_FETTLER`), `POST /providers` for a tenant:
+
+- refuses a slug reserved for the shared catalog (a `VENDOR_CATALOG` vendor slug or an existing
+  shared provider row) with `409 provider_slug_reserved`; and
+- namespaces the stored slug as `<tenantId>~<requested>` so it can never collide with a current
+  or future shared vendor. The effective slug is returned in the create response and is what the
+  tenant's routes address.
+
+A create colliding with any existing slug returns `409 provider_slug_unavailable` (never 500,
+never revealing whether the taken slug is shared or another tenant's private one).
+
+### Legacy squatted private row (operator path)
+
+If a tenant created a PRIVATE provider under a bare, now-reserved slug BEFORE this change (a
+row with a non-null `tenant_id` whose bare slug matches a shared vendor), there is no automatic
+data move. Production has no private providers today (self-serve off, one tenant), so this is a
+forward-looking procedure only. To remediate, an operator (system-catalog admin) should, in one
+transaction: repoint that provider's dependents to the intended shared provider, or rename the
+squatted row's slug to the namespaced form `UPDATE providers SET slug = '<tenantId>~<slug>'
+WHERE id = '<providerId>' AND tenant_id = '<tenantId>'` (and update any cached slug references),
+then create the shared vendor row under the freed bare slug. Never bulk-rewrite slugs blindly:
+verify each dependent (versions, changes, monitored_apis) before and after.
+
 ## Out of platform scope
 
 GNN training, Neo4j, multi-tenant RBAC, browser tool, full Fettler/Regauge product logic.

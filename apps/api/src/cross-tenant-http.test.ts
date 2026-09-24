@@ -26,6 +26,11 @@ let tokenB = "";
 const changeId = { shared: "", aPrivate: "", bPrivate: "" };
 let consumerAId = "";
 let bPrivateProviderId = "";
+// POST /providers namespaces a private provider's slug (tenant-scoped) and returns the
+// effective slug; these hold the real stored slugs so the isolation assertions address B's
+// actual private provider (not the bare requested name, which namespacing makes nonexistent).
+let aPrivateSlug = "";
+let bPrivateSlug = "";
 
 function auth(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
@@ -104,17 +109,21 @@ beforeAll(async () => {
   // subject of these isolation tests).
   dbMod.insertProvider(db, { id: "provider-shared", slug: "shared-vendor", name: "Shared Vendor", tenantId: null, createdAt: NOW });
 
-  const mkPrivate = async (token: string, slug: string): Promise<string> => {
+  const mkPrivate = async (token: string, slug: string): Promise<{ id: string; slug: string }> => {
     const res = await app.request("/providers", {
       method: "POST",
       headers: auth(token),
       body: JSON.stringify({ slug, name: `Private ${slug}` }),
     });
     if (res.status !== 201) throw new Error(`create ${slug} failed: ${res.status} ${await res.text()}`);
-    return ((await res.json()) as { id: string }).id;
+    return (await res.json()) as { id: string; slug: string };
   };
-  const aPrivateId = await mkPrivate(tokenA, "a-private");
-  const bPrivateId = await mkPrivate(tokenB, "b-private");
+  const aPrivate = await mkPrivate(tokenA, "a-private");
+  const bPrivate = await mkPrivate(tokenB, "b-private");
+  const aPrivateId = aPrivate.id;
+  const bPrivateId = bPrivate.id;
+  aPrivateSlug = aPrivate.slug;
+  bPrivateSlug = bPrivate.slug;
   bPrivateProviderId = bPrivateId;
 
   const seedVersionsAndChange = (providerId: string, slug: string): string => {
@@ -187,17 +196,17 @@ afterAll(() => {
 describe("HTTP cross-tenant isolation — reads never disclose B's private provider to A", () => {
   it("POST /fettler/plans/from-spec: b-private is indistinguishable from an unknown slug", async () => {
     const unknown = await body(await app.request("/fettler/plans/from-spec", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: "no-such-slug" }) }));
-    const cross = await body(await app.request("/fettler/plans/from-spec", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: "b-private" }) }));
+    const cross = await body(await app.request("/fettler/plans/from-spec", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: bPrivateSlug }) }));
     expect(cross).toEqual(unknown);
     expect(cross.status).toBe(404);
     // Positive controls: A's own private and a shared provider build a plan.
-    expect((await app.request("/fettler/plans/from-spec", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: "a-private" }) })).status).toBe(200);
+    expect((await app.request("/fettler/plans/from-spec", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: aPrivateSlug }) })).status).toBe(200);
     expect((await app.request("/fettler/plans/from-spec", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: "shared-vendor" }) })).status).toBe(200);
   });
 
   it("POST /fettler/gates: b-private is indistinguishable from an unknown slug", async () => {
     const unknown = await body(await app.request("/fettler/gates", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: "no-such-slug" }) }));
-    const cross = await body(await app.request("/fettler/gates", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: "b-private" }) }));
+    const cross = await body(await app.request("/fettler/gates", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: bPrivateSlug }) }));
     expect(cross).toEqual(unknown);
     expect(cross.status).toBe(404);
     expect((await app.request("/fettler/gates", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: "shared-vendor" }) })).status).toBe(200);
@@ -205,13 +214,13 @@ describe("HTTP cross-tenant isolation — reads never disclose B's private provi
 
   it("POST /fettler/review (and /warden alias): b-private is indistinguishable from an unknown slug", async () => {
     const unknown = await body(await app.request("/fettler/review", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: "no-such-slug" }) }));
-    const cross = await body(await app.request("/fettler/review", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: "b-private" }) }));
+    const cross = await body(await app.request("/fettler/review", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: bPrivateSlug }) }));
     expect(cross).toEqual(unknown);
     expect(cross.status).toBe(404);
     // The /warden alias enforces the same isolation.
-    const wardenCross = await body(await app.request("/warden/review", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: "b-private" }) }));
+    const wardenCross = await body(await app.request("/warden/review", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: bPrivateSlug }) }));
     expect(wardenCross).toEqual(unknown);
-    expect((await app.request("/fettler/review", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: "a-private" }) })).status).toBe(200);
+    expect((await app.request("/fettler/review", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: aPrivateSlug }) })).status).toBe(200);
   });
 
   it("GET /changes/:id: a change on b-private is indistinguishable from an unknown id", async () => {
@@ -237,15 +246,15 @@ describe("HTTP cross-tenant isolation — reads never disclose B's private provi
     const report = (await res.json()) as { monitoredApis: Array<{ providerSlug: string; providerName: string }> };
     // The exposure route passes the caller's tenant to buildExposureReport, so B's private
     // provider (linked by the stale monitored_apis row seeded in beforeAll) is filtered out.
-    expect(report.monitoredApis.map((m) => m.providerSlug)).not.toContain("b-private");
-    expect(JSON.stringify(report)).not.toContain("b-private");
+    expect(report.monitoredApis.map((m) => m.providerSlug)).not.toContain(bPrivateSlug);
+    expect(JSON.stringify(report)).not.toContain(bPrivateSlug);
   });
 });
 
 describe("HTTP cross-tenant isolation — links/jobs/polls never reach B's private provider", () => {
   it("POST /consumers/:id/monitor: b-private is indistinguishable from an unknown slug", async () => {
     const unknown = await body(await app.request(`/consumers/${consumerAId}/monitor`, { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: "no-such-slug" }) }));
-    const cross = await body(await app.request(`/consumers/${consumerAId}/monitor`, { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: "b-private" }) }));
+    const cross = await body(await app.request(`/consumers/${consumerAId}/monitor`, { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: bPrivateSlug }) }));
     expect(cross).toEqual(unknown);
     expect(cross.status).toBe(404);
     // Positive control: A can monitor a shared provider.
@@ -254,7 +263,7 @@ describe("HTTP cross-tenant isolation — links/jobs/polls never reach B's priva
 
   it("POST /jobs/fanout: b-private is indistinguishable from an unknown slug", async () => {
     const unknown = await body(await app.request("/jobs/fanout", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: "no-such-slug" }) }));
-    const cross = await body(await app.request("/jobs/fanout", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: "b-private" }) }));
+    const cross = await body(await app.request("/jobs/fanout", { method: "POST", headers: auth(tokenA), body: JSON.stringify({ providerSlug: bPrivateSlug }) }));
     expect(cross).toEqual(unknown);
     expect(cross.status).toBe(404);
     // Positive control: fanout over a shared provider is queued.
@@ -262,16 +271,16 @@ describe("HTTP cross-tenant isolation — links/jobs/polls never reach B's priva
   });
 
   it("POST /feeds/poll: tenant A's poll writes nothing to B's private provider", async () => {
-    const before = db.raw.prepare(`SELECT COUNT(*) AS c FROM api_versions WHERE provider_id = (SELECT id FROM providers WHERE slug = 'b-private')`).get() as { c: number };
+    const before = db.raw.prepare(`SELECT COUNT(*) AS c FROM api_versions WHERE provider_id = ?`).get(bPrivateProviderId) as { c: number };
     const res = await app.request("/feeds/poll", {
       method: "POST",
       headers: auth(tokenA),
-      body: JSON.stringify({ localOnly: true, runPipeline: false, slugs: ["b-private"] }),
+      body: JSON.stringify({ localOnly: true, runPipeline: false, slugs: [bPrivateSlug] }),
     });
     expect(res.status).toBe(200);
     const results = ((await res.json()) as { results: Array<{ slug: string }> }).results;
-    expect(results.find((r) => r.slug === "b-private")).toBeUndefined();
-    const after = db.raw.prepare(`SELECT COUNT(*) AS c FROM api_versions WHERE provider_id = (SELECT id FROM providers WHERE slug = 'b-private')`).get() as { c: number };
+    expect(results.find((r) => r.slug === bPrivateSlug)).toBeUndefined();
+    const after = db.raw.prepare(`SELECT COUNT(*) AS c FROM api_versions WHERE provider_id = ?`).get(bPrivateProviderId) as { c: number };
     expect(after.c).toBe(before.c);
   });
 });
@@ -287,7 +296,7 @@ describe("HTTP cross-tenant isolation — provider mutation routes have no exist
   for (const route of mutation) {
     it(`${route.name}: b-private returns the same 404 as an unknown slug (no oracle)`, async () => {
       const unknown = await body(await app.request(`/providers/no-such-slug${route.suffix}`, { method: route.method, headers: auth(tokenA), body: JSON.stringify(route.payload) }));
-      const cross = await body(await app.request(`/providers/b-private${route.suffix}`, { method: route.method, headers: auth(tokenA), body: JSON.stringify(route.payload) }));
+      const cross = await body(await app.request(`/providers/${bPrivateSlug}${route.suffix}`, { method: route.method, headers: auth(tokenA), body: JSON.stringify(route.payload) }));
       expect(cross).toEqual(unknown);
       expect(cross.status).toBe(404);
       // A VISIBLE provider the caller may not mutate (the shared catalog, for a non-system-admin
@@ -298,7 +307,7 @@ describe("HTTP cross-tenant isolation — provider mutation routes have no exist
   }
 
   it("POST /providers/:slug/versions: positive control — A mutates its own private provider", async () => {
-    const res = await app.request("/providers/a-private/versions", {
+    const res = await app.request(`/providers/${aPrivateSlug}/versions`, {
       method: "POST",
       headers: auth(tokenA),
       body: JSON.stringify({ versionLabel: "3", openapi: { openapi: "3.0.0", info: { title: "a", version: "3" }, paths: {} } }),

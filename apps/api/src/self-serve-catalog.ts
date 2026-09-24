@@ -93,6 +93,45 @@ export function decideCatalogMutation(
 }
 
 /**
+ * Separator between a tenant namespace and the requested slug of a tenant-private provider.
+ *
+ * `~` can never appear in a bare vendor slug (those are `[a-z0-9-]+`), so a namespaced private
+ * slug is disjoint from every current AND future shared-catalog vendor slug. Including the
+ * owning tenant id in the prefix also keeps two tenants' identically-named private providers
+ * from colliding on the globally-unique `providers.slug` (which would otherwise be a 500 /
+ * cross-tenant existence oracle).
+ */
+export const TENANT_SLUG_SEPARATOR = "~" as const;
+
+/**
+ * Auto-apply the tenant namespace to a self-serve private provider's requested slug. The result
+ * is what gets stored and what routes (which address providers by `:slug`) resolve; the create
+ * response returns it so the client uses the effective slug for subsequent calls.
+ */
+export function namespacePrivateProviderSlug(tenantId: string, requestedSlug: string): string {
+  return `${tenantId}${TENANT_SLUG_SEPARATOR}${requestedSlug}`;
+}
+
+/**
+ * Is `requestedSlug` reserved for the shared provider catalog? The reserved set is the union of
+ * the repo's authoritative vendor catalog (`VENDOR_CATALOG`) and every existing shared provider
+ * row (tenant_id IS NULL) — both public to all tenants — so refusing a private create under a
+ * reserved slug reveals nothing tenant-private. Comparison is case-insensitive and
+ * whitespace-trimmed so a case-variant (`Stripe`) cannot squat a vendor's identity.
+ */
+export function isReservedSharedSlug(
+  requestedSlug: string,
+  reservedSlugs: ReadonlySet<string>,
+): boolean {
+  return reservedSlugs.has(requestedSlug.trim().toLowerCase());
+}
+
+/** Normalize a slug for reserved-set membership (trim + lowercase). */
+export function normalizeReservedSlug(slug: string): string {
+  return slug.trim().toLowerCase();
+}
+
+/**
  * Read-side isolation: is this provider visible to the reader?
  *
  * Shared providers (tenant_id null) are visible to everyone (the shared catalog is public by

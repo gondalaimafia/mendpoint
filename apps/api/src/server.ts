@@ -30,6 +30,7 @@ import {
   listMonitoredForConsumers,
   getConsumer,
   insertProvider,
+  listSharedProviderSlugs,
   insertApiVersion,
   insertConsumer,
   insertConsumerRepo,
@@ -117,6 +118,7 @@ import {
   listCatalogFeeds,
   pollAllFeeds,
   probeKnownSdks,
+  VENDOR_CATALOG,
 } from "@mendpoint/catalog";
 import {
   applyPrFeedback,
@@ -245,6 +247,9 @@ import {
 } from "./self-serve-onboarding.js";
 import {
   decideCatalogMutation,
+  isReservedSharedSlug,
+  namespacePrivateProviderSlug,
+  normalizeReservedSlug,
 } from "./self-serve-catalog.js";
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
@@ -699,6 +704,19 @@ function catalogMutationScope(
 function catalogReadTenantId(c: Context<ApiEnv>): string | undefined {
   if (effectiveAuthMode() === "off") return undefined;
   return requestTenantId(c);
+}
+
+/**
+ * Slugs reserved for the shared provider catalog, so a self-serve tenant cannot claim a real
+ * vendor slug as a private provider. Union of the repo's authoritative vendor catalog
+ * (`VENDOR_CATALOG`) and every existing shared provider row (tenant_id IS NULL); both are
+ * public to all tenants. Normalized (trim + lowercase) for case-insensitive matching.
+ */
+function reservedSharedProviderSlugs(): Set<string> {
+  const reserved = new Set<string>();
+  for (const vendor of VENDOR_CATALOG) reserved.add(normalizeReservedSlug(vendor.slug));
+  for (const slug of listSharedProviderSlugs(db)) reserved.add(normalizeReservedSlug(slug));
+  return reserved;
 }
 
 function requestConsumerIds(c: Context<ApiEnv>): string[] {
@@ -1821,24 +1839,71 @@ app.post("/providers", async (c) => {
     openapiUrl?: string;
     changelogUrl?: string;
   }>();
+  let slug = body.slug;
+  if (scope.tenantScope !== null) {
+    // Tenant-private (self-serve) create. Two guards, in order:
+    //  1. Reserve the shared catalog: a tenant may not claim a known vendor slug (or an
+    //     existing shared row) as a private provider, which would otherwise occupy that slug
+    //     globally and block every other tenant from the real vendor. The reserved set is
+    //     public, so this 409 discloses nothing tenant-private.
+    if (isReservedSharedSlug(slug, reservedSharedProviderSlugs())) {
+      return c.json(
+        {
+          error: "provider_slug_reserved",
+          message: "This slug is reserved for the shared provider catalog.",
+        },
+        409,
+      );
+    }
+    //  2. Namespace the private slug so it can never collide with a current or future shared
+    //     vendor slug (and never with another tenant's identically-named private provider).
+    //     The effective slug is returned below so the client addresses it on later calls.
+    slug = namespacePrivateProviderSlug(scope.tenantScope, slug);
+  }
+  // No existence oracle and no 500: a collision with ANY existing slug (a shared row or another
+  // tenant's private provider) returns the same 409 regardless of who owns it.
+  if (getProviderBySlugUnscopedForSystem(db, slug)) {
+    return c.json(
+      {
+        error: "provider_slug_unavailable",
+        message: "This provider slug is already in use.",
+      },
+      409,
+    );
+  }
   const id = newId();
-  insertProvider(db, {
-    id,
-    slug: body.slug,
-    name: body.name,
-    website: body.website ?? null,
-    openapiUrl: body.openapiUrl ?? null,
-    changelogUrl: body.changelogUrl ?? null,
-    tenantId: scope.tenantScope,
-    createdAt: nowIso(),
-  });
+  try {
+    insertProvider(db, {
+      id,
+      slug,
+      name: body.name,
+      website: body.website ?? null,
+      openapiUrl: body.openapiUrl ?? null,
+      changelogUrl: body.changelogUrl ?? null,
+      tenantId: scope.tenantScope,
+      createdAt: nowIso(),
+    });
+  } catch (err) {
+    // Guard the narrow TOCTOU window between the pre-check and the insert: a unique-slug
+    // violation is the same ownership-agnostic 409, never a 500 that would leak existence.
+    if (err instanceof Error && /UNIQUE constraint failed/i.test(err.message)) {
+      return c.json(
+        {
+          error: "provider_slug_unavailable",
+          message: "This provider slug is already in use.",
+        },
+        409,
+      );
+    }
+    throw err;
+  }
   requestAudit(c, {
     actor: "api",
     action: "provider.created",
     resourceType: "provider",
     resourceId: id,
   });
-  return c.json({ id, ...body }, 201);
+  return c.json({ id, ...body, slug }, 201);
 });
 
 app.patch("/providers/:slug/feed", async (c) => {

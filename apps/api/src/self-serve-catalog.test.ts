@@ -10,8 +10,12 @@ import type { Principal } from "@mendpoint/platform";
 import { describe, expect, it } from "vitest";
 import {
   decideCatalogMutation,
+  isReservedSharedSlug,
+  namespacePrivateProviderSlug,
+  normalizeReservedSlug,
   providerVisibleToTenant,
   selfServeWardenEnabled,
+  TENANT_SLUG_SEPARATOR,
 } from "./self-serve-catalog.js";
 
 const SYSTEM_TENANT = "tenant_default";
@@ -149,5 +153,32 @@ describe("providerVisibleToTenant", () => {
 
   it("treats the auth-off (undefined tenant) context as open", () => {
     expect(providerVisibleToTenant({ tenant_id: "tenant-a" }, undefined)).toBe(true);
+  });
+});
+
+describe("isReservedSharedSlug", () => {
+  const reserved = new Set(["stripe", "custom-shared"].map(normalizeReservedSlug));
+
+  it("reserves a slug in the shared set", () => {
+    expect(isReservedSharedSlug("stripe", reserved)).toBe(true);
+    expect(isReservedSharedSlug("custom-shared", reserved)).toBe(true);
+  });
+
+  it("is case-insensitive and whitespace-trimmed", () => {
+    expect(isReservedSharedSlug("Stripe", reserved)).toBe(true);
+    expect(isReservedSharedSlug("  STRIPE ", reserved)).toBe(true);
+  });
+
+  it("allows a slug not in the shared set", () => {
+    expect(isReservedSharedSlug("my-internal-api", reserved)).toBe(false);
+  });
+});
+
+describe("namespacePrivateProviderSlug", () => {
+  it("prefixes the requested slug with the tenant namespace using a separator no vendor slug can contain", () => {
+    expect(namespacePrivateProviderSlug("tenant-a", "stripe")).toBe(`tenant-a${TENANT_SLUG_SEPARATOR}stripe`);
+    expect(TENANT_SLUG_SEPARATOR).toBe("~");
+    // Vendor slugs are [a-z0-9-]+, so a namespaced slug can never equal a bare vendor slug.
+    expect(namespacePrivateProviderSlug("tenant-a", "stripe")).not.toMatch(/^[a-z0-9-]+$/);
   });
 });
