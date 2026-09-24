@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { runFixtureShellStep } from "./workflow-fixture-shell.js";
 
 const root = resolve(import.meta.dirname, "..");
 const source = readFileSync(
@@ -81,7 +82,11 @@ describe("customer backup workflow", () => {
     expect(alert.run).toContain("gh issue create");
     expect(alert.run).toContain("customer-production-backup-failure");
     const resolveAlert = step("Resolve backup failure alert");
-    expect(resolveAlert.if).toBe("${{ success() }}");
+    // Closes on a real successful backup, but a deferred cycle (deploy in
+    // progress) is green with no backup taken and must not auto-close the alert.
+    expect(resolveAlert.if).toContain("success()");
+    expect(resolveAlert.if).toContain("steps.deploy_check.outputs.defer != 'true'");
+    expect(resolveAlert.if).toContain("steps.backup_run.outputs.deferred != 'true'");
     expect(resolveAlert.run).toContain("gh issue close");
   });
 
@@ -112,8 +117,6 @@ describe("customer backup workflow", () => {
  * answer" (unauthorized, network) was reported as "token not app scoped". These
  * run the real step and prove the two states are now distinct.
  */
-/** Exactly what GitHub passes for `shell: bash`. Not our own choice of flags. */
-const GITHUB_BASH_FLAGS = ["--noprofile", "--norc", "-e", "-o", "pipefail"];
 /** A fake app that cannot resolve, so a PATH miss can never reach production. */
 const STUB_APP = "stub-app-that-does-not-exist";
 const STUB_TOKEN = "stub-token-not-a-real-secret";
@@ -126,8 +129,16 @@ const STUB_TOKEN = "stub-token-not-a-real-secret";
  * CR so the test reproduces the runner regardless of host, preserving jq's own
  * exit status (which `jq -e` relies on). No effect where jq already emits LF.
  */
-const REAL_JQ =
-  spawnSync("bash", ["-c", "command -v jq"], { encoding: "utf8" }).stdout.trim() || "jq";
+const REAL_JQ = (() => {
+  const found = spawnSync("bash", ["-c", "command -v jq"], { encoding: "utf8" }).stdout.trim();
+  // Never fall back to the bare word `jq`: the wrapper below is itself named `jq`
+  // on the fixture PATH, so a bare-word delegation would make it call itself. If
+  // the real jq is not on PATH, fail loudly rather than shipping that recursion.
+  if (!found) {
+    throw new Error("real jq not found on PATH; the jq LF wrapper cannot delegate to itself");
+  }
+  return found;
+})();
 const JQ_LF_WRAPPER = [
   "#!/usr/bin/env bash",
   `"${REAL_JQ}" "$@" | tr -d '\\r'`,
@@ -171,8 +182,8 @@ function runValidateStep(flyctlBody: string): {
   calls: string;
 } {
   const validate = step("Validate app-scoped backup authority");
-  // If this step ever stops being `shell: bash`, GITHUB_BASH_FLAGS are no longer
-  // the flags it runs under and every assertion below would measure fiction.
+  // If this step ever stops being `shell: bash`, the helper's GitHub flags are no
+  // longer the flags it runs under and every assertion below would measure fiction.
   expect(validate.shell).toBe("bash");
   const dir = mkdtempSync(join(tmpdir(), "customer-backup-validate-"));
   const callLog = join(dir, "flyctl-calls.log");
@@ -185,25 +196,19 @@ function runValidateStep(flyctlBody: string): {
   const jqPath = join(bin, "jq");
   writeFileSync(jqPath, JQ_LF_WRAPPER, "utf8");
   chmodSync(jqPath, 0o755);
-  writeFileSync(join(dir, "step.sh"), validate.run, "utf8");
-  // Git Bash prepends host tools during startup, ahead of the inherited PATH.
-  // Restore fixture precedence inside that shell before sourcing the real step.
-  const result = spawnSync("bash", [...GITHUB_BASH_FLAGS, "-c", `
-    fixture_bin="$(cd "$1" && pwd)"
-    export PATH="$fixture_bin:$PATH"
-    hash -r
-    for tool in flyctl jq; do
-      [[ "$(command -v "$tool")" == "$fixture_bin/$tool" ]] || {
-        echo "fixture_tool_selection_failed:$tool" >&2; exit 127;
-      }
-    done
-    source "$2"
-  `, "workflow-fixture", bin.replace(/\\/g, "/"), "./step.sh"], {
+  const stepPath = join(dir, "step.sh");
+  writeFileSync(stepPath, validate.run, "utf8");
+  // The shared helper restores the fixture PATH inside the shell (Git Bash
+  // prepends host tools during startup) and refuses to run unless flyctl AND jq
+  // resolve to the fixture, so a shadowed stub fails loudly instead of the step
+  // exercising a host binary.
+  const result = runFixtureShellStep({
+    scriptPath: stepPath,
     cwd: dir,
-    encoding: "utf8",
+    fixtureBin: bin,
+    guardTools: ["flyctl", "jq"],
     env: {
       ...process.env,
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
       FLYCTL_CALL_LOG: callLog,
       FLY_API_TOKEN: STUB_TOKEN,
       CUSTOMER_APP: STUB_APP,
@@ -241,5 +246,232 @@ describe("Validate app-scoped backup authority — the shipped step under GitHub
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.calls).toContain("status --app");
+  });
+});
+
+describe("customer backup workflow — deploy deferral and install resilience", () => {
+  it("creates the evidence directory first so the retain step never errors on a missing dir", () => {
+    // run 35842783709 died at Install Fly CLI (a download blip), so Initialize
+    // never ran and "Retain backup evidence" errored with "No files were found"
+    // (if-no-files-found: error). Initialize must be the FIRST step and create
+    // both the directory and a file.
+    expect(steps[0].name).toBe("Initialize backup evidence");
+    expect(steps[0].run).toContain("mkdir -p test-results/customer-backup");
+    const install = steps.findIndex((s) => s.name === "Install Fly CLI");
+    expect(steps.findIndex((s) => s.name === "Initialize backup evidence")).toBeLessThan(install);
+  });
+
+  it("retries the Fly CLI install once with the same pinned SHA and version", () => {
+    const install = step("Install Fly CLI");
+    expect(install.id).toBe("install_flyctl");
+    expect(install["continue-on-error"]).toBe(true);
+    const retry = step("Install Fly CLI (retry once)");
+    expect(retry.if).toBe("${{ steps.install_flyctl.outcome == 'failure' }}");
+    expect(retry.uses).toBe(install.uses);
+    expect(retry["with"].version).toBe(install["with"].version);
+    // The retry itself is NOT continue-on-error, so a genuinely broken install
+    // still fails the job loudly.
+    expect(retry["continue-on-error"]).toBeUndefined();
+  });
+
+  it("gates the backup run on no deploy in progress and reports a deferral as a neutral outcome", () => {
+    const detect = step("Detect a customer deploy in progress");
+    expect(detect.id).toBe("deploy_check");
+    expect(detect.run).toContain("flyctl releases");
+    expect(detect.run).toContain("flyctl machine list");
+    expect(detect.run).toContain("release_in_progress");
+    expect(detect.run).toContain("no_started_machine");
+    const run = step("Run authenticated customer backup");
+    expect(run.if).toBe("${{ steps.deploy_check.outputs.defer != 'true' }}");
+    const report = step("Report a deferred backup");
+    expect(report.run).toContain("customer_backup_deferred_deploy_in_progress");
+    expect(report.run).toContain("::notice");
+    expect(report.run).toContain("GITHUB_STEP_SUMMARY");
+    // A deferred cycle must NOT auto-close a genuine backup-failure alert.
+    const resolveAlert = step("Resolve backup failure alert");
+    expect(resolveAlert.if).toContain("steps.deploy_check.outputs.defer != 'true'");
+    expect(resolveAlert.if).toContain("steps.backup_run.outputs.deferred != 'true'");
+  });
+});
+
+/**
+ * The SHIPPED deploy-detection and backup-run steps under GitHub's real shell,
+ * against a stubbed flyctl (and the real jq via the LF wrapper for the detection
+ * step's JSON logic). Routed through the shared fixture-shell helper so the host
+ * flyctl/jq can never shadow the stubs.
+ */
+function runBackupWorkflowStep(options: {
+  stepName: string;
+  flyctl: string;
+  withJq?: boolean;
+  env?: Record<string, string>;
+}): { status: number | null; stdout: string; stderr: string; output: string; calls: string } {
+  const st = step(options.stepName);
+  expect(st.shell).toBe("bash");
+  const dir = mkdtempSync(join(tmpdir(), "customer-backup-step-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  const callLog = join(dir, "flyctl-calls.log");
+  writeFileSync(callLog, "", "utf8");
+  const flyctlPath = join(bin, "flyctl");
+  writeFileSync(flyctlPath, options.flyctl, "utf8");
+  chmodSync(flyctlPath, 0o755);
+  const tools = ["flyctl"];
+  if (options.withJq) {
+    const jqPath = join(bin, "jq");
+    writeFileSync(jqPath, JQ_LF_WRAPPER, "utf8");
+    chmodSync(jqPath, 0o755);
+    tools.push("jq");
+  }
+  mkdirSync(join(dir, "test-results", "customer-backup"), { recursive: true });
+  const outputPath = join(dir, "github-output");
+  writeFileSync(outputPath, "", "utf8");
+  const scriptPath = join(dir, "step.sh");
+  writeFileSync(scriptPath, st.run, "utf8");
+  const result = runFixtureShellStep({
+    scriptPath,
+    cwd: dir,
+    fixtureBin: bin,
+    guardTools: tools,
+    env: {
+      ...process.env,
+      GITHUB_OUTPUT: outputPath,
+      GITHUB_RUN_ID: "1",
+      GITHUB_RUN_ATTEMPT: "1",
+      GITHUB_SHA: "deadbeefdeadbeef",
+      FLYCTL_CALL_LOG: callLog,
+      FLY_API_TOKEN: STUB_TOKEN,
+      CUSTOMER_APP: STUB_APP,
+      ...options.env,
+    },
+  });
+  return {
+    status: result.status,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    output: readFileSync(outputPath, "utf8"),
+    calls: readFileSync(callLog, "utf8"),
+  };
+}
+
+/** flyctl that answers `releases`/`machine list` from env, or fails when told to. */
+const FLYCTL_DEPLOY_PROBE = [
+  "#!/bin/sh",
+  'printf "%s\\n" "$*" >> "$FLYCTL_CALL_LOG"',
+  'if [ -n "${FLYCTL_FAIL:-}" ]; then echo "Error: unauthorized" >&2; exit 1; fi',
+  'if [ "$1" = "releases" ]; then printf "%s" "${RELEASES_JSON:-[]}"; exit 0; fi',
+  'if [ "$1" = "machine" ]; then printf "%s" "${MACHINES_JSON:-[]}"; exit 0; fi',
+  "exit 0",
+  "",
+].join("\n");
+
+/** flyctl whose `ssh console` replays a scripted output and exit status. */
+const FLYCTL_SSH = [
+  "#!/bin/sh",
+  'printf "%s\\n" "$*" >> "$FLYCTL_CALL_LOG"',
+  'if [ "$1 $2" = "ssh console" ]; then printf "%s\\n" "$SSH_OUTPUT"; exit "${SSH_STATUS:-0}"; fi',
+  "exit 0",
+  "",
+].join("\n");
+
+describe("Detect a customer deploy in progress — the shipped step under GitHub's shell", () => {
+  it("defers when a Fly release is still in flight", () => {
+    const result = runBackupWorkflowStep({
+      stepName: "Detect a customer deploy in progress",
+      flyctl: FLYCTL_DEPLOY_PROBE,
+      withJq: true,
+      env: { RELEASES_JSON: '[{"Status":"running"}]', MACHINES_JSON: '[{"state":"stopped"}]' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.output).toContain("defer=true");
+    expect(result.output).toContain("defer_reason=release_in_progress");
+    expect(result.stdout).toContain("customer_backup_deferred_deploy_in_progress");
+  });
+
+  it("defers when no machine is started, even with no in-flight release", () => {
+    const result = runBackupWorkflowStep({
+      stepName: "Detect a customer deploy in progress",
+      flyctl: FLYCTL_DEPLOY_PROBE,
+      withJq: true,
+      env: { RELEASES_JSON: '[{"Status":"complete"}]', MACHINES_JSON: '[{"state":"stopped"}]' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.output).toContain("defer=true");
+    expect(result.output).toContain("defer_reason=no_started_machine");
+  });
+
+  it("does not defer when a machine is started and no release is in flight", () => {
+    const result = runBackupWorkflowStep({
+      stepName: "Detect a customer deploy in progress",
+      flyctl: FLYCTL_DEPLOY_PROBE,
+      withJq: true,
+      env: { RELEASES_JSON: '[{"Status":"complete"}]', MACHINES_JSON: '[{"state":"started"}]' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.output).toContain("defer=false");
+  });
+
+  it("fails open (does not defer) when flyctl cannot answer, leaving the mid-backup classifier as backstop", () => {
+    const result = runBackupWorkflowStep({
+      stepName: "Detect a customer deploy in progress",
+      flyctl: FLYCTL_DEPLOY_PROBE,
+      withJq: true,
+      env: { FLYCTL_FAIL: "1" },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.output).toContain("defer=false");
+  });
+});
+
+describe("Run authenticated customer backup — the shipped step under GitHub's shell", () => {
+  const OK_OUTPUT = '{"backupId":"customer-x","manifestAuthentication":"abc","publication":{"prefix":"p"}}';
+
+  it("succeeds and asserts the evidence markers when the backup runs cleanly", () => {
+    const result = runBackupWorkflowStep({
+      stepName: "Run authenticated customer backup",
+      flyctl: FLYCTL_SSH,
+      env: { SSH_OUTPUT: OK_OUTPUT, SSH_STATUS: "0" },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.output).not.toContain("deferred=true");
+  });
+
+  it("classifies a severed ssh session mid-backup as a deferral, not a failure", () => {
+    const result = runBackupWorkflowStep({
+      stepName: "Run authenticated customer backup",
+      flyctl: FLYCTL_SSH,
+      env: {
+        SSH_OUTPUT: "ssh shell: wait: remote command exited without exit status or exit signal",
+        SSH_STATUS: "1",
+      },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.output).toContain("deferred=true");
+    expect(result.output).toContain("defer_reason=deploy_interrupted_ssh");
+    expect(result.stdout).toContain("customer_backup_deferred_deploy_in_progress");
+  });
+
+  it("classifies a 'no started VMs' deploy error as a deferral", () => {
+    const result = runBackupWorkflowStep({
+      stepName: "Run authenticated customer backup",
+      flyctl: FLYCTL_SSH,
+      env: {
+        SSH_OUTPUT: "Error: app mendpoint-fettler-production has no started VMs",
+        SSH_STATUS: "1",
+      },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.output).toContain("deferred=true");
+  });
+
+  it("fails loudly on any OTHER backup error, never deferring", () => {
+    const result = runBackupWorkflowStep({
+      stepName: "Run authenticated customer backup",
+      flyctl: FLYCTL_SSH,
+      env: { SSH_OUTPUT: "Error: object store credentials rejected", SSH_STATUS: "7" },
+    });
+    expect(result.status).toBe(7);
+    expect(result.output).not.toContain("deferred=true");
+    expect(result.stderr).toContain("customer_backup_run_failed");
   });
 });

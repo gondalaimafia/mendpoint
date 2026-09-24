@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { CORE_DISASTER_RECOVERY_POLICY } from "@mendpoint/ops";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { runFixtureShellStep } from "./workflow-fixture-shell.js";
 import {
   BACKUP_FRESHNESS_INDETERMINATE_REASONS,
   assessBackupEvidenceFreshness,
@@ -45,14 +46,12 @@ function judge(text: string | null, status: number | null = 0, now = NOW) {
 }
 
 /**
- * The shared harness for running SHIPPED workflow step scripts under the shell
- * GitHub actually uses. Module scope because both the read-step suite and the
- * remediation suite below run the same steps the same way; a second private
- * copy of these stubs is how one suite would start testing a different shell
- * than the other.
+ * Every SHIPPED workflow step below runs under the shell GitHub actually uses
+ * through the shared `runFixtureShellStep` helper, which also restores the
+ * fixture PATH and refuses to run unless the declared tools resolve to the
+ * fixture (issue #697). A second private copy of that guard is how one suite
+ * would start testing a different shell, or a weaker guard, than the others.
  */
-/** Exactly what GitHub passes for `shell: bash`. Not our own choice of flags. */
-const GITHUB_BASH_FLAGS = ["--noprofile", "--norc", "-e", "-o", "pipefail"];
 
 /** A fake app that cannot resolve, so a PATH miss can never reach production. */
 const STUB_APP = "stub-app-that-does-not-exist";
@@ -507,17 +506,22 @@ describe("customer backup watchdog — the shipped steps under GitHub's real she
 
   function runShippedStep(
     run: string,
-    options: { cwd: string; bin?: string; env?: Record<string, string> },
+    options: { cwd: string; bin?: string; tools?: readonly string[]; env?: Record<string, string> },
   ): { status: number | null; stdout: string; stderr: string; output: string } {
-    writeFileSync(join(options.cwd, "step.sh"), run, "utf8");
+    const scriptPath = join(options.cwd, "step.sh");
+    writeFileSync(scriptPath, run, "utf8");
     const outputPath = join(options.cwd, "github-output");
     writeFileSync(outputPath, "", "utf8");
-    const result = spawnSync("bash", [...GITHUB_BASH_FLAGS, "step.sh"], {
+    const result = runFixtureShellStep({
+      scriptPath,
       cwd: options.cwd,
-      encoding: "utf8",
+      fixtureBin: options.bin,
+      // Every caller runs the flyctl-backed read step, so flyctl is guarded by
+      // default; a stub that the host shadows fails loudly rather than the step
+      // exercising the real flyctl.
+      guardTools: options.bin ? (options.tools ?? ["flyctl"]) : undefined,
       env: {
         ...process.env,
-        PATH: options.bin ? `${options.bin}${delimiter}${process.env.PATH ?? ""}` : process.env.PATH,
         GITHUB_OUTPUT: outputPath,
         ...options.env,
       },
@@ -725,11 +729,11 @@ describe("customer backup watchdog — the watchdog's own failure has a name", (
   }
 
   function runMetaStep(cwd: string): number | null {
-    writeFileSync(join(cwd, "meta.sh"), step("Record the meta verdict when the watchdog produced none").run, "utf8");
-    return spawnSync("bash", ["--noprofile", "--norc", "-e", "-o", "pipefail", "meta.sh"], {
-      cwd,
-      encoding: "utf8",
-    }).status;
+    const scriptPath = join(cwd, "meta.sh");
+    writeFileSync(scriptPath, step("Record the meta verdict when the watchdog produced none").run, "utf8");
+    // No stubbed tools: the meta step legitimately uses the host `date`. Routed
+    // through the shared helper so it runs under GitHub's exact `shell: bash` flags.
+    return runFixtureShellStep({ scriptPath, cwd }).status;
   }
 
   it("judges the read even when the read step failed, instead of being skipped", () => {
@@ -898,12 +902,16 @@ exit 0
   ): StepResult {
     const scriptPath = join(options.dir, "step.sh");
     writeFileSync(scriptPath, run, "utf8");
-    const result = spawnSync("bash", [...GITHUB_BASH_FLAGS, scriptPath.replace(/\\/g, "/")], {
+    // The remediation scenario stubs flyctl, gh AND sleep; guard all three so
+    // the host's (notably `sleep`, the one shadowed on Windows today) can never
+    // run in place of the stub.
+    const result = runFixtureShellStep({
+      scriptPath,
       cwd: options.cwd,
-      encoding: "utf8",
+      fixtureBin: options.bin,
+      guardTools: ["flyctl", "gh", "sleep"],
       env: {
         ...process.env,
-        PATH: `${options.bin}${delimiter}${process.env.PATH ?? ""}`,
         ...options.env,
       },
     });
@@ -1431,25 +1439,18 @@ exit 0
     // finishes in about a second rather than busy-looping to the wall clock.
     const outputPath = join(dir, "github-output");
     writeFileSync(outputPath, "", "utf8");
-    writeFileSync(join(dir, "step.sh"), shippedStep(ENSURE).run, "utf8");
-    // Git Bash prepends its real curl during startup. Restore the fixture PATH
-    // afterward and fail before the step if either external tool is not mocked.
-    const result = spawnSync("bash", [...GITHUB_BASH_FLAGS, "-c", `
-      fixture_bin="$(cd "$1" && pwd)"
-      export PATH="$fixture_bin:$PATH"
-      hash -r
-      for tool in flyctl curl; do
-        [[ "$(command -v "$tool")" == "$fixture_bin/$tool" ]] || {
-          echo "fixture_tool_selection_failed:$tool" >&2; exit 127;
-        }
-      done
-      source "$2"
-    `, "workflow-fixture", bin.replace(/\\/g, "/"), "./step.sh"], {
+    const scriptPath = join(dir, "step.sh");
+    writeFileSync(scriptPath, shippedStep(ENSURE).run, "utf8");
+    // The shared helper restores the fixture PATH inside the shell (Git Bash
+    // prepends its real curl during startup) and guards flyctl AND curl before
+    // the step runs.
+    const result = runFixtureShellStep({
+      scriptPath,
       cwd: dir,
-      encoding: "utf8",
+      fixtureBin: bin,
+      guardTools: ["flyctl", "curl"],
       env: {
         ...process.env,
-        PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
         GITHUB_OUTPUT: outputPath,
         FLY_API_TOKEN: STUB_TOKEN,
         CUSTOMER_APP: STUB_APP,
@@ -1705,13 +1706,16 @@ exit 0
         }),
         "utf8",
       );
-      writeFileSync(join(dir, "step.sh"), alert.run, "utf8");
-      const result = spawnSync("bash", [...GITHUB_BASH_FLAGS, "step.sh"], {
+      const scriptPath = join(dir, "step.sh");
+      writeFileSync(scriptPath, alert.run, "utf8");
+      // The alert step drives gh; guard it so the host's gh cannot shadow the stub.
+      const result = runFixtureShellStep({
+        scriptPath,
         cwd: dir,
-        encoding: "utf8",
+        fixtureBin: bin,
+        guardTools: ["gh"],
         env: {
           ...process.env,
-          PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
           GH_TOKEN: STUB_TOKEN,
           GH_REPO: "mendpoint-tests/repository-that-does-not-exist",
           RUN_URL: "https://example.invalid/run/1",

@@ -109,7 +109,29 @@ jobs:
       contents: read
       issues: write
     steps:
+      # FIRST, so the evidence directory (and a file) always exist: run 35842783709
+      # failed at "Install Fly CLI" (a download blip), the job died before this
+      # step ran, and "Retain backup evidence" then errored with "No files were
+      # found" (if-no-files-found: error). Creating the evidence up front means the
+      # upload always has something to retain even when a later step fails.
+      - name: Initialize backup evidence
+        shell: bash
+        env:
+          CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/customer-backup
+          evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          printf 'run=%s attempt=%s app=%s revision=%s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$CUSTOMER_APP" "$GITHUB_SHA" > "$evidence"
+
       - name: Install Fly CLI
+        id: install_flyctl
+        # The setup action cannot retry its own download, and a transient CDN blip
+        # (run 35842783709) killed the whole backup. Allow this first attempt to
+        # fail without failing the job, then retry once below with the SAME pinned
+        # SHA and version. Only if BOTH fail does the job fail.
+        continue-on-error: true
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
         # Pinned: flyctl 0.4.101 and later answer "Error: unauthorized" to
         # `flyctl apps list --json` for an app-scoped token, which breaks the
@@ -122,16 +144,14 @@ jobs:
         with:
           version: "0.4.100"
 
-      - name: Initialize backup evidence
-        shell: bash
-        env:
-          CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
-        run: |
-          set -euo pipefail
-          mkdir -p test-results/customer-backup
-          evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
-          printf 'run=%s attempt=%s app=%s revision=%s\n' \
-            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$CUSTOMER_APP" "$GITHUB_SHA" > "$evidence"
+      - name: Install Fly CLI (retry once)
+        # Same pinned SHA and version; runs only when the first install failed, so
+        # a single download blip no longer fails the backup. A second failure here
+        # is NOT continue-on-error, so a genuinely broken install still fails loudly.
+        if: ${{ steps.install_flyctl.outcome == 'failure' }}
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+        with:
+          version: "0.4.100"
 
       - name: Validate app-scoped backup authority
         shell: bash
@@ -168,7 +188,57 @@ jobs:
           fi
           flyctl status --app "$CUSTOMER_APP" >/dev/null
 
+      - name: Detect a customer deploy in progress
+        id: deploy_check
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}
+          CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
+        run: |
+          set -euo pipefail
+          # DEFER (do not fail, do not alert) when a deploy is replacing the
+          # customer machine right now. Backups run over ssh on the started VM, so
+          # a deploy window is exactly when they cannot run cleanly: run 35935775978
+          # died with "app mendpoint-fettler-production has no started VMs" and run
+          # 35933404692 with a severed ssh session, each opening and auto-closing a
+          # FAILED alert during a customer deploy. Two live signals:
+          #   1. a Fly release still in flight (status not terminal), and
+          #   2. no machine cleanly `started` yet (a machine mid-replacement).
+          # Deferring never fakes "we have backups" (no evidence is written) and it
+          # does not mask a genuinely-down machine: the customer-backup-watchdog
+          # independently detects a down machine and a stale backup (RPO), and the
+          # delivery controller's next cycle re-dispatches. If flyctl cannot answer
+          # we do NOT defer here (fail open to attempting the backup); the mid-backup
+          # classifier below is the backstop for a deploy that starts during the run.
+          defer=false
+          reason=""
+          releases_json="$(flyctl releases --app "$CUSTOMER_APP" --json 2>/dev/null || echo '[]')"
+          if printf '%s' "$releases_json" | jq -e '
+              type == "array" and any(.[];
+                ((.Status // .status // "") | ascii_downcase) as $s
+                | ($s == "running" or $s == "pending" or $s == "replacing" or $s == "deploying"))
+            ' >/dev/null 2>&1; then
+            defer=true
+            reason="release_in_progress"
+          fi
+          if [ "$defer" != true ]; then
+            machines_json="$(flyctl machine list --app "$CUSTOMER_APP" --json 2>/dev/null || echo '[]')"
+            if printf '%s' "$machines_json" | jq -e '
+                type == "array" and length > 0 and (all(.[]; (.state // "") != "started"))
+              ' >/dev/null 2>&1; then
+              defer=true
+              reason="no_started_machine"
+            fi
+          fi
+          if [ "$defer" = true ]; then
+            echo "customer_backup_deferred_deploy_in_progress reason=$reason"
+          fi
+          echo "defer=$defer" >> "$GITHUB_OUTPUT"
+          echo "defer_reason=$reason" >> "$GITHUB_OUTPUT"
+
       - name: Run authenticated customer backup
+        id: backup_run
+        if: ${{ steps.deploy_check.outputs.defer != 'true' }}
         shell: bash
         env:
           FLY_API_TOKEN: ${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}
@@ -176,11 +246,60 @@ jobs:
         run: |
           set -euo pipefail
           evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          # `set +e` (then restore) so the ssh exit can be classified rather than
+          # dying on the runner's -e; PIPESTATUS[0] is the ssh status, not tee's.
+          set +e
           flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
             --command "node --import tsx scripts/customer-backup.ts" 2>&1 | tee -a "$evidence"
+          ssh_status=${PIPESTATUS[0]}
+          set -e
+          if [ "$ssh_status" -ne 0 ]; then
+            # Classify ONLY a mid-backup machine replacement (deploy-interrupted) as
+            # DEFERRED, never any other error. Fly severs the ssh session when it
+            # replaces the machine mid-deploy; run 35933404692 surfaced this as
+            # "ssh shell: wait: remote command exited without exit status or exit
+            # signal", and a deploy that removes the started VM as "has no started
+            # VMs". An interrupted backup leaves NO corrupt "verified" evidence:
+            # customer-backup.ts records evidence atomically (staging + rename) only
+            # after verify+publish+receipt succeed, and the #661 backup fence / boot
+            # recovery reclaims a half-done backup. Any OTHER failure fails loudly.
+            if grep -qiE 'remote command exited without exit status or exit signal|has no started VMs?|no started VMs?' "$evidence"; then
+              echo "customer_backup_deferred_deploy_in_progress reason=deploy_interrupted_ssh"
+              echo "deferred=true" >> "$GITHUB_OUTPUT"
+              echo "defer_reason=deploy_interrupted_ssh" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "customer_backup_run_failed status=$ssh_status" >&2
+            exit "$ssh_status"
+          fi
           grep -q '"backupId"' "$evidence"
           grep -q '"manifestAuthentication"' "$evidence"
           grep -q '"publication"' "$evidence"
+
+      - name: Report a deferred backup
+        # A deferred cycle is a named NEUTRAL outcome: green, loud (step summary +
+        # notice), no backup taken, no alert. Fires whether the deploy was detected
+        # before the backup (deploy_check) or mid-backup (backup_run classified the
+        # ssh error).
+        if: ${{ !cancelled() && (steps.deploy_check.outputs.defer == 'true' || steps.backup_run.outputs.deferred == 'true') }}
+        shell: bash
+        env:
+          PRE_REASON: ${{ steps.deploy_check.outputs.defer_reason }}
+          MID_REASON: ${{ steps.backup_run.outputs.defer_reason }}
+        run: |
+          set -euo pipefail
+          reason="${PRE_REASON:-}"
+          if [ -z "$reason" ]; then reason="${MID_REASON:-deploy_in_progress}"; fi
+          echo "customer_backup_deferred_deploy_in_progress reason=$reason"
+          echo "::notice title=Customer backup deferred::customer_backup_deferred_deploy_in_progress reason=${reason}. No backup was taken this cycle; the delivery controller re-dispatches and the watchdog RPO check alerts if a backup never lands."
+          {
+            echo "### Customer backup deferred"
+            echo ""
+            echo "outcome: customer_backup_deferred_deploy_in_progress"
+            echo "reason: ${reason}"
+            echo ""
+            echo "No backup ran (a customer deploy was in progress). This is a neutral outcome, not a failure: the next delivery cycle re-dispatches and the watchdog's RPO check alerts if a backup never lands."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Retain backup evidence
         if: ${{ always() }}
@@ -215,7 +334,10 @@ jobs:
           fi
 
       - name: Resolve backup failure alert
-        if: ${{ success() }}
+        # Only a real, completed backup resolves the failure alert. A deferred
+        # cycle (deploy in progress) is green but took NO backup, so it must not
+        # auto-close a genuine failure alert -- the backup did not actually recover.
+        if: ${{ success() && steps.deploy_check.outputs.defer != 'true' && steps.backup_run.outputs.deferred != 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

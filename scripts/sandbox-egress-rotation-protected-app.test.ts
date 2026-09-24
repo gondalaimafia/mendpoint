@@ -437,6 +437,15 @@ interface ProtectedOptions {
   stageFail?: boolean;
   stripReadinessGuard?: boolean;
   expiresAt?: string;
+  /**
+   * Per-attempt behaviour of the ssh install, space-separated; the last entry
+   * repeats. Each is one of: `ok` (installs and the machine now serves the
+   * receipt), `hang` (times out, nothing landed), `hang-landed` (times out but
+   * the server-side install completed), `bad` (exits 0 but reports
+   * installed:false), or anything else (exit 1). Defaults to `ok`, or `fail`
+   * when `installFail` is set.
+   */
+  installBehavior?: string;
 }
 
 interface ProtectedResult {
@@ -460,6 +469,8 @@ function runProtected(opts: ProtectedOptions = {}): ProtectedResult {
   mkdirSync(binDir);
   mkdirSync(join(dir, "test-results", "sandbox-egress"), { recursive: true });
   const callLog = join(dir, "calls.log").replace(/\\/g, "/");
+  const installCount = join(dir, "install.count").replace(/\\/g, "/");
+  const landed = join(dir, "receipt.landed").replace(/\\/g, "/");
   const app = "mendpoint-fettler-production";
   const expiresAt = opts.expiresAt ?? "2026-08-19T19:00:00.000Z";
   const installJson = JSON.stringify({
@@ -469,17 +480,30 @@ function runProtected(opts: ProtectedOptions = {}): ProtectedResult {
     expiresAt,
     sha256: "a".repeat(64),
   });
+  const installJsonBad = JSON.stringify({ installed: false, reason: "verify_failed" });
   const readyJson = opts.readyJson ?? JSON.stringify({
     name: "sandbox_egress_receipt",
     ok: true,
     detail: JSON.stringify({ status: "verified", source: "file", expiresAt }),
   });
+  // What /ready reports before the receipt has landed on the machine: a pending,
+  // not-yet-serving reading, distinct from a matching one.
+  const readyJsonPending = JSON.stringify({
+    name: "sandbox_egress_receipt",
+    ok: false,
+    detail: JSON.stringify({ status: "pending" }),
+  });
   const machinesJson = '[{"id":"84e696a22eee68","state":"started"}]';
+  const installBehavior = opts.installBehavior ?? (opts.installFail ? "fail" : "ok");
 
-  // Stubbed flyctl: `ssh console ...install.ts...` answers the install (JSON line,
-  // or a non-zero exit when INSTALL_FAIL=1); `ssh console ...sandbox_egress_receipt...`
-  // answers the in-machine /ready read; `machine list` returns the current state.
-  // Every invocation is logged so the test can assert what was and was NOT called.
+  // Stubbed flyctl. The install is per-attempt (INSTALL_BEHAVIOR, one word per
+  // attempt, last repeats): `ok` installs and touches the LANDED marker; `hang`
+  // times out (exit 124) with nothing landed; `hang-landed` times out but the
+  // server-side install completed (LANDED touched); `bad` exits 0 with
+  // installed:false; anything else exits 1. `ssh console ...sandbox_egress_receipt...`
+  // answers the in-machine /ready read: the matching READY_JSON once the receipt
+  // has LANDED, the pending reading otherwise. Every invocation is logged so the
+  // test can assert what was and was NOT called.
   writeFileSync(
     join(binDir, "flyctl"),
     [
@@ -487,11 +511,19 @@ function runProtected(opts: ProtectedOptions = {}): ProtectedResult {
       `printf 'flyctl %s\\n' "$*" >>"${callLog}"`,
       'case "$*" in',
       '  *"ssh console"*"install.ts"*)',
-      '    if [ "${INSTALL_FAIL:-0}" = "1" ]; then exit 1; fi',
-      "    printf '%s\\n' \"$INSTALL_JSON\"",
+      '    n=0; [ -f "$INSTALL_COUNT" ] && n="$(cat "$INSTALL_COUNT")"; n=$((n + 1)); printf "%s" "$n" > "$INSTALL_COUNT"',
+      '    read -ra __beh <<< "$INSTALL_BEHAVIOR"',
+      '    __idx=$((n - 1)); [ "$__idx" -ge "${#__beh[@]}" ] && __idx=$(( ${#__beh[@]} - 1 ))',
+      '    case "${__beh[$__idx]}" in',
+      '      ok) : > "$LANDED"; printf "%s\\n" "$INSTALL_JSON"; exit 0 ;;',
+      '      hang) exit 124 ;;',
+      '      hang-landed) : > "$LANDED"; exit 124 ;;',
+      '      bad) printf "%s\\n" "$INSTALL_JSON_BAD"; exit 0 ;;',
+      '      *) exit 1 ;;',
+      '    esac',
       "    ;;",
       '  *"ssh console"*"sandbox_egress_receipt"*)',
-      "    printf '%s\\n' \"$READY_JSON\"",
+      '    if [ -f "$LANDED" ]; then printf "%s\\n" "$READY_JSON"; else printf "%s\\n" "$READY_JSON_PENDING"; fi',
       "    ;;",
       '  *"secrets set"*)',
       '    if [ "${STAGE_FAIL:-0}" = "1" ]; then exit 1; fi',
@@ -535,9 +567,13 @@ function runProtected(opts: ProtectedOptions = {}): ProtectedResult {
       ...process.env,
       PATH: `${binDir}${SEP}${process.env.PATH ?? ""}`,
       INSTALL_JSON: installJson,
+      INSTALL_JSON_BAD: installJsonBad,
       READY_JSON: readyJson,
+      READY_JSON_PENDING: readyJsonPending,
       MACHINES_JSON: machinesJson,
-      INSTALL_FAIL: opts.installFail ? "1" : "0",
+      INSTALL_BEHAVIOR: installBehavior,
+      INSTALL_COUNT: installCount,
+      LANDED: landed,
       STAGE_FAIL: opts.stageFail ? "1" : "0",
     },
   });
@@ -624,12 +660,51 @@ describe("sandbox egress rotation — protected apps get the receipt as a file, 
     expect(result.startCalls).toEqual([]);
   }, 60_000);
 
-  it("fails when the ssh install fails, without reading /ready or containing", () => {
+  it("retries the ssh install up to 3 times and fails loudly, never containing, when every attempt fails", () => {
     const result = runProtected({ installFail: true });
     expect(result.status).not.toBe(0);
-    expect(result.installCalls.length).toBe(1);
-    expect(result.readyCalls).toEqual([]);
+    // Bounded retries: three install attempts, not one.
+    expect(result.installCalls.length).toBe(3);
+    // Between attempts it re-reads /ready to detect a hung-but-landed install
+    // (attempts 2 and 3), but here nothing ever lands, so it fails loudly.
+    expect(result.readyCalls.length).toBe(2);
+    expect(result.recovery).toContain("protected_install_attempt_failed");
     expect(result.recovery).toContain("protected_install_failed");
+    expect(result.stderr).toContain("after 3 attempts");
+    // A protected app is never contained on install failure.
+    expect(result.stopCalls).toEqual([]);
+    expect(result.startCalls).toEqual([]);
+    expect(result.updateCalls).toEqual([]);
+    expect(result.secretsCalls).toEqual([]);
+  }, 60_000);
+
+  it("recovers when the first ssh install hangs past the timeout and a retry succeeds", () => {
+    // Attempt 1 times out (the flyctl ssh connection hangs) with nothing landed;
+    // the between-attempt /ready probe confirms it did NOT land, so attempt 2
+    // installs and the app then serves the receipt. The renewal succeeds instead
+    // of failing loudly (the run 35921243289 / 36029373235 failure mode).
+    const result = runProtected({ installBehavior: "hang ok" });
+    expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+    // The retry is load-bearing: two install invocations, the second one landing.
+    expect(result.installCalls.length).toBe(2);
+    expect(result.recovery).toContain("protected_install_attempt_failed");
+    expect(result.recovery).toContain("protected_file_delivery_ok");
+    // Still a protected file delivery: no restart, no containment.
+    expect(result.updateCalls).toEqual([]);
+    expect(result.stopCalls).toEqual([]);
+    expect(result.startCalls).toEqual([]);
+  }, 60_000);
+
+  it("detects a hung install that actually landed via /ready and does NOT reinstall", () => {
+    // Attempt 1 times out but the server-side install completed. The
+    // between-attempt /ready probe sees the app already serving the new receipt,
+    // so the loop stops early: exactly one install invocation, no second install.
+    const result = runProtected({ installBehavior: "hang-landed ok" });
+    expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+    expect(result.installCalls.length).toBe(1);
+    expect(result.recovery).toContain("protected_install_confirmed_after_hang");
+    expect(result.recovery).toContain("protected_file_delivery_ok");
+    expect(result.updateCalls).toEqual([]);
     expect(result.stopCalls).toEqual([]);
     expect(result.startCalls).toEqual([]);
   }, 60_000);
