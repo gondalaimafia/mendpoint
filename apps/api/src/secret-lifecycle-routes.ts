@@ -208,6 +208,16 @@ function keyLocator(value: unknown): EnvelopeKeyLocator {
   });
 }
 
+// A null expiry never expires. A malformed / unparseable expiry cannot be
+// proven to be in the future — Date.parse returns NaN and `NaN <= now` is false,
+// which would read a garbage expiry as "not expired". Fail closed: treat an
+// unparseable expiry as already expired.
+export function expiryReached(expiresAt: string | null, nowMs: number): boolean {
+  if (expiresAt === null) return false;
+  const parsed = Date.parse(expiresAt);
+  return Number.isNaN(parsed) || parsed <= nowMs;
+}
+
 function currentAuthorityVersion(
   db: AppDb,
   input: Readonly<{
@@ -221,13 +231,13 @@ function currentAuthorityVersion(
   const now = Date.now();
   const principal = getPrincipal(db, input.tenantId, input.actorId);
   if (!principal || principal.revoked_at !== null || Date.parse(principal.created_at) > now ||
-      (principal.expires_at !== null && Date.parse(principal.expires_at) <= now)) {
+      expiryReached(principal.expires_at, now)) {
     throw new Error("secret_lifecycle_authority_invalid");
   }
   const credentialPrincipal = getPrincipal(db, input.tenantId, input.credentialPrincipalId);
   if (!credentialPrincipal || credentialPrincipal.revoked_at !== null ||
       Date.parse(credentialPrincipal.created_at) > now ||
-      (credentialPrincipal.expires_at !== null && Date.parse(credentialPrincipal.expires_at) <= now)) {
+      expiryReached(credentialPrincipal.expires_at, now)) {
     throw new Error("secret_lifecycle_authority_invalid");
   }
   let role: string | null = null;

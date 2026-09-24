@@ -291,7 +291,16 @@ export function createServicePrincipalRoutes(options: Options): Hono<ApiEnv> {
         if (principal.audience !== "mendpoint-scim" && grantedScopes.includes("identity:provision")) {
           throw new Error("service_principal_scim_audience_required");
         }
-        if (principal.revoked_at || (principal.expires_at && Date.parse(principal.expires_at) <= observedAt.getTime())) {
+        // A malformed / unparseable expiry cannot be proven to be in the future.
+        // Date.parse returns NaN for it, and `NaN <= now` is false, which would
+        // read a garbage expiry as "not expired". Fail closed: treat an
+        // unparseable expiry as already expired.
+        const principalExpiresAtMs = principal.expires_at ? Date.parse(principal.expires_at) : null;
+        if (
+          principal.revoked_at ||
+          (principalExpiresAtMs !== null &&
+            (Number.isNaN(principalExpiresAtMs) || principalExpiresAtMs <= observedAt.getTime()))
+        ) {
           throw new Error("service_principal_inactive_conflict");
         }
         const replay = listApiKeys(options.db, identity.tenantId).find((key) => key.id === nextCredentialId);

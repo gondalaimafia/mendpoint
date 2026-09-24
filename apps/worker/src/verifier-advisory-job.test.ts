@@ -12,9 +12,10 @@ import {
   upsertScmConnection, type AppDb,
 } from "@mendpoint/db";
 import { enqueueVerifierAdvisoryJob } from "@mendpoint/pipeline";
-import { criteriaForProduct, type VerifierHttpRequest } from "@mendpoint/verifier";
+import { criteriaForProduct, type AgentVerifierResult, type VerifierHttpRequest } from "@mendpoint/verifier";
 import { REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE } from "./verifier-product-shadow.js";
 import {
+  resolveAdvisoryOutcomeStatus,
   runVerifierAdvisoryJob,
   VerifierProviderNoResponseError,
 } from "./verifier-advisory-job.js";
@@ -86,6 +87,30 @@ function env(): Record<string, string> {
     MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({ policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824", tenantId: "tenant_regauge_canary", version: 1, repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"], branchScope: ["codex/regauge-canary-baseline"], forbiddenZones: [], allowedTools: ["deepseek-verifier"], allowedModelClasses: ["rented_specialist"], externalProcessingAllowed: true, residency: "cn", riskCeiling: "high", reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: 90, createdAt: "2026-08-24T00:00:00.000Z" }),
   };
 }
+
+describe("resolveAdvisoryOutcomeStatus", () => {
+  const resultWith = (
+    status: AgentVerifierResult["status"],
+    failureCode: AgentVerifierResult["failureCode"] = null,
+  ): AgentVerifierResult => ({ status, failureCode }) as unknown as AgentVerifierResult;
+
+  it("maps a verified result and a no-observation replay to their exact statuses", () => {
+    expect(resolveAdvisoryOutcomeStatus(null)).toBe("already_verified");
+    expect(resolveAdvisoryOutcomeStatus(resultWith("verified"))).toBe("verified");
+  });
+
+  it("never completes a non-verified provider result as verified", () => {
+    // A definitive but non-retryable provider failure (a cache/identity
+    // mismatch) is NOT a verified outcome. Before the fix, any truthy result
+    // read as "verified" and counted as succeeded.
+    expect(() => resolveAdvisoryOutcomeStatus(resultWith("failed", "cache_failure")))
+      .toThrow("verifier_advisory_not_verified:failed:cache_failure");
+    expect(() => resolveAdvisoryOutcomeStatus(resultWith("no_eligible_candidates", "evidence_missing")))
+      .toThrow("verifier_advisory_not_verified:no_eligible_candidates:evidence_missing");
+    expect(() => resolveAdvisoryOutcomeStatus(resultWith("disabled")))
+      .toThrow("verifier_advisory_not_verified:disabled");
+  });
+});
 
 describe("verifier advisory job runner", () => {
   it("retries a lost provider call and closes only after telemetry is durable", async () => {

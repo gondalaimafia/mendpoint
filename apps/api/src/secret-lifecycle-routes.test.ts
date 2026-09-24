@@ -17,6 +17,7 @@ import { createAuthMiddleware, createRbacMiddleware, type ApiEnv } from "./auth.
 import {
   createSecretBreakGlassDenialAuditMiddleware,
   createSecretLifecycleRoutes,
+  expiryReached,
 } from "./secret-lifecycle-routes.js";
 
 const open: AppDb[] = [];
@@ -181,6 +182,25 @@ function authenticatedHeaders(token: string, requestId: string, idempotencyKey: 
     "Idempotency-Key": idempotencyKey,
   };
 }
+
+describe("secret lifecycle authority expiry", () => {
+  const now = Date.parse("2026-08-30T00:00:00.000Z");
+
+  it("treats a malformed / unparseable expiry as already expired (fail closed)", () => {
+    // A malformed expiry must never read as "not expired". Before the fix,
+    // `Date.parse("not-a-timestamp") <= now` is `NaN <= now` === false, so a
+    // garbage expiry held authority open. Every unparseable form fails closed.
+    for (const malformed of ["not-a-timestamp", "", "2026-13-45T99:99:99Z", "yesterday"]) {
+      expect(expiryReached(malformed, now)).toBe(true);
+    }
+  });
+
+  it("keeps the well-formed expiry semantics: null never expires, past does, future does not", () => {
+    expect(expiryReached(null, now)).toBe(false);
+    expect(expiryReached("2026-08-29T23:59:59.000Z", now)).toBe(true);
+    expect(expiryReached("2026-08-30T00:00:01.000Z", now)).toBe(false);
+  });
+});
 
 describe("secret lifecycle routes", () => {
   it("keeps the lifecycle surface unreachable outside its explicit activation scope", async () => {

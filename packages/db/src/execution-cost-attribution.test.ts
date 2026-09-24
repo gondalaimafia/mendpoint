@@ -284,7 +284,12 @@ describe("execution cost attribution", () => {
       currency: "USD",
       actorPrincipalId: "principal-cost",
       createdAt: at,
+      modelCostMeasured: true,
+      cacheCostMeasured: true,
       gpuCostMeasured: true,
+      graphCostMeasured: true,
+      sandboxCostMeasured: true,
+      verificationCostMeasured: true,
     });
 
     // B: an unmeasured GPU component (no ledger cost at all -> model also unmeasured).
@@ -345,7 +350,12 @@ describe("execution cost attribution", () => {
         currency: "USD",
         actorPrincipalId: "principal-cost",
         createdAt: at,
+        modelCostMeasured: true,
+        cacheCostMeasured: true,
         gpuCostMeasured: false,
+        graphCostMeasured: true,
+        sandboxCostMeasured: true,
+        verificationCostMeasured: true,
       }),
     ).toThrow(/gpu_unmeasured_nonzero/);
   });
@@ -579,7 +589,12 @@ describe("execution cost attribution", () => {
       currency: "USD",
       actorPrincipalId: "principal-legacy",
       createdAt: at,
+      modelCostMeasured: true,
+      cacheCostMeasured: true,
       gpuCostMeasured: false,
+      graphCostMeasured: true,
+      sandboxCostMeasured: true,
+      verificationCostMeasured: true,
     });
     const { entryHash: _v3Hash, measurementProvenance: _v3Provenance,
       ...historicalV2Base } = writtenV2;
@@ -600,6 +615,8 @@ describe("execution cost attribution", () => {
       graphCostMoneyMicros: 0, sandboxCostMoneyMicros: 0,
       verificationCostMoneyMicros: 0, currency: "USD",
       actorPrincipalId: "principal-legacy", createdAt: at,
+      modelCostMeasured: true, cacheCostMeasured: true, gpuCostMeasured: true,
+      graphCostMeasured: true, sandboxCostMeasured: true, verificationCostMeasured: true,
       measurementProvenance: { model: "  invoice:model-v3  " },
     });
     const integrity = verifyExecutionCostIntegrity(db, "tenant_default");

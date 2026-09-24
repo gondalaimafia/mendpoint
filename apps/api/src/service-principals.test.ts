@@ -397,6 +397,33 @@ describe("service principal administration", () => {
     )).toHaveLength(2);
   });
 
+  it("fails closed when the principal's expiry is malformed, treating it as expired", async () => {
+    const { app, db } = fixture();
+    const created = await createPrincipal(app);
+    const prior = created.payload.data.credential;
+    // Corrupt the principal's expiry to an unparseable value. Before the fix,
+    // `Date.parse("not-a-timestamp") <= now` is `NaN <= now` === false, so the
+    // rotation read a garbage expiry as "not expired" and issued a new key.
+    db.raw.prepare("UPDATE principals SET expires_at = ? WHERE id = ?")
+      .run("not-a-timestamp", created.payload.data.id);
+
+    const rotation = await app.request(
+      `/tenants/service-principals/${created.payload.data.id}/credentials/rotate`,
+      {
+        method: "POST",
+        headers: mutationHeaders("rotate-malformed-expiry"),
+        body: JSON.stringify({ currentCredentialId: prior.id, scopes: ["graph:read"] }),
+      },
+    );
+    expect(rotation.status).toBe(409);
+    expect(await rotation.json()).toMatchObject({ error: "service_principal_inactive_conflict" });
+    // Fail closed with no mutation: the prior credential is not revoked and no
+    // replacement key was issued.
+    expect(listApiKeys(db, "tenant-a").filter(
+      (key) => key.principal_id === created.payload.data.id && !key.revoked_at,
+    ).map((key) => key.id)).toEqual([prior.id]);
+  });
+
   it("blocks delayed creation after manager membership revocation without state mutation", async () => {
     const { app, db } = fixture();
     const principalsBefore = db.raw.prepare("SELECT * FROM principals ORDER BY id").all();

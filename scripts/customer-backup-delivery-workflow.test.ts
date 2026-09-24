@@ -51,6 +51,9 @@ function runController(options: {
   activeMetadataValid?: boolean;
   acknowledgedMetadataValid?: boolean;
   handoffMetadataValid?: boolean;
+  runListConclusionFail?: boolean;
+  runViewFail?: boolean;
+  runListObserveFail?: boolean;
 }) {
   const dir = mkdtempSync(join(tmpdir(), "customer-backup-delivery-"));
   const log = join(dir, "gh.log");
@@ -77,6 +80,20 @@ gh() {
 printf '%s\\n' "$*" >> "$GH_STUB_LOG"
 case "$1 $2" in
   'run list')
+    case "$*" in
+      *conclusion*)
+        if [ -n "\${GH_STUB_RUN_LIST_CONCLUSION_FAIL:-}" ]; then
+          echo 'gh: HTTP 502 Bad Gateway (api.github.com)' >&2; return 1
+        fi
+        ;;
+    esac
+    case "$*" in
+      *displayTitle*)
+        if [ -n "\${GH_STUB_RUN_LIST_OBSERVE_FAIL:-}" ]; then
+          echo 'gh: HTTP 502 Bad Gateway (api.github.com)' >&2; return 1
+        fi
+        ;;
+    esac
     case "$*" in
       *customer-backup-delivery.yml*)
         if [ -f "$GH_STUB_HANDOFF_DISPATCHED" ]; then
@@ -106,7 +123,11 @@ case "$1 $2" in
         ;;
     esac
     ;;
-  'run view') printf '%s\\n' "\${GH_STUB_BACKUP_JOB_SUCCESS:-1}" ;;
+  'run view')
+    if [ -n "\${GH_STUB_RUN_VIEW_FAIL:-}" ]; then
+      echo 'gh: HTTP 502 Bad Gateway (api.github.com)' >&2; return 1
+    fi
+    printf '%s\\n' "\${GH_STUB_BACKUP_JOB_SUCCESS:-1}" ;;
   'api repos/'*)
     run_id="\${2##*/}"
     case "$run_id" in
@@ -183,6 +204,11 @@ return 0
     GH_STUB_ACTIVE_BRANCH: options.activeMetadataValid === false ? "unprotected-branch" : "main",
     GH_STUB_ACK_BRANCH: options.acknowledgedMetadataValid === false ? "unprotected-branch" : "main",
     GH_STUB_HANDOFF_BRANCH: options.handoffMetadataValid === false ? "unprotected-branch" : "main",
+    // HTTP 502 injection for the backup-history lookups, to prove an API outage
+    // fails closed instead of reading as "no backup"/"not observed".
+    GH_STUB_RUN_LIST_CONCLUSION_FAIL: options.runListConclusionFail ? "1" : "",
+    GH_STUB_RUN_VIEW_FAIL: options.runViewFail ? "1" : "",
+    GH_STUB_RUN_LIST_OBSERVE_FAIL: options.runListObserveFail ? "1" : "",
   };
   const run = (name: string, source: string) => {
     const script = join(dir, `${name}.sh`);
@@ -632,6 +658,62 @@ describe("customer backup delivery controller workflow", () => {
       .toHaveLength(1);
     expect(result.ledger).not.toContainEqual(expect.objectContaining({
       event: "delivery_deferred_app_not_live",
+    }));
+  });
+
+  it("fails closed on a backup-history lookup outage instead of dispatching a duplicate", () => {
+    // `gh run list` for the successful-backup lookup returns HTTP 502. Before
+    // the fix, the command substitution swallowed the error and read as "no
+    // recent backup", dispatching a backup and later reporting completion-missing.
+    const result = runController({ runListConclusionFail: true, deliveryCycles: "1" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_delivery_lookup_failed");
+    expect(result.stderr).not.toContain("customer_backup_delivery_completion_missing");
+    // Never dispatch a backup on the strength of an unreadable history.
+    expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup.yml")))
+      .toHaveLength(0);
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_lookup_failed",
+      operation: "run_list",
+    }));
+  });
+
+  it("does not read a 502 on the backup-job lookup as a job that never completed", () => {
+    // `gh run view` returns HTTP 502 while inspecting a successful candidate.
+    // Before the fix, the empty result read as "workflow green but backup job
+    // missing" and dispatched a backup; now it is a distinct lookup failure.
+    const result = runController({ runViewFail: true, deliveryCycles: "1" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_delivery_lookup_failed");
+    expect(result.calls.filter((call) => call.startsWith("workflow run customer-backup.yml")))
+      .toHaveLength(0);
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_lookup_failed",
+      operation: "run_view",
+      backupRunId: "777",
+    }));
+    expect(result.ledger).not.toContainEqual(expect.objectContaining({
+      event: "backup_workflow_success_without_backup_job",
+    }));
+  });
+
+  it("fails closed when the dispatch-acknowledgement lookup errors instead of re-dispatching", () => {
+    // The backup is dispatched, then `gh run list` for the acknowledgement
+    // observation returns HTTP 502. Before the fix, the empty word list read as
+    // "dispatch unacknowledged"; now it is a distinct lookup failure.
+    const result = runController({
+      runListObserveFail: true,
+      latestSuccess: "",
+      deliveryCycles: "1",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_delivery_lookup_failed");
+    expect(result.ledger).toContainEqual(expect.objectContaining({
+      event: "backup_lookup_failed",
+      operation: "run_list_observe",
+    }));
+    expect(result.ledger).not.toContainEqual(expect.objectContaining({
+      event: "dispatch_unacknowledged",
     }));
   });
 });

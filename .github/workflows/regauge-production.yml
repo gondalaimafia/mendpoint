@@ -288,8 +288,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          flyctl status --app mendpoint-regauge-production >/dev/null 2>&1 \
-            || { echo "regauge_fly_app_bootstrap_required"; exit 1; }
+          # Reuse the preflight's stderr classification (see "Prove Fly authority
+          # without mutation"): only a real "could not find app" means the app
+          # must still be bootstrapped. A network or other flyctl error leaves
+          # existence indeterminate and must NOT be read as bootstrap required.
+          verify_status_err="test-results/regauge-production/verify-app-status-error.txt"
+          if flyctl status --app mendpoint-regauge-production >/dev/null 2>"$verify_status_err"; then
+            :
+          elif grep -qiE 'could not find app|could not find the app|app not found|does not exist' \
+            "$verify_status_err"; then
+            echo "regauge_fly_app_bootstrap_required"
+            exit 1
+          else
+            echo "regauge_fly_app_status_indeterminate"
+            cat "$verify_status_err" >&2
+            exit 1
+          fi
           volume_json="$(flyctl volumes list --app mendpoint-regauge-production --json \
             | jq -ce '[.[] | select(
                 .name == "mendpoint_regauge_prod_data"
