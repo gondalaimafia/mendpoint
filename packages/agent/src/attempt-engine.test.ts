@@ -14,11 +14,12 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentPlanner, AgentTask } from "./types.js";
 import { ABSENT_FILE_EVIDENCE_DIGEST } from "./agent.js";
 import type { WardenCheckpointJournal, WardenCheckpointJournalRecord } from "./checkpoint.js";
 import {
+  runNpmEinvalFallback,
   runWardenAttempt,
   scanTree,
   wardenNpmFallbackEnvironment,
@@ -1685,4 +1686,71 @@ describe("Warden source tree scanner", () => {
     expect(manifest.entries).toHaveLength(sourceCount);
     expect(manifest.entries.every((entry) => entry.path.startsWith("src/"))).toBe(true);
   }, 30_000);
+});
+
+describe("runNpmEinvalFallback classifies the Windows npm fallback at its site", () => {
+  // The fallback fires only when runVerificationCommand throws a synchronous
+  // EINVAL (Node refusing to execFile npm's .cmd shim on Windows), so it cannot
+  // be reached through a real attempt on Linux CI. Driving the exported helper
+  // with a synthetic EINVAL exercises the exact classification the engine's
+  // baseline gate depends on, on any platform.
+  const dirs: string[] = [];
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  function tempDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "mp-einval-fallback-"));
+    dirs.push(dir);
+    return dir;
+  }
+  function einval(): NodeJS.ErrnoException {
+    return Object.assign(new Error("spawn npm.cmd EINVAL"), { code: "EINVAL" });
+  }
+
+  it("reports a fallback that never launches as not_verified with no backend, never a failing test", async () => {
+    const dir = tempDir();
+    const npmEntry = join(dir, "npm-cli.js");
+    writeFileSync(npmEntry, "process.exit(0)\n");
+    vi.stubEnv("npm_execpath", npmEntry);
+    vi.stubEnv("NODE_ENV", "development");
+    // A missing working directory makes the child fail to spawn: nothing ran.
+    const missingWorkspace = join(dir, "missing");
+
+    const execution = await runNpmEinvalFallback(einval(), "npm test", missingWorkspace, 10_000);
+
+    // The engine keys warden_attempt_verifier_unavailable on exactly this outcome
+    // (attempt-engine.ts baseline gate), so a verifier that never started must not
+    // read as a failed target.
+    expect(execution.outcome).toBe("not_verified");
+    expect(execution.sandboxBackend).toBeNull();
+    expect(execution.ok).toBe(false);
+    expect(execution.exitCode).toBe(126);
+  });
+
+  it("reports a fallback that started then exited non-zero as failed under the local backend", async () => {
+    const dir = tempDir();
+    const npmEntry = join(dir, "npm-cli.js");
+    writeFileSync(npmEntry, "process.exit(3)\n");
+    vi.stubEnv("npm_execpath", npmEntry);
+    vi.stubEnv("NODE_ENV", "development");
+
+    const execution = await runNpmEinvalFallback(einval(), "npm test", dir, 10_000);
+
+    expect(execution.outcome).toBe("failed");
+    expect(execution.sandboxBackend).toBe("local");
+    expect(execution.ok).toBe(false);
+    expect(execution.exitCode).toBe(3);
+  });
+
+  it("rethrows any error that is not the fallback-eligible EINVAL", async () => {
+    const dir = tempDir();
+    const npmEntry = join(dir, "npm-cli.js");
+    writeFileSync(npmEntry, "process.exit(0)\n");
+    vi.stubEnv("npm_execpath", npmEntry);
+    vi.stubEnv("NODE_ENV", "development");
+    const notEinval = Object.assign(new Error("boom"), { code: "EPIPE" });
+
+    await expect(runNpmEinvalFallback(notEinval, "npm test", dir, 10_000)).rejects.toBe(notEinval);
+  });
 });

@@ -249,10 +249,11 @@ describe("field-rename recipe end to end through the campaign executor", () => {
 
     value.db.raw.exec("DROP TRIGGER fail_analyzing");
 
-    // Attempt 2 at a LATER worker time (15:30, still in window): run_started is
-    // re-appended. Its occurredAt is the STABLE enqueue clock, so it matches the
-    // first attempt and appends idempotently instead of throwing
-    // domain_event_idempotency_conflict. The target advances to review.
+    // Attempt 2 at a LATER worker time (15:30, still in window): attempt 1 recorded
+    // a terminal run_failed, so this attempt continues the run's event sequence past
+    // it (see wardenRunResumePoint / issue #696) instead of colliding on attempt 1's
+    // numbers. Every run event still stamps the STABLE enqueue clock, so nothing
+    // throws domain_event_idempotency_conflict. The target advances to review.
     const second = await runWardenCampaignExecuteTarget({
       db: value.db, job: queuedJob, now: () => "2026-08-02T15:30:00.000Z", resolveDependencies,
     });

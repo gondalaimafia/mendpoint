@@ -6112,6 +6112,7 @@ export {
 export {
   appendWardenRunEvent,
   replayWardenRun,
+  wardenRunResumePoint,
   WARDEN_RUN_EVENT_KINDS,
 } from "./warden-replay.js";
 export type {

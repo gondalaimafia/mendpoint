@@ -266,6 +266,69 @@ export function appendWardenRunEvent(
   };
 }
 
+/**
+ * Where a fresh invocation of a run must continue from so that a retry never
+ * reuses a previous attempt's identifiers.
+ *
+ * A run is one append-only causal chain: each execution attempt appends
+ * `run_started` ... (`run_completed` | `run_failed`). Restarting the per-run
+ * sequence at 0 on every attempt collides attempt N's events with attempt N-1's
+ * at the same sequence number (two events at `:2:`, a `run_failed` and a
+ * `run_completed` in the one run) and raises `domain_event_idempotency_conflict`
+ * when two attempts fail before the same sequence with different payloads.
+ *
+ * `sequence`/`causationId`/`stateSha256` resume the envelope chain from the LAST
+ * TERMINAL event (`run_completed` / `run_failed`) — the boundary of the last
+ * COMPLETED attempt (0 / null / null when none). `attempt` is the number of
+ * COMPLETED (terminal) attempts so far, NOT the count of invocations; callers
+ * scope the run's OTHER per-attempt idempotency keys (the target transition
+ * events, which are keyed by run id, not by sequence) with it so attempt N's
+ * transitions never conflict with attempt N-1's.
+ *
+ * Which invocations re-enter the executor and hit this resume point:
+ * - A crash BEFORE the `queued -> analyzing` transition leaves the target
+ *   `queued` with only `run_started` committed (no terminal). The resume point
+ *   is unchanged, so the replay re-appends that `run_started` byte-identically.
+ * - A crash AFTER the transition leaves the target at its stage (`analyzing` /
+ *   `editing` / `verifying`) with no terminal. `claimReadyWardenTargets` only
+ *   picks `queued`, so that target is NOT retried today (pre-existing; see #676)
+ *   and never reaches this function again.
+ *
+ * If #676 adds a requeue path for such a stranded target, it MUST first advance
+ * `attempt` for the abandoned invocation — e.g. record a terminal `run_failed`
+ * (or an abandoned) event for it — before the successor runs. Otherwise the
+ * successor sees the same `attempt` and its `${runId}:${attempt}:target:*` keys
+ * collide with the crashed invocation's transitions.
+ */
+export function wardenRunResumePoint(
+  db: AppDb,
+  tenantId: string,
+  runId: string,
+): Readonly<{ attempt: number; sequence: number; causationId: string | null; stateSha256: string | null }> {
+  const rows = runRows(db, tenantId, runId);
+  let attempt = 0;
+  let last: Readonly<{ sequence: number; causationId: string; stateSha256: string }> | null = null;
+  for (const row of rows) {
+    if (row.event_type !== "warden.run.run_completed" && row.event_type !== "warden.run.run_failed") {
+      continue;
+    }
+    attempt += 1;
+    const envelope = JSON.parse(row.payload_json) as WardenRunReplayEnvelope;
+    const sequence = envelope.metadata.sequence;
+    if (typeof sequence !== "number" || !Number.isInteger(sequence) || sequence < 1) {
+      throw new Error("warden_replay_resume_sequence_invalid");
+    }
+    if (!SHA256.test(envelope.outputSha256)) throw new Error("warden_replay_resume_state_invalid");
+    last = { sequence, causationId: row.id, stateSha256: envelope.outputSha256 };
+  }
+  return Object.freeze({
+    attempt,
+    sequence: last?.sequence ?? 0,
+    causationId: last?.causationId ?? null,
+    stateSha256: last?.stateSha256 ?? null,
+  });
+}
+
 export function replayWardenRun(
   db: AppDb,
   tenantId: string,
