@@ -26,6 +26,7 @@ import {
   deliverConsumerDraft,
   deliveryArtifactDigest,
   refreshOpenDraftBodies,
+  refreshHadFailures,
   renderPublicPrIdentity,
 } from "./index.js";
 
@@ -348,6 +349,120 @@ describe("refreshOpenDraftBodies — one-time refresh of open drafts (#724 block
     });
     expect(result.totalAffected).toBe(0);
     expect(result.totalUpdated).toBe(0);
+  });
+
+  // #730: one revoked installation or one 403 reading a PR must not abort the
+  // sweep for every other draft (or tenant). A fake token in the 403 message
+  // proves the recorded error class carries no raw text.
+  const SENSITIVE = "SENSITIVE_SHOULD_NEVER_APPEAR_ghs_FAKE";
+  function seedDraftForRepo(
+    db: AppDb,
+    opts: { repo: string; prNumber: number; prId: string; changeId: string },
+  ): string {
+    const consumerId = newId();
+    insertConsumer(db, {
+      id: consumerId,
+      name: `Shop ${opts.repo}`,
+      githubOwner: "org",
+      githubRepo: opts.repo,
+      installationId: null,
+      tenantId: TENANT,
+      createdAt: nowIso(),
+    });
+    insertConsumerRepo(db, {
+      id: newId(),
+      consumerId,
+      localPath: `/srv/mendpoint/repos/${TENANT}/${opts.repo}`,
+      defaultBranch: "main",
+      createdAt: nowIso(),
+    });
+    const deliveryKey = `${opts.changeId}:${consumerId}`;
+    const baseSha = "b".repeat(40);
+    insertMigrationPr(db, {
+      id: opts.prId,
+      changeId: opts.changeId,
+      consumerId,
+      title: "Adopt Acme Payments v2",
+      body: MAIN_ERA_BODY,
+      branchName: "mendpoint/acme-payments-v2",
+      status: "draft",
+      risk: "low",
+      patchUnified: "diff",
+      githubPrNumber: opts.prNumber,
+      githubPrUrl: `https://github.com/org/${opts.repo}/pull/${opts.prNumber}`,
+      createdAt: nowIso(),
+    });
+    persistDeliveryArtifact(db, {
+      tenantId: TENANT,
+      artifactDigest: deliveryArtifactDigest(deliveryKey, "t".repeat(40), baseSha),
+      deliveryKey,
+      title: "Adopt Acme Payments v2",
+      body: MAIN_ERA_BODY,
+      treeSha: "t".repeat(40),
+      parentSha: baseSha,
+      filesJson: JSON.stringify([{ path: "src/client.ts", content: "export const v = 2;\n" }]),
+      createdAt: nowIso(),
+    });
+    return `https://github.com/org/${opts.repo}/pull/${opts.prNumber}`;
+  }
+
+  it("isolates a revoked install and a 403 per draft, processes the rest, and exits non-zero", async () => {
+    const db = freshDb();
+    seedTenant(db);
+    const revokedUrl = seedDraftForRepo(db, { repo: "revoked-app", prNumber: 1, prId: "pr-revoked", changeId: "change-revoked" });
+    const forbiddenUrl = seedDraftForRepo(db, { repo: "forbidden-app", prNumber: 2, prId: "pr-forbidden", changeId: "change-forbidden" });
+    seedDraftForRepo(db, { repo: "clean-app", prNumber: 3, prId: "pr-clean", changeId: "change-clean" });
+
+    const result = await refreshOpenDraftBodies({
+      db,
+      reposDir,
+      dryRun: false,
+      deliveryFor: (_tid, consumer) => {
+        // Building the transport throws for the revoked consumer (as the real
+        // resolver does), before any live read.
+        if (consumer.github_repo === "revoked-app") {
+          throw new Error("github_app_installation_revoked");
+        }
+        // Reading the live PR throws a 403 whose message carries a token-like
+        // string; only the error class must be recorded, never that text.
+        if (consumer.github_repo === "forbidden-app") {
+          return {
+            delivery: {
+              getOpenPullRequest: async () => {
+                throw Object.assign(new Error(`403 Forbidden ${SENSITIVE}`), { status: 403, name: "HttpError" });
+              },
+            } as unknown as GitHubDelivery,
+          };
+        }
+        return { delivery: fakeRefreshDelivery({ liveBody: MAIN_ERA_BODY, adopt: "converge" }).delivery };
+      },
+    });
+
+    const tenant = result.tenants.find((t) => t.tenantId === TENANT);
+    // The clean draft still processes despite the two failures.
+    expect(tenant?.updated).toBe(1);
+    expect(getPr(db, "pr-clean", TENANT)?.body).not.toContain(TENANT);
+    // Both failures are recorded against the right PR URLs, with a token-free class.
+    expect(tenant?.failed).toEqual(
+      expect.arrayContaining([`${revokedUrl} (Error)`, `${forbiddenUrl} (HttpError:403)`]),
+    );
+    expect(tenant?.failed).toHaveLength(2);
+    // The raw 403 message (which could carry a token) never reaches the record.
+    expect(tenant?.failed.join("\n")).not.toContain(SENSITIVE);
+    // The operator command exits non-zero because something failed.
+    expect(refreshHadFailures(result)).toBe(true);
+  });
+
+  it("refreshHadFailures is false when every draft is clean", async () => {
+    const db = freshDb();
+    seedTenant(db);
+    seedOpenDraft(db);
+    const result = await refreshOpenDraftBodies({
+      db, reposDir, dryRun: false,
+      deliveryFor: () => ({ delivery: fakeRefreshDelivery({ liveBody: MAIN_ERA_BODY, adopt: "converge" }).delivery }),
+    });
+    expect(result.tenants.find((t) => t.tenantId === TENANT)?.failed).toHaveLength(0);
+    expect(refreshHadFailures(result)).toBe(false);
   });
 });
 

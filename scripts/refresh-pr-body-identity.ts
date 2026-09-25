@@ -25,30 +25,16 @@ import { createDb, type AppDb } from "@mendpoint/db";
 import {
   createPipelineDeliveryResolver,
   refreshOpenDraftBodies,
+  refreshHadFailures,
   type PipelineInput,
-  type RefreshTenantResult,
 } from "@mendpoint/pipeline";
 import { classifyDependencyOutage } from "@mendpoint/ops";
+import { reportRefresh } from "./refresh-pr-body-identity-report.js";
 
 const apply = process.argv.includes("--apply");
 const dryRun = !apply || process.argv.includes("--dry-run");
 const tenantArgIndex = process.argv.indexOf("--tenant");
 const tenantId = tenantArgIndex >= 0 ? process.argv[tenantArgIndex + 1] : undefined;
-
-function reportList(label: string, urls: ReadonlyArray<string>): void {
-  if (urls.length === 0) return;
-  console.log(`    ${label} (${urls.length}): ${urls.filter(Boolean).join(", ")}`);
-}
-
-function reportTenant(t: RefreshTenantResult): void {
-  console.log(`  tenant=${t.tenantSlug} (${t.tenantId}) affected=${t.affected} updated=${t.updated}`);
-  reportList("needs a human (foreign head)", t.skippedForeignHead);
-  reportList("human-edited (left untouched)", t.skippedHumanEdited);
-  reportList("closed/merged", t.skippedClosed);
-  reportList("no write-ahead artifact", t.skippedNoArtifact);
-  reportList("blocked by guard (still leaked)", t.blocked);
-  reportList("failed", t.failed);
-}
 
 async function main(): Promise<void> {
   const db = createDb();
@@ -82,16 +68,16 @@ async function main(): Promise<void> {
     deliveryFor,
   });
 
-  console.log(dryRun ? "[refresh:pr-body-identity] DRY RUN (reads only, no writes)" : "[refresh:pr-body-identity] APPLY");
-  for (const t of result.tenants) {
-    if (t.affected === 0) continue;
-    reportTenant(t);
+  const failedCount = reportRefresh(result, { dryRun });
+
+  // A revoked installation or a 403 reading one PR is isolated per draft and
+  // recorded as `failed` (#730); the sweep still processes the rest, but the
+  // command exits non-zero so an operator notices the failed drafts. The report
+  // above prints every tenant that has failures even when none was affected.
+  if (refreshHadFailures(result)) {
+    console.error(`[refresh:pr-body-identity] ${failedCount} draft(s) failed; see 'failed' above`);
+    process.exitCode = 1;
   }
-  console.log(
-    dryRun
-      ? `[refresh:pr-body-identity] total affected open drafts: ${result.totalAffected}`
-      : `[refresh:pr-body-identity] total updated: ${result.totalUpdated} of ${result.totalAffected} affected`,
-  );
 }
 
 main().catch((error) => {
