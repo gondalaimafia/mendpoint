@@ -74,6 +74,7 @@ export {
 export { renderPublicPrIdentity, type PublicPrIdentityOptions } from "./public-pr-identity.js";
 export {
   refreshOpenDraftBodies,
+  refreshHadFailures,
   type RefreshOpenDraftBodiesInput,
   type RefreshOpenDraftBodiesResult,
   type RefreshTenantResult,

@@ -25,6 +25,7 @@ import { createDb, type AppDb } from "@mendpoint/db";
 import {
   createPipelineDeliveryResolver,
   refreshOpenDraftBodies,
+  refreshHadFailures,
   type PipelineInput,
   type RefreshTenantResult,
 } from "@mendpoint/pipeline";
@@ -92,6 +93,15 @@ async function main(): Promise<void> {
       ? `[refresh:pr-body-identity] total affected open drafts: ${result.totalAffected}`
       : `[refresh:pr-body-identity] total updated: ${result.totalUpdated} of ${result.totalAffected} affected`,
   );
+
+  // A revoked installation or a 403 reading one PR is isolated per draft and
+  // recorded as `failed` (#730); the sweep still processes the rest, but the
+  // command exits non-zero so an operator notices the failed drafts.
+  if (refreshHadFailures(result)) {
+    const failedCount = result.tenants.reduce((sum, t) => sum + t.failed.length, 0);
+    console.error(`[refresh:pr-body-identity] ${failedCount} draft(s) failed; see 'failed' above`);
+    process.exitCode = 1;
+  }
 }
 
 main().catch((error) => {
