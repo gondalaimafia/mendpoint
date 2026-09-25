@@ -102,6 +102,32 @@ describe("adoptive draft delivery state machine", () => {
     expect(fake.allPulls(OWNER, REPO)).toHaveLength(1);
   });
 
+  it("re-adopts a draft created by main after the graph section drops the tenant id (#606 x #716)", async () => {
+    // A draft delivered by MAIN carries the tenant id in its graph section. The HEAD build renders
+    // the same section from public identity (no tenant id). Adoption identity excludes the body, so
+    // on the next full re-render the head re-delivery must adopt the same PR (same branch + delivery
+    // key) and converge the body once — never a duplicate. This is the upgrade-window closure: a
+    // main-era draft's body is updated on the first head re-render, not left carrying the id.
+    const tenantId = "f".repeat(64);
+    const mainEraBody = [
+      "### Graph-RAG: blast_radius",
+      `- (Provider) ${tenantId}:acme-payments \`provider:${tenantId}:acme-payments\``,
+    ].join("\n");
+    const headBody = [
+      "### Graph-RAG: blast_radius",
+      "- (Provider) acme-payments `provider:acme-payments`",
+    ].join("\n");
+    expect(headBody.includes(tenantId)).toBe(false);
+
+    const { fake, baseSha } = seed();
+    const main = await deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha, { body: mainEraBody }));
+    const head = await deliverAdoptiveDraftWithOctokit(fake, input(fake, baseSha, { body: headBody }));
+    expect(head.number).toBe(main.number);
+    expect(head.body).toBe(headBody);
+    expect(head.body.includes(tenantId)).toBe(false);
+    expect(fake.allPulls(OWNER, REPO)).toHaveLength(1);
+  });
+
   it("fast-forwards a legacy bare branch to our commit, then adopts (D3/D8)", async () => {
     const { fake, baseSha } = seed();
     // A legacy bare branch that points at the base commit itself: no Mendpoint

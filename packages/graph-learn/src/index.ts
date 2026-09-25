@@ -88,6 +88,7 @@ export {
   runGraphQuery,
   blastRadius,
   formatQueryForPlanner,
+  projectGraphResultForDisplay,
   GRAPH_RAG_TOOLS,
 } from "./query.js";
 

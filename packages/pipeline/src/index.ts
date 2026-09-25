@@ -128,11 +128,15 @@ import {
   getSoftwareGraphHead,
   runGraphQuery,
   formatQueryForPlanner,
+  projectGraphResultForDisplay,
+  compileFettlerImpactDisplayJson,
   type GraphLearnDb,
 } from "@mendpoint/graph-learn";
 import {
   newId,
   nowIso,
+  publicProviderSlug,
+  publicGraphToken,
   type ImpactReport,
   type StructuralDiff,
 } from "@mendpoint/shared";
@@ -876,7 +880,9 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     surfaces,
   });
   const registryHits = listConsumersForProvider(db, provider.slug, input.tenantId);
-  const registryMd = registrySummaryMarkdown(registryHits, provider.slug);
+  // Customer-facing: the consumer-registry section renders the PUBLIC slug (never the stored,
+  // possibly tenant-namespaced one). The DB lookup above still uses the stored slug.
+  const registryMd = registrySummaryMarkdown(registryHits, publicProviderSlug(provider.slug));
   const apiReview = reviewOpenApiDesign(newSpec);
   // Deployment policy for the security gate. Keys on the deployment PROFILE
   // (customer profile requires a verified scanner result), never the deployment
@@ -1044,7 +1050,18 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
   // formatQueryForPlanner prints that. Emitting "" instead would drop the
   // one signal distinguishing "no graph was consulted" from "the graph was
   // consulted and found nothing" — the honest object is already built above.
-  const graphRagMd = formatQueryForPlanner(blast);
+  // The graph result is keyed by tenant-scoped node ids (`provider:<tenantId>:<slug>`, ...) and,
+  // for a private provider, the `<tenantId>~` namespaced slug. Those keyed ids stay as-is in the
+  // graph store. For the CUSTOMER-FACING rendering, project each node's id and label to public
+  // identity at the structured source (`publicGraphToken`, keyed on the known tenant id + stored
+  // slug), then render the projected copy — the planner path still reads the raw ids. This removes
+  // the tenant id from every delivered body, shared providers included (#716), and collapses a
+  // private slug to its public form while preserving a `~` inside an API path (#704/#713).
+  const graphRagMd = formatQueryForPlanner(
+    projectGraphResultForDisplay(blast, (value) =>
+      publicGraphToken(value, input.tenantId, provider.slug),
+    ),
+  );
 
   // Graph-update audit at the ingest entry point. Keep the replay identity and
   // metadata derived only from the immutable spec change. Blast-radius counts
@@ -1259,7 +1276,9 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     const graphObservedAt = changeResult.change.created_at;
     let graphVersionId: string | undefined;
     let graphContextArtifactId: string | undefined;
-    let graphContextContent: string | undefined;
+    // Customer-facing "Change Graph evidence" JSON, built from an explicit public-field allowlist
+    // (never the internal context record, which carries the tenant id and the namespaced slug).
+    let graphEvidenceDisplay: string | undefined;
     let impactReport: ImpactReport;
     let indexMaterialization: IndexMaterializationEvidence | undefined;
     let rawRetrievalFallback = false;
@@ -1424,7 +1443,14 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         impactReport = graphAnalysis.impactReport;
         indexMaterialization = graphAnalysis.indexReuse;
         graphVersionId = graphAnalysis.graphVersion.versionId;
-        graphContextContent = graphAnalysis.context.content;
+        // Build the customer-facing evidence block from public fields at the source: the public
+        // provider slug and the endpoint's method+path, plus the reachability paths with internal
+        // ids / evidence refs / tenant binding omitted. The internal context (with the tenant id)
+        // is still persisted as the stored artifact below.
+        graphEvidenceDisplay = compileFettlerImpactDisplayJson(graphAnalysis.graphImpact, {
+          provider: publicProviderSlug(provider.slug),
+          endpoint: `${(endpointSurface.method ?? "ANY").toUpperCase()} ${endpointSurface.path}`,
+        });
         // Spec §11.10: pin the published version on any single-repo Fettler
         // Mission that already exists for this consumer repository. Multi-repo
         // campaigns stay unbound. Mission bookkeeping must not fail analysis.
@@ -1907,14 +1933,17 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
 
     // Enforce: never claim auto-merge in PR body; attach plan + registry + gates + critic.
     // Kept as a named block so an oversized body can drop it first (see boundPrBody).
-    const graphEvidenceBlock = graphContextContent
+    const graphEvidenceBlock = graphEvidenceDisplay
       ? [
           "### Change Graph evidence",
           `- Graph version: \`${graphVersionId}\``,
           `- Context artifact: \`${graphContextArtifactId}\``,
           "",
           "```json",
-          graphContextContent,
+          // Customer-facing: a dedicated display object built from public fields (see
+          // compileFettlerImpactDisplayJson). The stored artifact keeps its full keyed identity
+          // and tenant binding; this rendered copy never carries the tenant id or the slug.
+          graphEvidenceDisplay,
           "```",
         ].join("\n")
       : "";

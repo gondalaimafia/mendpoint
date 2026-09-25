@@ -189,7 +189,11 @@ export type AdoptiveDraftBlocked = Readonly<{
     | "github_delivery_artifact_missing"
     | "github_delivery_pr_body_too_long"
     | "github_delivery_base_invalid"
-    | "github_delivery_pull_unsupported";
+    | "github_delivery_pull_unsupported"
+    // The generated branch name is not a valid git ref (a legacy provider slug carrying a
+    // git-invalid character): needs a human action (rename the provider slug), so it is a
+    // reported, non-retryable delivery_blocked rather than a crash of the pipeline run.
+    | "branch_name_invalid";
 }>;
 
 export class AdoptiveDraftBlockedError extends Error {
