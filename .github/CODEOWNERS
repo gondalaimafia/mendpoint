@@ -32,6 +32,7 @@
 /scripts/build-sandbox-image.mjs                @gondalaimafia
 /scripts/start-sandbox-entrypoint.sh            @gondalaimafia
 /scripts/create-sandbox-egress-attestation.ts   @gondalaimafia
+/scripts/flyctl-transport-retry.sh              @gondalaimafia
 /packages/contract/src/security-attestation.ts  @gondalaimafia
 /packages/contract/src/software-attestation.ts  @gondalaimafia
 /packages/pipeline/src/software-attestation-operation.ts @gondalaimafia

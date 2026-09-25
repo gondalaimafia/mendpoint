@@ -14,16 +14,18 @@ import { describe, expect, it } from "vitest";
  * crash-loop workers.
  *
  * These tests exercise the SHIPPED shell of that probe step and the SHIPPED
- * retry helper (`scripts/flyctl-transport-retry.sh`), not copies: the probe core
- * is extracted verbatim from the workflow between the `# probe-machine-create`
- * markers / the machine-create..forbidden-verdict span and run under
- * `bash --noprofile --norc -e -o pipefail` against a stubbed `flyctl`/`node`,
- * with a REAL `jq` so the verdict assertions are genuine.
+ * retry helper (`scripts/flyctl-transport-retry.sh`), not copies. The step region
+ * is extracted verbatim from the YAML INCLUDING its `source` line, the real
+ * helper is written into the harness's cwd so that `source` line resolves, and
+ * the whole thing runs under `bash --noprofile --norc -e -o pipefail` against a
+ * stubbed `flyctl`/`node` with a REAL `jq` so the verdict assertions are genuine.
+ * Deleting the `source` line therefore breaks the step (O5 is load-bearing).
  *
- * The safety property proved by mutation: only the act of REACHING the Fly API
- * is retried, and only on a transport-class failure classified from flyctl's
- * final `Error:` line. A verdict-bearing `flyctl machine exec` probe is never
- * retried; a real default-deny violation fails on the first observation.
+ * Error shapes match what flyctl/fly-go actually print. fly-go wraps every
+ * `flaps.Get` error as `could not get machine <id>: failed to get VM <id>:
+ * <cause>`, so `machine not found` and `unauthorized` arrive under that prefix;
+ * the classifier must NOT treat that prefix as transport (only `read tcp` /
+ * `connection reset` etc. are transport). See FAILURE_MODES #19.
  */
 
 const root = resolve(import.meta.dirname, "..");
@@ -38,24 +40,28 @@ function helperSource(): string {
   return readFileSync(resolve(root, HELPER_PATH), "utf8");
 }
 
-/** Slice a shell region out of the workflow, de-indented by 10 (run: content). */
-function extractRegion(startMarker: string, endMarker: string): string {
+/** Slice a shell region out of the workflow, de-indented by `indent`. */
+function extractRegion(startMarker: string, endMarker: string, indent = 10): string {
   const source = engineSource();
   const start = source.indexOf(startMarker);
   expect(start, `missing region start: ${startMarker}`).toBeGreaterThan(-1);
   const end = source.indexOf(endMarker, start);
   expect(end, `missing region end: ${endMarker}`).toBeGreaterThan(-1);
+  const pad = " ".repeat(indent);
   return source
     .slice(start, end + endMarker.length)
     .split("\n")
-    .map((line) => (line.startsWith("          ") ? line.slice(10) : line))
+    .map((line) => (line.startsWith(pad) ? line.slice(indent) : line))
     .join("\n");
 }
 
-/** The probe core: machine create (idempotent retry) + status + the four exec verdicts. */
-function probeCore(): string {
+/**
+ * The probe step from its `source` line through the forbidden verdict assertion.
+ * The `source` line is included so deleting it (mutation O5) breaks the step.
+ */
+function probeStep(): string {
   return extractRegion(
-    'machine_name="egress-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
+    "source scripts/flyctl-transport-retry.sh",
     "test-results/sandbox-egress/forbidden-outbound.json >/dev/null",
   );
 }
@@ -70,20 +76,25 @@ const IMAGE = `registry.fly.io/mendpoint-sandbox@sha256:${"a".repeat(64)}`;
 const TAG = "registry.fly.io/mendpoint-sandbox:deploy-1";
 
 interface ProbeOptions {
-  /** `flyctl machine run` per-attempt behaviour (last repeats): ok | transport | transport-after-create | auth. */
+  /** `machine run` per-attempt behaviour (last repeats): ok | transport | transport-after-create | nontransport. */
   runBehavior?: string;
-  /** `flyctl machine status` per-attempt behaviour (last repeats): ok | transport | auth | auth-noise. */
+  /** `machine status` per-attempt behaviour (last repeats): ok | transport | notfound | unauthorized | auth-noise. */
   statusBehavior?: string;
+  /** `machine list` behaviour: ok (default) | transport. */
+  listBehavior?: string;
+  /** `machine destroy` behaviour: ok (default) | transport. */
+  destroyBehavior?: string;
   /** forbidden verdict probe behaviour: blocked (default) | violation | transport. */
   forbiddenBehavior?: string;
-  /** MUTATION: helper classifies the whole log instead of the final Error: line. */
+  // Helper mutations (applied to the sourced helper file).
   mutateClassifyWholeLog?: boolean;
-  /** MUTATION: helper retries regardless of classification (retries non-transport). */
   mutateRetryNonTransport?: boolean;
-  /** MUTATION: route the verdict-bearing forbidden exec through the transport retry. */
+  // Region mutations (applied to the extracted step).
   mutateRetryVerdict?: boolean;
-  /** MUTATION: drop the pre-retry orphan destroy from the machine-create loop. */
   mutateDropOrphanCleanup?: boolean;
+  mutateOrphanFailSilent?: boolean;
+  mutateCreateRetryNonTransport?: boolean;
+  mutateDeleteSource?: boolean;
 }
 
 interface ProbeResult {
@@ -102,16 +113,13 @@ function runProbe(opts: ProbeOptions = {}): ProbeResult {
   const dir = mkdtempSync(join(tmpdir(), "egress-probe-"));
   const binDir = join(dir, "bin");
   mkdirSync(binDir);
+  mkdirSync(join(dir, "scripts"), { recursive: true });
   mkdirSync(join(dir, "test-results", "sandbox-egress"), { recursive: true });
   const callLog = join(dir, "calls.log").replace(/\\/g, "/");
   const machinesFile = join(dir, "machines.json").replace(/\\/g, "/");
   writeFileSync(machinesFile, "[]");
 
-  // Stubbed, stateful flyctl. `machine run` appends a machine (deterministic id
-  // mN) and honours a per-attempt behaviour; `machine destroy <id>` removes it;
-  // `machine list` reports current state; `machine status` honours its own
-  // per-attempt behaviour; the four `machine exec` probes emit fixed policy /
-  // egress JSON that the REAL jq in the region asserts. Every call is logged.
+  // Stubbed, stateful flyctl emitting flyctl/fly-go-shaped errors.
   writeFileSync(
     join(binDir, "flyctl"),
     [
@@ -128,10 +136,11 @@ function runProbe(opts: ProbeOptions = {}): ProbeResult {
       '      ok) add_machine; printf "Machine ID: %s\\n" "$id"; exit 0 ;;',
       '      transport-after-create) add_machine; echo "Error: failed to launch VM $id: Post \\"https://api.machines.dev/...\\": read tcp 1->2:443: read: connection reset by peer" >&2; exit 1 ;;',
       '      transport) echo "Error: failed to launch VM: read tcp 1->2:443: read: connection reset by peer" >&2; exit 1 ;;',
-      '      auth) echo "Error: authentication required" >&2; exit 1 ;;',
+      '      nontransport) echo "Error: failed to launch VM: unauthorized" >&2; exit 1 ;;',
       '    esac',
       '    ;;',
       '  *"machine destroy"*)',
+      '    if [ "${DESTROY_BEHAVIOR:-ok}" = "transport" ]; then echo "Error: could not get machine: failed to get VM: read tcp 1->2:443: read: connection reset by peer" >&2; exit 1; fi',
       '    id="${!#}"',
       '    jq --arg id "$id" \'map(select(.id != $id))\' "$MACHINES" > "$MACHINES.t" && mv "$MACHINES.t" "$MACHINES"',
       '    exit 0 ;;',
@@ -141,14 +150,14 @@ function runProbe(opts: ProbeOptions = {}): ProbeResult {
       '    case "${__sb[$si]}" in',
       '      ok) printf "%s\\n" "$STATUS_JSON"; exit 0 ;;',
       '      transport) echo "Error: could not get machine m1: failed to get VM m1: Get \\"https://api.machines.dev/v1/apps/mendpoint-sandbox/machines/m1\\": read tcp 1->2:443: read: connection reset by peer" >&2; exit 1 ;;',
-      '      auth) echo "Error: authentication required" >&2; exit 1 ;;',
-      '      auth-noise) echo "warning: transient socket note: connection reset by peer" >&2; echo "Error: authentication required" >&2; exit 1 ;;',
+      '      notfound) echo "Error: could not get machine m1: failed to get VM m1: machine not found" >&2; exit 1 ;;',
+      '      unauthorized) echo "Error: could not get machine m1: failed to get VM m1: unauthorized" >&2; exit 1 ;;',
+      '      auth-noise) echo "Failed to fetch machine details: connection reset by peer" >&2; echo "Error: could not get machine m1: failed to get VM m1: unauthorized" >&2; exit 1 ;;',
       '    esac',
       '    ;;',
       '  *"machine exec"*ip6tables*) printf "%s\\n" "$IPV6_JSON"; exit 0 ;;',
       '  *"machine exec"*iptables*) printf "%s\\n" "$IPV4_JSON"; exit 0 ;;',
       '  *"machine exec"*MENDPOINT_FORBIDDEN_PROBE*)',
-      '    fc=0; [ -f "$FORBID_COUNT" ] && fc="$(cat "$FORBID_COUNT")"; fc=$((fc + 1)); printf "%s" "$fc" > "$FORBID_COUNT"',
       '    case "$FORBIDDEN_BEHAVIOR" in',
       '      transport) echo "Error: could not exec: read tcp 1->2:443: read: connection reset by peer" >&2; exit 1 ;;',
       '      violation) printf "%s\\n" "$FORBIDDEN_VIOLATION_JSON"; exit 0 ;;',
@@ -156,7 +165,9 @@ function runProbe(opts: ProbeOptions = {}): ProbeResult {
       '    esac',
       '    ;;',
       '  *"machine exec"*MENDPOINT_ALLOWED_PROBE*) printf "%s\\n" "$ALLOWED_JSON"; exit 0 ;;',
-      '  *"machine list"*) cat "$MACHINES"; exit 0 ;;',
+      '  *"machine list"*)',
+      '    if [ "${LIST_BEHAVIOR:-ok}" = "transport" ]; then echo "Error: could not list machines: read tcp 1->2:443: read: connection reset by peer" >&2; exit 1; fi',
+      '    cat "$MACHINES"; exit 0 ;;',
       "esac",
       "exit 0",
       "",
@@ -164,36 +175,33 @@ function runProbe(opts: ProbeOptions = {}): ProbeResult {
   );
   chmodSync(join(binDir, "flyctl"), 0o755);
 
-  // `node --import tsx ... -e '<probe fetch>'` -> the two probe command tokens
-  // the exec calls are built from. The stub ignores all args.
   writeFileSync(
     join(binDir, "node"),
-    [
-      "#!/usr/bin/env bash",
-      `printf '%s' '{"allowed":"MENDPOINT_ALLOWED_PROBE","forbidden":"MENDPOINT_FORBIDDEN_PROBE"}'`,
-      "",
-    ].join("\n"),
+    ["#!/usr/bin/env bash", `printf '%s' '{"allowed":"MENDPOINT_ALLOWED_PROBE","forbidden":"MENDPOINT_FORBIDDEN_PROBE"}'`, ""].join("\n"),
   );
   chmodSync(join(binDir, "node"), 0o755);
 
-  // Build the helper (optionally mutated) and the region (optionally mutated).
+  // Write the (optionally mutated) SHIPPED helper where the step's `source` line resolves.
   let helper = helperSource();
   if (opts.mutateClassifyWholeLog) {
-    // Classify the WHOLE log (grep the files) instead of the final Error: line.
     const from = 'grep -qiE "$FLY_TRANSPORT_SIGNAL" <<<"$error_line"';
     expect(helper, "classify line not found").toContain(from);
     helper = helper.replace(from, 'grep -qiE "$FLY_TRANSPORT_SIGNAL" "$@"');
   }
   if (opts.mutateRetryNonTransport) {
-    // Never take the non-transport early return: retry regardless of class.
     const from = 'if ! fly_is_transport_failure "$err_file" "$out_file"; then';
     expect(helper, "classification guard not found").toContain(from);
     helper = helper.replace(from, "if false; then");
   }
+  writeFileSync(join(dir, "scripts", "flyctl-transport-retry.sh"), helper);
 
-  let region = probeCore();
+  let region = probeStep();
+  if (opts.mutateDeleteSource) {
+    const before = region;
+    region = region.replace(/^source scripts\/flyctl-transport-retry\.sh\n/m, "");
+    expect(region, "delete-source mutation did not apply").not.toBe(before);
+  }
   if (opts.mutateRetryVerdict) {
-    // Route the verdict-bearing forbidden exec through the transport retry.
     const before = region;
     region = region.replace(
       /flyctl machine exec "\$machine_id" \\\n\s*--app "\$MENDPOINT_SANDBOX_EGRESS_APP" \\\n\s*--json "runuser -u node -- \$forbidden_probe" \\\n\s*>test-results\/sandbox-egress\/forbidden-outbound\.json/,
@@ -214,11 +222,29 @@ function runProbe(opts: ProbeOptions = {}): ProbeResult {
     expect(end, "orphan-destroy end marker not found").toBeGreaterThan(start);
     region = region.slice(0, start) + region.slice(end + endMarker.length);
   }
+  if (opts.mutateOrphanFailSilent) {
+    // Revert the loud fail-on-orphan-error back to the old `|| true` blind retry.
+    const before = region;
+    region = region
+      .replace(
+        /if ! fly_retry create-orphan-list -- flyctl machine list --app "\$MENDPOINT_SANDBOX_EGRESS_APP" --json; then\n[\s\S]*?exit 1\n\s*fi/,
+        'fly_retry create-orphan-list -- flyctl machine list --app "$MENDPOINT_SANDBOX_EGRESS_APP" --json || true',
+      )
+      .replace(
+        /if ! fly_retry create-orphan-destroy -- flyctl machine destroy --force --app "\$MENDPOINT_SANDBOX_EGRESS_APP" "\$orphan_id"; then\n[\s\S]*?exit 1\n\s*fi/,
+        'fly_retry create-orphan-destroy -- flyctl machine destroy --force --app "$MENDPOINT_SANDBOX_EGRESS_APP" "$orphan_id" || true',
+      );
+    expect(region, "orphan-fail-silent mutation did not apply").not.toBe(before);
+  }
+  if (opts.mutateCreateRetryNonTransport) {
+    const from = 'if ! fly_is_transport_failure "$create_err" "$create_out"; then';
+    expect(region, "create-loop classification guard not found").toContain(from);
+    region = region.replace(from, "if false; then");
+  }
 
   const harness = [
     "set -euo pipefail",
     "sleep() { :; }",
-    helper,
     `export FLY_RETRY_BACKOFF_SECONDS=0`,
     `export SANDBOX_IMAGE_TAG="${TAG}"`,
     `export MENDPOINT_SANDBOX_EGRESS_APP="mendpoint-sandbox"`,
@@ -238,10 +264,11 @@ function runProbe(opts: ProbeOptions = {}): ProbeResult {
       PATH: `${binDir}${SEP}${process.env.PATH ?? ""}`,
       RUN_COUNT: join(dir, "run.count").replace(/\\/g, "/"),
       STATUS_COUNT: join(dir, "status.count").replace(/\\/g, "/"),
-      FORBID_COUNT: join(dir, "forbid.count").replace(/\\/g, "/"),
       MACHINES: machinesFile,
       RUN_BEHAVIOR: opts.runBehavior ?? "ok",
       STATUS_BEHAVIOR: opts.statusBehavior ?? "ok",
+      LIST_BEHAVIOR: opts.listBehavior ?? "ok",
+      DESTROY_BEHAVIOR: opts.destroyBehavior ?? "ok",
       FORBIDDEN_BEHAVIOR: opts.forbiddenBehavior ?? "blocked",
       STATUS_JSON: JSON.stringify({ image: IMAGE }),
       IPV4_JSON: EXEC_OK(IPV4_STDOUT),
@@ -252,9 +279,7 @@ function runProbe(opts: ProbeOptions = {}): ProbeResult {
     },
   });
 
-  const calls = existsSync(callLog)
-    ? readFileSync(callLog, "utf8").split("\n").filter(Boolean)
-    : [];
+  const calls = existsSync(callLog) ? readFileSync(callLog, "utf8").split("\n").filter(Boolean) : [];
   return {
     status: result.status,
     stdout: result.stdout ?? "",
@@ -272,9 +297,7 @@ describe("sandbox egress probe — transport blips are retried, verdicts are not
   it("a transport reset on the machine status read, then success: the step passes", () => {
     const r = runProbe({ statusBehavior: "transport ok" });
     expect(r.status, `stderr: ${r.stderr}`).toBe(0);
-    // The status read was retried past the reset (two calls), then succeeded.
     expect(r.statusCalls.length).toBe(2);
-    // Cleanup ran on the success path: the probe machine was destroyed.
     expect(r.destroyCalls.length).toBeGreaterThan(0);
     expect(r.machinesAtEnd).toEqual([]);
   }, 60_000);
@@ -282,11 +305,8 @@ describe("sandbox egress probe — transport blips are retried, verdicts are not
   it("a persistent transport failure on the status read fails loudly (renewal-failure alert fires)", () => {
     const r = runProbe({ statusBehavior: "transport" });
     expect(r.status).not.toBe(0);
-    // Bounded at 3 attempts, then a loud failure -- the workflow's failure()-
-    // guarded "Alert on renewal failure" step opens the #708-style alert.
     expect(r.statusCalls.length).toBe(3);
     expect(r.stderr).toContain("failing loudly");
-    // Cleanup still runs on the failure path (EXIT trap).
     expect(r.destroyCalls.length).toBeGreaterThan(0);
     expect(r.machinesAtEnd).toEqual([]);
   }, 60_000);
@@ -294,80 +314,207 @@ describe("sandbox egress probe — transport blips are retried, verdicts are not
   it("a real default-deny violation fails on the first observation, with no retry, even after a transport blip", () => {
     const r = runProbe({ statusBehavior: "transport ok", forbiddenBehavior: "violation" });
     expect(r.status).not.toBe(0);
-    // The earlier transport blip WAS retried (status called twice)...
     expect(r.statusCalls.length).toBe(2);
-    // ...but the verdict-bearing forbidden probe is observed exactly once and
-    // never retried: the violation fails on first observation.
     expect(r.forbiddenExecCalls.length).toBe(1);
   }, 60_000);
 
   it("a machine-run transport error after the machine was created leaves no orphan, and cleanup runs", () => {
     const r = runProbe({ runBehavior: "transport-after-create ok" });
     expect(r.status, `stderr: ${r.stderr}`).toBe(0);
-    // Two create attempts: the first landed server-side then transport-failed.
     expect(r.runCalls.length).toBe(2);
-    // The orphan from attempt 1 (m1) was destroyed before the retry, and the
-    // final probe machine (m2) was destroyed by cleanup: no machine survives.
     expect(r.destroyCalls.some((l) => l.trim().endsWith(" m1"))).toBe(true);
     expect(r.machinesAtEnd).toEqual([]);
   }, 60_000);
+});
 
-  it("a non-transport flyctl error (auth) is not retried", () => {
-    const r = runProbe({ statusBehavior: "auth" });
+describe("sandbox egress probe — flyctl-shaped non-transport errors are NOT retried (blocker #708 fix)", () => {
+  // fly-go wraps every flaps.Get error as "could not get machine X: failed to
+  // get VM X: <cause>". The classifier must not treat that prefix as transport.
+  it.each([
+    ["notfound", "machine not found"],
+    ["unauthorized", "a revoked token / unauthorized"],
+  ])("a %s error under the `failed to get VM` prefix runs the status read exactly once", (behavior) => {
+    const r = runProbe({ statusBehavior: behavior });
     expect(r.status).not.toBe(0);
-    // Exactly one status call: an auth error is returned immediately, no retry.
-    expect(r.statusCalls.length).toBe(1);
+    expect(r.statusCalls.length, "must not be retried as transport").toBe(1);
     expect(r.stderr).toContain("non-transport flyctl error");
+  }, 60_000);
+
+  it("the #708 line (read tcp / connection reset under the same prefix) IS still retried", () => {
+    const r = runProbe({ statusBehavior: "transport ok" });
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+    expect(r.statusCalls.length).toBe(2);
+  }, 60_000);
+});
+
+describe("sandbox egress probe — orphan compound-fault fails loudly, never a blind retry", () => {
+  it("fails loudly (no blind create retry, no silent mint) when the orphan LIST keeps transport-failing", () => {
+    const r = runProbe({ runBehavior: "transport-after-create ok", listBehavior: "transport" });
+    expect(r.status).not.toBe(0);
+    // The create was attempted once; it was NOT retried blind into a second machine.
+    expect(r.runCalls.length).toBe(1);
+    expect(r.stderr).toContain("failing loudly rather than retrying the create blind");
+  }, 60_000);
+
+  it("fails loudly when the orphan DESTROY keeps transport-failing", () => {
+    const r = runProbe({ runBehavior: "transport-after-create ok", destroyBehavior: "transport" });
+    expect(r.status).not.toBe(0);
+    expect(r.runCalls.length).toBe(1);
+    expect(r.stderr).toContain("failing loudly rather than retrying the create blind");
+  }, 60_000);
+});
+
+/**
+ * Rotation-step wraps: the two top-level non-verdict reads that gate the whole
+ * rotation. Extracted verbatim from the YAML and run through the SHIPPED helper.
+ */
+interface RotationReadOptions {
+  which: "apps" | "preflight";
+  behavior: string; // machine list / apps list per-attempt: transport | ok
+  revertWrap?: boolean; // MUTATION O6: revert to the pre-fix `$(...)` form.
+}
+function runRotationRead(opts: RotationReadOptions): { status: number | null; stderr: string; calls: string[] } {
+  const dir = mkdtempSync(join(tmpdir(), "egress-rot-"));
+  const binDir = join(dir, "bin");
+  mkdirSync(binDir);
+  const callLog = join(dir, "calls.log").replace(/\\/g, "/");
+  writeFileSync(
+    join(binDir, "flyctl"),
+    [
+      "#!/usr/bin/env bash",
+      `printf 'flyctl %s\\n' "$*" >>"${callLog}"`,
+      'n=0; [ -f "$C" ] && n="$(cat "$C")"; n=$((n + 1)); printf "%s" "$n" > "$C"',
+      'read -ra b <<< "$BEHAVIOR"; i=$((n - 1)); [ "$i" -ge "${#b[@]}" ] && i=$(( ${#b[@]} - 1 ))',
+      'case "${b[$i]}" in',
+      '  ok) printf "%s\\n" "$JSON"; exit 0 ;;',
+      '  transport) echo "Error: could not list: read tcp 1->2:443: read: connection reset by peer" >&2; exit 1 ;;',
+      'esac',
+      "",
+    ].join("\n"),
+  );
+  chmodSync(join(binDir, "flyctl"), 0o755);
+
+  const shipped =
+    opts.which === "apps"
+      ? 'fly_retry apps-list -- flyctl apps list --json\napps_json="$FLY_RETRY_STDOUT"'
+      : 'fly_retry preflight-list -- flyctl machine list --app "$app" --json\nmachines_json="$FLY_RETRY_STDOUT"';
+  const reverted =
+    opts.which === "apps"
+      ? 'apps_json="$(flyctl apps list --json)"'
+      : 'machines_json="$(flyctl machine list --app "$app" --json)"';
+  // Confirm the shipped form is present verbatim in the workflow (guards drift).
+  expect(engineSource(), `shipped ${opts.which} wrap not found in YAML`).toContain(
+    opts.which === "apps"
+      ? "fly_retry apps-list -- flyctl apps list --json"
+      : 'fly_retry preflight-list -- flyctl machine list --app "$app" --json',
+  );
+  const body = opts.revertWrap ? reverted : shipped;
+
+  const harness = [
+    "set -euo pipefail",
+    "sleep() { :; }",
+    helperSource(),
+    "export FLY_RETRY_BACKOFF_SECONDS=0",
+    'app="mendpoint-warden-preview"',
+    body,
+    "",
+  ].join("\n");
+  writeFileSync(join(dir, "h.sh"), harness);
+  const result = spawnSync("bash", ["--noprofile", "--norc", "h.sh"], {
+    cwd: dir,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${binDir}${SEP}${process.env.PATH ?? ""}`,
+      C: join(dir, "c").replace(/\\/g, "/"),
+      BEHAVIOR: opts.behavior,
+      JSON: "[]",
+    },
+  });
+  const calls = existsSync(callLog) ? readFileSync(callLog, "utf8").split("\n").filter(Boolean) : [];
+  return { status: result.status, stderr: result.stderr ?? "", calls };
+}
+
+describe("sandbox egress rotation — the top-level reads are transport-retried (O6)", () => {
+  it.each(["apps", "preflight"] as const)("%s list: a transport blip then success is retried", (which) => {
+    const r = runRotationRead({ which, behavior: "transport ok" });
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+    expect(r.calls.length, "retried past the blip").toBe(2);
+  }, 60_000);
+
+  it.each(["apps", "preflight"] as const)("(mutation) reverting the %s wrap loses the retry", (which) => {
+    const control = runRotationRead({ which, behavior: "transport ok" });
+    expect(control.status, "control: shipped wrap retries").toBe(0);
+    const mutated = runRotationRead({ which, behavior: "transport ok", revertWrap: true });
+    // The bare $(...) form aborts under set -e on the first blip: one call, non-zero.
+    expect(mutated.status, "mutation: bare command substitution is not retried").not.toBe(0);
+    expect(mutated.calls.length).toBe(1);
   }, 60_000);
 });
 
 describe("sandbox egress probe — mutations each killed", () => {
   it("(mutation) retrying a verdict: wrapping the forbidden probe in the transport retry retries it", () => {
-    // Control: the shipped step observes the verdict-bearing forbidden probe
-    // exactly once even when it transport-fails -- the verdict is not retried.
     const control = runProbe({ forbiddenBehavior: "transport" });
     expect(control.status).not.toBe(0);
     expect(control.forbiddenExecCalls.length, "shipped: verdict observed once").toBe(1);
-
-    // Mutation: route the verdict through the transport retry. Now the same
-    // transport failure on the verdict is retried three times -- exactly what
-    // the shipped step must never do.
     const mutated = runProbe({ forbiddenBehavior: "transport", mutateRetryVerdict: true });
     expect(mutated.status).not.toBe(0);
     expect(mutated.forbiddenExecCalls.length, "mutation retries the verdict").toBe(3);
   }, 60_000);
 
   it("(mutation) classifying the whole log: a non-transport error with transport noise is wrongly retried", () => {
-    // Control: the final Error: line is an auth error, so no retry -- even though
-    // an earlier diagnostic line contains "connection reset by peer".
     const control = runProbe({ statusBehavior: "auth-noise" });
     expect(control.status).not.toBe(0);
     expect(control.statusCalls.length, "shipped: classify the Error: line only").toBe(1);
-
-    // Mutation: classify the whole log. The stray "connection reset" now flips
-    // an auth failure into a transport retry (3 attempts).
     const mutated = runProbe({ statusBehavior: "auth-noise", mutateClassifyWholeLog: true });
     expect(mutated.statusCalls.length, "mutation retries on log noise").toBe(3);
   }, 60_000);
 
-  it("(mutation) retrying non-transport errors: an auth failure is retried", () => {
-    const control = runProbe({ statusBehavior: "auth" });
-    expect(control.statusCalls.length, "shipped: auth not retried").toBe(1);
-
-    const mutated = runProbe({ statusBehavior: "auth", mutateRetryNonTransport: true });
+  it("(mutation) retrying non-transport errors (helper): a not-found failure is retried", () => {
+    const control = runProbe({ statusBehavior: "notfound" });
+    expect(control.statusCalls.length, "shipped: not-found not retried").toBe(1);
+    const mutated = runProbe({ statusBehavior: "notfound", mutateRetryNonTransport: true });
     expect(mutated.statusCalls.length, "mutation retries everything").toBe(3);
   }, 60_000);
 
+  it("(mutation O8) create loop retries a non-transport error", () => {
+    const control = runProbe({ runBehavior: "nontransport" });
+    expect(control.status).not.toBe(0);
+    expect(control.runCalls.length, "shipped: create not retried on a non-transport error").toBe(1);
+    const mutated = runProbe({ runBehavior: "nontransport", mutateCreateRetryNonTransport: true });
+    expect(mutated.runCalls.length, "mutation retries the create on a non-transport error").toBe(3);
+  }, 60_000);
+
   it("(mutation) dropping the orphan cleanup: a retried create leaves a second orphaned machine", () => {
-    // Control: the pre-retry orphan destroy leaves no machine behind (above).
     const control = runProbe({ runBehavior: "transport-after-create ok" });
     expect(control.machinesAtEnd, "shipped: no orphan").toEqual([]);
-
-    // Mutation: without the pre-retry orphan destroy, m1 (created by the failed
-    // attempt) survives -- cleanup only tears down the final machine id (m2).
     const mutated = runProbe({ runBehavior: "transport-after-create ok", mutateDropOrphanCleanup: true });
     expect(mutated.machinesAtEnd.length, "mutation leaves an orphan").toBe(1);
     expect(mutated.machinesAtEnd[0]?.id).toBe("m1");
+  }, 60_000);
+
+  it("(mutation) orphan list/destroy failing silently: a blind create retry mints with an orphan running", () => {
+    const control = runProbe({ runBehavior: "transport-after-create ok", listBehavior: "transport" });
+    expect(control.status, "shipped: fails loudly").not.toBe(0);
+    expect(control.runCalls.length, "shipped: no blind create retry").toBe(1);
+    const mutated = runProbe({
+      runBehavior: "transport-after-create ok",
+      listBehavior: "transport",
+      mutateOrphanFailSilent: true,
+    });
+    // With the old `|| true`, the create is retried blind: a second machine is
+    // created and the step succeeds with the m1 orphan still running.
+    expect(mutated.runCalls.length, "mutation retries the create blind").toBe(2);
+    expect(mutated.machinesAtEnd.some((m) => m.id === "m1"), "mutation leaks the orphan").toBe(true);
+  }, 60_000);
+
+  it("(mutation O5) deleting the `source` line breaks the shipped step", () => {
+    const control = runProbe({});
+    expect(control.status, "control: sourced helper works").toBe(0);
+    const mutated = runProbe({ mutateDeleteSource: true });
+    // Without the source, fly_retry is undefined: the step cannot run.
+    expect(mutated.status, "mutation: no helper, step fails").not.toBe(0);
+    expect(mutated.stderr).toMatch(/fly_retry: (command )?not found/);
   }, 60_000);
 });
 
@@ -377,8 +524,6 @@ describe("flyctl-transport-retry.sh — classification unit checks", () => {
     const binDir = join(dir, "bin");
     mkdirSync(binDir);
     const countFile = join(dir, "count").replace(/\\/g, "/");
-    // flyctl always fails, writing the given Error: line (plus stray transport
-    // noise on a non-Error line) so whole-log vs Error-line classification differ.
     writeFileSync(
       join(binDir, "flyctl"),
       [
@@ -393,29 +538,18 @@ describe("flyctl-transport-retry.sh — classification unit checks", () => {
     chmodSync(join(binDir, "flyctl"), 0o755);
     let helper = helperSource();
     if (mutateWholeLog) {
-      helper = helper.replace(
-        'grep -qiE "$FLY_TRANSPORT_SIGNAL" <<<"$error_line"',
-        'grep -qiE "$FLY_TRANSPORT_SIGNAL" "$@"',
-      );
+      helper = helper.replace('grep -qiE "$FLY_TRANSPORT_SIGNAL" <<<"$error_line"', 'grep -qiE "$FLY_TRANSPORT_SIGNAL" "$@"');
     }
-    const harness = [
-      "set -euo pipefail",
-      "sleep() { :; }",
-      helper,
-      "export FLY_RETRY_BACKOFF_SECONDS=0",
-      "fly_retry probe -- flyctl x || true",
-      "",
-    ].join("\n");
-    writeFileSync(join(dir, "h.sh"), harness);
+    writeFileSync(
+      join(dir, "h.sh"),
+      ["set -euo pipefail", "sleep() { :; }", helper, "export FLY_RETRY_BACKOFF_SECONDS=0", "fly_retry probe -- flyctl x || true", ""].join("\n"),
+    );
     const result = spawnSync("bash", ["--noprofile", "--norc", "h.sh"], {
       cwd: dir,
       encoding: "utf8",
       env: { ...process.env, PATH: `${binDir}${SEP}${process.env.PATH ?? ""}` },
     });
-    return {
-      retried: Number(readFileSync(countFile, "utf8")),
-      status: result.status,
-    };
+    return { retried: Number(readFileSync(countFile, "utf8")), status: result.status };
   }
 
   it.each([
@@ -423,26 +557,26 @@ describe("flyctl-transport-retry.sh — classification unit checks", () => {
     "Error: net/http: TLS handshake timeout",
     'Error: Get "https://api.machines.dev/...": read tcp 1->2:443: i/o timeout',
     "Error: Post ...: EOF",
-    "Error: could not get machine m1: failed to get VM m1: read tcp ...",
+    // The exact #708 shape: transport under the `failed to get VM` prefix.
+    'Error: could not get machine 80537dc6644038: failed to get VM 80537dc6644038: Get "https://api.machines.dev/v1/apps/mendpoint-sandbox/machines/80537dc6644038": read tcp 1->2:443: read: connection reset by peer',
     "Error: server returned a non-200 status code: 503 Service Unavailable",
   ])("retries a transport-class Error line up to 3 times: %j", (line) => {
     expect(classify(line).retried).toBe(3);
   });
 
   it.each([
-    "Error: authentication required",
-    "Error: machine not found",
-    "Error: config.image: invalid image identifier",
-  ])("does not retry a non-transport Error line: %j", (line) => {
+    // flyctl/fly-go real shapes: non-transport causes under the Get wrapper.
+    "Error: could not get machine 80537dc6644038: failed to get VM 80537dc6644038: machine not found",
+    "Error: could not get machine 80537dc6644038: failed to get VM 80537dc6644038: unauthorized",
+    "Error: failed to launch VM: invalid image identifier",
+  ])("does not retry a non-transport Error line (incl. the `failed to get VM` prefix): %j", (line) => {
     expect(classify(line).retried).toBe(1);
   });
 
   it("classifies from the final Error: line, not the whole log", () => {
-    // The Error line is auth; a stray non-Error line elsewhere says "connection
-    // reset by peer" (added by the stub). Shipped: 1 attempt; whole-log: 3.
-    const line = "Error: authentication required";
+    const line = "Error: could not get machine m1: failed to get VM m1: unauthorized";
     expect(classify(line).retried).toBe(1);
-    // Prove the noise line would flip a whole-log classifier.
+    // A stray non-Error noise line with transport text flips a whole-log classifier.
     const dir = mkdtempSync(join(tmpdir(), "fly-retry-noise-"));
     const binDir = join(dir, "bin");
     mkdirSync(binDir);
@@ -459,10 +593,7 @@ describe("flyctl-transport-retry.sh — classification unit checks", () => {
       ].join("\n"),
     );
     chmodSync(join(binDir, "flyctl"), 0o755);
-    const helper = helperSource().replace(
-      'grep -qiE "$FLY_TRANSPORT_SIGNAL" <<<"$error_line"',
-      'grep -qiE "$FLY_TRANSPORT_SIGNAL" "$@"',
-    );
+    const helper = helperSource().replace('grep -qiE "$FLY_TRANSPORT_SIGNAL" <<<"$error_line"', 'grep -qiE "$FLY_TRANSPORT_SIGNAL" "$@"');
     writeFileSync(
       join(dir, "h.sh"),
       ["set -euo pipefail", "sleep() { :; }", helper, "export FLY_RETRY_BACKOFF_SECONDS=0", "fly_retry probe -- flyctl x || true", ""].join("\n"),

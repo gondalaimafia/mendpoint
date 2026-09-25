@@ -250,10 +250,23 @@ jobs:
             # server-side leaves a second orphaned probe Machine running).
             # Idempotency: destroy any Machine the failed attempt may have created
             # before retrying, so no orphaned second probe Machine is left running.
-            fly_retry create-orphan-list -- flyctl machine list --app "$MENDPOINT_SANDBOX_EGRESS_APP" --json || true
+            # If we cannot list machines, or cannot destroy the orphan we found,
+            # even after fly_retry's own bounded attempts, FAIL LOUDLY here rather
+            # than retry the create blind: a blind retry can mint a receipt with an
+            # orphaned probe Machine still running (compound-fault leak). The EXIT
+            # trap then attempts cleanup by name, and the failure() alert fires.
+            if ! fly_retry create-orphan-list -- flyctl machine list --app "$MENDPOINT_SANDBOX_EGRESS_APP" --json; then
+              echo "probe Machine create: could not list machines to clean up a possible orphan before retrying; failing loudly rather than retrying the create blind." >&2
+              rm -f "$create_out" "$create_err"
+              exit 1
+            fi
             orphan_id="$(jq -r --arg name "$machine_name" '.[] | select(.name == $name) | .id' <<<"${FLY_RETRY_STDOUT:-[]}" 2>/dev/null | head -n 1 || true)"
             if [ -n "$orphan_id" ]; then
-              fly_retry create-orphan-destroy -- flyctl machine destroy --force --app "$MENDPOINT_SANDBOX_EGRESS_APP" "$orphan_id" || true
+              if ! fly_retry create-orphan-destroy -- flyctl machine destroy --force --app "$MENDPOINT_SANDBOX_EGRESS_APP" "$orphan_id"; then
+                echo "probe Machine create: could not destroy orphan ${orphan_id} left by a failed create attempt; failing loudly rather than retrying the create blind." >&2
+                rm -f "$create_out" "$create_err"
+                exit 1
+              fi
             fi
             # probe-orphan-destroy-end
             echo "probe Machine create hit a transient transport blip on attempt ${create_attempt} of ${create_max}; retrying after a short backoff." >&2

@@ -21,13 +21,20 @@
 #     never turn an observed egress success (default-deny violated), a wrong
 #     probe exit status, or a failed assertion into a pass.
 #   * Only a TRANSPORT-level failure is retried: connection reset, TLS handshake
-#     timeout, i/o timeout, EOF, a 5xx from the API, or "failed to get VM ...
-#     read tcp". The class is read from flyctl's FINAL `Error:` line ONLY, never
-#     the whole log -- the forbidden-egress probe workload literally prints
-#     rejection text, and a build/exec log can contain "connection reset" without
-#     the API call having failed. The last `Error:` line is read from a file with
-#     no `printf | grep` pipe, so there is no SIGPIPE under `pipefail` (the
-#     rotation-028 pattern; see ci.yml "Build and push customer production image").
+#     timeout, i/o timeout, EOF, or a 5xx from the API. The class is read from
+#     flyctl's FINAL `Error:` line ONLY, never the whole log -- the
+#     forbidden-egress probe workload literally prints rejection text, and a
+#     build/exec log can contain "connection reset" without the API call having
+#     failed. The last `Error:` line is read from a file with no `printf | grep`
+#     pipe, so there is no SIGPIPE under `pipefail` (the rotation-028 pattern;
+#     see ci.yml "Build and push customer production image").
+#   * The `failed to get VM <id>` prefix is DELIBERATELY not a signal. fly-go
+#     wraps every `flaps.Get` error in it -- including `machine not found` and
+#     `unauthorized` -- and `machine destroy` calls Get first, so matching it
+#     would retry real not-found and revoked-token errors as transport blips.
+#     The #708 line (`... failed to get VM X: Get "...": read tcp ...: read:
+#     connection reset by peer`) still classifies through `read tcp` and
+#     `connection reset`, so nothing is lost.
 #   * A non-transport failure (auth, not found, invalid config, a real assertion)
 #     is returned immediately with flyctl's own exit status -- no retry.
 #
@@ -39,7 +46,7 @@
 # The transport-signal alternation, matched case-insensitively against a single
 # `Error:` line. Kept as one string so the probe and rotation steps classify
 # identically. `\bEOF\b` avoids matching substrings inside longer tokens.
-FLY_TRANSPORT_SIGNAL='connection reset|TLS handshake timeout|i/o timeout|\bEOF\b|failed to get VM|read tcp|5[0-9][0-9] (Service Unavailable|Bad Gateway|Gateway Time-?out|Internal Server Error)'
+FLY_TRANSPORT_SIGNAL='connection reset|TLS handshake timeout|i/o timeout|\bEOF\b|read tcp|5[0-9][0-9] (Service Unavailable|Bad Gateway|Gateway Time-?out|Internal Server Error)'
 
 # Echo the LAST line beginning with "Error:" from the file named by $1. Reading
 # from the file (not a pipe) keeps the classification off flyctl's whole log and
