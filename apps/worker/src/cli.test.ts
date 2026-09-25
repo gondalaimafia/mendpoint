@@ -6193,6 +6193,16 @@ describe("delivery-replay dead-letter finalization (PR #712, #717)", () => {
     avail(db, "pipeline-delivery-fallback:pr-r");
     for (let i = 0; i < 3; i++) await processJobsOnce(db, opts("tenant-a", deliveringRunner)); // gen1 delivers and settles
     expect(openHolds(db), "the superseded gen0 hold must be released by the retry transaction").toEqual([]);
+    // The retry must have actually COMMITTED and admitted generation 1 (a :1:0 reservation
+    // and a fallback carrying replayGeneration 1). If the nestable release is reverted to
+    // always opening its own transaction (N6), the prior-gen release throws "cannot start a
+    // transaction within a transaction", the retry dead-letters non-retryably, and no
+    // generation-1 replay is ever admitted — so this asserts the release completed.
+    const replayKeys = listUsageLedger(db, "tenant-a").filter((e) => e.entryType === "reservation").map((e) => e.taskId);
+    expect(replayKeys).toContain("delivery-replay:pr-r:1:0");
+    const fallbackPayload = JSON.parse(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")!.payload_json) as { replayGeneration?: number };
+    expect(fallbackPayload.replayGeneration).toBe(1);
+    expect(getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")?.status).toBe("done");
     db.raw.close();
   });
 
@@ -6227,4 +6237,77 @@ describe("delivery-replay dead-letter finalization (PR #712, #717)", () => {
     expect(replayKeys).toEqual(["delivery-replay:pr-r:0:0", "delivery-replay:pr-r:1:0", "delivery-replay:pr-r:2:0"]);
     db.raw.close();
   });
+
+  // ---- B2 liveness: the deferred retry must outlive the previous-generation fallback ----
+  // A retryable pipeline failure (an outage: timeout/429/5xx) that the previous-generation
+  // fallback keeps hitting.
+  const retryableRunner: typeof runChangePipeline = async () => { throw new Error("upstream model timeout"); };
+
+  it("L1: a deferred retry survives past its attempt budget while the prior fallback is pending, then admits gen1 and stamps (enforcement off)", async () => {
+    const db = newDb("l1"); seedFk(db); // enforcement off (no entitlement)
+    enqRetry(db);
+    await processJobsOnce(db, off()); // gen0 fallback enqueued under its backoff
+    park(db, "pipeline-delivery-fallback:pr-r"); // it simply waits; it does not terminate during the defer phase
+    operatorRetry(db); // gen0 -> gen1
+    // Shrink the retry's budget so we prove "retries PAST max_attempts" without 50 real
+    // deferrals. Each drain deferrs (throws the retryable defer code); with the fix the
+    // retry stays pending past its budget instead of dead-lettering.
+    db.raw.prepare("UPDATE jobs SET max_attempts = 2 WHERE id = ?").run("pipeline-delivery-retry:pr-r");
+    for (let i = 0; i < 5; i++) { avail(db, "pipeline-delivery-retry:pr-r"); await processJobsOnce(db, off()); }
+    const deferred = getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")!;
+    expect(deferred.status, "the deferred retry must NOT dead-letter at max_attempts (retryPastMaxAttempts)").toBe("pending");
+    expect(deferred.attempts, "it deferred past its budget").toBeGreaterThan(2);
+    // The prior fallback finally terminates; the retry then admits gen1 and the gen1 replay
+    // fails through its own boundary -> stamp + audit.
+    avail(db, "pipeline-delivery-fallback:pr-r"); await processJobsOnce(db, off()); // gen0 fallback dead-letters (stale, no stamp)
+    avail(db, "pipeline-delivery-retry:pr-r"); await processJobsOnce(db, off()); // retry admits gen1, enqueues fresh gen1 fallback
+    avail(db, "pipeline-delivery-fallback:pr-r"); await processJobsOnce(db, off()); // gen1 fails -> stamp + audit
+    const pr = getPr(db, "pr-r", "tenant-a");
+    const fb = JSON.parse(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")!.payload_json) as { replayGeneration?: number };
+    expect(fb.replayGeneration, "generation 1 admitted").toBe(1);
+    expect(pr?.delivery_error, "row stamped, not silent").toBe("github_delivery_replay_failed");
+    expect(auditCount(db), "audited once").toBe(1);
+    expect(pr?.replay_generation).toBe(1);
+    db.raw.close();
+  }, 60_000);
+
+  for (const tag of ["on", "off"] as const) {
+    const drainOpts = (runner: typeof runChangePipeline = throwingRunner) =>
+      tag === "on" ? opts("tenant-a", runner) : off(runner);
+    it(`L2-${tag}: a retryably-failing previous-gen fallback outlives the retry budget; the retry waits, admits gen1, and the row is stamped and audited`, async () => {
+      const db = newDb(`l2-${tag}`); seedFk(db); if (tag === "on") entitle(db);
+      enqRetry(db);
+      await processJobsOnce(db, drainOpts()); // gen0 fallback enqueued (reservation held when enforcement on)
+      operatorRetry(db); // gen0 -> gen1
+      // Shrink both budgets: the retry (2) is smaller than the fallback (6), so the fallback
+      // -- itself failing retryably -- outlives the retry's ordinary budget, the exact race.
+      db.raw.prepare("UPDATE jobs SET max_attempts = 2 WHERE id = ?").run("pipeline-delivery-retry:pr-r");
+      db.raw.prepare("UPDATE jobs SET max_attempts = 6 WHERE id = ?").run("pipeline-delivery-fallback:pr-r");
+      // The retry defers past its budget while the gen0 fallback keeps failing retryably.
+      for (let i = 0; i < 6; i++) {
+        avail(db, "pipeline-delivery-retry:pr-r"); await processJobsOnce(db, drainOpts(retryableRunner)); // defers (stays pending)
+        avail(db, "pipeline-delivery-fallback:pr-r"); await processJobsOnce(db, drainOpts(retryableRunner)); // fallback fails retryably
+      }
+      const deferred = getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")!;
+      expect(deferred.status, "the retry outlived by a retryably-failing fallback must not dead-letter").toBe("pending");
+      expect(deferred.attempts).toBeGreaterThan(2);
+      // The gen0 fallback finally exhausts / fails fatally -> dead_letter (stale gen: releases
+      // its hold, never stamps). Then the retry admits gen1, which fails -> stamp + audit.
+      avail(db, "pipeline-delivery-fallback:pr-r"); await processJobsOnce(db, drainOpts()); // fatal -> dead_letter
+      avail(db, "pipeline-delivery-retry:pr-r"); await processJobsOnce(db, drainOpts()); // retry admits gen1
+      avail(db, "pipeline-delivery-fallback:pr-r"); await processJobsOnce(db, drainOpts()); // gen1 fails -> stamp + audit
+      const pr = getPr(db, "pr-r", "tenant-a");
+      const fb = JSON.parse(getJob(db, "pipeline-delivery-fallback:pr-r", "tenant-a")!.payload_json) as { replayGeneration?: number };
+      expect(fb.replayGeneration, "generation 1 admitted").toBe(1);
+      expect(pr?.delivery_error, "the operator retry must not end silently").toBe("github_delivery_replay_failed");
+      expect(pr?.replay_generation).toBe(1);
+      expect(auditCount(db), "audited once").toBe(1);
+      expect(openHolds(db), "no hold left open").toEqual([]);
+      if (tag === "on") {
+        const keys = listUsageLedger(db, "tenant-a").filter((e) => e.entryType === "reservation").map((e) => e.taskId);
+        expect(keys, "generation 1 reservation admitted").toContain("delivery-replay:pr-r:1:0");
+      }
+      db.raw.close();
+    }, 60_000);
+  }
 });

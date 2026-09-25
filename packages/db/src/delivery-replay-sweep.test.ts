@@ -126,3 +126,45 @@ describe("delivery-replay sweep — B1 generation-marker branch (enforcement off
     expect(ids(db, "tenant-b")).toEqual(["pipeline-delivery-fallback:pr-s"]);
   });
 });
+
+describe("delivery-replay sweep — S-a partial index is used in GLOBAL mode", () => {
+  it("EXPLAIN QUERY PLAN of the real global-mode sweep, after ANALYZE on a populated table, uses jobs_dead_letter_fanout_idx", () => {
+    const db = newDb("global-index");
+    // Populate the jobs table so ANALYZE has real statistics: many pipeline.fanout jobs, of
+    // which a minority are dead_letter. Production drains ALL tenants (allTenants), the mode
+    // where the planner otherwise prefers the full jobs_type_idx and scans every fanout job.
+    db.raw.exec("BEGIN");
+    const ins = db.raw.prepare("INSERT INTO jobs (id, tenant_id, type, payload_json, status, created_at) VALUES (?,?,?,?,?,?)");
+    for (let i = 0; i < 4000; i++) {
+      ins.run(`pipeline-delivery-fallback:pr-live-${i}`, "tenant-a", "pipeline.fanout", "{}", i < 300 ? "dead_letter" : "done", nowIso());
+    }
+    for (let i = 0; i < 1000; i++) ins.run(`pipeline.delivery-retry:pr-o-${i}`, "tenant-a", "pipeline.delivery-retry", "{}", "pending", nowIso());
+    db.raw.exec("COMMIT");
+    db.raw.exec("ANALYZE");
+
+    // Capture the EXACT SQL the sweep prepares in GLOBAL mode (tenantId undefined), so this
+    // asserts the real query's plan, not a copy. Removing INDEXED BY from the sweep makes
+    // the captured SQL lose the pin and this turns red.
+    const captured: string[] = [];
+    const realPrepare = db.raw.prepare.bind(db.raw);
+    db.raw.prepare = ((sql: string) => { captured.push(sql); return realPrepare(sql); }) as typeof db.raw.prepare;
+    try {
+      listUnfinalizedDeadLetteredReplayFallbacks(db); // global mode
+    } finally {
+      db.raw.prepare = realPrepare;
+    }
+    const genSql = captured.find((s) => s.includes("json_extract(j.payload_json"));
+    expect(genSql, "captured the global-mode sweep SQL").toBeTruthy();
+    expect(genSql!).toContain("INDEXED BY jobs_dead_letter_fanout_idx");
+
+    // The generation branch of the UNION binds 4 params in global mode
+    // (fallback prefix for `?||pr.id`, the replay task_id LIKE, the substr offset, the job-id
+    // LIKE). EXPLAIN needs the right arity; the plan is independent of the bound values.
+    const plan = (db.raw.prepare("EXPLAIN QUERY PLAN " + genSql!)
+      .all("pipeline-delivery-fallback:", "delivery-replay:%", 28, "pipeline-delivery-fallback:%") as Array<{ detail: string }>)
+      .map((r) => r.detail)
+      .join(" | ");
+    expect(plan, plan).toContain("jobs_dead_letter_fanout_idx");
+    expect(plan, "the pin must keep the planner off the full jobs_type_idx scan").not.toContain("USING INDEX jobs_type_idx");
+  });
+});

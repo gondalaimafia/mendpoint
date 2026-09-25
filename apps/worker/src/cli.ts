@@ -5291,11 +5291,58 @@ if (job.type === "warden.candidate.cleanup") {
             ...fence,
             errorCode: classified.errorCode,
             retryable: classified.retryable,
+            // A delivery-retry job that deferred itself behind a previous-generation
+            // fallback (B2) must retry PAST the ordinary attempt budget: each deferral
+            // burns one attempt, and a previous-generation fallback that is itself failing
+            // retryably (timeouts, 429s, 5xx during an outage) runs the same 50-attempt
+            // schedule, so the retry would otherwise dead-letter first and leave the row
+            // silent. This is bounded: the prior fallback ALWAYS terminates — by its own
+            // max_attempts or by lease recovery — after which the deferral stops and the
+            // retry admits the current generation. No other error keeps its budget.
+            retryPastMaxAttempts:
+              classified.errorCode === "delivery_replay_awaiting_previous_generation",
             baseDelayMs: 5_000,
             maxDelayMs: 300_000,
           });
       result.failed++;
       if (failure.status === "pending") result.retried++;
+      // Belt-and-braces: should a deferred delivery-retry job ever reach a terminal
+      // dead-letter still carrying the defer code (e.g. a lease-expiry path, or a future
+      // regression that drops retryPastMaxAttempts), stamp the row and audit it so the
+      // operator retry can never end in the silent third state (undelivered, unstamped,
+      // no live job). Idempotent via the delivery_error-IS-NULL guard; the current
+      // generation is used so it describes the retry the operator actually asked for.
+      if (
+        job.type === "pipeline.delivery-retry" &&
+        failure.applied &&
+        failure.status === "dead_letter" &&
+        classified.errorCode === "delivery_replay_awaiting_previous_generation"
+      ) {
+        try {
+          const prId = (JSON.parse(job.payload_json) as { prId?: string }).prId;
+          if (typeof prId === "string" && prId.length > 0) {
+            const stamped = recordMigrationPrDeliveryErrorCode(
+              db,
+              prId,
+              "github_delivery_replay_failed",
+              job.tenant_id,
+            );
+            if (stamped) {
+              recordAudit(db, {
+                tenantId: job.tenant_id, actor: "system",
+                action: "pr.delivery_replay_failed", resourceType: "migration_pr", resourceId: prId,
+                metadata: { jobId: job.id, error: classified.errorCode },
+              });
+            }
+          }
+        } catch (error) {
+          console.error(
+            `  deferred retry dead-letter annotation skipped job=${job.id}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
       // Wave C: a terminally failed fanout run releases its usage hold (infra failure
       // burns no quota). Retryable failures keep the hold for the retried run.
       if (

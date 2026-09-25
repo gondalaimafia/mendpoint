@@ -7650,8 +7650,16 @@ const REPLAY_TASK_PR_ID = `substr(
  * this branch stamps and audits once (the stamp's own delivery_error-IS-NULL guard is
  * idempotent); its release is a no-op when the row held no reservation (B1). A legacy
  * payload with no replayGeneration key never matches (json_extract is NULL, NULL = 0 is
- * false), so an operator-retried main-era row is not falsely stamped (U2). The
- * jobs-driven branch is bounded by the jobs_dead_letter_fanout_idx partial index.
+ * false), so an operator-retried main-era row is not falsely stamped (U2).
+ *
+ * The jobs-driven branch is pinned with INDEXED BY jobs_dead_letter_fanout_idx. Production
+ * drains ALL tenants (allTenants, since no app sets MENDPOINT_TENANT_ID), and in that mode
+ * the planner otherwise picks the full jobs_type_idx (type=?) over the partial index and
+ * scans every pipeline.fanout job (~500 ms at 1M jobs, run synchronously per lane per
+ * drain); the pin holds it at ~1 ms. The pin fails CLOSED: if the index is ever absent the
+ * query raises "no such index" and the sweep throws loudly rather than silently
+ * regressing. The index's WHERE (status='dead_letter' AND type='pipeline.fanout') is
+ * implied by this branch's WHERE, which INDEXED BY requires.
  */
 export function listUnfinalizedDeadLetteredReplayFallbacks(
   db: AppDb,
@@ -7672,7 +7680,7 @@ export function listUnfinalizedDeadLetteredReplayFallbacks(
        AND ${OPEN_HOLD_PREDICATE}
        ${tenantId ? "AND r.tenant_id = ? AND j.tenant_id = ? AND c.tenant_id = ?" : ""}
      UNION
-     SELECT j.* FROM jobs j
+     SELECT j.* FROM jobs j INDEXED BY jobs_dead_letter_fanout_idx
      JOIN migration_prs pr ON pr.id = substr(j.id, ?)
      JOIN consumers c ON c.id = pr.consumer_id
      WHERE j.status = 'dead_letter'
