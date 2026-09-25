@@ -422,7 +422,7 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
     throw new Error("regauge_production_draft_canary_invalid");
   }
   const observeDraft = input.observeDraft ?? (async (draftInput, authority) =>
-    createAppDelivery(authority.installationId, undefined, [authority.repositoryId])
+    createAppDelivery(authority.installationId, tenantId, undefined, [authority.repositoryId])
       .observeExactDraft(draftInput));
   const pullRequests = await Promise.all(payload.result.map(async (value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) {

@@ -71,7 +71,7 @@ function makeDelivery(
   workerId: string,
   now: () => string,
 ): GitHubAppDelivery {
-  const delivery = new GitHubAppDelivery(credentials(), 42, undefined, [77], {
+  const delivery = new GitHubAppDelivery(credentials(), 42, "tenant-acme", undefined, [77], {
     tenantId: "tenant-acme",
     outage: queue,
     decide: classifyDependencyOutage,
@@ -96,6 +96,7 @@ function adoptiveInput(baseSha: string) {
     expectedBaseSha: baseSha,
     branch: BRANCH,
     deliveryKey: DELIVERY_KEY,
+    tenantId: "tenant-acme",
     title: TITLE,
     commitDate: "2026-09-02T12:00:00.000Z",
     files: [{ path: "src/a.ts", content: "changed\n", mode: "100644" as const }],

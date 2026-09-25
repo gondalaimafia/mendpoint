@@ -74,11 +74,13 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
     gateConfig: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_GATE"), "transformer_multinode_gate_required"),
     deliverDraft: (intent, target) => createAppDelivery(
       target.installationId,
+      tenantId,
       appCredentials,
       [target.remoteRepositoryId],
     ).deliverExactDraft(intent),
     observeDraft: (observation, target) => createAppDelivery(
       target.installationId,
+      tenantId,
       appCredentials,
       [target.remoteRepositoryId],
     ).observeExactDraft(observation),

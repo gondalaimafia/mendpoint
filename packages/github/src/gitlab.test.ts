@@ -119,7 +119,7 @@ describe("HttpGitLabDelivery", () => {
         reply: { ok: true, status: 201, json: { name: SOURCE } },
       },
     ]);
-    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl, tenantId: "tenant_default" });
     await delivery.createBranch(NS, PROJECT, SOURCE, TARGET);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.method).toBe("POST");
@@ -146,7 +146,7 @@ describe("HttpGitLabDelivery", () => {
         reply: { ok: true, status: 200, json: { name: SOURCE, commit: { id: moved } } },
       },
     ]);
-    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl, tenantId: "tenant_default" });
 
     await expect(delivery.createBranch(NS, PROJECT, SOURCE, requested)).rejects.toThrow(
       /existing branch head drift/i,
@@ -210,7 +210,7 @@ describe("HttpGitLabDelivery", () => {
         },
       },
     ]);
-    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl, tenantId: "tenant_default" });
 
     await expect(
       delivery.verifyExactCommit(NS, PROJECT, SOURCE, {
@@ -243,7 +243,7 @@ describe("HttpGitLabDelivery", () => {
           reply: { ok: false, status, json: { message: "upstream unavailable" } },
         },
       ]);
-      const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+      const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl, tenantId: "tenant_default" });
       const err = await delivery
         .verifyExactCommit(NS, PROJECT, SOURCE, {
           commitSha,
@@ -268,7 +268,7 @@ describe("HttpGitLabDelivery", () => {
         reply: { ok: false, status: 404, json: { message: "404 Commit Not Found" } },
       },
     ]);
-    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl, tenantId: "tenant_default" });
     await expect(
       delivery.verifyExactCommit(NS, PROJECT, SOURCE, {
         commitSha,
@@ -299,7 +299,7 @@ describe("HttpGitLabDelivery", () => {
         reply: { ok: true, status: 201, json: { id: "c".repeat(40) } },
       },
     ]);
-    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl, tenantId: "tenant_default" });
     const commitSha = await delivery.commitFiles(NS, PROJECT, SOURCE, "Apply migration", [
       { path: "existing.ts", content: "a" },
       { path: "new.ts", content: "b" },
@@ -333,7 +333,7 @@ describe("HttpGitLabDelivery", () => {
         reply: { ok: true, status: 201, json: { id: "d".repeat(40) } },
       },
     ]);
-    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl, tenantId: "tenant_default" });
     await expect(delivery.commitFiles(NS, PROJECT, SOURCE, "Remove obsolete source", [
       { path: "obsolete.ts", delete: true },
     ])).resolves.toBe("d".repeat(40));
@@ -368,7 +368,7 @@ describe("HttpGitLabDelivery", () => {
         },
       },
     ]);
-    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl, tenantId: "tenant_default" });
     const mr = await delivery.openDraftMergeRequest(
       NS,
       PROJECT,
@@ -417,7 +417,7 @@ describe("HttpGitLabDelivery", () => {
         },
       },
     ]);
-    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl, tenantId: "tenant_default" });
     const mr = await delivery.openDraftMergeRequest(NS, PROJECT, SOURCE, "new", "b", TARGET);
     expect(mr.number).toBe(3);
     expect(calls.every((c) => c.method === "GET")).toBe(true);
@@ -445,7 +445,7 @@ describe("HttpGitLabDelivery", () => {
         },
       },
     ]);
-    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl, tenantId: "tenant_default" });
 
     await expect(
       delivery.openDraftMergeRequest(NS, PROJECT, SOURCE, "new", "b", TARGET),
@@ -484,7 +484,7 @@ describe("HttpGitLabDelivery", () => {
       }
       return { ok: false, status: 404, json: {} };
     };
-    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl, tenantId: "tenant_default" });
 
     const result = await delivery.openDraftMergeRequest(
       NS,
@@ -514,7 +514,7 @@ describe("HttpGitLabDelivery", () => {
         reply: { ok: false, status: 403, json: { message: "insufficient scope" } },
       },
     ]);
-    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl, tenantId: "tenant_default" });
     await expect(
       delivery.openDraftMergeRequest(NS, PROJECT, SOURCE, "t", "b", TARGET),
     ).rejects.toMatchObject({
@@ -549,7 +549,7 @@ describe("HttpGitLabDelivery", () => {
         },
       },
     ]);
-    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl });
+    const delivery = new HttpGitLabDelivery({ token: "glpat-abc", fetch: fetchImpl, tenantId: "tenant_default" });
     await expect(
       delivery.openDraftMergeRequest(NS, PROJECT, SOURCE, "Stripe migration", "b", TARGET),
     ).rejects.toMatchObject({
@@ -559,7 +559,7 @@ describe("HttpGitLabDelivery", () => {
   });
 
   it("requires a token when constructed for real delivery", () => {
-    expect(() => new HttpGitLabDelivery({ token: undefined })).toThrow(/GITLAB_TOKEN/);
+    expect(() => new HttpGitLabDelivery({ token: undefined, tenantId: "tenant_default" })).toThrow(/GITLAB_TOKEN/);
   });
 });
 
@@ -571,18 +571,18 @@ describe("createGitLabDelivery factory", () => {
 
   it("returns the real HTTP adapter when mode is real and a token is present", () => {
     vi.stubEnv("GITLAB_TOKEN", "glpat-xyz");
-    expect(createGitLabDelivery("real")).toBeInstanceOf(HttpGitLabDelivery);
+    expect(createGitLabDelivery("real", "tenant_default")).toBeInstanceOf(HttpGitLabDelivery);
   });
 
   it("fails closed for real mode without a token", () => {
     vi.stubEnv("GITLAB_TOKEN", "");
-    expect(() => createGitLabDelivery("real")).toThrow(/GITLAB_TOKEN/);
+    expect(() => createGitLabDelivery("real", "tenant_default")).toThrow(/GITLAB_TOKEN/);
   });
 });
 
 describe("createReviewableChangeDelivery selector", () => {
   it("defaults to GitHub so existing behavior is unchanged when GitLab is unconfigured", async () => {
-    const delivery = createReviewableChangeDelivery();
+    const delivery = createReviewableChangeDelivery("tenant_default");
     await delivery.createBranch("acme", "shop", "mendpoint/x", "main");
     await delivery.commitFiles("acme", "shop", "mendpoint/x", "msg", [
       { path: "a.ts", content: "x" },
@@ -599,7 +599,7 @@ describe("createReviewableChangeDelivery selector", () => {
   });
 
   it("routes to the GitLab draft-MR adapter when GitLab is selected", async () => {
-    const delivery = createReviewableChangeDelivery("gitlab");
+    const delivery = createReviewableChangeDelivery("tenant_default", "gitlab");
     const change = await delivery.openPullRequest(
       NS,
       PROJECT,
@@ -615,7 +615,7 @@ describe("createReviewableChangeDelivery selector", () => {
   it("honors the SCM_PROVIDER environment default", () => {
     vi.stubEnv("SCM_PROVIDER", "gitlab");
     // The adapter is the mock GitLab delivery wrapped onto the shared contract.
-    const delivery = createReviewableChangeDelivery();
+    const delivery = createReviewableChangeDelivery("tenant_default");
     expect(delivery.openPullRequest).toBeTypeOf("function");
   });
 });

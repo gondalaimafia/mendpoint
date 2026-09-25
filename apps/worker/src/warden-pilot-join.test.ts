@@ -303,6 +303,25 @@ describe("joined Fettler provider-change intake", () => {
     });
   });
 
+  it("renders the Fettler goal from the PUBLIC provider slug, never the tenant-private namespace (#724)", () => {
+    const { db } = fixture();
+    // A tenant-private provider is stored namespaced as `<tenantId>~<slug>`; that
+    // slug must never reach the agent report goal, which is embedded in the PR body.
+    const result = enqueuePipelineFettlerRuns(db, {
+      tenantId: "tenant-a",
+      pipelineJobId: "pipeline-job-private",
+      providerSlug: "tenant-a~acme-payments",
+      report: report(["src/client.ts", "src/charges.ts"]),
+      observedAt,
+      useLlm: true,
+      versionBinding,
+    });
+    const job = getJob(db, result[0]!.jobId!, "tenant-a");
+    const payload = JSON.parse(job!.payload_json) as { goal?: string };
+    expect(payload.goal).toContain("acme-payments");
+    expect(payload.goal).not.toContain("tenant-a~");
+  });
+
   it("abstains when impact evidence is low confidence, exceeds the bounded path limit, or is protected", () => {
     const { db } = fixture();
     const low = enqueuePipelineFettlerRuns(db, {

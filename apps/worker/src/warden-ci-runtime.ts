@@ -122,7 +122,7 @@ export function createWardenCiGitHubRuntime(input: Readonly<{
   const connected = exactRepository(input);
   const credentials = loadAppCredentials(input.env);
   if (!credentials) throw new Error("warden_ci_github_app_credentials_required");
-  const github = createAppDelivery(input.installationId, credentials, [input.remoteRepositoryId]);
+  const github = createAppDelivery(input.installationId, input.tenantId, credentials, [input.remoteRepositoryId]);
   return Object.freeze({
     owner: connected.repository.owner,
     repo: connected.repository.name,

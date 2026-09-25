@@ -238,7 +238,7 @@ function outageOctokit(control: { base: () => string; createRefBlockedFor?: () =
 function outageAppDelivery(db: ReturnType<typeof createDb>, octokit: unknown, now: () => string): GitHubAppDelivery {
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-  const delivery = new GitHubAppDelivery({ appId: "99", privateKeyPem: pem }, 42, undefined, [77], {
+  const delivery = new GitHubAppDelivery({ appId: "99", privateKeyPem: pem }, 42, "tenant_default", undefined, [77], {
     tenantId: "tenant_default",
     outage: createDependencyOutageQueue(db.raw, { now }),
     decide: classifyDependencyOutage,
