@@ -213,6 +213,16 @@ jobs:
           : "${SETTLE_MAX_SECONDS:=720}"
           : "${SETTLE_POLL_SECONDS:=30}"
           : "${SETTLE_RECENT_SECONDS:=300}"
+          # Per-read wall-clock bound for EVERY flyctl call in the settle wait
+          # (`releases` and `machine list`). flyctl sets NO client timeout of its
+          # own (fly-go uses http.DefaultTransport with no deadline), and the step
+          # wraps nothing, so without this a single hung read runs to the
+          # 270-minute job timeout. A read that exceeds this bound is treated as
+          # `unknown` (release_readable/machines_readable=false) and the step falls
+          # open, exactly like any other unreadable read. 30s is far above the
+          # 1-2s realistic latency, so it never trips a healthy read; it only
+          # catches a genuinely hung one.
+          : "${SETTLE_READ_TIMEOUT_SECONDS:=30}"
 
           # ONE deadline for BOTH settle windows (the pre-backup settle and the
           # retry settle). Computed once here and shared by every settle_wait
@@ -225,7 +235,18 @@ jobs:
           #   + total settle across BOTH windows (this cap)       720s
           #   + two backup attempts at up to 51s each             102s
           #   -----------------------------------------------------------
-          #   = 929s of active age, 271s under the 1200s ceiling.
+          #   = 929s of active age with INSTANT flyctl reads, 271s under 1200.
+          # Slow-but-succeeding settle reads stretch that worst SUCCESSFUL path:
+          # the reviewer measured 929s at 0s per read, 969s at 2s, 1109s at 30s
+          # and 1199s at 45s. The SETTLE_READ_TIMEOUT_SECONDS=30 bound above caps a
+          # read at 30s, so the worst path a slow-but-readable flyctl can produce
+          # is about 1109s, still 91s under the 1200s ceiling; a read that would
+          # take longer (the 1199s/45s row) times out to `unknown` instead of
+          # lengthening the run. This worst case is what the backup-freshness
+          # watchdog's remediation observe window is tied to:
+          #   BACKUP_WORST_CASE_ACTIVE_AGE_SECONDS = 1109
+          # (see customer-backup-watchdog.yml, whose observe window must clear this
+          # plus margin, or a still-settling backup would be reported as failed).
           # A single deploy's release phase is 34-81s (247s outlier), so the 720s
           # total absorbs even the outlier and still leaves the run under 1200s.
           settle_deadline="$(( $(date -u +%s) + SETTLE_MAX_SECONDS ))"
@@ -233,27 +254,34 @@ jobs:
           read_deploy_state() {
             # Reads the NEWEST release only (sorted by version descending -- never
             # `any` over all releases, so one old stuck `running` release cannot
-            # wedge every backup forever) and the machine state. Sets:
-            #   release_readable / machines_readable  (false when flyctl errored)
+            # wedge every backup forever) and the machine state. Both reads are
+            # bounded by SETTLE_READ_TIMEOUT_SECONDS; a read that hangs past it, or
+            # errors, is `unknown`. Sets:
+            #   release_readable / machines_readable  (false when flyctl errored,
+            #     timed out, OR answered 0 with no well-formed non-empty release
+            #     list -- see below)
             #   newest_status (lowercased)
-            #   newest_version  "unknown" when flyctl could not answer, -1 when it
-            #     answered with NO releases, else the newest release's version.
-            #     These are three distinct values on purpose (FAILURE_MODES §1):
-            #     a failed read must never later read as "a newer release
-            #     appeared", which is exactly how an unreadable baseline used to
-            #     let a crash retry into a green run.
+            #   newest_version  "unknown" when the release read could not be
+            #     trusted, else the newest release's version. There is NO separate
+            #     "no releases" value: this app always has releases, so flyctl
+            #     exiting 0 with a non-array, an empty list, or non-JSON is a read
+            #     we could not trust, NOT proof of "none". Collapsing that into
+            #     `unknown` (not -1) is deliberate (FAILURE_MODES §1): a failed or
+            #     empty read must never later read as "a newer release appeared",
+            #     which is exactly how an unreadable/empty baseline used to let a
+            #     crash retry into a green run.
             #   newest_age_seconds (age of newest release; large when unknown)
             #   machine_started (true when at least one machine is started)
             release_readable=true
             local releases_json=""
-            if ! releases_json="$(flyctl releases --app "$CUSTOMER_APP" --json 2>/dev/null)"; then
+            if ! releases_json="$(timeout "$SETTLE_READ_TIMEOUT_SECONDS" \
+              flyctl releases --app "$CUSTOMER_APP" --json 2>/dev/null)"; then
               release_readable=false
             fi
             newest_status=""
             newest_version=unknown
             local newest_created_at=""
             if [ "$release_readable" = true ]; then
-              newest_version=-1
               local newest_line=""
               newest_line="$(printf '%s' "$releases_json" | jq -r '
                 if (type == "array" and length > 0) then
@@ -279,7 +307,8 @@ jobs:
             fi
             machines_readable=true
             local machines_json=""
-            if ! machines_json="$(flyctl machine list --app "$CUSTOMER_APP" --json 2>/dev/null)"; then
+            if ! machines_json="$(timeout "$SETTLE_READ_TIMEOUT_SECONDS" \
+              flyctl machine list --app "$CUSTOMER_APP" --json 2>/dev/null)"; then
               machines_readable=false
             fi
             machine_started=false
@@ -386,9 +415,16 @@ jobs:
             deploy_confirmed=false
             # A deploy is confirmed ONLY when BOTH the baseline (from settle's final
             # read) and this post-failure read are KNOWN. "unknown" on either side
-            # -- flyctl could not answer -- is NOT a deploy: a crash or OOM with an
-            # unreadable baseline must fail loudly, never retry into a green run
-            # (FAILURE_MODES §1 -- "unknown" is distinct from "no releases").
+            # -- flyctl could not answer, timed out, or returned an empty/garbage
+            # list -- is NOT a deploy: a crash or OOM with an unreadable baseline
+            # must fail loudly, never retry into a green run (FAILURE_MODES §1).
+            #
+            # This explicit known-value guard is LOAD-BEARING and not redundant
+            # with the `unknown` sentinel making `-gt` false: it also blocks the
+            # `release_in_progress` branch below, so an unknown baseline paired
+            # with a post-failure read that shows a deploy VISIBLY in progress is
+            # still failed loudly rather than retried. Deleting this `if` fails a
+            # test (an unknown baseline plus an in-progress post-failure read).
             if [ "$pre_backup_version" != unknown ] && [ "$newest_version" != unknown ]; then
               if [ "$newest_version" -gt "$pre_backup_version" ] 2>/dev/null; then
                 deploy_confirmed=true

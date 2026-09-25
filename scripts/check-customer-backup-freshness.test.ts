@@ -1237,13 +1237,14 @@ exit 0
     const run = shippedStep(REMEDIATE).run;
     expect(run).not.toContain("gh run watch");
     expect(run).toContain("for _ in $(seq 1 18); do");
-    // The observe window must cover the dispatched backup's MAXIMUM duration.
-    // That backup now waits out an in-progress deploy up to its ~929s settle
-    // budget (preamble + 720s total settle + two 51s attempts), so a 360s window
-    // (the old seq 1 36) would report failure on a run that then succeeds. 96 *
-    // 10s = 960s clears the 929s max with margin, and past it the run is
-    // genuinely hung and SHOULD be reported.
-    expect(run).toContain("for _ in $(seq 1 96); do");
+    // The finish-wait loop is DEADLINE-based, not iteration-count: a fixed
+    // `seq 1 96` * 10s loop is 960s only with instant GitHub responses, but at 1s
+    // per `gh run view` it really runs ~1058s, so the window a count delivers
+    // drifts with API latency. An elapsed-seconds deadline is a true wall-clock
+    // bound (issue #722, item 4b). The old iteration-count loop is gone.
+    expect(run).not.toContain("for _ in $(seq 1 96); do");
+    expect(run).toContain('REMEDIATION_OBSERVE_DEADLINE_SECONDS:=');
+    expect(run).toContain('while [ "$(date -u +%s)" -lt "$observe_deadline" ]; do');
     const freshness = (
       parse(
         readFileSync(resolve(root, ".github/workflows/customer-backup-watchdog.yml"), "utf8"),
@@ -1252,13 +1253,66 @@ exit 0
     // The job timeout must clear the SERIAL worst case of every inside-the-step
     // bound one run can hit in order: ensure the machine is up (list <=120s +
     // start <=120s + lost-lease re-read <=60s + readiness <=180s = <=8min) +
-    // read (<=5min) + judge (~0) + remediate (observe <=3min + finish <=16min +
-    // re-read <=5min = <=24min). The finish window grew from 6 to 16min with the
-    // longer settling backup above, so the timeout grew from 40 to 50. With setup
-    // that is ~40min of bounded work, so 50 leaves real headroom and stays under
-    // the hourly (`29 * * * *`) schedule so runs never overlap.
-    expect(freshness["timeout-minutes"]).toBe(50);
+    // read (<=5min) + judge (~0) + remediate (observe <=3min + finish <=25min +
+    // re-read <=5min = <=33min). The finish window grew to 1500s (25min) to clear
+    // the dispatched backup's ~1109s slow-read worst case plus margin, so the
+    // timeout grew from 50 to 55. That is ~46min of bounded work, so 55 leaves
+    // real headroom. 55min is under the hourly (`29 * * * *`) schedule, so two
+    // SCHEDULED runs cannot overlap; a workflow_run or manual run can overlap a
+    // scheduled one (own concurrency group), which is safe (see the workflow).
+    expect(freshness["timeout-minutes"]).toBe(55);
     expect(freshness.permissions).toMatchObject({ "actions": "write", "issues": "write" });
+  });
+
+  it("item 4: ties the remediation observe window to the backup's worst-case budget", () => {
+    // The window and the backup budget live in two files, so pin them TOGETHER:
+    // read the backup's documented worst-case active age from customer-backup.yml
+    // and the watchdog's observe deadline from customer-backup-watchdog.yml, and
+    // require the window to clear that worst case plus a margin. Shrinking the
+    // window below the budget (the mutation), or growing the backup budget past
+    // the window, fails here — which the two files' own text-only pins could not
+    // catch (issue #722, item 4a).
+    const backupSource = readFileSync(
+      resolve(root, ".github/workflows/customer-backup.yml"),
+      "utf8",
+    );
+    const worstCaseMatch = /BACKUP_WORST_CASE_ACTIVE_AGE_SECONDS\s*=\s*(\d+)/.exec(backupSource);
+    if (!worstCaseMatch) {
+      throw new Error("BACKUP_WORST_CASE_ACTIVE_AGE_SECONDS not documented in customer-backup.yml");
+    }
+    const backupWorstCase = Number(worstCaseMatch[1]);
+
+    const windowMatch = /REMEDIATION_OBSERVE_DEADLINE_SECONDS:=(\d+)/.exec(shippedStep(REMEDIATE).run);
+    if (!windowMatch) {
+      throw new Error("REMEDIATION_OBSERVE_DEADLINE_SECONDS default not found in the remediate step");
+    }
+    const observeWindow = Number(windowMatch[1]);
+
+    // The same 300s the delivery controller uses for its observation margin.
+    const MARGIN = 300;
+    expect(backupWorstCase).toBeGreaterThan(0);
+    expect(observeWindow).toBeGreaterThanOrEqual(backupWorstCase + MARGIN);
+  });
+
+  it("item 4d: a dispatched backup still hung at the observe deadline is reported, not passed", () => {
+    // The window must still END: a run that never completes within it is a
+    // genuinely hung backup and MUST alert. With a zero window and a run that
+    // stays in progress, the finish-wait reports it unsuccessful rather than
+    // waiting forever or reading not-completed as success.
+    const context = scenario({
+      gh: {
+        GH_STUB_RUN_STATE: "in_progress",
+        REMEDIATION_OBSERVE_DEADLINE_SECONDS: "0",
+      },
+    });
+    const step = remediate(context);
+    expect(step.status).toBe(1);
+    expect(step.stderr).toContain("customer_backup_remediation_run_unsuccessful conclusion=not_completed");
+    expect(context.verdict().remediation).toMatchObject({
+      outcome: "backup_run_unsuccessful",
+      conclusion: "not_completed",
+    });
+    expect(decide(context).status).toBe(1);
   });
 
   it("leaves the backup workflow's own schedule, RPO and alert untouched", () => {
