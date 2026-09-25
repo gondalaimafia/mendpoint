@@ -1094,3 +1094,34 @@ export function formatQueryForPlanner(r: GraphQueryResult): string {
     .filter((line) => line.length > 0)
     .join("\n");
 }
+
+/**
+ * Project a graph query result to a customer-facing copy before it is rendered into a PR body.
+ *
+ * The planner reads {@link formatQueryForPlanner} with the internal, tenant-scoped node ids and
+ * labels — those stay unchanged. The customer body must not, so this returns a projected COPY
+ * whose every rendered string field (summary, each node's id and label, each row value) has been
+ * passed through `project`. The projection is applied at the STRUCTURED source (per node / per
+ * field), not by post-processing the rendered markdown, so a tenant id cannot survive in the
+ * customer body even if a new node field is later rendered. Render the returned copy with
+ * {@link formatQueryForPlanner}.
+ */
+export function projectGraphResultForDisplay(
+  r: GraphQueryResult,
+  project: (value: string) => string,
+): GraphQueryResult {
+  return {
+    ...r,
+    summary: project(r.summary),
+    nodes: r.nodes.map((n) => ({ ...n, id: project(n.id), label: project(n.label) })),
+    ...(r.rows
+      ? {
+          rows: r.rows.map((row) =>
+            Object.fromEntries(
+              Object.entries(row).map(([k, v]) => [k, typeof v === "string" ? project(v) : v]),
+            ),
+          ),
+        }
+      : {}),
+  };
+}

@@ -35,6 +35,7 @@ import {
 } from "@mendpoint/agent";
 import {
   CandidateReviewEvidenceSchema,
+  publicProviderSlug,
   type CandidateReviewEvidence,
 } from "@mendpoint/shared";
 import { admitWardenGovernedLearningEvent } from "./warden-learning-producer.js";
@@ -210,12 +211,15 @@ function reviewEvidenceBody(review: CandidateReviewEvidence): string[] {
   ];
 }
 
-function providerChangeBody(artifact: Record<string, unknown>): string[] {
+export function providerChangeBody(artifact: Record<string, unknown>): string[] {
   if (artifact.fettlerProviderChange === undefined) return [];
   const evidence = parseFettlerProviderChangeEvidence(artifact.fettlerProviderChange);
   return [
     "Provider change",
-    `Provider: ${singleLine(evidence.providerSlug)}`,
+    // Customer-facing: render the PUBLIC slug. evidence.providerSlug is the stored fan-out slug
+    // (kept namespaced for lineage/binding validation), so project it here so no tenant id or `~`
+    // reaches the customer repo (#704/#713).
+    `Provider: ${singleLine(publicProviderSlug(evidence.providerSlug))}`,
     `Change: ${singleLine(evidence.changeId)}`,
     `Provider versions: ${singleLine(evidence.fromVersionLabel)} (${singleLine(evidence.fromVersionId)}) to ${singleLine(evidence.toVersionLabel)} (${singleLine(evidence.toVersionId)})`,
     `Provider content hash: ${evidence.contentHash}`,

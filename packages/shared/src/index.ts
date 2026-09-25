@@ -41,6 +41,15 @@ export {
   type DependencyDirectoryDecision,
 } from "./dependency-directories.js";
 
+export {
+  TENANT_PRIVATE_SLUG_SEPARATOR,
+  PROVIDER_SLUG_PATTERN,
+  isValidProviderSlug,
+  publicProviderSlug,
+  publicSurfaceId,
+  publicGraphToken,
+} from "./provider-slug.js";
+
 /**
  * Model egress boundary policy.
  *
