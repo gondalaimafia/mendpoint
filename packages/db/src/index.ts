@@ -7933,6 +7933,39 @@ export function failJob(
   };
 }
 
+/**
+ * Reschedule a job the caller currently holds: put it back to pending, release the lease,
+ * and make it available again at `runAt`, WITHOUT spending an attempt. This models a
+ * deliberate deferral (the delivery-retry job waiting out a previous-generation replay
+ * fallback, B2) as a plain reschedule rather than a failure — so it is invisible to the
+ * lane's consecutive-drain-failure backoff, never counts toward max_attempts, and never
+ * dead-letters (no failJob call). `claimNextJob` bumped `attempts` when it leased the job to
+ * peek at it, so the reschedule decrements it back by one (floored at 0): the net effect of
+ * a deferral is zero attempts, which is what keeps a later lease-expiry recovery from
+ * dead-lettering the job at max_attempts (P4/UC). Guarded on the current claimer (status =
+ * 'running' AND lease_owner = ?), so it is a no-op if the lease was lost or re-claimed;
+ * returns whether it applied.
+ */
+export function rescheduleJob(
+  db: AppDb,
+  id: string,
+  runAt: string,
+  leaseOwner: string,
+): boolean {
+  const result = db.raw
+    .prepare(
+      `UPDATE jobs
+       SET status = 'pending',
+           available_at = ?,
+           attempts = MAX(attempts - 1, 0),
+           lease_owner = NULL,
+           lease_expires_at = NULL
+       WHERE id = ? AND status = 'running' AND lease_owner = ?`,
+    )
+    .run(runAt, id, leaseOwner);
+  return Number(result.changes) === 1;
+}
+
 export function retryJob(
   db: AppDb,
   id: string,

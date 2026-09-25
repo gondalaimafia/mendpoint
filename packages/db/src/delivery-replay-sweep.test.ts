@@ -19,7 +19,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb, OPEN_HOLD_PREDICATE, insertTenant, insertProvider, insertApiChange,
   insertConsumer, insertConsumerRepo, insertMigrationPr, enqueueOrResetJob,
-  listUnfinalizedDeadLetteredReplayFallbacks, type AppDb,
+  listUnfinalizedDeadLetteredReplayFallbacks, rescheduleJob, type AppDb,
 } from "./index.js";
 import { nowIso } from "@mendpoint/shared";
 
@@ -166,5 +166,34 @@ describe("delivery-replay sweep — S-a partial index is used in GLOBAL mode", (
       .join(" | ");
     expect(plan, plan).toContain("jobs_dead_letter_fanout_idx");
     expect(plan, "the pin must keep the planner off the full jobs_type_idx scan").not.toContain("USING INDEX jobs_type_idx");
+  });
+});
+
+describe("rescheduleJob — deferral primitive (B2/D1)", () => {
+  const future = "2099-01-01T00:00:00.000Z";
+  function runningJob(db: AppDb, owner: string): void {
+    insertTenant(db, { id: "tenant-a", slug: "tenant-a", name: "tenant-a", createdAt: nowIso() });
+    db.raw.prepare(
+      "INSERT INTO jobs (id, tenant_id, type, payload_json, status, attempts, lease_owner, lease_expires_at, available_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    ).run("j1", "tenant-a", "pipeline.delivery-retry", "{}", "running", 3, owner, future, nowIso(), nowIso());
+  }
+  const read = (db: AppDb) => db.raw.prepare("SELECT status, attempts, lease_owner, available_at FROM jobs WHERE id = 'j1'").get() as { status: string; attempts: number; lease_owner: string | null; available_at: string };
+
+  it("only reschedules for the current lease owner; a stale/wrong owner is a no-op", () => {
+    const db = newDb("resched-guard");
+    runningJob(db, "owner-a");
+    // Wrong owner: the guard (lease_owner = ?) makes it a no-op — nothing changes.
+    expect(rescheduleJob(db, "j1", future, "owner-b"), "a non-owner must not reschedule").toBe(false);
+    const stale = read(db);
+    expect(stale.status).toBe("running");
+    expect(stale.lease_owner).toBe("owner-a");
+    expect(stale.attempts).toBe(3);
+    // Current owner: re-pends, releases the lease, decrements the claim's attempt bump.
+    expect(rescheduleJob(db, "j1", future, "owner-a")).toBe(true);
+    const after = read(db);
+    expect(after.status).toBe("pending");
+    expect(after.lease_owner).toBeNull();
+    expect(after.available_at).toBe(future);
+    expect(after.attempts, "a deferral spends no attempt (undoes the claim's +1)").toBe(2);
   });
 });

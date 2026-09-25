@@ -6252,13 +6252,13 @@ describe("delivery-replay dead-letter finalization (PR #712, #717)", () => {
     avail(db, "pipeline-delivery-retry:pr-r"); await processJobsOnce(db, off()); // first deferral
     const afterFirst = getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")!;
     expect(afterFirst.status).toBe("pending");
-    // Defer several more times. Each deferral refunds the attempt it just spent, so the
-    // budget is untouched (this replaces the old, now-moot "retries past max_attempts"
-    // proof: max_attempts is left at its real 50 and never approached).
+    // Defer several more times. Each deferral is a reschedule that undoes the claim's
+    // attempt bump, so the budget is untouched (max_attempts is left at its real 50 and
+    // never approached).
     for (let i = 0; i < 8; i++) { avail(db, "pipeline-delivery-retry:pr-r"); await processJobsOnce(db, off()); }
     const afterMany = getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")!;
     expect(afterMany.status, "still pending, never dead-lettered").toBe("pending");
-    expect(afterMany.attempts, "deferrals leave the retry's attempts unchanged (refunded)").toBe(afterFirst.attempts);
+    expect(afterMany.attempts, "deferrals leave the retry's attempts unchanged (reschedule, net zero)").toBe(afterFirst.attempts);
     // The prior fallback finally terminates; the retry then admits gen1 and the gen1 replay
     // fails through its own boundary -> stamp + audit.
     avail(db, "pipeline-delivery-fallback:pr-r"); await processJobsOnce(db, off()); // gen0 fallback dead-letters (stale, no stamp)
@@ -6292,7 +6292,7 @@ describe("delivery-replay dead-letter finalization (PR #712, #717)", () => {
       }
       const deferred = getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")!;
       expect(deferred.status, "the retry outlived by a retryably-failing fallback must not dead-letter").toBe("pending");
-      expect(deferred.attempts, "deferrals leave the retry's attempts unchanged (refunded)").toBe(afterFirst.attempts);
+      expect(deferred.attempts, "deferrals leave the retry's attempts unchanged (reschedule, net zero)").toBe(afterFirst.attempts);
       // The gen0 fallback finally fails fatally -> dead_letter (stale gen: releases its hold,
       // never stamps). Then the retry admits gen1, which fails -> stamp + audit.
       avail(db, "pipeline-delivery-fallback:pr-r"); await processJobsOnce(db, drainOpts()); // fatal -> dead_letter
@@ -6313,8 +6313,8 @@ describe("delivery-replay dead-letter finalization (PR #712, #717)", () => {
     }, 60_000);
   }
 
-  // Defer the retry `n` times against a parked (never-terminating) gen0 fallback, so the
-  // deferrals alone would spend an unrefunded 50-attempt budget.
+  // Defer the retry `n` times against a parked (never-terminating) gen0 fallback. If a
+  // deferral counted as an attempt, n >= 50 alone would exhaust the retry's budget.
   async function deferMany(db: TDb, n: number): Promise<void> {
     enqRetry(db);
     await processJobsOnce(db, off()); // gen0 fallback enqueued
@@ -6325,14 +6325,14 @@ describe("delivery-replay dead-letter finalization (PR #712, #717)", () => {
 
   it("UD: after ~60 deferrals, one transient admission error still ends with gen1 admitted, stamped and audited", async () => {
     const db = newDb("ud"); seedFk(db);
-    await deferMany(db, 60); // without the refund this alone dead-letters the retry at attempt 50
+    await deferMany(db, 60); // if a deferral spent an attempt, this alone would dead-letter the retry at attempt 50
     expect(getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")?.status, "60 deferrals must not dead-letter the retry").toBe("pending");
     avail(db, "pipeline-delivery-fallback:pr-r"); await processJobsOnce(db, off()); // gen0 fallback dead-letters (stale)
     // One transient SQLITE_BUSY during the real admission run (not a deferral).
     const spy = vi.spyOn(dbModule, "bumpMigrationPrReplayCount")
       .mockImplementationOnce(() => { throw new Error("SQLITE_BUSY: database is locked (sqlite_busy)"); });
     park(db, "pipeline-delivery-fallback:pr-r");
-    avail(db, "pipeline-delivery-retry:pr-r"); await processJobsOnce(db, off()); // transient failure -> retryable re-queue (attempt NOT refunded: real error)
+    avail(db, "pipeline-delivery-retry:pr-r"); await processJobsOnce(db, off()); // transient failure -> retryable re-queue (a real error consumes an attempt)
     spy.mockRestore();
     // The retry still has budget, so it re-runs, admits gen1, and the gen1 replay fails -> stamp.
     park(db, "pipeline-delivery-fallback:pr-r");
@@ -6353,8 +6353,9 @@ describe("delivery-replay dead-letter finalization (PR #712, #717)", () => {
     db.raw.prepare("UPDATE jobs SET status = 'running', lease_owner = 'crashed', lease_generation = lease_generation + 1, lease_expires_at = ? WHERE id = ?")
       .run(new Date(Date.now() - 60_000).toISOString(), "pipeline-delivery-retry:pr-r");
     dbModule.recoverExpiredJobs(db, nowIso(), "tenant-a");
-    // Without the refund the retry's attempts are past max, so recovery dead-letters it and
-    // the row goes silent. With the refund the budget is intact, so recovery re-pends it.
+    // If deferrals spent attempts, they would be past max, so recovery would dead-letter the
+    // retry and the row would go silent. Because a deferral is a net-zero reschedule, the
+    // budget is intact and recovery re-pends it.
     expect(getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")?.status, "lease recovery must re-pend, not dead-letter").toBe("pending");
     // Drive to a stamp, serializing the two jobs with park() so the drain claims the one we
     // mean each step. The prior fallback terminates, the retry admits gen1, gen1 fails -> stamp.
@@ -6371,16 +6372,16 @@ describe("delivery-replay dead-letter finalization (PR #712, #717)", () => {
     db.raw.close();
   }, 120_000);
 
-  it("refund is deferral-scoped: a genuine (non-deferral) retry failure still consumes its attempt budget", async () => {
-    const db = newDb("refund-scope"); seedFk(db);
+  it("a genuine (non-deferral) retry failure consumes its attempt budget and dead-letters at max", async () => {
+    const db = newDb("genuine-fail"); seedFk(db);
     enqRetry(db);
     await processJobsOnce(db, off()); // gen0 fallback enqueued
     avail(db, "pipeline-delivery-fallback:pr-r"); await processJobsOnce(db, off()); // gen0 fallback dead-letters (terminal)
     operatorRetry(db); // gen1; the terminal gen0 fallback means the retry proceeds to admission, not a deferral
     db.raw.prepare("UPDATE jobs SET max_attempts = 3 WHERE id = ?").run("pipeline-delivery-retry:pr-r");
-    // Every admission run throws a retryable, NON-defer error. These are genuine failures and
-    // must consume the budget; if the refund were not scoped to the defer code they would be
-    // refunded and the retry would spin forever.
+    // Every admission run throws a retryable, NON-defer error. These are genuine failures that
+    // go through failJob and must consume the budget, so the retry dead-letters at max instead
+    // of spinning forever (only a deferral is a net-zero reschedule).
     const spy = vi.spyOn(dbModule, "bumpMigrationPrReplayCount")
       .mockImplementation(() => { throw new Error("SQLITE_BUSY: database is locked (sqlite_busy)"); });
     for (let i = 0; i < 5; i++) { avail(db, "pipeline-delivery-retry:pr-r"); await processJobsOnce(db, off()); }
@@ -6388,4 +6389,61 @@ describe("delivery-replay dead-letter finalization (PR #712, #717)", () => {
     expect(getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")?.status, "a genuine retryable failure must consume attempts and dead-letter at max").toBe("dead_letter");
     db.raw.close();
   }, 60_000);
+
+  it("P2: a deferral is a reschedule, not a failure — drain.failed=0, the lane interval stays at 5s, and the retry re-queues ~60s out", async () => {
+    const db = newDb("p2"); seedFk(db);
+    enqRetry(db);
+    await processJobsOnce(db, off()); // gen0 fallback enqueued
+    park(db, "pipeline-delivery-fallback:pr-r"); // never terminates: every drain is a deferral
+    operatorRetry(db); // gen0 -> gen1
+    const intervalMs = 5_000;
+    let laneFailures = 0;
+    for (let round = 0; round < 5; round++) {
+      avail(db, "pipeline-delivery-retry:pr-r"); // the lane woke and the reschedule delay elapsed
+      const before = Date.parse(nowIso());
+      const drain = await processJobsOnce(db, off());
+      expect(drain.failed, "a deferral must not count as a drain failure").toBe(0);
+      expect(drain.retried, "a deferral must not count as a retried job").toBe(0);
+      // The real run-service lane rule (runService: failures = failed > 0 ? failures + 1 : 0).
+      laneFailures = drain.failed > 0 ? laneFailures + 1 : 0;
+      const laneSleepMs = laneFailures ? retryDelayMs(laneFailures, intervalMs) : intervalMs;
+      expect(laneSleepMs, "the lane interval must stay at its 5s base, not escalate to 300s").toBe(intervalMs);
+      const j = getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")!;
+      expect(j.status).toBe("pending");
+      const delayMs = Date.parse(j.available_at!) - before;
+      expect(delayMs, "the retry re-queues ~60s out (a reschedule), not on the 5s attempt backoff").toBeGreaterThanOrEqual(55_000);
+      expect(delayMs, "and not indefinitely").toBeLessThanOrEqual(65_000);
+    }
+    db.raw.close();
+  }, 60_000);
+
+  it("P3: a deferral on the final attempt re-queues pending and never dead-letters", async () => {
+    const db = newDb("p3"); seedFk(db);
+    enqRetry(db);
+    await processJobsOnce(db, off()); // gen0 fallback enqueued
+    park(db, "pipeline-delivery-fallback:pr-r");
+    operatorRetry(db); // gen0 -> gen1
+    // 49 earlier real failures: the next claim bumps attempts to max (50).
+    db.raw.prepare("UPDATE jobs SET attempts = 49, max_attempts = 50 WHERE id = ?").run("pipeline-delivery-retry:pr-r");
+    avail(db, "pipeline-delivery-retry:pr-r"); await processJobsOnce(db, off());
+    const j = getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")!;
+    // The reschedule decides before failJob, so a final-attempt deferral never dead-letters,
+    // and it undoes the claim's bump so attempts stay at 49 (D2).
+    expect(j.status, "a final-attempt deferral must re-queue pending, not dead-letter").toBe("pending");
+    expect(j.attempts, "the reschedule undoes the claim's increment").toBe(49);
+    db.raw.close();
+  }, 60_000);
+
+  it("P4: a deferred job that lease-expires recovers to pending with a low attempt count (never dead-letters)", async () => {
+    const db = newDb("p4"); seedFk(db);
+    await deferMany(db, 60);
+    const afterDefers = getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")!;
+    expect(afterDefers.attempts, "60 deferrals must not accumulate attempts").toBeLessThan(50);
+    // A worker crash mid-deferral-run: running with an expired lease.
+    db.raw.prepare("UPDATE jobs SET status = 'running', lease_owner = 'crashed', lease_generation = lease_generation + 1, lease_expires_at = ? WHERE id = ?")
+      .run(new Date(Date.now() - 60_000).toISOString(), "pipeline-delivery-retry:pr-r");
+    dbModule.recoverExpiredJobs(db, nowIso(), "tenant-a");
+    expect(getJob(db, "pipeline-delivery-retry:pr-r", "tenant-a")?.status, "lease-expiry recovery must re-pend a deferred job, not dead-letter").toBe("pending");
+    db.raw.close();
+  }, 120_000);
 });

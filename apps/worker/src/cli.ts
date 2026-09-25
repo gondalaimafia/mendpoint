@@ -41,6 +41,7 @@ import {
   enqueueJob,
   enqueueOrResetJob,
   failJob,
+  rescheduleJob,
   failWardenCiOperation,
   renewJobLease,
   findMonorepoRoot,
@@ -1103,6 +1104,13 @@ export const GITHUB_DELIVERY_ABANDON_AFTER_MS = 7 * 24 * 60 * 60 * 1_000;
 export const MAX_FULL_PIPELINE_REPLAYS = 3;
 /** Base backoff between full-pipeline replays; doubles each replay (15m, 30m, 60m). */
 export const FULL_PIPELINE_REPLAY_BASE_BACKOFF_MS = 15 * 60_000;
+/**
+ * How long a delivery-retry job waits before re-checking when it finds a previous-generation
+ * replay fallback still in flight (B2). This is a plain reschedule, not a failure backoff, so
+ * it neither slows the lane nor spends the job's attempts. The old fallback always terminates
+ * (its own max_attempts, or lease recovery), so the deferral loop ends.
+ */
+export const DELIVERY_REPLAY_DEFER_MS = 60_000;
 
 export function classifyJobFailure(
   error: unknown,
@@ -1154,17 +1162,14 @@ export function classifyJobFailure(
   // ORDINARY attempt budget only: retryPastMaxAttempts stays false, so a fence
   // that never clears still terminates instead of spinning forever. The sibling
   // warden_ci_mutation_in_flight follows for the identical reason.
-  // delivery_replay_awaiting_previous_generation is transient in the same shape: an
-  // operator-retry replay job defers itself while the prior generation's fallback is
-  // still pending/running, and re-runs once that fallback terminates. It is retryable
-  // but not retryPastMaxAttempts: the error boundary refunds the attempt each deferral
-  // (B2/S1), so deferrals never approach the cap and no past-max exemption is needed.
+  // (A delivery-retry job waiting out a previous-generation replay fallback is NOT handled
+  // here: it is rescheduled before the failure path, so it never reaches classification.)
   const retryPastMaxAttempts = (remoteSideEffectUncertain || deliveryOutage) && !authorizationFailure;
   const retryable =
     !authorizationFailure &&
     (remoteSideEffectUncertain ||
     deliveryOutage ||
-    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|delivery_replay_awaiting_previous_generation|verifier_advisory_provider_retryable|mcu_(?:accounting|settlement)_persistence_failed|(?:mission_mutation_dispatch|warden_ci_mutation)_in_flight/.test(
+    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|verifier_advisory_provider_retryable|mcu_(?:accounting|settlement)_persistence_failed|(?:mission_mutation_dispatch|warden_ci_mutation)_in_flight/.test(
         normalized,
       ));
   const errorCode = explicitCode ?? (retryable
@@ -4906,13 +4911,27 @@ if (job.type === "warden.candidate.cleanup") {
               // current-generation retry, and when that stale fallback later fails, its
               // generation guard skips the stamp: the row is left undelivered, unstamped,
               // unaudited, with no live current-generation job (the silent third state).
-              // Defer this retry with a retryable code until the previous generation's
-              // fallback reaches a terminal state (its own dead-letter boundary releases
-              // that generation's hold and, being stale, never stamps). The next run then
-              // sees a terminal fallback and enqueues a fresh current-generation replay
-              // below. Rewriting the running job's generation is not safe: the per-job
-              // finalizer reads the payload captured at claim time.
-              throw new Error("delivery_replay_awaiting_previous_generation");
+              // Rewriting the running job's generation is not safe: the per-job finalizer
+              // reads the payload captured at claim time.
+              //
+              // Defer as a plain RESCHEDULE, decided BEFORE the failure path: put this retry
+              // back to pending ~60s out and release the lease, leaving attempts untouched
+              // and NOT counting it as a drain failure or an error. Modelling it as a failure
+              // + refund (the previous approach) polled it every 5s and drove every lane that
+              // claimed it to a 300s backoff for the whole deferral window, and a deferral on
+              // the final attempt still dead-lettered before the refund ran (D1/D2). The next
+              // run sees the fallback terminal (it always terminates: its own max_attempts or
+              // lease recovery) and enqueues a fresh current-generation replay below. A
+              // fallback that hangs forever while its worker renews the lease is a pre-existing
+              // main-era queue stall (no job-duration cap), not this PR's to solve.
+              rescheduleJob(
+                db,
+                job.id,
+                new Date(Date.parse(nowIso()) + DELIVERY_REPLAY_DEFER_MS).toISOString(),
+                fence.workerId,
+              );
+              console.log(`  delivery-retry ${prId} -> deferred (previous-generation fallback in flight)`);
+              continue;
             }
             settleFallback({ status: outcome.status, fallback: "already_scheduled" }, "fallback already scheduled");
             continue;
@@ -5297,31 +5316,6 @@ if (job.type === "warden.candidate.cleanup") {
           });
       result.failed++;
       if (failure.status === "pending") result.retried++;
-      // A deferral is not a real attempt. When a delivery-retry job re-queues itself
-      // because a previous-generation fallback is still in flight (B2), refund the attempt
-      // it just spent, so an operator retry that waits out a long outage keeps its full
-      // budget for the real run. Without this, ~50 deferrals (about 3.7h of the old
-      // fallback failing) would exhaust the budget, and one transient admission error or a
-      // lease-expiry crash would then dead-letter the retry and leave the row silent (S1).
-      // The refund makes retryPastMaxAttempts for this code redundant (deferrals never
-      // approach the cap), so there is one mechanism, not two. Scoped to the defer code and
-      // a re-queued (pending) failure through the generic boundary, so a genuine retry
-      // failure still consumes its attempt and a real error can still dead-letter. Bounded:
-      // the previous-generation fallback ALWAYS terminates — by its own max_attempts or by
-      // lease recovery (a fanout failure never passes retryPastMaxAttempts) — so the
-      // deferral loop ends. A fallback that hangs forever while its worker renews the lease
-      // is a pre-existing main-era queue stall (there is no job-duration cap), not this
-      // PR's to solve.
-      if (
-        job.type === "pipeline.delivery-retry" &&
-        failure.applied &&
-        failure.status === "pending" &&
-        classified.errorCode === "delivery_replay_awaiting_previous_generation"
-      ) {
-        db.raw
-          .prepare("UPDATE jobs SET attempts = attempts - 1 WHERE id = ? AND attempts > 0")
-          .run(job.id);
-      }
       // Wave C: a terminally failed fanout run releases its usage hold (infra failure
       // burns no quota). Retryable failures keep the hold for the retried run.
       if (
