@@ -40,6 +40,17 @@ import {
   type AdoptiveDeliveryOptions,
   type AdoptiveOctokit,
 } from "./draft-adoption.js";
+import {
+  guardGitHubWrites,
+  assertTenantIdPresent,
+  TENANT_IDENTITY_DELIVERY_ERROR,
+} from "./tenant-identity-guard.js";
+
+/** The error a guarded App transport throws on a tenant-id leak (#724). Defined
+ * locally (not imported from index.js) to avoid a runtime import cycle. */
+function tenantIdentityGuardError(): AdoptiveDraftBlockedError {
+  return new AdoptiveDraftBlockedError(TENANT_IDENTITY_DELIVERY_ERROR);
+}
 
 const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
 const GITHUB_FILE_CONCURRENCY = 8;
@@ -623,13 +634,19 @@ export class GitHubAppDelivery implements GitHubDelivery {
   private readonly tokenCache: InstallationTokenCache;
   private readonly existingBranches = new Set<string>();
 
+  private readonly tenantId: string;
+
   constructor(
     private creds: AppCredentials,
     private installationId: number,
+    tenantId: string,
     private fetchToken: TokenFetcher = defaultFetchInstallationToken,
     private repositoryIds?: number[],
     private readonly dependencyOutage?: GitHubDependencyOutageOptions,
   ) {
+    // #724: the App client is tenant-scoped; the tenant id is required so the
+    // fail-closed guard can never be silently disabled.
+    this.tenantId = assertTenantIdPresent(tenantId);
     this.tokenCache = new InstallationTokenCache(
       this.creds,
       this.installationId,
@@ -644,12 +661,18 @@ export class GitHubAppDelivery implements GitHubDelivery {
   }
 
   private async withAuthRetry<T>(work: (octokit: Octokit) => Promise<T>): Promise<T> {
+    // #724: wrap the installation octokit with the fail-closed tenant-identity
+    // guard here — the single accessor every App write (exact-draft, adoptive,
+    // update, content-manifest, comment, check-run) flows through — so every write
+    // whatever its path is refused if it carries the tenant id.
+    const guard = (octokit: Octokit): Octokit =>
+      guardGitHubWrites(octokit, this.tenantId, tenantIdentityGuardError) as Octokit;
     try {
-      return await work(await this.octokit());
+      return await work(guard(await this.octokit()));
     } catch (error) {
       if (!isAuthenticationError(error)) throw error;
       this.tokenCache.clear();
-      return work(await this.octokit());
+      return work(guard(await this.octokit()));
     }
   }
 
@@ -757,6 +780,26 @@ export class GitHubAppDelivery implements GitHubDelivery {
 
   observeExactDraft(input: ExactDraftObservationInput): Promise<ExactDraftObservation> {
     return this.withAuthRetry((octokit) => observeExactDraftWithOctokit(octokit, input));
+  }
+
+  getOpenPullRequest(
+    owner: string,
+    repo: string,
+    prNumber: number,
+  ): Promise<{ body: string; state: "open" | "closed"; draft: boolean } | undefined> {
+    return this.withAuthRetry(async (octokit) => {
+      try {
+        const { data } = await octokit.pulls.get({ owner, repo, pull_number: prNumber });
+        return {
+          body: data.body ?? "",
+          state: data.state === "open" ? ("open" as const) : ("closed" as const),
+          draft: data.draft === true,
+        };
+      } catch (error) {
+        if ((error as { status?: number } | null)?.status === 404) return undefined;
+        throw error;
+      }
+    });
   }
 
   updateExactDraft(input: ExactDraftUpdateInput): Promise<ExactDraftUpdateResult> {
@@ -1044,6 +1087,7 @@ export async function deliverToManyRepos(
 
 export function createAppDelivery(
   installationId: number,
+  tenantId: string,
   creds?: AppCredentials | null,
   repositoryIds?: number[],
   dependencyOutage?: GitHubDependencyOutageOptions,
@@ -1053,6 +1097,7 @@ export function createAppDelivery(
   return new GitHubAppDelivery(
     c,
     installationId,
+    tenantId,
     defaultFetchInstallationToken,
     repositoryIds,
     dependencyOutage,

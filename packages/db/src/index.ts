@@ -5468,6 +5468,26 @@ export function getPr(
   );
 }
 
+/**
+ * Open, delivered draft migration PRs for a tenant (#724 body refresh): rows in
+ * the `draft` state that recorded a GitHub PR number. Tenant-scoped through the
+ * consumer join, exactly like {@link getPr}.
+ */
+export function listOpenDraftPrs(db: AppDb, tenantId: string): MigrationPrRow[] {
+  assertTenantScope(tenantId);
+  return all(
+    db,
+    `SELECT pr.*
+     FROM migration_prs pr
+     JOIN consumers c ON c.id = pr.consumer_id
+     WHERE c.tenant_id = ?
+       AND pr.status = 'draft'
+       AND pr.github_pr_number IS NOT NULL
+     ORDER BY pr.created_at ASC`,
+    [tenantId],
+  );
+}
+
 export function listAudit(
   db: AppDb,
   tenantId?: string,

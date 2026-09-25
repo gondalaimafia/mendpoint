@@ -565,7 +565,7 @@ async function runFamilyCanary(
     });
     const scmDelivery =
       config.scmProvider === "gitlab"
-        ? transformerAdaptiveGitLabDelivery({ GITLAB_MODE: "mock" } as NodeJS.ProcessEnv)
+        ? transformerAdaptiveGitLabDelivery({ GITLAB_MODE: "mock" } as NodeJS.ProcessEnv, fence.tenantId)
         : new MockGitHubDelivery(join(root, "mock-github", config.family));
     const drain = await processJobsOnce(db, {
       tenantId: fence.tenantId,

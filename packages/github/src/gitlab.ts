@@ -1,5 +1,26 @@
 import { createHash } from "node:crypto";
 import type { FileEdit } from "./index.js";
+import {
+  assertNoTenantIdentity,
+  assertTenantIdPresent,
+  TENANT_IDENTITY_DELIVERY_ERROR,
+  type CustomerWriteKind,
+} from "./tenant-identity-guard.js";
+import { AdoptiveDraftBlockedError } from "./draft-adoption.js";
+
+/** Refuse a GitLab write whose customer-facing strings carry the tenant id (#724). */
+function assertGitLabNoTenantIdentity(
+  tenantId: string,
+  method: string,
+  values: ReadonlyArray<{ kind: CustomerWriteKind; value: string }>,
+): void {
+  assertNoTenantIdentity(
+    tenantId,
+    method,
+    values,
+    () => new AdoptiveDraftBlockedError(TENANT_IDENTITY_DELIVERY_ERROR),
+  );
+}
 
 /**
  * GitLab merge-request delivery, parallel to the GitHub draft-PR delivery.
@@ -323,8 +344,11 @@ export class HttpGitLabDelivery implements GitLabDelivery {
   private readonly token: string;
   private readonly api: string;
   private readonly fetchImpl: GitLabFetch;
+  private readonly tenantId: string;
 
-  constructor(opts?: { token?: string; apiUrl?: string; fetch?: GitLabFetch }) {
+  constructor(opts?: { token?: string; apiUrl?: string; fetch?: GitLabFetch; tenantId?: string }) {
+    // #724: the GitLab client is tenant-scoped and guarded; the tenant id is required.
+    this.tenantId = assertTenantIdPresent(opts?.tenantId ?? "");
     const token = opts?.token ?? process.env.GITLAB_TOKEN;
     if (!token) {
       throw new Error(
@@ -358,6 +382,7 @@ export class HttpGitLabDelivery implements GitLabDelivery {
   ): Promise<void> {
     assertBranch(branch);
     assertBranch(fromBranch);
+    assertGitLabNoTenantIdentity(this.tenantId, "gitlab.createBranch", [{ kind: "branch", value: branch }]);
     const id = this.projectId(namespace, project);
     const created = await this.fetchImpl(
       `${this.api}/projects/${id}/repository/branches?branch=${encodeURIComponent(branch)}&ref=${encodeURIComponent(fromBranch)}`,
@@ -586,6 +611,16 @@ export class HttpGitLabDelivery implements GitLabDelivery {
   ): Promise<string> {
     if (!files.length) return "";
     assertBranch(branch);
+    assertGitLabNoTenantIdentity(this.tenantId, "gitlab.commitFiles", [
+      { kind: "commit", value: message },
+      { kind: "branch", value: branch },
+      ...files.flatMap((f) => [
+        { kind: "file" as const, value: f.path },
+        ..."content" in f && typeof (f as { content?: unknown }).content === "string"
+          ? [{ kind: "file" as const, value: (f as { content: string }).content }]
+          : [],
+      ]),
+    ]);
     const id = this.projectId(namespace, project);
     const actions: Array<
       {
@@ -647,6 +682,11 @@ export class HttpGitLabDelivery implements GitLabDelivery {
   ): Promise<MergeRequestResult> {
     assertBranch(sourceBranch);
     assertBranch(targetBranch);
+    assertGitLabNoTenantIdentity(this.tenantId, "gitlab.openDraftMergeRequest", [
+      { kind: "title", value: title },
+      { kind: "body", value: body },
+      { kind: "branch", value: sourceBranch },
+    ]);
     const id = this.projectId(namespace, project);
     if (expectedHeadSha !== undefined && !GITLAB_HEAD_SHA.test(expectedHeadSha)) {
       throw new Error("gitlab_branch_head_invalid");
@@ -910,9 +950,11 @@ export class MockGitLabDelivery implements GitLabDelivery {
 
 export function createGitLabDelivery(
   mode = process.env.GITLAB_MODE ?? "mock",
+  tenantId?: string,
 ): GitLabDelivery {
   if (mode === "real") {
-    return new HttpGitLabDelivery();
+    // #724: the real GitLab transport is tenant-scoped and guarded; tenant id required.
+    return new HttpGitLabDelivery({ tenantId: assertTenantIdPresent(tenantId ?? "") });
   }
   return new MockGitLabDelivery();
 }

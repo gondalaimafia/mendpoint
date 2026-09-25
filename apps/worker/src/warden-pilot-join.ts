@@ -21,6 +21,7 @@ import {
   resolveUnambiguousSingleRepoFettlerCampaign,
   type PipelineReport,
 } from "@mendpoint/pipeline";
+import { publicProviderSlug } from "@mendpoint/shared";
 
 const EXACT_REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const MAX_CHANGED_PATHS = 40;
@@ -296,7 +297,11 @@ export function enqueuePipelineFettlerRuns(
     // prefixes so a replay after this rename resolves the same durable records.
     const jobId = `warden-pilot-job-${identity.slice(0, 32)}`;
     const runId = `warden-pilot-run-${identity.slice(32)}`;
-    const goal = `Apply the recorded ${input.providerSlug} API migration for change ${input.report.changeId}. ` +
+    // #724: the goal becomes the agent report's first line and is embedded in the
+    // customer PR body, so render the PROVIDER SLUG with its public projection — a
+    // tenant-private slug is `<tenantId>~<slug>` and must never reach the repo. The
+    // fail-closed transport guard is the backstop if any other field leaks.
+    const goal = `Apply the recorded ${publicProviderSlug(input.providerSlug)} API migration for change ${input.report.changeId}. ` +
       "Update only the evidence linked paths and pass the repository verification policy.";
     const campaign = resolveUnambiguousSingleRepoFettlerCampaign(
       db,

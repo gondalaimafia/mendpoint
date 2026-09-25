@@ -233,12 +233,12 @@ describe("octokit real delivery", () => {
   it("errors clearly without token", () => {
     const prev = process.env.GITHUB_TOKEN;
     delete process.env.GITHUB_TOKEN;
-    expect(() => new OctokitGitHubDelivery(undefined)).toThrow(/GITHUB_TOKEN/);
+    expect(() => new OctokitGitHubDelivery("tenant_default", undefined)).toThrow(/GITHUB_TOKEN/);
     if (prev) process.env.GITHUB_TOKEN = prev;
   });
 
   it("opens real pull requests as drafts", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const create = vi.fn(async (input: Record<string, unknown>) => ({
       data: {
         number: 7,
@@ -269,7 +269,7 @@ describe("octokit real delivery", () => {
   });
 
   it("never overwrites an existing recovery branch without an open pull request", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const createBlob = vi.fn();
     (
       delivery as unknown as {
@@ -307,7 +307,7 @@ describe("octokit real delivery", () => {
   });
 
   it("does not mistake a failed deletion read for an applied recovery", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const createBlob = vi.fn();
     (
       delivery as unknown as {
@@ -343,7 +343,7 @@ describe("octokit real delivery", () => {
   });
 
   it("continues a lost delivery when the existing branch already has the intended patch", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const createBlob = vi.fn();
     (
       delivery as unknown as {
@@ -381,7 +381,7 @@ describe("octokit real delivery", () => {
   });
 
   it("pins PAT delivery to the exact numeric repository identity", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const get = vi.fn(async () => ({
       data: { id: 456, name: "shop", owner: { login: "acme" } },
     }));
@@ -399,7 +399,7 @@ describe("octokit real delivery", () => {
   });
 
   it("delivers an exact non-force draft and returns base, commit, and PR evidence", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const octokit = exactOctokit();
     (delivery as unknown as { octokit: typeof octokit }).octokit = octokit;
 
@@ -430,7 +430,7 @@ describe("octokit real delivery", () => {
   });
 
   it("preserves executable mode in the exact Git tree", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const octokit = exactOctokit();
     (delivery as unknown as { octokit: typeof octokit }).octokit = octokit;
 
@@ -445,7 +445,7 @@ describe("octokit real delivery", () => {
   });
 
   it("deletes an approved tracked file with an exact null tree entry", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const octokit = exactOctokit();
     (delivery as unknown as { octokit: typeof octokit }).octokit = octokit;
 
@@ -461,7 +461,7 @@ describe("octokit real delivery", () => {
   });
 
   it("rejects unsupported exact draft file modes before GitHub mutation", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const octokit = exactOctokit();
     (delivery as unknown as { octokit: typeof octokit }).octokit = octokit;
 
@@ -478,7 +478,7 @@ describe("octokit real delivery", () => {
   });
 
   it("rejects base drift before first branch creation", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const octokit = exactOctokit({ baseSha: DRIFTED_BASE_SHA });
     (delivery as unknown as { octokit: typeof octokit }).octokit = octokit;
 
@@ -491,7 +491,7 @@ describe("octokit real delivery", () => {
   });
 
   it("recovers an exact draft after the base branch advances", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const octokit = exactOctokit();
     (delivery as unknown as { octokit: typeof octokit }).octokit = octokit;
 
@@ -505,7 +505,7 @@ describe("octokit real delivery", () => {
   });
 
   it("recovers idempotently after branch, commit, and pull request boundaries", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const octokit = exactOctokit();
     (delivery as unknown as { octokit: typeof octokit }).octokit = octokit;
 
@@ -520,7 +520,7 @@ describe("octokit real delivery", () => {
   });
 
   it("recovers the exact draft when GitHub creates it but the response is lost", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const octokit = exactOctokit();
     const create = octokit.pulls.create.getMockImplementation()!;
     octokit.pulls.create.mockImplementationOnce(async (request) => {
@@ -540,7 +540,7 @@ describe("octokit real delivery", () => {
   });
 
   it("recovers the exact draft after a concurrent create returns 422", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const octokit = exactOctokit();
     const create = octokit.pulls.create.getMockImplementation()!;
     octokit.pulls.create.mockImplementationOnce(async (request) => {
@@ -560,7 +560,7 @@ describe("octokit real delivery", () => {
   });
 
   it("marks an absent recovery result as an uncertain remote side effect", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const octokit = exactOctokit();
     octokit.pulls.create.mockRejectedValueOnce(
       Object.assign(new Error("request timed out after write"), { code: "ETIMEDOUT" }),
@@ -576,7 +576,7 @@ describe("octokit real delivery", () => {
   });
 
   it("rejects a divergent deterministic branch without updating it", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const octokit = exactOctokit({
       branchHead: DIVERGENT_SHA,
       branchTree: "reviewer-tree",
@@ -592,7 +592,7 @@ describe("octokit real delivery", () => {
   });
 
   it("rejects a different commit even when its tree and parent match", async () => {
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const octokit = exactOctokit({
       branchHead: DIVERGENT_SHA,
       branchTree: "desired-tree",
@@ -618,7 +618,7 @@ describe("octokit real delivery", () => {
       head: { ref: EXACT_DRAFT.branch, sha: COMMIT_SHA },
       base: { ref: "release", sha: DRIFTED_BASE_SHA },
     };
-    const delivery = new OctokitGitHubDelivery("test-token");
+    const delivery = new OctokitGitHubDelivery("tenant_default", "test-token");
     const octokit = exactOctokit({
       branchHead: COMMIT_SHA,
       branchTree: "desired-tree",
