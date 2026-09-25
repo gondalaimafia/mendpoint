@@ -911,6 +911,20 @@ jobs:
               rollback_attempted_machines "post_update_invariant_failed" || true
               exit 1
             fi
+            # Snapshot the attestation secret's DIGEST before the mutation, via a
+            # retried READ. This is the only reliable "did this set land" signal:
+            # flyctl computes secrets-list `status` per secret ("updated_at <=
+            # machine release created_at"), so a set that never reached Fly leaves
+            # the PREVIOUS attestation secret listed as Deployed -- status alone
+            # reads a not-landed set as landed (the #729 false-success blocker).
+            # The read is tolerated on failure (only the failed-set path needs it);
+            # a missing secret yields an empty digest, which any real set changes.
+            attestation_digest_before=""
+            digest_before_readable=false
+            if fly_retry secret-digest-before -- flyctl secrets list --app "$app" --json; then
+              attestation_digest_before="$(jq -r '.[] | select(.name == "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64") | .digest' <<<"$FLY_RETRY_STDOUT" 2>/dev/null | head -n1)"
+              digest_before_readable=true
+            fi
             if ! flyctl secrets set --app "$app" \
                 MENDPOINT_SANDBOX_FLY_IMAGE="$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
                 MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64="$attestation" \
@@ -919,31 +933,54 @@ jobs:
                 MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST="$policy_digest" \
                 MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA="$schema"; then
               # The secrets set MUTATION stays unretried. Its outcome is unknown on
-              # a transport failure, but that is NOT evidence the generation is
-              # undeployed -- and stopping here adds no containment. Egress already
-              # fails CLOSED inside the app: the worker verifies the egress
-              # authority (receipt, key, policy, image) at boot
+              # a transport (or auth) failure, but stopping adds no containment:
+              # egress already fails CLOSED inside the app -- the worker verifies
+              # the egress authority (receipt, key, policy, image) at boot
               # (apps/worker/src/cli.ts:2542) and before every sandbox launch
               # (packages/platform/src/fly-sandbox.ts:496), so a half-applied
-              # authority refuses launches rather than serving with a mismatch.
-              # Stopping would only cost availability (the outage shape of run
-              # 33890068837). Resolve the outcome with a RETRIED read of the secret
-              # status: Deployed means the mutation landed (continue to the
-              # verification reads below); readable-but-not-Deployed is a genuine
-              # failure (contain as today); unreadable is UNDETERMINED (no stop).
+              # authority refuses launches rather than serving with a mismatch, and
+              # stopping would only cost availability (the outage shape of run
+              # 33890068837). Resolve the outcome by whether THIS set landed, which
+              # is a DIGEST CHANGE on the attestation secret, never status alone:
+              #   * post-read unreadable, or the pre-snapshot was unreadable
+              #     -> UNDETERMINED (no stop): we cannot tell landed from not;
+              #   * digest UNCHANGED -> the set did not reach Fly (an auth/permission
+              #     regression reads here); fail loudly, but do NOT stop -- the old
+              #     receipt is still valid and in-app fail-closed covers a mismatch;
+              #   * digest CHANGED but not all Deployed -> a genuine bad deploy,
+              #     contain as today;
+              #   * digest CHANGED and all Deployed -> the set landed, continue.
               if ! fly_retry secret-set-outcome -- flyctl secrets list --app "$app" --json; then
                 printf 'undetermined\t%s\n' "rotation_post_update_undetermined:secret_set_outcome_unreadable" \
                   >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
                 echo "UNDETERMINED (rotation_post_update_undetermined): secrets set for ${app} failed and the secrets list read-back also failed after retries. Leaving machines RUNNING and failing loudly; egress fails closed in-app, so stopping on an unknown mutation outcome only costs availability." >&2
                 exit 1
               fi
+              secret_list_after="$FLY_RETRY_STDOUT"
+              if [ "$digest_before_readable" != true ]; then
+                printf 'undetermined\t%s\n' "rotation_post_update_undetermined:secret_set_outcome_undeterminable" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                echo "UNDETERMINED (rotation_post_update_undetermined): secrets set for ${app} failed and the pre-mutation digest snapshot was unreadable, so landed cannot be told from not-landed. Leaving machines RUNNING and failing loudly." >&2
+                exit 1
+              fi
+              attestation_digest_after="$(jq -r '.[] | select(.name == "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64") | .digest' <<<"$secret_list_after" 2>/dev/null | head -n1)"
+              if [ "$attestation_digest_after" = "$attestation_digest_before" ]; then
+                # NOT LANDED: the attestation secret is unchanged (the old
+                # generation, still listed and still Deployed). Fail loudly so the
+                # renewal-failure alert fires and can never auto-resolve on a
+                # permission regression; do NOT stop (old receipt still valid).
+                printf 'secret_set_not_landed\t%s\n' "attestation_digest_unchanged" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                echo "FAILED: secrets set for ${app} did not land (the attestation secret digest is unchanged: an unreached or unauthorized set). Leaving machines RUNNING and failing loudly; the old receipt stays valid and egress fails closed in-app." >&2
+                exit 1
+              fi
               if ! jq -e 'length > 0 and all(.[]; .status == "Deployed")' \
-                  <<<"$FLY_RETRY_STDOUT" >/dev/null; then
+                  <<<"$secret_list_after" >/dev/null; then
                 contain_current_machines "secret_deploy_outcome_unknown"
                 exit 1
               fi
-              # Deployed after all: the mutation landed despite the transport error
-              # on the set. Fall through to the post-secret verification reads.
+              # Digest changed and all Deployed: the set landed despite the
+              # transport error. Fall through to the post-secret verification reads.
             fi
             # Post-mutation READ (#728, item 1, the L891 case). `secrets set`
             # above is a mutation and stays unretried / fail-closed. Reading the
@@ -1062,6 +1099,12 @@ jobs:
                 readiness_after_json="$FLY_RETRY_STDOUT"
                 readiness_read_ok=true
                 poll_read_ok=true
+                # Decide on the LATEST evidence: a readable poll supersedes any
+                # earlier /livez-OK-but-unreadable poll, so blocked-by-read means
+                # "unreadable since the last readable poll". Without this reset an
+                # early unknown would keep a later, readably-stopped window from
+                # containing.
+                readiness_blocked_by_read=false
               else
                 readiness_after_json='[]'
               fi

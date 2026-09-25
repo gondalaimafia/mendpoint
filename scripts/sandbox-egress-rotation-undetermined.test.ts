@@ -141,15 +141,26 @@ function flyctlStub(callLog: string, mlist: string): string {
     `printf 'flyctl %s\\n' "$*" >>"${callLog}"`,
     'case "$*" in',
     "  *\"machine update\"*) exit 0 ;;",
+    // `secrets set` lands by writing the "new" digest marker; a transport error
+    // lands only when SECRETS_SET_LANDED=true (a set that reached Fly then the
+    // connection dropped); unauthorized never lands. This lets a failed set be
+    // either landed or not-landed, independent of its exit code.
     '  *"secrets set"*)',
-    '    if [ "${SECRETS_SET_BEHAVIOR:-ok}" = "transport" ]; then echo "Error: failed to update secrets: read tcp 1->2:443: read: connection reset by peer" >&2; exit 1; fi',
-    "    exit 0 ;;",
+    '    case "${SECRETS_SET_BEHAVIOR:-ok}" in',
+    '      ok) echo new > "$SECRETS_STATE"; exit 0 ;;',
+    '      transport) [ "${SECRETS_SET_LANDED:-false}" = true ] && echo new > "$SECRETS_STATE"; echo "Error: failed to update secrets: read tcp 1->2:443: read: connection reset by peer" >&2; exit 1 ;;',
+    '      unauthorized) echo "Error: failed to update secrets: unauthorized" >&2; exit 1 ;;',
+    "    esac ;;",
+    // flyctl 0.4.79 `secrets list --json` shape: {name, digest, status}. The
+    // attestation secret's digest is "sha256:new" once a set landed, else
+    // "sha256:old" -- so "landed" and "never sent" are DISTINGUISHABLE, unlike a
+    // status-only fixture.
     '  *"secrets list"*)',
     '    sc=0; [ -f "$SLCOUNT" ] && sc="$(cat "$SLCOUNT")"; sc=$((sc + 1)); printf "%s" "$sc" > "$SLCOUNT"',
     '    read -ra __sb <<< "${SECRETS_LIST_BEHAVIOR:-ok}"; si=$((sc - 1)); [ "$si" -ge "${#__sb[@]}" ] && si=$(( ${#__sb[@]} - 1 ))',
     '    case "${__sb[$si]}" in',
     '      transport) echo "Error: could not retrieve secrets: read tcp 1->2:443: read: connection reset by peer" >&2; exit 1 ;;',
-    '      *) cat "$SECRETS_FILE"; exit 0 ;;',
+    '      *) mk="old"; [ -f "$SECRETS_STATE" ] && mk="$(cat "$SECRETS_STATE")"; dg="sha256:old"; [ "$mk" = "new" ] && dg="sha256:new"; st="${SECRETS_STATUS:-Deployed}"; printf \'[{"name":"MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64","digest":"%s","status":"%s"},{"name":"MENDPOINT_SANDBOX_FLY_IMAGE","digest":"sha256:img","status":"%s"}]\\n\' "$dg" "$st" "$st"; exit 0 ;;',
     "    esac ;;",
     '  *"machine stop"*)',
     "    jq 'map(.state = \"stopped\")' \"$MLIST\" > \"$MLIST.t\" && mv \"$MLIST.t\" \"$MLIST\"; exit 0 ;;",
@@ -192,7 +203,8 @@ function curlStub(): string {
 interface BodyOptions {
   listBehavior?: string;
   secretsListBehavior?: string;
-  secretsSetBehavior?: string;
+  secretsSetBehavior?: string; // "ok" (default) | "transport" | "unauthorized"
+  secretsSetLanded?: boolean; // a transport-failed set still reached Fly (digest changes)
   livezBehavior?: string;
   secretsStatus?: string; // "Deployed" (default) | "Staged"
   livezSeq?: string; // per-poll "ok"/"fail" sequence for /livez (last repeats)
@@ -206,6 +218,9 @@ interface BodyOptions {
   deleteRotationSource?: boolean;
   treatBlockedAsVerified?: boolean; // drop readiness_blocked_by_read from the rule
   containOnUnreadableSecretSet?: boolean; // contain instead of UNDETERMINED on unreadable read-back
+  continueOnDeployedAlone?: boolean; // drop the digest-change check (status-only, the #729 blocker)
+  neverResetBlocked?: boolean; // remove the blocked_by_read reset in the readable branch
+  readinessReadOkInitTrue?: boolean; // initialise readiness_read_ok to true
 }
 
 interface BodyResult {
@@ -231,8 +246,8 @@ function runBody(opts: BodyOptions = {}): BodyResult {
   // `machines_json` (the pre-flight "before" snapshot) is ALWAYS started, so
   // `started_before_ids` is non-empty and a stopped read is a real state change.
   writeFileSync(mlist, machineJson(opts.state ?? "started"));
-  const secretsFile = join(dir, "secrets.json").replace(/\\/g, "/");
-  writeFileSync(secretsFile, JSON.stringify([{ status: opts.secretsStatus ?? "Deployed" }]));
+  const secretsState = join(dir, "secrets-state").replace(/\\/g, "/");
+  writeFileSync(secretsState, "old"); // the attestation secret starts on the old digest
 
   writeFileSync(join(binDir, "flyctl"), flyctlStub(callLog, mlist));
   chmodSync(join(binDir, "flyctl"), 0o755);
@@ -275,11 +290,12 @@ function runBody(opts: BodyOptions = {}): BodyResult {
   if (opts.bareRead === "readiness") {
     const before = region;
     region = region.replace(
-      /if fly_retry readiness-list -- flyctl machine list --app "\$app" --json; then\n\s*readiness_after_json="\$FLY_RETRY_STDOUT"\n\s*readiness_read_ok=true\n\s*poll_read_ok=true\n\s*else\n\s*readiness_after_json='\[\]'\n\s*fi/,
+      /if fly_retry readiness-list -- flyctl machine list --app "\$app" --json; then\n[\s\S]*?\n\s*else\n\s*readiness_after_json='\[\]'\n\s*fi/,
       [
         'if readiness_after_json="$(flyctl machine list --app "$app" --json)"; then',
         "  readiness_read_ok=true",
         "  poll_read_ok=true",
+        "  readiness_blocked_by_read=false",
         "else",
         "  readiness_after_json='[]'",
         "fi",
@@ -320,6 +336,29 @@ function runBody(opts: BodyOptions = {}): BodyResult {
     );
     expect(region, "containOnUnreadableSecretSet did not apply").not.toBe(before);
   }
+  if (opts.continueOnDeployedAlone) {
+    // Drop the digest-change gate: continue on status==Deployed alone, which is
+    // the #729 false-success blocker (a not-landed set leaves the OLD secret
+    // Deployed).
+    const before = region;
+    region = region.replace(
+      /if \[ "\$attestation_digest_after" = "\$attestation_digest_before" \]; then\n[\s\S]*?exit 1\n\s*fi\n/,
+      "",
+    );
+    expect(region, "continueOnDeployedAlone did not apply").not.toBe(before);
+  }
+  if (opts.neverResetBlocked) {
+    // Remove only the reset in the readable branch (its preceding comment
+    // anchors it), never the pre-loop initialisation.
+    const before = region;
+    region = region.replace(/\n\s*# Decide on the LATEST evidence:[\s\S]*?\n\s*readiness_blocked_by_read=false/, "");
+    expect(region, "neverResetBlocked did not apply").not.toBe(before);
+  }
+  if (opts.readinessReadOkInitTrue) {
+    const before = region;
+    region = region.replace("readiness_read_ok=false", "readiness_read_ok=true");
+    expect(region, "readinessReadOkInitTrue did not apply").not.toBe(before);
+  }
 
   const source = opts.deleteRotationSource ? "" : rotationSourceLine();
   const harness = [
@@ -353,7 +392,9 @@ function runBody(opts: BodyOptions = {}): BodyResult {
       SLCOUNT: join(dir, "sl.count").replace(/\\/g, "/"),
       LVCOUNT: join(dir, "lv.count").replace(/\\/g, "/"),
       MLIST: mlist,
-      SECRETS_FILE: secretsFile,
+      SECRETS_STATE: secretsState,
+      SECRETS_STATUS: opts.secretsStatus ?? "Deployed",
+      SECRETS_SET_LANDED: opts.secretsSetLanded ? "true" : "false",
       LIST_BEHAVIOR: opts.listBehavior ?? "ok",
       SECRETS_LIST_BEHAVIOR: opts.secretsListBehavior ?? "ok",
       SECRETS_SET_BEHAVIOR: opts.secretsSetBehavior ?? "ok",
@@ -480,20 +521,50 @@ describe("egress rotation #729 review — a mixed/partial readiness window is UN
     expect(r.stopCalls.length, "readable + not healthy is a genuine failure").toBeGreaterThan(0);
     expect(r.stderr).not.toContain("rotation_post_update_undetermined");
   }, 60_000);
+
+  it("latest evidence: early /livez-OK-but-unreadable polls, then a readably-stopped poll -> CONTAINS (not sticky)", () => {
+    // Read A + Read C (2 ok), then 2 blocked polls (each fly_retry burns 3 reads
+    // = 6 transport), then a readable poll showing the machine stopped.
+    const list = ["ok", "ok", ...Array(6).fill("transport"), "ok"].join(" ");
+    const r = runBody({ state: "stopped", livezSeq: "ok", listBehavior: list, readinessTimeout: "30" });
+    expect(r.status).not.toBe(0);
+    expect(r.recovery, "the latest readable evidence lets containment run").toContain("containment_proven");
+    expect(r.stderr, "not UNDETERMINED once state was readably observed").not.toContain("rotation_post_update_undetermined");
+  }, 60_000);
+
+  it("reads AND /livez fail throughout -> UNDETERMINED, no stop", () => {
+    const r = runBody({ state: "started", livezSeq: "fail", listBehavior: "ok ok transport", readinessTimeout: "10" });
+    expect(r.status).not.toBe(0);
+    expect(r.stopCalls.length, "state never observed: do not stop").toBe(0);
+    expect(r.stderr).toContain("rotation_post_update_undetermined");
+  }, 60_000);
 });
 
-describe("egress rotation #729 review — a failed `secrets set` is resolved by read-back, not by stopping", () => {
-  it("read-back shows Deployed: the mutation landed, rotation continues, no machine stopped", () => {
-    const r = runBody({ secretsSetBehavior: "transport", secretsStatus: "Deployed", secretsListBehavior: "ok" });
+describe("egress rotation #729 review — a failed `secrets set` is resolved by a DIGEST CHANGE, never status alone", () => {
+  it("LANDED then transport error (digest changed, Deployed): rotation continues, no machine stopped", () => {
+    const r = runBody({ secretsSetBehavior: "transport", secretsSetLanded: true, secretsStatus: "Deployed", secretsListBehavior: "ok" });
     expect(r.status, `stderr: ${r.stderr}`).toBe(0);
     expect(r.stopCalls.length, "a landed-but-transport-errored set must not stop the app").toBe(0);
     expect(r.secretsSetCalls.length, "the mutation itself is never retried").toBe(1);
   }, 60_000);
 
-  it("read-back readable but NOT Deployed: containment runs, as today", () => {
-    const r = runBody({ secretsSetBehavior: "transport", secretsStatus: "Staged", secretsListBehavior: "ok" });
+  it("NOT LANDED transport error (old attestation secret still Deployed): fails loudly, NO false success, no stop", () => {
+    const r = runBody({ secretsSetBehavior: "transport", secretsSetLanded: false, secretsStatus: "Deployed", secretsListBehavior: "ok" });
+    expect(r.status, "a set that never reached Fly must never read as success").not.toBe(0);
+    expect(r.stopCalls.length, "not-landed leaves the old valid receipt; do not stop").toBe(0);
+    expect(r.recovery).toContain("secret_set_not_landed");
+  }, 60_000);
+
+  it("`unauthorized` set (lost secrets:write, old secret Deployed): always loud, never green", () => {
+    const r = runBody({ secretsSetBehavior: "unauthorized", secretsStatus: "Deployed", secretsListBehavior: "ok" });
+    expect(r.status, "an unauthorized set must never report a successful renewal").not.toBe(0);
+    expect(r.recovery).toContain("secret_set_not_landed");
+  }, 60_000);
+
+  it("digest changed but NOT Deployed: containment runs, as today", () => {
+    const r = runBody({ secretsSetBehavior: "transport", secretsSetLanded: true, secretsStatus: "Staged", secretsListBehavior: "ok" });
     expect(r.status).not.toBe(0);
-    expect(r.stopCalls.length, "a genuine not-deployed outcome contains").toBeGreaterThan(0);
+    expect(r.stopCalls.length, "a genuine bad deploy contains").toBeGreaterThan(0);
     expect(r.stderr).not.toContain("rotation_post_update_undetermined");
   }, 60_000);
 
@@ -510,9 +581,11 @@ describe("egress rotation #728 — mutations, each killed", () => {
   it.each(["post-update", "post-secret", "readiness", "secrets"] as const)(
     "(mutation) a bare read without retry at the %s read loses the retry",
     (which) => {
+      // For "secrets" the pre-mutation digest snapshot is the first secrets-list
+      // call, so the blip must land on Read B: snapshot ok, then Read B blip-ok.
       const control =
         which === "secrets"
-          ? runBody({ secretsListBehavior: "transport ok" })
+          ? runBody({ secretsListBehavior: "ok transport ok" })
           : which === "post-update"
             ? runBody({ listBehavior: "transport ok ok" })
             : which === "post-secret"
@@ -521,7 +594,7 @@ describe("egress rotation #728 — mutations, each killed", () => {
       expect(control.status, `control stderr: ${control.stderr}`).toBe(0);
       const mutated =
         which === "secrets"
-          ? runBody({ secretsListBehavior: "transport ok", bareRead: "secrets" })
+          ? runBody({ secretsListBehavior: "ok transport ok", bareRead: "secrets" })
           : which === "post-update"
             ? runBody({ listBehavior: "transport ok ok", bareRead: "post-update" })
             : which === "post-secret"
@@ -565,6 +638,34 @@ describe("egress rotation #728 — mutations, each killed", () => {
     expect(control.stopCalls.length, "shipped: unreadable read-back is UNDETERMINED, no stop").toBe(0);
     const mutated = runBody({ secretsSetBehavior: "transport", secretsListBehavior: "transport", containOnUnreadableSecretSet: true });
     expect(mutated.stopCalls.length, "mutation contains on an unknown mutation outcome").toBeGreaterThan(0);
+  }, 60_000);
+
+  it("(mutation) continue on Deployed alone without a digest change gives a false success", () => {
+    // Not-landed set: the OLD attestation secret is still Deployed, digest unchanged.
+    const opts = { secretsSetBehavior: "transport", secretsSetLanded: false, secretsStatus: "Deployed", secretsListBehavior: "ok" } as const;
+    const control = runBody(opts);
+    expect(control.status, "shipped: an unchanged digest is not-landed, never green").not.toBe(0);
+    const mutated = runBody({ ...opts, continueOnDeployedAlone: true });
+    expect(mutated.status, "mutation: status-only read-back reports a successful renewal").toBe(0);
+  }, 60_000);
+
+  it("(mutation) never resetting blocked_by_read misses a latest-evidence stopped app", () => {
+    const list = ["ok", "ok", ...Array(6).fill("transport"), "ok"].join(" ");
+    const opts = { state: "stopped" as const, livezSeq: "ok", listBehavior: list, readinessTimeout: "30" };
+    const control = runBody(opts);
+    expect(control.recovery, "shipped: latest readable evidence contains").toContain("containment_proven");
+    const mutated = runBody({ ...opts, neverResetBlocked: true });
+    expect(mutated.stderr, "mutation: sticky blocked_by_read misses the failure").toContain("rotation_post_update_undetermined");
+  }, 60_000);
+
+  it("(mutation) initialising readiness_read_ok to true stops on a reads+livez-fail window", () => {
+    // Reads fail through the window then recover for containment; /livez fails.
+    const opts = { state: "started" as const, livezSeq: "fail", listBehavior: "ok ok transport transport transport ok", readinessTimeout: "10" };
+    const control = runBody(opts);
+    expect(control.stopCalls.length, "shipped: state never observed -> UNDETERMINED, no stop").toBe(0);
+    expect(control.stderr).toContain("rotation_post_update_undetermined");
+    const mutated = runBody({ ...opts, readinessReadOkInitTrue: true });
+    expect(mutated.stopCalls.length, "mutation: read_ok=true treats an unobserved window as failed").toBeGreaterThan(0);
   }, 60_000);
 
   it("(mutation) deleting the rotation `source` line breaks the shipped step", () => {
