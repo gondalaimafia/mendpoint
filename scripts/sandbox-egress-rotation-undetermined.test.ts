@@ -169,13 +169,19 @@ function flyctlStub(callLog: string, mlist: string): string {
 }
 
 // A curl stub for /livez (redirect-to-file, exit code only) and /healthz
-// (prints an http code to stdout). /livez fails when CURL_LIVEZ_BEHAVIOR=fail.
+// (prints an http code to stdout). /livez is driven per-poll by LIVEZ_SEQ
+// (space-separated "ok"|"fail", last entry repeats), defaulting to
+// CURL_LIVEZ_BEHAVIOR for the whole run when LIVEZ_SEQ is unset.
 function curlStub(): string {
   return [
     "#!/usr/bin/env bash",
     'url="${!#}"',
     'case "$url" in',
-    '  */livez) if [ "${CURL_LIVEZ_BEHAVIOR:-ok}" = "fail" ]; then exit 22; fi; echo ok; exit 0 ;;',
+    "  */livez)",
+    '    seq="${LIVEZ_SEQ:-${CURL_LIVEZ_BEHAVIOR:-ok}}"',
+    '    n=0; [ -f "$LVCOUNT" ] && n="$(cat "$LVCOUNT")"; n=$((n + 1)); printf "%s" "$n" > "$LVCOUNT"',
+    '    read -ra __lv <<< "$seq"; i=$((n - 1)); [ "$i" -ge "${#__lv[@]}" ] && i=$(( ${#__lv[@]} - 1 ))',
+    '    [ "${__lv[$i]}" = "fail" ] && exit 22; echo ok; exit 0 ;;',
     '  */healthz) echo 200; exit 0 ;;',
     "esac",
     "exit 0",
@@ -189,6 +195,7 @@ interface BodyOptions {
   secretsSetBehavior?: string;
   livezBehavior?: string;
   secretsStatus?: string; // "Deployed" (default) | "Staged"
+  livezSeq?: string; // per-poll "ok"/"fail" sequence for /livez (last repeats)
   state?: "started" | "stopped";
   isProtected?: boolean;
   readinessTimeout?: string;
@@ -197,6 +204,8 @@ interface BodyOptions {
   retrySecretsSet?: boolean;
   containOnUndetermined?: boolean;
   deleteRotationSource?: boolean;
+  treatBlockedAsVerified?: boolean; // drop readiness_blocked_by_read from the rule
+  containOnUnreadableSecretSet?: boolean; // contain instead of UNDETERMINED on unreadable read-back
 }
 
 interface BodyResult {
@@ -266,8 +275,15 @@ function runBody(opts: BodyOptions = {}): BodyResult {
   if (opts.bareRead === "readiness") {
     const before = region;
     region = region.replace(
-      /if fly_retry readiness-list -- flyctl machine list --app "\$app" --json; then\n\s*readiness_after_json="\$FLY_RETRY_STDOUT"\n\s*readiness_read_ok=true\n\s*else\n\s*readiness_after_json='\[\]'\n\s*fi/,
-      ['if ! readiness_after_json="$(flyctl machine list --app "$app" --json)"; then', "  readiness_after_json='[]'", "fi"].join("\n"),
+      /if fly_retry readiness-list -- flyctl machine list --app "\$app" --json; then\n\s*readiness_after_json="\$FLY_RETRY_STDOUT"\n\s*readiness_read_ok=true\n\s*poll_read_ok=true\n\s*else\n\s*readiness_after_json='\[\]'\n\s*fi/,
+      [
+        'if readiness_after_json="$(flyctl machine list --app "$app" --json)"; then',
+        "  readiness_read_ok=true",
+        "  poll_read_ok=true",
+        "else",
+        "  readiness_after_json='[]'",
+        "fi",
+      ].join("\n"),
     );
     expect(region, "bareRead readiness did not apply").not.toBe(before);
   }
@@ -283,6 +299,26 @@ function runBody(opts: BodyOptions = {}): BodyResult {
       'if ! fly_retry post-secret-list-secrets -- flyctl secrets list --app "$app" --json; then\n  contain_current_machines "mutation_contain_on_undetermined"\n',
     );
     expect(region, "containOnUndetermined did not apply").not.toBe(before);
+  }
+  if (opts.treatBlockedAsVerified) {
+    // Drop readiness_blocked_by_read from the decision rule: a livez-OK poll with
+    // an unreadable state then reads as "verified failed" and stops the app.
+    const before = region;
+    region = region.replace(
+      'if [ "$readiness_read_ok" != true ] || [ "$readiness_blocked_by_read" = true ]; then',
+      'if [ "$readiness_read_ok" != true ]; then',
+    );
+    expect(region, "treatBlockedAsVerified did not apply").not.toBe(before);
+  }
+  if (opts.containOnUnreadableSecretSet) {
+    // On an unreadable secrets read-back after a failed set, contain instead of
+    // concluding UNDETERMINED.
+    const before = region;
+    region = region.replace(
+      /if ! fly_retry secret-set-outcome -- flyctl secrets list --app "\$app" --json; then\n\s*printf 'undetermined[\s\S]*?exit 1\n\s*fi/,
+      ['if ! fly_retry secret-set-outcome -- flyctl secrets list --app "$app" --json; then', '  contain_current_machines "secret_deploy_outcome_unknown"', "  exit 1", "fi"].join("\n"),
+    );
+    expect(region, "containOnUnreadableSecretSet did not apply").not.toBe(before);
   }
 
   const source = opts.deleteRotationSource ? "" : rotationSourceLine();
@@ -315,12 +351,14 @@ function runBody(opts: BodyOptions = {}): BodyResult {
       PATH: `${binDir}${SEP}${process.env.PATH ?? ""}`,
       LCOUNT: join(dir, "l.count").replace(/\\/g, "/"),
       SLCOUNT: join(dir, "sl.count").replace(/\\/g, "/"),
+      LVCOUNT: join(dir, "lv.count").replace(/\\/g, "/"),
       MLIST: mlist,
       SECRETS_FILE: secretsFile,
       LIST_BEHAVIOR: opts.listBehavior ?? "ok",
       SECRETS_LIST_BEHAVIOR: opts.secretsListBehavior ?? "ok",
       SECRETS_SET_BEHAVIOR: opts.secretsSetBehavior ?? "ok",
       CURL_LIVEZ_BEHAVIOR: opts.livezBehavior ?? "ok",
+      LIVEZ_SEQ: opts.livezSeq ?? "",
       REAL_JQ,
     },
   });
@@ -407,6 +445,67 @@ describe("egress rotation #728 — the protected-app path is unchanged (start, n
   }, 60_000);
 });
 
+describe("egress rotation #729 review — a mixed/partial readiness window is UNDETERMINED, never a stop", () => {
+  // The window: poll 1 reads state (started for M2, stopped for M1) while /livez
+  // fails during the restart; every later poll has /livez OK but the state read
+  // fails after retries. A single stale readable poll must not "verify" a
+  // failure the later polls could never observe.
+  it("M2: poll 1 reads all-started with /livez down, later polls /livez OK but unreadable state -> UNDETERMINED, no stop", () => {
+    const r = runBody({
+      state: "started",
+      livezSeq: "fail ok",
+      listBehavior: "ok ok ok transport",
+      readinessTimeout: "20",
+    });
+    expect(r.status, `stderr: ${r.stderr}`).not.toBe(0);
+    expect(r.stopCalls.length, "a partial read must never stop a healthy app").toBe(0);
+    expect(r.stderr).toContain("rotation_post_update_undetermined");
+  }, 60_000);
+
+  it("M1: poll 1 reads stopped with /livez down, later polls /livez OK but unreadable state -> UNDETERMINED, no stop", () => {
+    const r = runBody({
+      state: "stopped",
+      livezSeq: "fail ok",
+      listBehavior: "ok ok ok transport",
+      readinessTimeout: "20",
+    });
+    expect(r.status, `stderr: ${r.stderr}`).not.toBe(0);
+    expect(r.stopCalls.length, "a stale stopped read must never stop the app").toBe(0);
+    expect(r.stderr).toContain("rotation_post_update_undetermined");
+  }, 60_000);
+
+  it("genuine: /livez fails with a readable state throughout still contains (no blocked-by-read poll)", () => {
+    const r = runBody({ state: "started", livezSeq: "fail", listBehavior: "ok", readinessTimeout: "20" });
+    expect(r.status).not.toBe(0);
+    expect(r.stopCalls.length, "readable + not healthy is a genuine failure").toBeGreaterThan(0);
+    expect(r.stderr).not.toContain("rotation_post_update_undetermined");
+  }, 60_000);
+});
+
+describe("egress rotation #729 review — a failed `secrets set` is resolved by read-back, not by stopping", () => {
+  it("read-back shows Deployed: the mutation landed, rotation continues, no machine stopped", () => {
+    const r = runBody({ secretsSetBehavior: "transport", secretsStatus: "Deployed", secretsListBehavior: "ok" });
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+    expect(r.stopCalls.length, "a landed-but-transport-errored set must not stop the app").toBe(0);
+    expect(r.secretsSetCalls.length, "the mutation itself is never retried").toBe(1);
+  }, 60_000);
+
+  it("read-back readable but NOT Deployed: containment runs, as today", () => {
+    const r = runBody({ secretsSetBehavior: "transport", secretsStatus: "Staged", secretsListBehavior: "ok" });
+    expect(r.status).not.toBe(0);
+    expect(r.stopCalls.length, "a genuine not-deployed outcome contains").toBeGreaterThan(0);
+    expect(r.stderr).not.toContain("rotation_post_update_undetermined");
+  }, 60_000);
+
+  it("read-back unreadable: UNDETERMINED, no machine stopped, loud", () => {
+    const r = runBody({ secretsSetBehavior: "transport", secretsListBehavior: "transport" });
+    expect(r.status).not.toBe(0);
+    expect(r.stopCalls.length, "an unknown mutation outcome must not stop the app").toBe(0);
+    expect(r.stderr).toContain("rotation_post_update_undetermined");
+    expect(r.recovery).toContain("secret_set_outcome_unreadable");
+  }, 60_000);
+});
+
 describe("egress rotation #728 — mutations, each killed", () => {
   it.each(["post-update", "post-secret", "readiness", "secrets"] as const)(
     "(mutation) a bare read without retry at the %s read loses the retry",
@@ -448,6 +547,24 @@ describe("egress rotation #728 — mutations, each killed", () => {
     expect(control.secretsSetCalls.length, "shipped: the mutation is attempted once, never retried").toBe(1);
     const mutated = runBody({ secretsSetBehavior: "transport", retrySecretsSet: true });
     expect(mutated.secretsSetCalls.length, "mutation retries the mutating call 3x").toBe(3);
+  }, 60_000);
+
+  it("(mutation) treating a /livez-OK-but-unreadable poll as verified stops a healthy app (M2)", () => {
+    // contain's own reads must succeed after the blocked window, so the mutant
+    // can actually reach a stop: reads return to ok after the readiness polls.
+    const seq = { state: "started" as const, livezSeq: "fail ok", listBehavior: "ok ok ok transport transport transport ok", readinessTimeout: "20" };
+    const control = runBody(seq);
+    expect(control.stopCalls.length, "shipped: M2 is UNDETERMINED, no stop").toBe(0);
+    expect(control.stderr).toContain("rotation_post_update_undetermined");
+    const mutated = runBody({ ...seq, treatBlockedAsVerified: true });
+    expect(mutated.stopCalls.length, "mutation stops a healthy app on a stale partial read").toBeGreaterThan(0);
+  }, 60_000);
+
+  it("(mutation) containing on an unreadable `secrets set` read-back stops the app", () => {
+    const control = runBody({ secretsSetBehavior: "transport", secretsListBehavior: "transport" });
+    expect(control.stopCalls.length, "shipped: unreadable read-back is UNDETERMINED, no stop").toBe(0);
+    const mutated = runBody({ secretsSetBehavior: "transport", secretsListBehavior: "transport", containOnUnreadableSecretSet: true });
+    expect(mutated.stopCalls.length, "mutation contains on an unknown mutation outcome").toBeGreaterThan(0);
   }, 60_000);
 
   it("(mutation) deleting the rotation `source` line breaks the shipped step", () => {

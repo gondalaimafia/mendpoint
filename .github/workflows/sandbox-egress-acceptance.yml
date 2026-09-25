@@ -35,9 +35,12 @@ on:
 jobs:
   accept:
     runs-on: ubuntu-latest
-    # Worst case per app is the readiness window (default 300s = 30 polls x up
-    # to ~20s) plus the rotation itself; 45 min leaves headroom across all
-    # consuming apps so the job finishes rather than being cancelled mid-app.
+    # Worst case per app is the readiness window plus the rotation itself. A
+    # failing readiness poll costs ~35s (3 flyctl calls with 15s of fly_retry
+    # backoff, plus up to 10s of curl and a 10s sleep), so the default 300s
+    # window (30 polls) is about 18 min worst case. Any UNDETERMINED or FAILED
+    # app exits the step, so there is at most one such window per run; the probe
+    # step, the protected ssh path and one failing window fit inside 45 min.
     timeout-minutes: 45
     environment: ${{ inputs.environment }}
     # The renewal-failure alarm is a GitHub issue opened in this repo (see the
@@ -915,8 +918,32 @@ jobs:
                 MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID="$key_id" \
                 MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST="$policy_digest" \
                 MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA="$schema"; then
-              contain_current_machines "secret_deploy_outcome_unknown"
-              exit 1
+              # The secrets set MUTATION stays unretried. Its outcome is unknown on
+              # a transport failure, but that is NOT evidence the generation is
+              # undeployed -- and stopping here adds no containment. Egress already
+              # fails CLOSED inside the app: the worker verifies the egress
+              # authority (receipt, key, policy, image) at boot
+              # (apps/worker/src/cli.ts:2542) and before every sandbox launch
+              # (packages/platform/src/fly-sandbox.ts:496), so a half-applied
+              # authority refuses launches rather than serving with a mismatch.
+              # Stopping would only cost availability (the outage shape of run
+              # 33890068837). Resolve the outcome with a RETRIED read of the secret
+              # status: Deployed means the mutation landed (continue to the
+              # verification reads below); readable-but-not-Deployed is a genuine
+              # failure (contain as today); unreadable is UNDETERMINED (no stop).
+              if ! fly_retry secret-set-outcome -- flyctl secrets list --app "$app" --json; then
+                printf 'undetermined\t%s\n' "rotation_post_update_undetermined:secret_set_outcome_unreadable" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                echo "UNDETERMINED (rotation_post_update_undetermined): secrets set for ${app} failed and the secrets list read-back also failed after retries. Leaving machines RUNNING and failing loudly; egress fails closed in-app, so stopping on an unknown mutation outcome only costs availability." >&2
+                exit 1
+              fi
+              if ! jq -e 'length > 0 and all(.[]; .status == "Deployed")' \
+                  <<<"$FLY_RETRY_STDOUT" >/dev/null; then
+                contain_current_machines "secret_deploy_outcome_unknown"
+                exit 1
+              fi
+              # Deployed after all: the mutation landed despite the transport error
+              # on the set. Fall through to the post-secret verification reads.
             fi
             # Post-mutation READ (#728, item 1, the L891 case). `secrets set`
             # above is a mutation and stays unretried / fail-closed. Reading the
@@ -1014,20 +1041,27 @@ jobs:
             printf '%s\n' "$machines_json" \
               >"test-results/sandbox-egress/rotation-before-${app}.json"
             ready=false
-            # UNDETERMINED tracking (#728): stays false until at least one poll
-            # actually reads machine state. A window where no poll could ever read
-            # state (transport blips outliving their retries) ends as UNDETERMINED,
-            # not as a health failure that stops the app.
+            # UNDETERMINED tracking (#728): readiness_read_ok stays false until at
+            # least one poll actually reads machine state; readiness_blocked_by_read
+            # records any poll where /livez answered but the state read failed after
+            # retries. A stale, partial read must never make us "verify" a failure
+            # we never observed: one readable poll earlier in the window used to
+            # mark the whole window verified, so a later all-unreadable stretch
+            # stopped a healthy app (the M1/M2 sequences in the #729 review). Both
+            # flags feed the decision rule after the loop.
             readiness_read_ok=false
+            readiness_blocked_by_read=false
             readiness_after_json='[]'
             for readiness_attempt in $(seq 1 "$readiness_attempts"); do
               # Post-mutation READ (#728, items 1/2): retry a transport blip on
               # the per-poll machine-list read. A blip that outlives its retries
               # leaves this attempt's read unavailable ('[]'); it never counts as
               # a machine that turned unhealthy.
+              poll_read_ok=false
               if fly_retry readiness-list -- flyctl machine list --app "$app" --json; then
                 readiness_after_json="$FLY_RETRY_STDOUT"
                 readiness_read_ok=true
+                poll_read_ok=true
               else
                 readiness_after_json='[]'
               fi
@@ -1036,6 +1070,12 @@ jobs:
                   "https://${app}.fly.dev/livez" \
                   >"test-results/sandbox-egress/livez-${app}.json"; then
                 livez_ok=true
+              fi
+              # If /livez answered but we could NOT read machine state this poll,
+              # the poll is inconclusive about the machines: mark the window
+              # blocked-by-read so a stale earlier read cannot conclude "failed".
+              if [ "$livez_ok" = true ] && [ "$poll_read_ok" != true ]; then
+                readiness_blocked_by_read=true
               fi
               # Every machine that was started before the update must be started
               # now; a stopped one keeps states_ok false (item 3 / item 2).
@@ -1062,20 +1102,27 @@ jobs:
               "https://${app}.fly.dev/healthz" || true)"
             echo "  /healthz -> http ${health_code} (diagnostic only -- rotation does NOT gate on this; see the note above)"
             if [ "$ready" != true ]; then
-              if [ "$readiness_read_ok" != true ]; then
-                # UNDETERMINED: not one poll in the whole window could read machine
-                # state (transport blips outlived their retries). We do NOT know the
-                # app is unhealthy, so we do NOT stop it -- leave machines running
-                # and fail loudly for the renewal-failure alert.
+              # Decision rule (#728, #729 review). The app is VERIFIED FAILED only
+              # when its machine state was READABLE in the polls that decide the
+              # verdict and genuinely not-started, OR /livez failed with a readable
+              # state throughout (a readable poll with /livez down and no
+              # blocked-by-read poll). It is UNDETERMINED when no poll ever read
+              # state (readiness_read_ok=false) OR any poll had /livez OK but an
+              # unreadable state (readiness_blocked_by_read=true) -- a stale/partial
+              # read must never make us stop a healthy app.
+              if [ "$readiness_read_ok" != true ] || [ "$readiness_blocked_by_read" = true ]; then
+                # UNDETERMINED: we could not conclusively read machine state during
+                # the window. We do NOT know the app is unhealthy, so we do NOT stop
+                # it -- leave machines running and fail loudly for the alert.
                 printf 'undetermined\t%s\n' "rotation_post_update_undetermined:readiness_reads_unavailable" \
                   >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
-                echo "UNDETERMINED (rotation_post_update_undetermined): could not read machine state for ${app} during the entire readiness window. Leaving machines RUNNING and failing loudly; stopping on an unknown read is what caused past outages." >&2
+                echo "UNDETERMINED (rotation_post_update_undetermined): could not conclusively read machine state for ${app} during the readiness window (no readable poll, or /livez answered while the state read failed). Leaving machines RUNNING and failing loudly; stopping on an unknown read is what caused past outages." >&2
                 exit 1
               fi
-              # VERIFIED FAILED: at least one poll read machine state and/or /livez
-              # answered, and the app genuinely never became healthy. Contain
-              # exactly as before (protected app: start-not-stop, fail loud;
-              # non-protected: fail-closed stop).
+              # VERIFIED FAILED: the state was readable in the deciding polls and
+              # the app genuinely never became healthy. Contain exactly as before
+              # (protected app: start-not-stop, fail loud; non-protected:
+              # fail-closed stop).
               contain_current_machines "post_rotation_health_failed"
               echo "The app $app did not become healthy after receipt rotation"
               exit 1
