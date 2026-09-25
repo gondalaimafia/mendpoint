@@ -243,7 +243,12 @@ async function main() {
   // 6) Real PR
   console.log("\n6) Opening real GitHub PR...");
   const branch = `mendpoint/phase-a-${Date.now().toString(36)}`;
-  const ghDelivery = new OctokitGitHubDelivery(token);
+  // Dev/demo script (not a production delivery path). The tenant-scoped guard
+  // still applies; a fixed dev tenant id keeps it satisfied (#724).
+  const ghDelivery = new OctokitGitHubDelivery(
+    process.env.MENDPOINT_TENANT_ID?.trim() || "phase-a-dev",
+    token,
+  );
 
   await ghDelivery.createBranch(owner, repo, branch, DEFAULT_BRANCH);
   await ghDelivery.commitFiles(

@@ -19,6 +19,11 @@
  * D7 (close-late-duplicate).
  */
 import { createHash } from "node:crypto";
+import {
+  guardGitHubWrites,
+  assertTenantIdPresent,
+  TENANT_IDENTITY_DELIVERY_ERROR,
+} from "./tenant-identity-guard.js";
 
 /** GitHub rejects pull-request bodies longer than this many characters (D2). */
 export const MAX_ADOPTIVE_PR_BODY_CHARS = 65_536;
@@ -115,6 +120,14 @@ export type AdoptiveDraftInput = Readonly<{
   branch: string;
   /** Identity of this delivery, K = change:consumer. Bound into the commit trailer. */
   deliveryKey: string;
+  /**
+   * The tenant this delivery belongs to (#724). REQUIRED: the transport is always
+   * wrapped with the fail-closed tenant-identity guard, so no customer-facing
+   * write can carry the internal tenant id. An empty id throws rather than
+   * disabling the guard. The state machine never reads it beyond threading the
+   * guard onto the transport.
+   */
+  tenantId: string;
   title: string;
   body: string;
   commitDate: string;
@@ -193,7 +206,12 @@ export type AdoptiveDraftBlocked = Readonly<{
     // The generated branch name is not a valid git ref (a legacy provider slug carrying a
     // git-invalid character): needs a human action (rename the provider slug), so it is a
     // reported, non-retryable delivery_blocked rather than a crash of the pipeline run.
-    | "branch_name_invalid";
+    | "branch_name_invalid"
+    // A customer-facing write would carry the internal tenant id (#724). The
+    // fail-closed guard refuses the write before it reaches GitHub; a human must
+    // fix the leak (a re-render bug), so it is reported, non-retryable and never
+    // masqueraded as a transient transport failure.
+    | typeof TENANT_IDENTITY_DELIVERY_ERROR;
 }>;
 
 export class AdoptiveDraftBlockedError extends Error {
@@ -530,10 +548,22 @@ export async function deliverAdoptiveDraftWithOctokit(
   if (input.body.length > MAX_ADOPTIVE_PR_BODY_CHARS) {
     throw new AdoptiveDraftBlockedError("github_delivery_pr_body_too_long");
   }
+  // #724: the single lowest choke point. All three adoptive adapters (mock, PAT,
+  // GitHub App) deliver through this function, so wrapping the transport here
+  // fails every customer-facing write (branch, commit, file, PR title/body,
+  // comment, check-run) closed on a tenant-id leak — object writes in buildCommit
+  // included — before it reaches the repo. The guard throws AdoptiveDraftBlockedError
+  // so the App outage path classifies it permanent and the pipeline records the
+  // named, non-retryable delivery_blocked code.
+  const tx = guardGitHubWrites(
+    octokit,
+    assertTenantIdPresent(input.tenantId),
+    () => new AdoptiveDraftBlockedError(TENANT_IDENTITY_DELIVERY_ERROR),
+  );
   const bodyDigest = adoptiveBodyDigest(input.title, input.body);
   // Build our commit up front (object writes only). Its tree sha is the content
   // bound into ours(); its sha is the commit createRef/updateRef will point at.
-  const built = await buildCommit(octokit, input, bodyDigest);
+  const built = await buildCommit(tx, input, bodyDigest);
   // D5: persist the write-ahead artifact now — tree/commit objects exist, but no
   // ref or PR has been written yet, so the artifact precedes every side effect.
   if (hooks.persistArtifact) {
@@ -549,7 +579,7 @@ export async function deliverAdoptiveDraftWithOctokit(
   let createdNewPull = false;
 
   for (let loop = 0; loop < MAX_REOBSERVE_LOOPS; loop += 1) {
-    const observation = await observe(octokit, input);
+    const observation = await observe(tx, input);
 
     if (observation.open.length > 1) throw new AdoptiveDraftBlockedError("github_delivery_pr_ambiguous");
     if (observation.open.length === 1) {
@@ -561,13 +591,13 @@ export async function deliverAdoptiveDraftWithOctokit(
       const older = observation.closed.filter((pull) => pull.number < observation.open[0]!.number);
       void createdNewPull;
       if (older.length > 0) {
-        await octokit.pulls.update({
+        await tx.pulls.update({
           owner: input.owner,
           repo: input.repo,
           pull_number: observation.open[0]!.number,
           state: "closed",
         });
-        await octokit.issues.createComment({
+        await tx.issues.createComment({
           owner: input.owner,
           repo: input.repo,
           issue_number: observation.open[0]!.number,
@@ -575,14 +605,14 @@ export async function deliverAdoptiveDraftWithOctokit(
         });
         return closedOutcome(input, older);
       }
-      return adopt(octokit, input, observation.open[0]!, built.treeSha, bodyDigest, hooks.isOursArtifact);
+      return adopt(tx, input, observation.open[0]!, built.treeSha, bodyDigest, hooks.isOursArtifact);
     }
     if (observation.closed.length > 0) return closedOutcome(input, observation.closed);
 
     // No pull for the branch. Ensure the branch holds our commit, then open a PR.
     if (observation.head === undefined) {
       try {
-        await octokit.git.createRef({
+        await tx.git.createRef({
           owner: input.owner,
           repo: input.repo,
           ref: `refs/heads/${input.branch}`,
@@ -596,14 +626,14 @@ export async function deliverAdoptiveDraftWithOctokit(
       continue;
     }
 
-    const ours = await oursCommit(octokit, input, observation.head, built.treeSha, hooks.isOursArtifact);
+    const ours = await oursCommit(tx, input, observation.head, built.treeSha, hooks.isOursArtifact);
     if (ours.verdict === "unknown") throw new AdoptiveDraftContentionError();
     if (ours.verdict === "ours") {
       // Open the PR from the commit already on the branch. We never rewrite it, so an
       // adopted main-era or prior-attempt commit keeps its own commit message; only the
       // PR title/body are ours (title/body are the delivery's, the commit is untouched).
       try {
-        await octokit.pulls.create({
+        await tx.pulls.create({
           owner: input.owner,
           repo: input.repo,
           title: input.title,
@@ -623,9 +653,9 @@ export async function deliverAdoptiveDraftWithOctokit(
 
     // Foreign head. D3: a legacy bare branch (h an ancestor of our base G) can be
     // fast-forwarded to our commit; anything else is a genuine foreign push.
-    if (await reachableByFirstParents(octokit, input, input.expectedBaseSha, observation.head)) {
+    if (await reachableByFirstParents(tx, input, input.expectedBaseSha, observation.head)) {
       try {
-        await octokit.git.updateRef({
+        await tx.git.updateRef({
           owner: input.owner,
           repo: input.repo,
           ref: `heads/${input.branch}`,

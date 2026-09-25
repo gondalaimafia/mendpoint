@@ -31,6 +31,7 @@ function input(fake: FakeGitHub, baseSha: string, overrides: Partial<AdoptiveDra
     expectedBaseSha: baseSha,
     branch: BRANCH,
     deliveryKey: "change-1:consumer-1",
+    tenantId: "tenant_default",
     title: "Fettler candidate",
     body: "Body A with the structured package section",
     commitDate: "2026-09-02T12:00:00.000Z",

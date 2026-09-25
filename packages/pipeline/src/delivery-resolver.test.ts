@@ -229,11 +229,14 @@ describe("pipeline GitHub delivery resolver", () => {
       { installation_id: "12345", github_delivery_mode: "app", github_owner: "gondalaimafia", github_repo: "private-repo" },
       repository,
     );
-    const options = vi.mocked(createAppDelivery).mock.calls.at(-1)?.[3] as
+    const call = vi.mocked(createAppDelivery).mock.calls.at(-1);
+    // #724: createAppDelivery is (installationId, tenantId, creds, repoIds, outageOptions).
+    expect(call?.[1]).toBe("tenant_default"); // the required tenant-scoping id
+    const options = call?.[4] as
       | { tenantId?: string; outage?: unknown; decide?: unknown }
       | undefined;
     // Removing either the durable queue or the decision policy from the app
-    // delivery construction (pipeline/src/index.ts:703) fails this test.
+    // delivery construction (pipeline/src/index.ts) fails this test.
     expect(options?.tenantId).toBe("tenant_default");
     expect(options?.decide).toBe(decide);
     expect(options?.outage).toBeInstanceOf(DependencyOutageQueue);

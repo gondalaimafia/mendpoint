@@ -105,6 +105,7 @@ class FakeRepo {
   readonly branches = new Map<string, string>();
   readonly pulls: FakePull[] = [];
   readonly comments: Array<{ issue: number; body: string }> = [];
+  readonly checkRuns: Array<{ name: string; output?: { title?: string; summary?: string; text?: string } }> = [];
   readonly refLog: FakeRefLogEntry[] = [];
   private pullCounter = 0;
 
@@ -570,6 +571,20 @@ export class FakeGitHub {
         return { data: { id: 1 } };
       }),
   };
+
+  // Check-runs are read-only in the delivery paths today; the recorder exists so
+  // the fail-closed write guard (#724) can be driven for the check-run write kind.
+  readonly checks = {
+    create: (args: { owner: string; repo: string; name: string; head_sha?: string; output?: { title?: string; summary?: string; text?: string } }) =>
+      this.yield("checks.create", args, () => {
+        this.repo(args.owner, args.repo).checkRuns.push({ name: args.name, output: args.output });
+        return { data: { id: this.repo(args.owner, args.repo).checkRuns.length } };
+      }),
+  };
+
+  checkRuns(owner: string, repo: string): ReadonlyArray<{ name: string; output?: { title?: string; summary?: string; text?: string } }> {
+    return this.repo(owner, repo).checkRuns;
+  }
 
   /** `octokit.paginate` shim over `pulls.list` for the paginated lookup L. */
   async paginate(
