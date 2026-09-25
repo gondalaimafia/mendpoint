@@ -10,6 +10,11 @@ const ENGINE_PATH = ".github/workflows/sandbox-egress-acceptance.yml";
 function engineSource(): string {
   return readFileSync(resolve(root, ENGINE_PATH), "utf8");
 }
+// #728: the readiness read is now wrapped in fly_retry, so the extracted health
+// block needs the transport-retry helper in scope.
+function helperSource(): string {
+  return readFileSync(resolve(root, "scripts/flyctl-transport-retry.sh"), "utf8");
+}
 
 /**
  * Pull the REAL guard + mutation loop out of the workflow so these tests
@@ -394,6 +399,8 @@ function runHealthGate(livezStatus: number, healthzStatus: number): HealthResult
     "is_protected_app=false",
     "machines_json=$(cat machines.json)",
     "sleep() { :; }", // keep the readiness backoff instant
+    "export FLY_RETRY_BACKOFF_SECONDS=0",
+    helperSource(), // #728: fly_retry for the wrapped readiness read
     curlStub,
     containment,
     healthBlock,

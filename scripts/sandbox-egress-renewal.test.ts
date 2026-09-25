@@ -205,7 +205,10 @@ describe("sandbox egress engine — rotation reaches every configured app", () =
     expect(rotate).toContain('containment-before-${app}.json');
     expect(rotate).toContain('containment-pass-${containment_attempt}-${app}.json');
     expect(rotate).toContain('contained-machines-${app}.json');
-    expect(rotate).toContain('post_secret_machines_json="$(flyctl machine list --app "$app" --json)"');
+    // #728: the post-secret machine-list READ is transport-retried (the mutating
+    // secrets set stays unretried); the read result comes from FLY_RETRY_STDOUT.
+    expect(rotate).toContain('fly_retry post-secret-list -- flyctl machine list --app "$app" --json');
+    expect(rotate).toContain('post_secret_machines_json="$FLY_RETRY_STDOUT"');
   });
 
   it("installs the protected receipt with bounded ssh retries, never a single long-timeout attempt", () => {
