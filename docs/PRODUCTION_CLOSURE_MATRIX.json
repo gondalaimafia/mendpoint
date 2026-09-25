@@ -2075,17 +2075,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-09-24T17:54:42.995Z",
-    "observedMainRevision": "3f1794d9c65dedcb4f5c1ef25399065d70e528b3",
-    "observationDigest": "sha256:3f64b05ffa7d335db3ad384dc6bdf0d9a6f179c3375fe4d5b50addf47585218b",
+    "observedAt": "2026-09-24T22:51:03.873Z",
+    "observedMainRevision": "f1ce6a6b233455dcacaac297fc11f2736fef1e77",
+    "observationDigest": "sha256:cd1bc9580de624c06fe04bc15d8e9f6768787974468a49f862b34cd9fbca9398",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 709,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/709",
-      "title": "closure: remove expired evidence holds, fix flyctl third-state, retire issue updatedAt drift (authority rotation)",
+      "number": 721,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/721",
+      "title": "closure: retry customer production registry push, release exact image once (authority rotation)",
       "baseBranch": "main",
-      "headBranch": "claude/authority-rotation-027",
+      "headBranch": "claude/authority-rotation-028",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2100,12 +2100,12 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260924-027",
+        "rotationId": "rotation-20260924-028",
         "kind": "runtime",
-        "issuedAt": "2026-09-24T17:54:42.995Z",
-        "expiresAt": "2026-09-25T17:54:42.995Z",
-        "basePolicySha256": "sha256:404d47ced62cbe845dcf5a068c66696745b307c9ca4cbadbb0e3603f7b57512d",
-        "proposedPolicySha256": "sha256:df285209a6631a3b153259b2d3dc5703cf9197a93acc95fcbe1bf760186a7e54"
+        "issuedAt": "2026-09-24T22:51:03.873Z",
+        "expiresAt": "2026-09-25T22:51:03.873Z",
+        "basePolicySha256": "sha256:df285209a6631a3b153259b2d3dc5703cf9197a93acc95fcbe1bf760186a7e54",
+        "proposedPolicySha256": "sha256:6e2cca40b8917527f586ae0f90ee7d719f774c39aa56f4d25b2330546d94d8b3"
       }
     },
     "pullRequests": [
