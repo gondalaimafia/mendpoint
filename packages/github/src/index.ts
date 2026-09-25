@@ -27,12 +27,25 @@ import {
 } from "./gitlab.js";
 import {
   deliverAdoptiveDraftWithOctokit,
+  AdoptiveDraftBlockedError,
   type AdoptiveDraftInput,
   type AdoptiveDraftResult,
   type AdoptiveDeliveryOptions,
   type AdoptiveOctokit,
 } from "./draft-adoption.js";
+import {
+  guardGitHubWrites,
+  TENANT_IDENTITY_DELIVERY_ERROR,
+  assertTenantIdPresent,
+} from "./tenant-identity-guard.js";
 import { FakeGitHub } from "./testing/fake-github.js";
+
+/** The error a guarded transport throws on a tenant-id leak (#724). Shared by
+ * every tenant-scoped client so the pipeline records the named, non-retryable
+ * delivery_blocked code and the App outage path classifies it permanent. */
+export function tenantIdentityGuardError(): AdoptiveDraftBlockedError {
+  return new AdoptiveDraftBlockedError(TENANT_IDENTITY_DELIVERY_ERROR);
+}
 
 export type PullRequestResult = {
   number: number;
@@ -97,6 +110,17 @@ export interface GitHubDelivery {
     body: string,
     base?: string,
   ): Promise<PullRequestResult>;
+  /**
+   * Read the LIVE state of a delivered pull request (#724 body refresh): its
+   * current body and state as GitHub holds it, so the refresh detects a leak on
+   * the real PR and a human edit, not only the stored DB row. Optional so
+   * peripheral transports need not implement it; App / PAT / mock do.
+   */
+  getOpenPullRequest?(
+    owner: string,
+    repo: string,
+    prNumber: number,
+  ): Promise<{ body: string; state: "open" | "closed"; draft: boolean } | undefined>;
 }
 
 export class MockGitHubDelivery implements GitHubDelivery {
@@ -422,6 +446,21 @@ export class MockGitHubDelivery implements GitHubDelivery {
     writeFileSync(join(prsDir, `${n}.json`), JSON.stringify(pr, null, 2), "utf8");
     return { number: pr.number, url: pr.url, branch, title };
   }
+
+  async getOpenPullRequest(
+    owner: string,
+    repo: string,
+    prNumber: number,
+  ): Promise<{ body: string; state: "open" | "closed"; draft: boolean } | undefined> {
+    const file = this.containedPathFrom(this.repoDir(owner, repo), "pulls", `${prNumber}.json`);
+    if (!existsSync(file)) return undefined;
+    const pull = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    return {
+      body: typeof pull.body === "string" ? pull.body : "",
+      state: pull.state === "open" ? "open" : "closed",
+      draft: pull.draft === true,
+    };
+  }
 }
 
 /**
@@ -432,8 +471,10 @@ export class MockGitHubDelivery implements GitHubDelivery {
 export class OctokitGitHubDelivery implements GitHubDelivery {
   private octokit: Octokit;
   private readonly existingBranches = new Set<string>();
+  private readonly tenantId: string;
 
-  constructor(token?: string) {
+  constructor(tenantId: string, token?: string) {
+    this.tenantId = assertTenantIdPresent(tenantId);
     const t = token ?? process.env.GITHUB_TOKEN;
     if (!t) {
       throw new Error(
@@ -445,6 +486,16 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
       userAgent: "mendpoint-api",
       request: { timeout: GITHUB_REQUEST_TIMEOUT_MS },
     });
+  }
+
+  /**
+   * The tenant-scoped, fail-closed transport (#724): every write through it —
+   * exact-draft, adoptive, and the content-manifest create/commit/open path —
+   * is refused if it carries the tenant id. A getter, so a test that injects a
+   * fake `octokit` after construction is still guarded. Reads pass through.
+   */
+  private get tx(): Octokit {
+    return guardGitHubWrites(this.octokit, this.tenantId, tenantIdentityGuardError) as Octokit;
   }
 
   async assertRepositoryIdentity(
@@ -466,7 +517,7 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
   }
 
   deliverExactDraft(input: ExactDraftDeliveryInput): Promise<ExactDraftDeliveryResult> {
-    return deliverExactDraftWithOctokit(this.octokit, input);
+    return deliverExactDraftWithOctokit(this.tx, input);
   }
 
   deliverAdoptiveDraft(
@@ -474,7 +525,7 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
     options: AdoptiveDeliveryOptions,
   ): Promise<AdoptiveDraftResult> {
     return deliverAdoptiveDraftWithOctokit(
-      this.octokit as unknown as AdoptiveOctokit,
+      this.tx as unknown as AdoptiveOctokit,
       { ...input, body: options.resolveBody() },
       options.hooks ?? {},
     );
@@ -548,7 +599,7 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
     }
 
     try {
-      await this.octokit.git.createRef({
+      await this.tx.git.createRef({
         owner,
         repo,
         ref: `refs/heads/${branch}`,
@@ -602,7 +653,7 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
             sha: null,
           };
         }
-        const { data: blob } = await this.octokit.git.createBlob({
+        const { data: blob } = await this.tx.git.createBlob({
           owner,
           repo,
           content: Buffer.from(f.content, "utf8").toString("base64"),
@@ -617,14 +668,14 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
       },
     );
 
-    const { data: newTree } = await this.octokit.git.createTree({
+    const { data: newTree } = await this.tx.git.createTree({
       owner,
       repo,
       base_tree: baseTree,
       tree,
     });
 
-    const { data: newCommit } = await this.octokit.git.createCommit({
+    const { data: newCommit } = await this.tx.git.createCommit({
       owner,
       repo,
       message,
@@ -632,7 +683,7 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
       parents: [branchSha],
     });
 
-    await this.octokit.git.updateRef({
+    await this.tx.git.updateRef({
       owner,
       repo,
       ref: `heads/${branch}`,
@@ -666,7 +717,7 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
     }
 
     try {
-      const { data } = await this.octokit.pulls.create({
+      const { data } = await this.tx.pulls.create({
         owner,
         repo,
         title,
@@ -684,7 +735,7 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
     } catch (e: unknown) {
       // base might be master
       if (base === "main") {
-        const { data } = await this.octokit.pulls.create({
+        const { data } = await this.tx.pulls.create({
           owner,
           repo,
           title,
@@ -703,6 +754,24 @@ export class OctokitGitHubDelivery implements GitHubDelivery {
       throw e;
     }
   }
+
+  async getOpenPullRequest(
+    owner: string,
+    repo: string,
+    prNumber: number,
+  ): Promise<{ body: string; state: "open" | "closed"; draft: boolean } | undefined> {
+    try {
+      const { data } = await this.octokit.pulls.get({ owner, repo, pull_number: prNumber });
+      return {
+        body: data.body ?? "",
+        state: data.state === "open" ? "open" : "closed",
+        draft: data.draft === true,
+      };
+    } catch (error) {
+      if (isNotFoundError(error)) return undefined;
+      throw error;
+    }
+  }
 }
 
 export async function resolveGitHubToken(): Promise<string | undefined> {
@@ -718,18 +787,23 @@ export async function resolveGitHubToken(): Promise<string | undefined> {
 
 export async function createGitHubDeliveryAsync(
   mode = process.env.GITHUB_MODE ?? "mock",
+  tenantId?: string,
 ): Promise<GitHubDelivery> {
   if (mode === "real") {
     const token = await resolveGitHubToken();
-    return new OctokitGitHubDelivery(token);
+    // #724: the real PAT transport is tenant-scoped and guarded; the tenant id is required.
+    return new OctokitGitHubDelivery(assertTenantIdPresent(tenantId ?? ""), token);
   }
   return new MockGitHubDelivery();
 }
 
-export function createGitHubDelivery(mode = process.env.GITHUB_MODE ?? "mock"): GitHubDelivery {
+export function createGitHubDelivery(
+  mode = process.env.GITHUB_MODE ?? "mock",
+  tenantId?: string,
+): GitHubDelivery {
   if (mode === "real") {
     // Sync path: env only (use createGitHubDeliveryAsync for gh auth token)
-    return new OctokitGitHubDelivery(process.env.GITHUB_TOKEN);
+    return new OctokitGitHubDelivery(assertTenantIdPresent(tenantId ?? ""), process.env.GITHUB_TOKEN);
   }
   return new MockGitHubDelivery();
 }
@@ -737,16 +811,18 @@ export function createGitHubDelivery(mode = process.env.GITHUB_MODE ?? "mock"): 
 /**
  * Provider-neutral delivery selector. Routes to the GitLab draft-MR adapter
  * when the caller (or SCM_PROVIDER) asks for GitLab; defaults to GitHub so all
- * existing GitHub behavior is unchanged when GitLab is not configured.
+ * existing GitHub behavior is unchanged when GitLab is not configured. The tenant
+ * id is required for the real transports (#724): both are tenant-scoped and guarded.
  */
 export function createReviewableChangeDelivery(
+  tenantId: string,
   provider: ScmDeliveryProvider = (process.env.SCM_PROVIDER?.trim().toLowerCase() as ScmDeliveryProvider) ||
     "github",
 ): ReviewableChangeDelivery {
   if (provider === "gitlab") {
-    return gitlabAsReviewableChangeDelivery(createGitLabDelivery());
+    return gitlabAsReviewableChangeDelivery(createGitLabDelivery(process.env.GITLAB_MODE, tenantId));
   }
-  return createGitHubDelivery();
+  return createGitHubDelivery(undefined, tenantId);
 }
 
 export {

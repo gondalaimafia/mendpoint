@@ -9,12 +9,12 @@
  * open draft — only the rendered text is. This projects that stored text back to
  * public identity by neutralising the known internal identifiers:
  *
+ *  - the production checkout path `<reposDir>/<tenantId>/<repoKey>` becomes the
+ *    public `owner/repo`, matching #713's registry line (when owner/repo is known);
  *  - the tenant-private namespace `<tenantId>~<slug>` collapses to its public
  *    slug (`<slug>`), matching `publicProviderSlug`;
- *  - the production checkout path segment `<reposDir>/<tenantId>/<repoKey>` loses
- *    its tenant component;
  *  - any remaining bare occurrence of the tenant id (a JSON `"tenantId"` binding,
- *    free text) is removed.
+ *    a residual path segment, free text) is removed.
  *
  * The match is a case-insensitive substring, exactly as the fail-closed guard
  * matches, so a projection that passes here also passes the guard. This is NOT a
@@ -27,16 +27,38 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+export type PublicPrIdentityOptions = Readonly<{
+  /** The configured repositories root, so `<reposDir>/<tenantId>/<repoKey>` can be found. */
+  reposDir?: string | null;
+  /** The customer's public `owner/repo`, used to replace the server checkout path. */
+  ownerRepo?: string | null;
+}>;
+
 /** Re-project stored PR text to public identity by removing the internal tenant id. */
-export function renderPublicPrIdentity(text: string, tenantId: string): string {
+export function renderPublicPrIdentity(
+  text: string,
+  tenantId: string,
+  options: PublicPrIdentityOptions = {},
+): string {
   if (!tenantId || !text) return text;
   const id = escapeRegExp(tenantId);
   const flags = "gi";
+  let out = text;
+  // The server checkout path `<reposDir>/<tenantId>/<repoKey>` -> public `owner/repo`
+  // (the same identity #713 renders in the registry), so neither the tenant id nor
+  // the server filesystem layout survives.
+  if (options.reposDir && options.ownerRepo) {
+    const root = escapeRegExp(options.reposDir.replace(/[/\\]+$/, ""));
+    out = out.replace(
+      new RegExp(`${root}[/\\\\]${id}[/\\\\][^\\s"'\`)\\]]+`, flags),
+      options.ownerRepo,
+    );
+  }
   return (
-    text
+    out
       // `<tenantId>~acme` -> `acme` (the public slug; matches publicProviderSlug).
       .replace(new RegExp(`${id}~`, flags), "")
-      // `/<tenantId>/` and `\<tenantId>\` inside a checkout path -> collapse the segment.
+      // `/<tenantId>/` and `\<tenantId>\` inside any remaining path -> collapse the segment.
       .replace(new RegExp(`([\\\\/])${id}[\\\\/]`, flags), "$1")
       // Any residual bare occurrence (JSON binding, free text).
       .replace(new RegExp(id, flags), "")

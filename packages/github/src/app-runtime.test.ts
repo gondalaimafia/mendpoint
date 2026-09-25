@@ -108,6 +108,7 @@ function reconcileOnlyDelivery(octokit: unknown): GitHubAppDelivery {
   const delivery = new GitHubAppDelivery(
     { appId: "99", privateKeyPem: pem },
     42,
+    "tenant-acme",
     undefined,
     [77],
     {
@@ -144,6 +145,7 @@ describe("github app runtime", () => {
     const delivery = new GitHubAppDelivery(
       { appId: "99", privateKeyPem: pem },
       42,
+      "tenant-acme",
       async (id, jwt) => {
         fetched = true;
         expect(id).toBe(42);
@@ -221,6 +223,7 @@ describe("github app runtime", () => {
     const delivery = new GitHubAppDelivery(
       { appId: "99", privateKeyPem: pem },
       42,
+      "tenant-acme",
     );
     const rejected = {
       git: {
@@ -261,6 +264,7 @@ describe("github app runtime", () => {
     const delivery = new GitHubAppDelivery(
       { appId: "99", privateKeyPem: pem },
       42,
+      "tenant-acme",
     );
     const rejected = {
       repos: {
@@ -335,6 +339,7 @@ describe("github app runtime", () => {
     const delivery = new GitHubAppDelivery(
       { appId: "99", privateKeyPem: pem },
       42,
+      "tenant-acme",
     );
     const createBlob = vi.fn();
     const updateRef = vi.fn();
@@ -375,6 +380,7 @@ describe("github app runtime", () => {
     const delivery = new GitHubAppDelivery(
       { appId: "99", privateKeyPem: pem },
       42,
+      "tenant-acme",
     );
     const createBlob = vi.fn();
     const fakeOctokit = {
@@ -407,6 +413,7 @@ describe("github app runtime", () => {
     const delivery = new GitHubAppDelivery(
       { appId: "99", privateKeyPem: pem },
       42,
+      "tenant-acme",
     );
     let branchHead: string | undefined;
     const fakeOctokit = {

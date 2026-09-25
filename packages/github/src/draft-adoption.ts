@@ -21,6 +21,7 @@
 import { createHash } from "node:crypto";
 import {
   guardGitHubWrites,
+  assertTenantIdPresent,
   TENANT_IDENTITY_DELIVERY_ERROR,
 } from "./tenant-identity-guard.js";
 
@@ -120,13 +121,13 @@ export type AdoptiveDraftInput = Readonly<{
   /** Identity of this delivery, K = change:consumer. Bound into the commit trailer. */
   deliveryKey: string;
   /**
-   * The tenant this delivery belongs to (#724). When set, the transport is
-   * wrapped with the fail-closed tenant-identity guard so no customer-facing
-   * write can carry the internal tenant id. The state machine itself never reads
-   * it — it only threads the guard onto the transport — so a state-machine unit
-   * test may omit it.
+   * The tenant this delivery belongs to (#724). REQUIRED: the transport is always
+   * wrapped with the fail-closed tenant-identity guard, so no customer-facing
+   * write can carry the internal tenant id. An empty id throws rather than
+   * disabling the guard. The state machine never reads it beyond threading the
+   * guard onto the transport.
    */
-  tenantId?: string;
+  tenantId: string;
   title: string;
   body: string;
   commitDate: string;
@@ -554,10 +555,11 @@ export async function deliverAdoptiveDraftWithOctokit(
   // included — before it reaches the repo. The guard throws AdoptiveDraftBlockedError
   // so the App outage path classifies it permanent and the pipeline records the
   // named, non-retryable delivery_blocked code.
-  const tx = input.tenantId
-    ? guardGitHubWrites(octokit, input.tenantId, () =>
-        new AdoptiveDraftBlockedError(TENANT_IDENTITY_DELIVERY_ERROR))
-    : octokit;
+  const tx = guardGitHubWrites(
+    octokit,
+    assertTenantIdPresent(input.tenantId),
+    () => new AdoptiveDraftBlockedError(TENANT_IDENTITY_DELIVERY_ERROR),
+  );
   const bodyDigest = adoptiveBodyDigest(input.title, input.body);
   // Build our commit up front (object writes only). Its tree sha is the content
   // bound into ours(); its sha is the commit createRef/updateRef will point at.

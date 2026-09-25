@@ -12,7 +12,14 @@ import {
   getPr,
   type AppDb,
 } from "@mendpoint/db";
-import { MockGitHubDelivery } from "@mendpoint/github";
+import {
+  MockGitHubDelivery,
+  AdoptiveDraftBlockedError,
+  TENANT_IDENTITY_DELIVERY_ERROR,
+  type GitHubDelivery,
+  type AdoptiveDraftInput,
+  type AdoptiveDraftResult,
+} from "@mendpoint/github";
 import { newId, nowIso } from "@mendpoint/shared";
 import {
   retryConsumerDelivery,
@@ -137,6 +144,16 @@ describe("renderPublicPrIdentity — re-project stored text to public identity (
     expect(out).toContain('"tenantId":""'); // bare id removed from the JSON binding
   });
 
+  it("rewrites the server checkout path to the public owner/repo when known", () => {
+    const out = renderPublicPrIdentity(MAIN_ERA_BODY, TENANT, {
+      reposDir: "/srv/mendpoint/repos",
+      ownerRepo: "org/shop-app",
+    });
+    expect(out).not.toContain(TENANT);
+    expect(out).not.toContain("/srv/mendpoint/repos"); // server layout removed
+    expect(out).toContain("- org/shop-app"); // #713's registry identity
+  });
+
   it("is a no-op for a body that never carried the id", () => {
     const clean = "### Consumer registry\n- org/shop-app\n";
     expect(renderPublicPrIdentity(clean, TENANT)).toBe(clean);
@@ -172,59 +189,165 @@ describe("delivery-only retry re-renders a main-era body (#724)", () => {
   });
 });
 
-describe("refreshOpenDraftBodies — one-time refresh of open drafts (#724)", () => {
+/**
+ * A controllable delivery double for the refresh accounting: it reports a
+ * configured LIVE body/state and a configured ADOPT outcome, and counts adoptive
+ * writes. This exercises the refresh's third-state accounting (blocker 2) — which
+ * outcome each disposition produces and whether the DB row body is written — apart
+ * from the real adoption state machine.
+ */
+type AdoptOutcome = "converge" | "foreign_head" | "closed" | "block";
+function fakeRefreshDelivery(config: {
+  liveBody: string;
+  liveState?: "open" | "closed";
+  adopt: AdoptOutcome;
+}): { delivery: GitHubDelivery; adoptCalls: () => number } {
+  let adoptCalls = 0;
+  const notUsed = async (): Promise<never> => {
+    throw new Error("refresh_delivery_method_not_expected");
+  };
+  const delivery = {
+    deliverExactDraft: notUsed,
+    createBranch: notUsed,
+    commitFiles: notUsed,
+    openPullRequest: notUsed,
+    async getOpenPullRequest(_owner: string, _repo: string, _prNumber: number) {
+      return { body: config.liveBody, state: config.liveState ?? ("open" as const), draft: true };
+    },
+    async deliverAdoptiveDraft(
+      input: Omit<AdoptiveDraftInput, "body">,
+      options: { resolveBody: () => string },
+    ): Promise<AdoptiveDraftResult> {
+      adoptCalls += 1;
+      if (config.adopt === "block") {
+        throw new AdoptiveDraftBlockedError(TENANT_IDENTITY_DELIVERY_ERROR);
+      }
+      const state = config.adopt === "closed" ? ("closed" as const) : ("draft" as const);
+      // "converge" returns our re-rendered clean body; "foreign_head" leaves the
+      // live (still-leaking) body untouched, exactly as ADOPT does on a human head.
+      const body = config.adopt === "converge" ? options.resolveBody() : config.liveBody;
+      return Object.freeze({
+        number: 1,
+        url: `https://github.com/org/${REPO_KEY}/pull/1`,
+        branch: input.branch,
+        title: input.title,
+        draft: true,
+        state,
+        baseBranch: input.baseBranch,
+        deliveredBaseSha: input.expectedBaseSha,
+        deliveredHeadSha: "c".repeat(40),
+        body,
+      });
+    },
+  } as unknown as GitHubDelivery;
+  return { delivery, adoptCalls: () => adoptCalls };
+}
+
+describe("refreshOpenDraftBodies — one-time refresh of open drafts (#724 blocker 2)", () => {
+  const reposDir = "/srv/mendpoint/repos";
   function seedTenant(db: AppDb): void {
     insertTenant(db, { id: TENANT, slug: "shop-tenant", name: "Shop Tenant", createdAt: nowIso() });
   }
-
-  it("dry-run counts affected drafts per tenant and writes nothing", async () => {
-    const db = freshDb();
-    seedTenant(db);
+  function seedOpenDraft(db: AppDb): string {
     const consumerId = seedConsumer(db);
     seedDeliveredRow(db, consumerId, {
       id: "pr-open", changeId: "change-open", status: "draft", prNumber: 1, body: MAIN_ERA_BODY, branch: "mendpoint/acme-payments-v2",
     });
-    const result = await refreshOpenDraftBodies({ db, reposDir: "/srv/mendpoint/repos", dryRun: true });
-    const tenant = result.tenants.find((t) => t.tenantId === TENANT);
-    expect(tenant?.affected).toBe(1);
+    return consumerId;
+  }
+
+  it("dry-run reads the live body, counts affected, and writes nothing (no adoptive write)", async () => {
+    const db = freshDb();
+    seedTenant(db);
+    seedOpenDraft(db);
+    const fake = fakeRefreshDelivery({ liveBody: MAIN_ERA_BODY, adopt: "converge" });
+    const result = await refreshOpenDraftBodies({ db, reposDir, dryRun: true, deliveryFor: () => ({ delivery: fake.delivery }) });
+    expect(result.tenants.find((t) => t.tenantId === TENANT)?.affected).toBe(1);
     expect(result.totalUpdated).toBe(0);
-    // Nothing written: the stored body still carries the id.
-    expect(getPr(db, "pr-open", TENANT)?.body).toContain(TENANT);
+    expect(fake.adoptCalls()).toBe(0); // no write attempted in dry-run
+    expect(getPr(db, "pr-open", TENANT)?.body).toContain(TENANT); // DB untouched
   });
 
-  it("updates an affected open draft once and is idempotent on re-run", async () => {
+  it("updates a converged draft once, writes the clean body, and is idempotent", async () => {
     const db = freshDb();
     seedTenant(db);
-    const consumerId = seedConsumer(db);
-    seedDeliveredRow(db, consumerId, {
-      id: "pr-open", changeId: "change-open", status: "draft", prNumber: 1, body: MAIN_ERA_BODY, branch: "mendpoint/acme-payments-v2",
+    seedOpenDraft(db);
+    const first = await refreshOpenDraftBodies({
+      db, reposDir, dryRun: false,
+      deliveryFor: () => ({ delivery: fakeRefreshDelivery({ liveBody: MAIN_ERA_BODY, adopt: "converge" }).delivery }),
     });
-    const github = new MockGitHubDelivery(join(dirs[dirs.length - 1]!, "gh"));
-    const deliveryFor = () => ({ delivery: github });
-    const first = await refreshOpenDraftBodies({ db, reposDir: "/srv/mendpoint/repos", dryRun: false, deliveryFor });
     expect(first.tenants.find((t) => t.tenantId === TENANT)?.updated).toBe(1);
     const afterFirst = getPr(db, "pr-open", TENANT);
     expect(afterFirst?.body).not.toContain(TENANT);
-    // Re-run: the row is no longer affected (its stored body is now clean).
-    const second = await refreshOpenDraftBodies({ db, reposDir: "/srv/mendpoint/repos", dryRun: false, deliveryFor });
+    expect(afterFirst?.body).toContain("org/shop-app"); // checkout path -> owner/repo
+    // The DB body is now clean, so a re-run's live read (still leaking here) would
+    // re-converge idempotently; and the DB detection no longer flags it.
+    const second = await refreshOpenDraftBodies({
+      db, reposDir, dryRun: true,
+      deliveryFor: () => ({ delivery: fakeRefreshDelivery({ liveBody: afterFirst!.body, adopt: "converge" }).delivery }),
+    });
     expect(second.totalAffected).toBe(0);
-    expect(second.totalUpdated).toBe(0);
   });
 
-  it("never touches a closed or merged PR", async () => {
+  it("does NOT count a foreign-head draft as updated and does NOT overwrite the DB body (so it stays visible)", async () => {
     const db = freshDb();
     seedTenant(db);
-    const consumerId = seedConsumer(db);
-    seedDeliveredRow(db, consumerId, {
-      id: "pr-closed", changeId: "change-closed", status: "closed", prNumber: 2, body: MAIN_ERA_BODY, branch: "mendpoint/closed",
+    seedOpenDraft(db);
+    // ADOPT respects the human head: it returns the old (still-leaking) live body.
+    const result = await refreshOpenDraftBodies({
+      db, reposDir, dryRun: false,
+      deliveryFor: () => ({ delivery: fakeRefreshDelivery({ liveBody: MAIN_ERA_BODY, adopt: "foreign_head" }).delivery }),
     });
-    seedDeliveredRow(db, consumerId, {
-      id: "pr-merged", changeId: "change-merged", status: "merged", prNumber: 3, body: MAIN_ERA_BODY, branch: "mendpoint/merged",
+    const tenant = result.tenants.find((t) => t.tenantId === TENANT);
+    expect(tenant?.updated).toBe(0);
+    expect(tenant?.skippedForeignHead).toHaveLength(1);
+    // The DB row body is NOT overwritten clean, so a following dry-run still flags it.
+    expect(getPr(db, "pr-open", TENANT)?.body).toContain(TENANT);
+    const followUp = await refreshOpenDraftBodies({
+      db, reposDir, dryRun: true,
+      deliveryFor: () => ({ delivery: fakeRefreshDelivery({ liveBody: MAIN_ERA_BODY, adopt: "foreign_head" }).delivery }),
     });
-    const result = await refreshOpenDraftBodies({ db, reposDir: "/srv/mendpoint/repos", dryRun: true });
+    expect(followUp.totalAffected).toBe(1);
+  });
+
+  it("skips a human-edited description without attempting an adoptive write", async () => {
+    const db = freshDb();
+    seedTenant(db);
+    seedOpenDraft(db);
+    // The human added a note beyond the leaked tokens; the projected bodies differ.
+    const fake = fakeRefreshDelivery({ liveBody: `${MAIN_ERA_BODY}\n\nHuman: please hold this PR.`, adopt: "converge" });
+    const result = await refreshOpenDraftBodies({ db, reposDir, dryRun: false, deliveryFor: () => ({ delivery: fake.delivery }) });
+    const tenant = result.tenants.find((t) => t.tenantId === TENANT);
+    expect(tenant?.updated).toBe(0);
+    expect(tenant?.skippedHumanEdited).toHaveLength(1);
+    expect(fake.adoptCalls()).toBe(0);
+    expect(getPr(db, "pr-open", TENANT)?.body).toContain(TENANT);
+  });
+
+  it("counts a re-render the guard still refuses as blocked, not updated", async () => {
+    const db = freshDb();
+    seedTenant(db);
+    seedOpenDraft(db);
+    const result = await refreshOpenDraftBodies({
+      db, reposDir, dryRun: false,
+      deliveryFor: () => ({ delivery: fakeRefreshDelivery({ liveBody: MAIN_ERA_BODY, adopt: "block" }).delivery }),
+    });
+    const tenant = result.tenants.find((t) => t.tenantId === TENANT);
+    expect(tenant?.updated).toBe(0);
+    expect(tenant?.blocked).toHaveLength(1);
+    expect(getPr(db, "pr-open", TENANT)?.body).toContain(TENANT);
+  });
+
+  it("never counts a closed PR (state read from GitHub) as affected", async () => {
+    const db = freshDb();
+    seedTenant(db);
+    seedOpenDraft(db);
+    const result = await refreshOpenDraftBodies({
+      db, reposDir, dryRun: false,
+      deliveryFor: () => ({ delivery: fakeRefreshDelivery({ liveBody: MAIN_ERA_BODY, liveState: "closed", adopt: "converge" }).delivery }),
+    });
     expect(result.totalAffected).toBe(0);
-    expect(getPr(db, "pr-closed", TENANT)?.body).toContain(TENANT);
-    expect(getPr(db, "pr-merged", TENANT)?.body).toContain(TENANT);
+    expect(result.totalUpdated).toBe(0);
   });
 });
 

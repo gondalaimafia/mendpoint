@@ -1,4 +1,14 @@
 import type { Octokit } from "@octokit/rest";
+import { TENANT_IDENTITY_DELIVERY_ERROR } from "./tenant-identity-guard.js";
+
+/**
+ * The fail-closed tenant-identity guard (#724) throws BEFORE the API call, so a
+ * refused write is deterministic — no remote side effect happened. It must never
+ * be laundered into a "remote side effect uncertain" outcome; rethrow it as-is.
+ */
+function isTenantIdentityGuardError(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === TENANT_IDENTITY_DELIVERY_ERROR;
+}
 
 const SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
@@ -317,6 +327,7 @@ export async function deliverExactDraftWithOctokit(
       draft: true,
     }));
   } catch (error) {
+    if (isTenantIdentityGuardError(error)) throw error;
     try {
       const recovered = await recoverExactPull(octokit, input, commitSha);
       if (recovered) return recovered;

@@ -3298,7 +3298,7 @@ export function transformerAdaptiveGitHubDelivery(
         ) {
           throw new Error("transformer_adaptive_delivery_installation_invalid");
         }
-        return createAppDelivery(installationId, credentials, [repositoryId])
+        return createAppDelivery(installationId, tenantId, credentials, [repositoryId])
           .deliverExactDraft(input);
       }
       const token = env.GITHUB_TOKEN?.trim();
@@ -3326,7 +3326,7 @@ export function transformerAdaptiveGitHubDelivery(
       ) {
         throw new Error("transformer_adaptive_delivery_pat_repository_not_pinned");
       }
-      const delivery = new OctokitGitHubDelivery(token);
+      const delivery = new OctokitGitHubDelivery(tenantId, token);
       await delivery.assertRepositoryIdentity(
         input.owner,
         input.repo,
@@ -3348,11 +3348,11 @@ export function transformerAdaptiveGitHubDelivery(
  * org-wide GitLab App install. The other GitHubDelivery methods are unused by
  * this delivery path and stay unsupported.
  */
-export function transformerAdaptiveGitLabDelivery(env: NodeJS.ProcessEnv): GitHubDelivery {
+export function transformerAdaptiveGitLabDelivery(env: NodeJS.ProcessEnv, tenantId: string): GitHubDelivery {
   const unsupported = async (): Promise<never> => {
     throw new Error("transformer_adaptive_delivery_exact_draft_only");
   };
-  const exactDraft = gitlabAsExactDraftDelivery(createGitLabDelivery(env.GITLAB_MODE));
+  const exactDraft = gitlabAsExactDraftDelivery(createGitLabDelivery(env.GITLAB_MODE, tenantId));
   return {
     deliverExactDraft: (input: ExactDraftDeliveryInput) => exactDraft.deliverExactDraft(input),
     createBranch: unsupported as GitHubDelivery["createBranch"],
@@ -3374,7 +3374,7 @@ export function transformerAdaptiveScmDelivery(
   env: NodeJS.ProcessEnv,
 ): GitHubDelivery {
   if (env.SCM_PROVIDER?.trim().toLowerCase() === "gitlab") {
-    return transformerAdaptiveGitLabDelivery(env);
+    return transformerAdaptiveGitLabDelivery(env, tenantId);
   }
   return transformerAdaptiveGitHubDelivery(db, tenantId, env);
 }

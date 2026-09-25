@@ -21,6 +21,18 @@
  * customer repo would carry the internal tenant id. */
 export const TENANT_IDENTITY_DELIVERY_ERROR = "tenant_identity_in_customer_output";
 
+/**
+ * A tenant-scoped GitHub client must be built with a real tenant id, so the guard
+ * can never be silently disabled by an omitted or empty id (#724). Call this at
+ * construction; a missing/empty id throws rather than failing open.
+ */
+export function assertTenantIdPresent(tenantId: string): string {
+  if (typeof tenantId !== "string" || tenantId.trim() === "") {
+    throw new Error("tenant_identity_guard_requires_tenant_id");
+  }
+  return tenantId;
+}
+
 /** The customer-facing GitHub write kinds the guard inspects. */
 export type CustomerWriteKind =
   | "title"

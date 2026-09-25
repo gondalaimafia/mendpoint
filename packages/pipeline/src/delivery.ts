@@ -34,6 +34,17 @@ import {
 import { isValidGitBranchName } from "@mendpoint/generation";
 import { renderPublicPrIdentity } from "./public-pr-identity.js";
 
+/** Public-identity re-render options for a retry: the configured repos root and
+ * the consumer's public owner/repo, so a legacy checkout path becomes owner/repo. */
+function retryPublicIdentityOptions(
+  consumer: Readonly<{ github_owner: string; github_repo: string }>,
+): { reposDir: string | null; ownerRepo: string } {
+  return {
+    reposDir: process.env.MENDPOINT_REPOS_DIR?.trim() || null,
+    ownerRepo: `${consumer.github_owner}/${consumer.github_repo}`,
+  };
+}
+
 /** ~7-day cap on retrying a stuck delivery before it abandons (D10). */
 export const GITHUB_DELIVERY_ABANDON_AFTER_MS = 7 * 24 * 60 * 60 * 1_000;
 
@@ -407,11 +418,12 @@ export async function retryConsumerDelivery(
     // re-sending the pre-upgrade text. Adoption identity is the commit trailer/tree
     // and the branch — never the body bytes — so re-rendering the body is safe and
     // ADOPT converges it. The branch is the delivery identity and is left as-is; if
-    // it somehow carried the id the fail-closed guard blocks the write.
-    title: renderPublicPrIdentity(artifact.title, tenantId),
+    // it somehow carried the id the fail-closed guard blocks the write. The server
+    // checkout path is rewritten to the public owner/repo (#724 should-fix).
+    title: renderPublicPrIdentity(artifact.title, tenantId, retryPublicIdentityOptions(consumer)),
     risk: pr.risk,
     patch: pr.patch_unified,
-    body: renderPublicPrIdentity(artifact.body, tenantId),
+    body: renderPublicPrIdentity(artifact.body, tenantId, retryPublicIdentityOptions(consumer)),
     files,
     // Base = the refreshed remote head when available, else the artifact's base.
     baseSha: input.refreshedHeadSha ?? artifact.parentSha,

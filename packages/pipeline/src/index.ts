@@ -71,12 +71,14 @@ export {
   type RetryConsumerDeliveryResult,
   type DeliveryResolution,
 } from "./delivery.js";
-export { renderPublicPrIdentity } from "./public-pr-identity.js";
+export { renderPublicPrIdentity, type PublicPrIdentityOptions } from "./public-pr-identity.js";
 export {
   refreshOpenDraftBodies,
   type RefreshOpenDraftBodiesInput,
   type RefreshOpenDraftBodiesResult,
   type RefreshTenantResult,
+  type RefreshDraftOutcome,
+  type RefreshDeliveryFor,
 } from "./body-refresh.js";
 import { filterRepairEdits } from "./repair-policy.js";
 import {
@@ -570,7 +572,7 @@ export function createPipelineDeliveryResolver(input: PipelineInput, db: AppDb) 
   }
   const appCredentials = loadAppCredentials();
   const legacyToken = process.env.GITHUB_TOKEN?.trim();
-  const legacy = legacyToken ? new OctokitGitHubDelivery(legacyToken) : null;
+  const legacy = legacyToken ? new OctokitGitHubDelivery(input.tenantId, legacyToken) : null;
   const appDeliveries = new Map<string, GitHubDelivery>();
   const outage = createDependencyOutageQueue(db.raw);
   return (
@@ -741,6 +743,7 @@ export function createPipelineDeliveryResolver(input: PipelineInput, db: AppDb) 
       }
       delivery = createAppDelivery(
         numericInstallationId,
+        input.tenantId,
         appCredentials,
         [authorizedRepository.id],
         {
