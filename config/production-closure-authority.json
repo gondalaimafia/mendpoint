@@ -38,8 +38,8 @@
   "protectedFiles": {
     "config/production-closure-successors/closure-authority-quiet-sweep.yml": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9",
     "config/production-closure-successors/closure-authority-systemic-escalation.yml": "sha256:955f0df2589cb71181621b8aa29ca4215d3bf4a29684985d74bf391d2b98e422",
-    ".github/workflows/ci.yml": "sha256:ce601e501d90bccd97ada3708ed7daee352db08d0116272a3ac8e568c4e7482f",
-    "scripts/production-closure-ci-workflow.test.ts": "sha256:4ac1d482f5d28ac8100e34e5a3afbbc2dee403eec39791a02b2a57ccca1b5c0b",
+    ".github/workflows/ci.yml": "sha256:ac7c23c45a9ed01e25f7758223fd07a982c29a7a3e63402525356e443abeba89",
+    "scripts/production-closure-ci-workflow.test.ts": "sha256:59f5c7309fc3f2e892b8412746f1aebce87adec7b5d3dedbfa68614753de90dd",
     "package.json": "sha256:5166abfa08925beec8bbf6cc0078435bf37f1d4165e25524608924d840dd606a",
     "package-lock.json": "sha256:2e17589cf4818c9280c8715bc5f8beda197c804bb6ddceb6c131d59a9460c079",
     "tsconfig.base.json": "sha256:7c157e5eafd2be931e382044c0bdbf7008e111c119c3932f6fd31603a28e8ede",
