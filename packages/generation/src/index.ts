@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { graphPathDisplay, publicProviderSlug } from "@mendpoint/shared";
+import { graphPathDisplay, publicProviderSlug, publicSurfaceId } from "@mendpoint/shared";
 import type {
   Confidence,
   GraphPath,
@@ -489,8 +489,9 @@ export function generateMigration(input: GenerateInput): MigrationDraft {
           ...report.surfaces.slice(0, 8).map(
             (s) =>
               // The surface canonical id is a keyed internal id that begins with the stored
-              // slug; project it to public identity for the customer-facing body (#704/#713).
-              `- \`${publicProviderSlug(s.canonicalId)}\` (${s.severity}) — ${s.migrationStrategy}`,
+              // slug; project it to public identity by known-prefix removal so a `~` inside an
+              // OpenAPI path survives while the tenant namespace does not (#704/#713).
+              `- \`${publicSurfaceId(s.canonicalId, providerSlug)}\` (${s.severity}) — ${s.migrationStrategy}`,
           ),
           "",
         ].join("\n")

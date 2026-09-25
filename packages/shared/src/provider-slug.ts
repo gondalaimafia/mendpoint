@@ -20,34 +20,61 @@ export const TENANT_PRIVATE_SLUG_SEPARATOR = "~" as const;
  * so the public identity is the requested (unnamespaced) part. A shared / legacy-bare slug has no
  * separator and is returned unchanged, so shared-provider rendered output stays byte-identical.
  *
- * This is deliberately safe on a compound id that BEGINS with the stored slug — a surface
- * canonical id `<slug>.<path>.<op>` — because neither the tenant id (`[0-9a-f]{64}`) nor a
- * requested slug (`[a-z0-9-]`) can contain `~`, so the only `~` in such an id is the namespace
- * boundary and slicing after it yields `<requested><rest>`. Every string that a renderer sends to
- * a customer repo (PR title, body, commit message, branch, file content, check/comment text) must
- * derive from this projection, never from the raw stored slug.
+ * The tenant id never contains `~` (it is a 64-hex sha256 or an `[A-Za-z0-9._-]` id — see
+ * `safeTenantId`), and the requested slug never contains `~` (see {@link PROVIDER_SLUG_PATTERN}),
+ * so the FIRST `~` in a stored slug is always the namespace boundary. Splitting on the first
+ * separator (not the last) is what keeps a requested slug safe even though `~` is legal elsewhere.
+ *
+ * This function must ONLY be applied to a STORED SLUG. It must never be handed a compound id such
+ * as a surface canonical id (`<slug>.<path>.<op>`), because a `~` in an OpenAPI path would then be
+ * mistaken for the namespace boundary. Project a compound id with {@link publicSurfaceId} (which
+ * removes the known stored-slug prefix) or {@link publicGraphToken} instead.
  */
 export function publicProviderSlug(storedSlug: string): string {
-  const sepIndex = storedSlug.lastIndexOf(TENANT_PRIVATE_SLUG_SEPARATOR);
+  const sepIndex = storedSlug.indexOf(TENANT_PRIVATE_SLUG_SEPARATOR);
   return sepIndex === -1 ? storedSlug : storedSlug.slice(sepIndex + 1);
 }
 
 /**
- * Remove tenant scoping from a graph-rendered string so it is safe to show a customer.
- *
- * The Change Graph keys its nodes by tenant-scoped ids (`provider:<tenantId>:<slug>`,
- * `consumer:<tenantId>:<consumerId>`, ...) and a private provider's slug carries the
- * `<tenantId>~` namespace. Those keyed ids stay as-is in the graph store, ledgers and audits;
- * this projection is applied ONLY to the rendered graph section of a customer PR body, stripping
- * both the `<tenantId>:` scope prefix and the `<tenantId>~` private-slug namespace. For a shared
- * provider the result is byte-identical to today except that the tenant id is gone (#716); for a
- * private provider the namespaced slug additionally collapses to its public form (#704/#713).
+ * Project a surface canonical id (`<storedSlug>.<METHOD>.<path>.<op>...`) to its customer-facing
+ * form by KNOWN-PREFIX removal: the display id is `publicProviderSlug(storedSlug)` followed by the
+ * exact remainder of the canonical id after the stored-slug prefix. This never searches the id for
+ * a separator, so a `~` inside an OpenAPI path (`/v1/users/~me`) is preserved verbatim. A shared
+ * provider's canonical id is returned byte-identical because its public slug equals its stored one.
  */
-export function stripTenantScopeForDisplay(text: string, tenantId: string): string {
-  if (!tenantId) return text;
-  return text
-    .split(`${tenantId}${TENANT_PRIVATE_SLUG_SEPARATOR}`).join("")
-    .split(`${tenantId}:`).join("");
+export function publicSurfaceId(canonicalId: string, storedSlug: string): string {
+  if (canonicalId === storedSlug) return publicProviderSlug(storedSlug);
+  if (canonicalId.startsWith(`${storedSlug}.`)) {
+    return `${publicProviderSlug(storedSlug)}${canonicalId.slice(storedSlug.length)}`;
+  }
+  return canonicalId;
+}
+
+/**
+ * Project a Change-Graph node id or label to its customer-facing form. The graph keys its nodes by
+ * tenant-scoped ids (`provider:<tenantId>:<storedSlug>`, `endpoint:<tenantId>:<storedSlug>:<method>:<path>`,
+ * `surface:<storedSlug>.<path>.<op>`, `consumer:<tenantId>:<consumerId>`, ...) and a private
+ * provider's slug carries the `<tenantId>~` namespace. Removal is anchored to the KNOWN identifiers,
+ * never a free-text substring strip:
+ *  - a whole `:`-delimited segment equal to the tenant id is dropped (the tenant scope), and
+ *  - a segment equal to the stored slug, or that begins with `<storedSlug>.`, has that stored-slug
+ *    prefix replaced by the public slug (so a `~` inside an API path segment is preserved).
+ * Every other segment is left byte-identical, so a shared provider's output only loses its tenant
+ * scope (#716) and a private provider's namespaced slug collapses to its public form (#704/#713).
+ */
+export function publicGraphToken(token: string, tenantId: string, storedSlug: string): string {
+  const publicSlug = publicProviderSlug(storedSlug);
+  return token
+    .split(":")
+    .filter((seg) => seg !== tenantId)
+    .map((seg) =>
+      seg === storedSlug
+        ? publicSlug
+        : seg.startsWith(`${storedSlug}.`)
+          ? `${publicSlug}${seg.slice(storedSlug.length)}`
+          : seg,
+    )
+    .join(":");
 }
 
 /**

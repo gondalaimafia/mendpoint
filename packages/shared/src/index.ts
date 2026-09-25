@@ -46,7 +46,8 @@ export {
   PROVIDER_SLUG_PATTERN,
   isValidProviderSlug,
   publicProviderSlug,
-  stripTenantScopeForDisplay,
+  publicSurfaceId,
+  publicGraphToken,
 } from "./provider-slug.js";
 
 /**

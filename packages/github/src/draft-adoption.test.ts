@@ -6,7 +6,6 @@ import {
   type AdoptiveDraftInput,
 } from "./draft-adoption.js";
 import { FakeGitHub, type FakeFaultController } from "./testing/fake-github.js";
-import { stripTenantScopeForDisplay } from "@mendpoint/shared";
 
 const OWNER = "acme";
 const REPO = "shop";
@@ -104,15 +103,20 @@ describe("adoptive draft delivery state machine", () => {
   });
 
   it("re-adopts a draft created by main after the graph section drops the tenant id (#606 x #716)", async () => {
-    // A draft delivered by MAIN carries the tenant id in its graph section. The HEAD build strips
-    // it (stripTenantScopeForDisplay). Adoption identity excludes the body, so the head re-delivery
-    // must adopt the same PR (same branch + delivery key) and converge the body — never a duplicate.
+    // A draft delivered by MAIN carries the tenant id in its graph section. The HEAD build renders
+    // the same section from public identity (no tenant id). Adoption identity excludes the body, so
+    // on the next full re-render the head re-delivery must adopt the same PR (same branch + delivery
+    // key) and converge the body once — never a duplicate. This is the upgrade-window closure: a
+    // main-era draft's body is updated on the first head re-render, not left carrying the id.
     const tenantId = "f".repeat(64);
     const mainEraBody = [
       "### Graph-RAG: blast_radius",
       `- (Provider) ${tenantId}:acme-payments \`provider:${tenantId}:acme-payments\``,
     ].join("\n");
-    const headBody = stripTenantScopeForDisplay(mainEraBody, tenantId);
+    const headBody = [
+      "### Graph-RAG: blast_radius",
+      "- (Provider) acme-payments `provider:acme-payments`",
+    ].join("\n");
     expect(headBody.includes(tenantId)).toBe(false);
 
     const { fake, baseSha } = seed();
