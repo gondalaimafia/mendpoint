@@ -1237,13 +1237,14 @@ exit 0
     const run = shippedStep(REMEDIATE).run;
     expect(run).not.toContain("gh run watch");
     expect(run).toContain("for _ in $(seq 1 18); do");
-    // The observe window must cover the dispatched backup's MAXIMUM duration.
-    // That backup now waits out an in-progress deploy up to its ~929s settle
-    // budget (preamble + 720s total settle + two 51s attempts), so a 360s window
-    // (the old seq 1 36) would report failure on a run that then succeeds. 96 *
-    // 10s = 960s clears the 929s max with margin, and past it the run is
-    // genuinely hung and SHOULD be reported.
-    expect(run).toContain("for _ in $(seq 1 96); do");
+    // The finish-wait loop is DEADLINE-based, not iteration-count: a fixed
+    // `seq 1 96` * 10s loop is 960s only with instant GitHub responses, but at 1s
+    // per `gh run view` it really runs ~1058s, so the window a count delivers
+    // drifts with API latency. An elapsed-seconds deadline is a true wall-clock
+    // bound (issue #722, item 4b). The old iteration-count loop is gone.
+    expect(run).not.toContain("for _ in $(seq 1 96); do");
+    expect(run).toContain('REMEDIATION_OBSERVE_DEADLINE_SECONDS:=');
+    expect(run).toContain('while [ "$(date -u +%s)" -lt "$observe_deadline" ]; do');
     const freshness = (
       parse(
         readFileSync(resolve(root, ".github/workflows/customer-backup-watchdog.yml"), "utf8"),
@@ -1252,13 +1253,114 @@ exit 0
     // The job timeout must clear the SERIAL worst case of every inside-the-step
     // bound one run can hit in order: ensure the machine is up (list <=120s +
     // start <=120s + lost-lease re-read <=60s + readiness <=180s = <=8min) +
-    // read (<=5min) + judge (~0) + remediate (observe <=3min + finish <=16min +
-    // re-read <=5min = <=24min). The finish window grew from 6 to 16min with the
-    // longer settling backup above, so the timeout grew from 40 to 50. With setup
-    // that is ~40min of bounded work, so 50 leaves real headroom and stays under
-    // the hourly (`29 * * * *`) schedule so runs never overlap.
-    expect(freshness["timeout-minutes"]).toBe(50);
+    // read (<=5min) + judge (~0) + remediate (observe <=3min + finish <=25min +
+    // re-read <=5min = <=33min). The finish window grew to 1500s (25min) to clear
+    // the dispatched backup's ~1109s slow-read worst case plus margin, so the
+    // timeout grew from 50 to 55. That is ~46min of bounded work, so 55 leaves
+    // real headroom. 55min is under the hourly (`29 * * * *`) schedule, so two
+    // SCHEDULED runs cannot overlap; a workflow_run or manual run can overlap a
+    // scheduled one (own concurrency group), which is safe (see the workflow).
+    expect(freshness["timeout-minutes"]).toBe(55);
     expect(freshness.permissions).toMatchObject({ "actions": "write", "issues": "write" });
+  });
+
+  it("item 4: derives the backup worst case from the SHIPPED settle knobs and ties the window to it", () => {
+    // The window and the backup budget live in two files, so pin them TOGETHER.
+    // Crucially the backup worst case is COMPUTED from the shipped settle knobs
+    // (SETTLE_MAX_SECONDS, SETTLE_POLL_SECONDS, SETTLE_READ_TIMEOUT_SECONDS), NOT
+    // read from a comment: matching the comment let SETTLE_MAX_SECONDS 720->1100
+    // and SETTLE_READ_TIMEOUT_SECONDS 30->120 push the real worst case past 1200
+    // with every test green (issue #722 re-review, finding 1). The formula is the
+    // one documented in customer-backup.yml's budget comment:
+    //   preamble + settleMax + poll + (2*attempts + 2)*readTimeout + attempts*backup
+    // A read that HITS the timeout falls open and shortens the run, so the worst
+    // readable read is just under the bound. With VARYING read latency the worst
+    // path is: settle 1 overruns by ONE poll + 2 reads; attempt 1; a confirm read
+    // (2 reads); settle 2's first read settles (2 reads, no second poll); attempt
+    // 2. So one poll and (2*attempts + 2) reads, not one overrun per window.
+    const backupSource = readFileSync(
+      resolve(root, ".github/workflows/customer-backup.yml"),
+      "utf8",
+    );
+    const num = (re: RegExp, what: string, source = backupSource): number => {
+      const m = re.exec(source);
+      if (!m) throw new Error(`could not parse ${what}`);
+      return Number(m[1]);
+    };
+    // The tunable settle knobs, from their shell `:=` defaults (the mutation targets).
+    const settleMax = num(/SETTLE_MAX_SECONDS:=(\d+)/, "SETTLE_MAX_SECONDS");
+    const settlePoll = num(/SETTLE_POLL_SECONDS:=(\d+)/, "SETTLE_POLL_SECONDS");
+    const readTimeout = num(/SETTLE_READ_TIMEOUT_SECONDS:=(\d+)/, "SETTLE_READ_TIMEOUT_SECONDS");
+    // The retry cap in the run loop is the number of settle windows AND attempts.
+    const attempts = num(/"\$attempt" -ge (\d+)/, "attempt retry cap");
+    // The measured production constants, documented as named markers.
+    const preamble = num(/PREAMBLE_SECONDS\s*=\s*(\d+)/, "PREAMBLE_SECONDS");
+    const backupAttempt = num(/BACKUP_ATTEMPT_SECONDS\s*=\s*(\d+)/, "BACKUP_ATTEMPT_SECONDS");
+    // The controller's active-age ceiling comes from the SHIPPED delivery
+    // workflow env (the real value the controller enforces), never a comment or a
+    // literal here, so lowering it there is caught by this budget test too.
+    const deliverySource = readFileSync(
+      resolve(root, ".github/workflows/customer-backup-delivery.yml"),
+      "utf8",
+    );
+    const controllerCeiling = num(
+      /DELIVERY_MAX_ACTIVE_AGE_SECONDS:\s*"?(\d+)"?/,
+      "DELIVERY_MAX_ACTIVE_AGE_SECONDS",
+      deliverySource,
+    );
+    const documentedWorstCase = num(
+      /BACKUP_WORST_CASE_ACTIVE_AGE_SECONDS\s*=\s*(\d+)/,
+      "BACKUP_WORST_CASE_ACTIVE_AGE_SECONDS",
+    );
+
+    const worstCase =
+      preamble +
+      settleMax +
+      settlePoll +
+      (2 * attempts + 2) * readTimeout +
+      attempts * backupAttempt;
+
+    // With the shipped knobs (720/30/30, attempts 2, 107/51) this is 1139 (the
+    // reviewer measured 1132s with a varying-latency mix). The comment's documented
+    // number must equal the formula, so the two cannot drift and a knob change not
+    // reflected in the budget comment fails here.
+    expect(worstCase).toBeGreaterThan(0);
+    expect(documentedWorstCase).toBe(worstCase);
+
+    const windowMatch = /REMEDIATION_OBSERVE_DEADLINE_SECONDS:=(\d+)/.exec(shippedStep(REMEDIATE).run);
+    if (!windowMatch) {
+      throw new Error("REMEDIATION_OBSERVE_DEADLINE_SECONDS default not found in the remediate step");
+    }
+    const observeWindow = Number(windowMatch[1]);
+    // The same 300s the delivery controller uses for its observation margin.
+    const MARGIN = 300;
+
+    // The worst case must stay under the controller's active-age ceiling, and the
+    // watchdog observe window must clear it plus margin. Raising SETTLE_MAX_SECONDS
+    // or SETTLE_READ_TIMEOUT_SECONDS grows `worstCase` and fails BOTH assertions.
+    expect(worstCase).toBeLessThan(controllerCeiling);
+    expect(observeWindow - MARGIN).toBeGreaterThanOrEqual(worstCase);
+  });
+
+  it("item 4d: a dispatched backup still hung at the observe deadline is reported, not passed", () => {
+    // The window must still END: a run that never completes within it is a
+    // genuinely hung backup and MUST alert. With a zero window and a run that
+    // stays in progress, the finish-wait reports it unsuccessful rather than
+    // waiting forever or reading not-completed as success.
+    const context = scenario({
+      gh: {
+        GH_STUB_RUN_STATE: "in_progress",
+        REMEDIATION_OBSERVE_DEADLINE_SECONDS: "0",
+      },
+    });
+    const step = remediate(context);
+    expect(step.status).toBe(1);
+    expect(step.stderr).toContain("customer_backup_remediation_run_unsuccessful conclusion=not_completed");
+    expect(context.verdict().remediation).toMatchObject({
+      outcome: "backup_run_unsuccessful",
+      conclusion: "not_completed",
+    });
+    expect(decide(context).status).toBe(1);
   });
 
   it("leaves the backup workflow's own schedule, RPO and alert untouched", () => {

@@ -350,6 +350,10 @@ const FLYCTL_SETTLE = [
   "}",
   'case "$1" in',
   "  releases)",
+  // A settle read that hangs: sleeps before answering, so a `timeout` wrapper
+  // around this read is what makes it return `unknown` at the bound instead of
+  // blocking. Gated on the env var, so every other test is unaffected.
+  '    [ -n "${RELEASES_DELAY:-}" ] && sleep "$RELEASES_DELAY"',
   '    tok="$(pick "$REL_COUNT" "$RELEASES_SEQ")"',
   '    case "$tok" in',
   '      inflight) printf \'[{"Version":10,"Status":"running","CreatedAt":"%s"}]\' "$now" ;;',
@@ -361,10 +365,13 @@ const FLYCTL_SETTLE = [
   '      complete-noage) printf \'[{"Version":10,"Status":"complete"}]\' ;;',
   '      stale-complete) printf \'[{"Version":10,"Status":"complete","CreatedAt":"2020-01-01T00:00:00Z"}]\' ;;',
   '      none) printf \'[]\' ;;',
+  '      garbage) printf \'not json at all\' ;;',
+  '      noversion) printf \'[{"Status":"complete","CreatedAt":"%s"}]\' "$now" ;;',
   '      fail) echo "Error: unauthorized" >&2; exit 1 ;;',
   "    esac",
   "    exit 0 ;;",
   "  machine)",
+  '    [ -n "${MACHINES_DELAY:-}" ] && sleep "$MACHINES_DELAY"',
   '    tok="$(pick "$MACH_COUNT" "$MACHINES_SEQ")"',
   '    case "$tok" in',
   '      started) printf \'[{"id":"m1","state":"started"}]\' ;;',
@@ -433,6 +440,12 @@ function runBackupStep(options: {
   settleMaxSeconds?: string;
   settleRecentSeconds?: string;
   settlePollSeconds?: string;
+  /** Per-read `timeout` bound for the settle reads (script default is 30). */
+  settleReadTimeoutSeconds?: string;
+  /** Seconds the stubbed `flyctl releases` sleeps before answering (a hung read). */
+  releasesDelay?: string;
+  /** Seconds the stubbed `flyctl machine list` sleeps before answering. */
+  machinesDelay?: string;
   /**
    * When set, install stubbed `date`/`sleep` that advance a virtual clock, so a
    * settle deadline spanning hundreds of seconds is exercised deterministically
@@ -500,6 +513,9 @@ function runBackupStep(options: {
       SETTLE_POLL_SECONDS: options.settlePollSeconds ?? "0",
       SETTLE_MAX_SECONDS: options.settleMaxSeconds ?? "300",
       SETTLE_RECENT_SECONDS: options.settleRecentSeconds ?? "300",
+      SETTLE_READ_TIMEOUT_SECONDS: options.settleReadTimeoutSeconds ?? "",
+      RELEASES_DELAY: options.releasesDelay ?? "",
+      MACHINES_DELAY: options.machinesDelay ?? "",
       ...clockEnv,
     },
   });
@@ -627,6 +643,113 @@ describe("Run authenticated customer backup — settle wait under GitHub's shell
     });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("customer_backup_settle_flyctl_unreadable");
+    expect(result.sshCalls.length).toBe(1);
+  }, 60_000);
+
+  // --- Follow-up review of #714 (issue #722): bound the settle reads, parse
+  // strictly, and make the known-value guard load-bearing.
+
+  it("item 1: wraps BOTH settle reads in a timeout bound", () => {
+    const collapsed = step("Run authenticated customer backup").run
+      .replace(/\\\n\s+/g, " ")
+      .replace(/[ \t]+/g, " ");
+    expect(collapsed).toContain('timeout "$SETTLE_READ_TIMEOUT_SECONDS" flyctl releases');
+    expect(collapsed).toContain('timeout "$SETTLE_READ_TIMEOUT_SECONDS" flyctl machine list');
+  });
+
+  it("item 1: a hung settle read times out to unknown and falls open, instead of blocking", () => {
+    // The read is made to hang (RELEASES_DELAY/MACHINES_DELAY) past the 1s bound.
+    // With the timeout the hung read is `unknown`, so settle falls open and the
+    // backup still runs; WITHOUT it the read would eventually return `settled`
+    // and this fall-open message would never appear. Run once per read so
+    // removing the timeout from EITHER is caught.
+    for (const which of ["releases", "machines"] as const) {
+      const result = runBackupStep({
+        releasesSeq: "settled",
+        machinesSeq: "started",
+        sshSeq: "ok",
+        settleReadTimeoutSeconds: "1",
+        releasesDelay: which === "releases" ? "3" : "",
+        machinesDelay: which === "machines" ? "3" : "",
+      });
+      expect(result.status, `${which}: ${result.stderr}`).toBe(0);
+      expect(result.stdout, which).toContain("customer_backup_settle_flyctl_unreadable");
+      expect(result.sshCalls.length, which).toBe(1);
+    }
+  }, 60_000);
+
+  it("item 2: an empty release list at settle is UNKNOWN, so a later crash fails loudly and never retries", () => {
+    // flyctl exits 0 but returns []. This app always has releases, so an empty
+    // list is a read that cannot be trusted, NOT proof of "no releases": the
+    // baseline is `unknown`. The backup then crashes and the now-readable v10
+    // must NOT be read as a deploy that dropped the backup. Treating [] as a
+    // known -1 (the mutation) would make v10 "newer" and retry a crash into a
+    // green run.
+    const result = runBackupStep({
+      releasesSeq: "none settled",
+      machinesSeq: "started started",
+      sshSeq: "crash ok",
+    });
+    expect(result.status).toBe(7);
+    expect(result.stderr).toContain("customer_backup_run_failed");
+    expect(result.stderr).toContain("no_deploy_confirmed");
+    // No retry: exactly one ssh attempt.
+    expect(result.sshCalls.length).toBe(1);
+  }, 60_000);
+
+  it("item 2: an empty (or garbage) read at settle falls OPEN, not treated as settled", () => {
+    // flyctl exits 0 with [] (or non-JSON) and the machine is started. An empty
+    // list is not proof of "no releases"; it is a read we cannot trust, so the
+    // release read is UNREADABLE and settle falls open and attempts the backup.
+    // The old code left release_readable=true and treated [] as "settled" (the
+    // comment/code mismatch, re-review finding 2); this proves the code now
+    // matches the comment and falls open.
+    for (const tok of ["none", "garbage"]) {
+      const result = runBackupStep({
+        releasesSeq: tok,
+        machinesSeq: "started",
+        sshSeq: "ok",
+      });
+      expect(result.status, `${tok}: ${result.stderr}`).toBe(0);
+      expect(result.stdout, tok).toContain("customer_backup_settle_flyctl_unreadable");
+      expect(result.sshCalls.length, tok).toBe(1);
+    }
+  }, 60_000);
+
+  it("nit: a newest release with no Version field is UNKNOWN (not a known -1), so a crash fails loudly", () => {
+    // Real flyctl 0.4.100 always emits Version, but if it were ever absent the jq
+    // default must map it to `unknown`, not a known -1: a -1 baseline plus a later
+    // readable v10 would count as "newer" and retry a crash into a green run
+    // (re-review finding 3). Settle sees a complete release on a started machine,
+    // so it settles; the crash then has an unknown baseline and fails loudly.
+    const result = runBackupStep({
+      releasesSeq: "noversion settled",
+      machinesSeq: "started started",
+      sshSeq: "crash ok",
+    });
+    expect(result.status).toBe(7);
+    expect(result.stderr).toContain("no_deploy_confirmed");
+    // No retry: exactly one ssh attempt.
+    expect(result.sshCalls.length).toBe(1);
+  }, 60_000);
+
+  it("item 3: the known-value guard is load-bearing — an unknown baseline plus an in-progress deploy fails loudly", () => {
+    // Settle falls open (flyctl unreadable), so the baseline is `unknown`. The
+    // backup is dropped (severed ssh) and the post-failure read shows the newest
+    // release VISIBLY in progress. The explicit `!= unknown` guard blocks the
+    // `release_in_progress` retry branch, so this fails loudly. Deleting the
+    // guard lets that branch confirm a deploy and retry into a green run — the
+    // case the `unknown` sentinel making `-gt` false does NOT cover, and the
+    // reviewer's surviving mutation F1b.
+    const result = runBackupStep({
+      releasesSeq: "fail inflight settled",
+      machinesSeq: "fail started started",
+      sshSeq: "severed ok",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("customer_backup_run_failed");
+    expect(result.stderr).toContain("no_deploy_confirmed");
+    // No retry: exactly one ssh attempt, because the guard refused to confirm.
     expect(result.sshCalls.length).toBe(1);
   }, 60_000);
 

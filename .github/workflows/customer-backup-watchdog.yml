@@ -134,18 +134,24 @@ jobs:
     # summed because one run can hit all of them in order: ensure the machine is
     # up (list <=120s + start <=120s + lost-lease re-read <=60s + readiness
     # <=180s = <=8min) + read the evidence (<=5min) + judge (seconds) + remediate
-    # a stale backup (<=3min to observe the dispatched run + <=16min for it to
-    # finish + <=5min for the re-read = <=24min). The dispatched backup now waits
-    # out an in-progress deploy (up to its ~929s settle budget), so the observe
-    # window below grew from 6min to 16min and this timeout grew with it. With
-    # setup that is ~40min of bounded work, so 50 leaves real headroom rather than
-    # consuming it exactly, and stays under the hourly schedule so runs never
-    # overlap. Those waits are bounded
-    # INSIDE their steps on purpose: a wait that ran into this job timeout would
-    # cancel the job, and `if: failure()` alert steps do not run on a cancelled
-    # job — the machine-start recovery and the remediation would have muted the
-    # very alarm they exist to protect.
-    timeout-minutes: 50
+    # a stale backup (<=3min to observe the dispatched run + <=25min for it to
+    # finish + <=5min for the re-read = <=33min). The dispatched backup waits out
+    # an in-progress deploy up to its ~1109s worst-case settle budget (a
+    # slow-but-readable flyctl; see customer-backup.yml), so the observe window
+    # below is 1500s (>= that worst case + margin) and this timeout clears the
+    # sum: ~46min of bounded work, so 55 leaves real headroom rather than
+    # consuming it exactly. Those waits are bounded INSIDE their steps on purpose:
+    # a wait that ran into this job timeout would cancel the job, and
+    # `if: failure()` alert steps do not run on a cancelled job — the
+    # machine-start recovery and the remediation would have muted the very alarm
+    # they exist to protect.
+    #
+    # 55min is under the hourly schedule, so two SCHEDULED runs cannot overlap.
+    # A CI-triggered (workflow_run) or manual (workflow_dispatch) run, each in its
+    # own concurrency group, CAN overlap a scheduled run; that is safe because a
+    # duplicate backup is stopped by customer-backup.yml's own backup concurrency
+    # and the execution-gate fence, and the machine-start is idempotent.
+    timeout-minutes: 55
     environment: customer-production-backup
     permissions:
       contents: read
@@ -643,21 +649,35 @@ jobs:
             exit 1
           fi
 
-          # <=16min. A backup that waits out an in-progress customer deploy now
-          # runs up to its settle budget before it takes the backup: preamble +
-          # 720s total settle + two 51s attempts = ~929s (see the budget comment
-          # in customer-backup.yml). Below that the run is still healthy and
-          # settling, so a shorter window would report failure on a run that then
-          # succeeds; only past it is the run genuinely hung. 96 * 10s = 960s.
+          # The observe window must cover the dispatched backup's WORST-CASE
+          # duration, or a still-settling run would be reported as failed. That
+          # backup waits out an in-progress customer deploy up to its settle
+          # budget, and a slow-but-readable flyctl stretches the worst SUCCESSFUL
+          # path to about 1109s (BACKUP_WORST_CASE_ACTIVE_AGE_SECONDS in
+          # customer-backup.yml's budget comment). The window below is tied to
+          # that: 1500s clears 1109s + a 300s margin, and only PAST the window is
+          # a run genuinely hung and reported. A test reads both shipped YAMLs and
+          # asserts window >= that worst case + margin, so shrinking either side
+          # of the tie fails.
+          #
+          # DEADLINE-based, not iteration-count. A fixed `seq 1 96` * 10s loop is
+          # 960s only with instant GitHub responses; at 1s per `gh run view` the
+          # same loop really runs ~1058s, so the window a count delivers drifts
+          # with API latency and cannot be reasoned about against the budget. An
+          # elapsed-seconds deadline makes the window a true wall-clock bound,
+          # independent of how fast the API answers.
+          : "${REMEDIATION_OBSERVE_DEADLINE_SECONDS:=1500}"
+          : "${REMEDIATION_OBSERVE_POLL_SECONDS:=10}"
           conclusion=""
-          for _ in $(seq 1 96); do
+          observe_deadline=$(( $(date -u +%s) + REMEDIATION_OBSERVE_DEADLINE_SECONDS ))
+          while [ "$(date -u +%s)" -lt "$observe_deadline" ]; do
             observed="$(gh run view "$run_id" --repo "$GH_REPO" --json status,conclusion \
               --jq '.status + " " + (.conclusion // "")' || true)"
             if [ "${observed%% *}" = "completed" ]; then
               conclusion="${observed#* }"
               break
             fi
-            sleep 10
+            sleep "$REMEDIATION_OBSERVE_POLL_SECONDS"
           done
           if [ "$conclusion" != "success" ]; then
             echo "customer_backup_remediation_run_unsuccessful conclusion=${conclusion:-not_completed}" >&2
