@@ -381,6 +381,14 @@ export type MigrationPrRow = {
   origin_fanout_json: string | null;
   /** Automatic full-pipeline replays scheduled for this row (D10), capped. */
   replay_count: number;
+  /**
+   * The row's replay generation. An operator retry advances it (in the same
+   * transaction that clears delivery_error), so a replay admitted after a retry gets a
+   * distinct admission key (`delivery-replay:<pr>:<generation>:<count>`) instead of
+   * reusing a spent one (#717), and a dead-lettered fallback job from an older
+   * generation never stamps the row's live state.
+   */
+  replay_generation: number;
   /** Named delivery/blocked code for a stuck row (delivery_blocked / abandoned). */
   delivery_error: string | null;
 };

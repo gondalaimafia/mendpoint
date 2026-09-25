@@ -301,6 +301,12 @@ CREATE TABLE IF NOT EXISTS migration_prs (
   -- scheduled. Capped so a sustained outage cannot replay forever; the operator retry
   -- endpoint resets it to 0 for a fresh budget.
   replay_count INTEGER NOT NULL DEFAULT 0,
+  -- The row's replay generation. An operator retry advances it in the same transaction
+  -- that clears delivery_error, so a replay admitted after a retry gets a distinct
+  -- admission key (delivery-replay:<pr>:<generation>:<count>) instead of reusing a spent
+  -- one (#717), and a dead-lettered fallback job from an older generation never stamps
+  -- the row's live state.
+  replay_generation INTEGER NOT NULL DEFAULT 0,
   -- The named delivery error/blocked code for a delivery_blocked / abandoned row
   -- (e.g. github_delivery_replay_unavailable, github_delivery_replay_quota_refused),
   -- so an operator can see WHY a delivery is stuck without reading the audit log.
@@ -3450,6 +3456,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "migration_prs", name: "delivered_head_sha", sql: "TEXT" },
     { table: "migration_prs", name: "origin_fanout_json", sql: "TEXT" },
     { table: "migration_prs", name: "replay_count", sql: "INTEGER NOT NULL DEFAULT 0" },
+    { table: "migration_prs", name: "replay_generation", sql: "INTEGER NOT NULL DEFAULT 0" },
     { table: "migration_prs", name: "delivery_error", sql: "TEXT" },
     { table: "migration_delivery_artifacts", name: "files_json", sql: "TEXT" },
     {
@@ -3803,6 +3810,14 @@ function migrateProvidersFeedColumns(db: AppDb) {
     db,
     `CREATE INDEX IF NOT EXISTS jobs_due_idx
      ON jobs(tenant_id, status, available_at, created_at)`,
+  );
+  // Bounds the jobs-driven branch of listUnfinalizedDeadLetteredReplayFallbacks (the
+  // enforcement-off replay-finalization sweep) to the small dead-lettered fanout set
+  // instead of scanning every job (B1/S1). Partial, additive and idempotent.
+  run(
+    db,
+    `CREATE INDEX IF NOT EXISTS jobs_dead_letter_fanout_idx
+     ON jobs(id) WHERE status = 'dead_letter' AND type = 'pipeline.fanout'`,
   );
   // Ensure default tenant exists
   const t = get<{ id: string }>(db, `SELECT id FROM tenants WHERE slug = 'default'`);
@@ -4972,41 +4987,141 @@ export function updateMigrationPrStatus(
   ]);
 }
 
+// migration_prs carries no tenant_id of its own; it is scoped through its consumer.
+// A bare `WHERE id = ?` UPDATE would let one tenant's job (or a forged id) mutate
+// another tenant's row, so every write here also requires the row's consumer to
+// belong to the caller's tenant.
+const MIGRATION_PR_TENANT_SCOPE =
+  "consumer_id IN (SELECT id FROM consumers WHERE tenant_id = ?)";
+
 /**
  * Record a terminal delivery-blocked outcome (PR #606 D10): set status
  * delivery_blocked and the named code, but only when no PR was ever recorded (CAS on
- * github_pr_number IS NULL), so it can never downgrade a delivered draft. Returns
- * whether it applied.
+ * github_pr_number IS NULL), so it can never downgrade a delivered draft, and only
+ * for a row that belongs to the caller's tenant. Returns whether it applied.
  */
 export function recordMigrationPrDeliveryBlocked(
   db: AppDb,
   id: string,
   code: string,
+  tenantId: string,
 ): boolean {
   const result = db.raw
     .prepare(
       `UPDATE migration_prs SET status = 'delivery_blocked', delivery_error = ?
-       WHERE id = ? AND github_pr_number IS NULL`,
+       WHERE id = ? AND github_pr_number IS NULL AND ${MIGRATION_PR_TENANT_SCOPE}`,
     )
-    .run(code, id);
+    .run(code, id, tenantId);
   return result.changes > 0;
+}
+
+/**
+ * Stamp a terminal delivery_error code on a row WITHOUT changing its status (PR #606
+ * D10 replay dead-letter): a full-pipeline replay exhausted its retries, so the row
+ * is already delivery_failed with no pending retry. Recording the code makes the row
+ * self-describing rather than a silent delivery_failed. Scoped to rows that never
+ * recorded a PR (github_pr_number IS NULL) and that belong to the caller's tenant, so
+ * it can never relabel a delivered draft or another tenant's row. Idempotent: it only
+ * stamps a row whose delivery_error is still unset, so a first stamp wins and returns
+ * true and a re-run (both dead-letter paths, or a repeated sweep) is a no-op that
+ * returns false — which lets the caller audit exactly once. Returns whether it applied.
+ *
+ * `expectedGeneration`, when given, additionally requires the row to still be on that
+ * replay generation. A fallback job that dead-letters after the operator retried the
+ * row (which advances the generation) releases its leaked hold but must not stamp the
+ * row's live state with a stale failure — the stamp is skipped when the generations
+ * differ (#717, B1).
+ */
+export function recordMigrationPrDeliveryErrorCode(
+  db: AppDb,
+  id: string,
+  code: string,
+  tenantId: string,
+  expectedGeneration?: number,
+): boolean {
+  const generationGuard =
+    expectedGeneration === undefined ? "" : "AND replay_generation = ?";
+  const params =
+    expectedGeneration === undefined
+      ? [code, id, tenantId]
+      : [code, id, expectedGeneration, tenantId];
+  const result = db.raw
+    .prepare(
+      `UPDATE migration_prs SET delivery_error = ?
+       WHERE id = ? AND github_pr_number IS NULL AND delivery_error IS NULL
+         ${generationGuard}
+         AND ${MIGRATION_PR_TENANT_SCOPE}`,
+    )
+    .run(...params);
+  return result.changes > 0;
+}
+
+/**
+ * Clear a row's delivery_error (operator retry gives a fresh start): the retry re-opens
+ * the row as delivery_failed, so a stale terminal code must not linger. Scoped to the
+ * caller's tenant and to rows that never recorded a PR (github_pr_number IS NULL), so it
+ * can never touch a delivered draft. Returns whether it applied.
+ */
+export function clearMigrationPrDeliveryError(
+  db: AppDb,
+  id: string,
+  tenantId: string,
+): boolean {
+  const result = db.raw
+    .prepare(
+      `UPDATE migration_prs SET delivery_error = NULL
+       WHERE id = ? AND github_pr_number IS NULL AND ${MIGRATION_PR_TENANT_SCOPE}`,
+    )
+    .run(id, tenantId);
+  return result.changes > 0;
+}
+
+/**
+ * Advance a row's replay generation (operator retry): a replay admitted after this gets
+ * a distinct admission key instead of reusing the spent one from the previous generation
+ * (#717), and a dead-lettered fallback job from the previous generation can no longer
+ * stamp the row. Scoped to the caller's tenant and to rows that never recorded a PR, so a
+ * delivered draft is never advanced. Returns the new generation (0 if nothing matched).
+ */
+export function advanceMigrationPrReplayGeneration(
+  db: AppDb,
+  id: string,
+  tenantId: string,
+): number {
+  db.raw
+    .prepare(
+      `UPDATE migration_prs SET replay_generation = replay_generation + 1
+       WHERE id = ? AND github_pr_number IS NULL AND ${MIGRATION_PR_TENANT_SCOPE}`,
+    )
+    .run(id, tenantId);
+  const row = get(
+    db,
+    `SELECT replay_generation FROM migration_prs
+     WHERE id = ? AND ${MIGRATION_PR_TENANT_SCOPE}`,
+    [id, tenantId],
+  ) as { replay_generation: number } | undefined;
+  return row?.replay_generation ?? 0;
 }
 
 /**
  * Increment a row's automatic-replay counter (D10 no-artifact fallback) and return
  * the new count, so the worker can cap replays. A row that recorded a PR is never
- * bumped (nothing to replay).
+ * bumped (nothing to replay), and only a row that belongs to the caller's tenant is
+ * touched or read.
  */
-export function bumpMigrationPrReplayCount(db: AppDb, id: string): number {
+export function bumpMigrationPrReplayCount(db: AppDb, id: string, tenantId: string): number {
   db.raw
     .prepare(
       `UPDATE migration_prs SET replay_count = replay_count + 1
-       WHERE id = ? AND github_pr_number IS NULL`,
+       WHERE id = ? AND github_pr_number IS NULL AND ${MIGRATION_PR_TENANT_SCOPE}`,
     )
-    .run(id);
-  const row = get(db, "SELECT replay_count FROM migration_prs WHERE id = ?", [id]) as
-    | { replay_count: number }
-    | undefined;
+    .run(id, tenantId);
+  const row = get(
+    db,
+    `SELECT replay_count FROM migration_prs
+     WHERE id = ? AND ${MIGRATION_PR_TENANT_SCOPE}`,
+    [id, tenantId],
+  ) as { replay_count: number } | undefined;
   return row?.replay_count ?? 0;
 }
 
@@ -7510,6 +7625,139 @@ export function recoverExpiredJobs(
   return Number(result.changes);
 }
 
+// The admission-key prefix for a no-artifact replay run
+// (delivery-replay:<prId>:<generation>:<count>, or the pre-#712
+// delivery-replay:<prId>:<count>). prId is a UUID, so it never contains ':'.
+const REPLAY_RUN_ADMISSION_PREFIX = "delivery-replay:";
+const REPLAY_FALLBACK_JOB_ID_PREFIX = "pipeline-delivery-fallback:";
+
+// A reservation is still an OPEN hold when the signed reserved-MCU total across the
+// reservation row and every entry that closes it (release/settlement) is positive.
+// Aggregated on reservation_id ALONE (never `hold.id = r.id OR ...`), so the subquery
+// seeks usage_ledger_reservation_idx(tenant_id, reservation_id) instead of scanning the
+// tenant's whole ledger once per replay reservation: the row's own delta is added
+// directly and only the closing entries (which carry reservation_id = r.id) are summed
+// (S1: 99.5 s -> 33 ms at 104k rows). Exported so a test can EXPLAIN QUERY PLAN the exact
+// production predicate and assert the index is used (delivery-replay-sweep.test.ts).
+export const OPEN_HOLD_PREDICATE = `r.reserved_mcu_micros_delta + COALESCE((
+  SELECT SUM(hold.reserved_mcu_micros_delta)
+  FROM usage_ledger_entries hold
+  WHERE hold.tenant_id = r.tenant_id AND hold.reservation_id = r.id
+), 0) > 0`;
+
+// Extract the prId from a delivery-replay admission task_id: the segment between the
+// first and second ':' (prId is colon-free, so this holds for both the pre-#712 3-part
+// and the current 4-part key). The trailing '||":"' guards a defensively malformed key.
+const REPLAY_TASK_PR_ID = `substr(
+  r.task_id,
+  ${REPLAY_RUN_ADMISSION_PREFIX.length + 1},
+  instr(substr(r.task_id, ${REPLAY_RUN_ADMISSION_PREFIX.length + 1}) || ':', ':') - 1
+)`;
+
+/**
+ * List the dead-lettered no-artifact replay fallback jobs
+ * (pipeline-delivery-fallback:<prId>) whose usage hold is STILL OPEN — the set the
+ * worker must finalize (release the hold, and stamp/audit the row) after a lease-expiry
+ * dead-letter, which recoverExpiredJobs performs at max attempts without re-entering the
+ * job loop, so the per-job error boundary never sees it.
+ *
+ * Finalization is a property of the JOB's reservation, not of the migration_prs row:
+ * the query is driven from the small set of OPEN replay holds in the usage ledger (the
+ * source of truth for release) and joined to the dead-lettered fallback job by prId, so
+ * it never misreads row state (delivery_error is written by several paths and cannot say
+ * "this job was finalized"). This makes the result empty once every hold for the row is
+ * released, so a repeated drain sweep does no repeated work; it lists a main-era row
+ * with a stale delivery_error whose hold main leaked (so the hold is released, S1); it
+ * never lists a row whose old job was already released (B1); and leading from open holds
+ * (a handful) instead of scanning every pipeline.fanout job removes the unscoped scan.
+ * github_pr_number IS NULL keeps a delivered draft out.
+ *
+ * The open-hold branch cannot see a replay that never HELD a reservation — which is
+ * every replay when usage enforcement is off, the production default. So a second branch
+ * (UNION) lists a dead-lettered fallback whose row is undelivered, still unstamped
+ * (delivery_error IS NULL), and whose payload replayGeneration equals the row's CURRENT
+ * replay_generation. That pair is a sound "not finalized" marker: the ONLY writer that
+ * clears delivery_error is the operator-retry route, which advances the generation in the
+ * same transaction, so a stale-generation job never matches this branch (it falls to the
+ * open-hold branch, which only releases its leaked hold and never re-stamps). Finalizing
+ * this branch stamps and audits once (the stamp's own delivery_error-IS-NULL guard is
+ * idempotent); its release is a no-op when the row held no reservation (B1). A legacy
+ * payload with no replayGeneration key never matches (json_extract is NULL, NULL = 0 is
+ * false), so an operator-retried main-era row is not falsely stamped (U2).
+ *
+ * The jobs-driven branch is pinned with INDEXED BY jobs_dead_letter_fanout_idx. Production
+ * drains ALL tenants (allTenants, since no app sets MENDPOINT_TENANT_ID), and in that mode
+ * the planner otherwise picks the full jobs_type_idx (type=?) over the partial index and
+ * scans every pipeline.fanout job (~500 ms at 1M jobs, run synchronously per lane per
+ * drain); the pin holds it at ~1 ms. The pin fails CLOSED: if the index is ever absent the
+ * query raises "no such index" and the sweep throws loudly rather than silently
+ * regressing. The index's WHERE (status='dead_letter' AND type='pipeline.fanout') is
+ * implied by this branch's WHERE, which INDEXED BY requires.
+ */
+export function listUnfinalizedDeadLetteredReplayFallbacks(
+  db: AppDb,
+  tenantId?: string,
+): JobRow[] {
+  assertTenantScope(tenantId);
+  return all<JobRow>(
+    db,
+    `SELECT DISTINCT j.* FROM usage_ledger_entries r
+     JOIN migration_prs pr ON pr.id = ${REPLAY_TASK_PR_ID}
+     JOIN jobs j ON j.id = ? || pr.id
+     JOIN consumers c ON c.id = pr.consumer_id
+     WHERE r.entry_type = 'reservation'
+       AND r.task_id LIKE ?
+       AND j.status = 'dead_letter'
+       AND j.type = 'pipeline.fanout'
+       AND pr.github_pr_number IS NULL
+       AND ${OPEN_HOLD_PREDICATE}
+       ${tenantId ? "AND r.tenant_id = ? AND j.tenant_id = ? AND c.tenant_id = ?" : ""}
+     UNION
+     SELECT j.* FROM jobs j INDEXED BY jobs_dead_letter_fanout_idx
+     JOIN migration_prs pr ON pr.id = substr(j.id, ?)
+     JOIN consumers c ON c.id = pr.consumer_id
+     WHERE j.status = 'dead_letter'
+       AND j.type = 'pipeline.fanout'
+       AND j.id LIKE ?
+       AND pr.github_pr_number IS NULL
+       AND pr.delivery_error IS NULL
+       AND json_extract(j.payload_json, '$.replayGeneration') = pr.replay_generation
+       ${tenantId ? "AND j.tenant_id = ? AND c.tenant_id = ?" : ""}`,
+    tenantId
+      ? [
+          REPLAY_FALLBACK_JOB_ID_PREFIX, `${REPLAY_RUN_ADMISSION_PREFIX}%`, tenantId, tenantId, tenantId,
+          REPLAY_FALLBACK_JOB_ID_PREFIX.length + 1, `${REPLAY_FALLBACK_JOB_ID_PREFIX}%`, tenantId, tenantId,
+        ]
+      : [
+          REPLAY_FALLBACK_JOB_ID_PREFIX, `${REPLAY_RUN_ADMISSION_PREFIX}%`,
+          REPLAY_FALLBACK_JOB_ID_PREFIX.length + 1, `${REPLAY_FALLBACK_JOB_ID_PREFIX}%`,
+        ],
+  );
+}
+
+/**
+ * The ids of every OPEN replay-run reservation for one migration PR row (all
+ * generations), tenant-scoped. The finalizer releases each so a dead-lettered fallback
+ * frees the tenant's held quota even when the row was operator-retried into a newer
+ * generation and an older generation's hold was left outstanding.
+ */
+export function listOpenReplayRunReservationIds(
+  db: AppDb,
+  tenantId: string,
+  prId: string,
+): string[] {
+  assertTenantScope(tenantId);
+  return all<{ id: string }>(
+    db,
+    `SELECT r.id FROM usage_ledger_entries r
+     WHERE r.tenant_id = ?
+       AND r.entry_type = 'reservation'
+       AND r.task_id LIKE ?
+       AND ${OPEN_HOLD_PREDICATE}`,
+    [tenantId, `${REPLAY_RUN_ADMISSION_PREFIX}${prId}:%`],
+  ).map((row) => row.id);
+}
+
 export function claimNextJob(
   db: AppDb,
   types?: string[],
@@ -7703,6 +7951,39 @@ export function failJob(
     availableAt: applied ? availableAt : job.available_at,
     deadAt: applied && !retry ? finishedAt : job.dead_at,
   };
+}
+
+/**
+ * Reschedule a job the caller currently holds: put it back to pending, release the lease,
+ * and make it available again at `runAt`, WITHOUT spending an attempt. This models a
+ * deliberate deferral (the delivery-retry job waiting out a previous-generation replay
+ * fallback, B2) as a plain reschedule rather than a failure — so it is invisible to the
+ * lane's consecutive-drain-failure backoff, never counts toward max_attempts, and never
+ * dead-letters (no failJob call). `claimNextJob` bumped `attempts` when it leased the job to
+ * peek at it, so the reschedule decrements it back by one (floored at 0): the net effect of
+ * a deferral is zero attempts, which is what keeps a later lease-expiry recovery from
+ * dead-lettering the job at max_attempts (P4/UC). Guarded on the current claimer (status =
+ * 'running' AND lease_owner = ?), so it is a no-op if the lease was lost or re-claimed;
+ * returns whether it applied.
+ */
+export function rescheduleJob(
+  db: AppDb,
+  id: string,
+  runAt: string,
+  leaseOwner: string,
+): boolean {
+  const result = db.raw
+    .prepare(
+      `UPDATE jobs
+       SET status = 'pending',
+           available_at = ?,
+           attempts = MAX(attempts - 1, 0),
+           lease_owner = NULL,
+           lease_expires_at = NULL
+       WHERE id = ? AND status = 'running' AND lease_owner = ?`,
+    )
+    .run(runAt, id, leaseOwner);
+  return Number(result.changes) === 1;
 }
 
 export function retryJob(
