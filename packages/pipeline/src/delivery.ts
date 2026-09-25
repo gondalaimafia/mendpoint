@@ -29,6 +29,7 @@ import {
   type GitHubDelivery,
   type AdoptiveDraftResult,
 } from "@mendpoint/github";
+import { isValidGitBranchName } from "@mendpoint/generation";
 
 /** ~7-day cap on retrying a stuck delivery before it abandons (D10). */
 export const GITHUB_DELIVERY_ABANDON_AFTER_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -147,6 +148,12 @@ export async function deliverConsumerDraft(
 
   params.assertActive();
   try {
+    // Fail closed per consumer on an unpushable branch (e.g. a legacy shared slug with a
+    // git-invalid character): a named, non-retryable delivery_blocked, NOT a thrown crash of the
+    // whole pipeline run. Analysis and findings are already persisted before this call.
+    if (!isValidGitBranchName(params.branchName)) {
+      throw new AdoptiveDraftBlockedError("branch_name_invalid");
+    }
     if (!params.baseSha || !params.commitDate || !params.revisionKind) {
       throw new Error("github_exact_draft_evidence_missing");
     }

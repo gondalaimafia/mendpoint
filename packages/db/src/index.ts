@@ -5313,6 +5313,19 @@ export function getProviderById(db: AppDb, id: string): Provider | undefined {
 }
 
 /**
+ * Slugs of every shared/system-catalog provider (tenant_id IS NULL). These are public to all
+ * tenants, so callers may reserve them (alongside the static vendor catalog) to stop a
+ * self-serve tenant from claiming a shared vendor's slug as a private provider. No tenant
+ * scoping is needed: only shared rows are returned, never any tenant-private slug.
+ */
+export function listSharedProviderSlugs(db: AppDb): string[] {
+  return all<{ slug: string }>(
+    db,
+    `SELECT slug FROM providers WHERE tenant_id IS NULL`,
+  ).map((row) => row.slug);
+}
+
+/**
  * List API changes.
  *
  * `tenantId` follows the standard scope convention (assertTenantScope): `undefined` is the

@@ -134,12 +134,12 @@ export function registrySummaryMarkdown(
     "",
     `Provider **${providerSlug}** is monitored by **${hits.length}** consumer(s):`,
     "",
-    ...hits.map(
-      (h) =>
-        `- **${h.consumerName}** (\`${h.githubOwner}/${h.githubRepo}\`)${
-          h.localPath ? ` — \`${h.localPath}\`` : ""
-        }`,
-    ),
+    // Customer-facing: identify each consumer by its public GitHub full name, never by
+    // `localPath`. In production a checkout lives at `MENDPOINT_REPOS_DIR/<tenantId>/<repoKey>`
+    // (apps/api/src/repo-path.ts), so rendering the path would disclose the tenant id and the
+    // server's on-disk layout into the customer PR body (#716). The owner/repo is the
+    // customer-meaningful identity and carries no tenant scope.
+    ...hits.map((h) => `- **${h.consumerName}** (\`${h.githubOwner}/${h.githubRepo}\`)`),
     "",
     "_Query this registry before proposing breaking OpenAPI changes (Warden P0)._",
   ].join("\n");

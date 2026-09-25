@@ -838,6 +838,60 @@ export function compileFettlerImpactContext(result: FettlerEndpointImpactResult,
 }
 
 /**
+ * Customer-facing projection of an endpoint-impact result for the "Change Graph evidence" section
+ * of a PR body. {@link compileFettlerImpactContext} serialises the FULL internal record — including
+ * a `binding` that carries the raw `tenantId`, internal repository/provider ids and digests, and
+ * per-path `evidenceRefs` that embed the stored (namespaced) provider slug — none of which may
+ * reach a customer repo. This builds a dedicated display object from an EXPLICIT allowlist instead
+ * of stripping the serialized internal one: provider identity is supplied by the caller (already
+ * public, from `publicProviderSlug`), and each path carries only the reachability chain a customer
+ * needs (`via`, `kind`, `label`, `derivation`, `confidenceBasis`) with `evidenceRefs` and the
+ * binding omitted. A tenant id therefore cannot reach the block even if a new field is later added
+ * to the internal record. The `label`s are the customer's own code identifiers and the endpoint
+ * label (`<METHOD> <path>`); none is derived from the stored slug. Returned as canonical JSON so
+ * the block is byte-stable.
+ */
+export function compileFettlerImpactDisplayJson(
+  result: FettlerEndpointImpactResult,
+  publicIdentity: { provider: string; endpoint: string },
+): string {
+  const entityById = new Map(result.entities.map((entity) => [entity.id, entity]));
+  const edgeByPair = new Map(
+    result.relationships.map((edge) => [`${edge.targetId}\0${edge.sourceId}`, edge]),
+  );
+  const paths = result.paths.map((path) =>
+    path.map((id, index) => {
+      const entity = entityById.get(id);
+      if (!entity) throw new Error("fettler_impact_context_entity_missing");
+      if (index === 0) {
+        return { kind: entity.kind, label: entity.label };
+      }
+      const targetId = path[index - 1]!;
+      const edge = edgeByPair.get(`${targetId}\0${id}`);
+      if (!edge) throw new Error("fettler_impact_context_relationship_missing");
+      return {
+        via: edge.kind,
+        kind: entity.kind,
+        label: entity.label,
+        derivation: edge.derivation,
+        confidenceBasis: edge.confidenceBasis,
+      };
+    }),
+  );
+  return canonicalJson({
+    provider: publicIdentity.provider,
+    endpoint: publicIdentity.endpoint,
+    impact: result.impact,
+    coverage: {
+      basis: result.coverage.basis,
+      reasons: result.coverage.reasons,
+      truncated: result.coverage.truncated,
+    },
+    paths,
+  });
+}
+
+/**
  * Named MissionGraphProjection (spec §8.16): the bounded, versioned,
  * evidence-bearing Change Graph view compiled for one mission or task.
  * Wraps `compileFettlerImpactContext` so callers receive one typed object
