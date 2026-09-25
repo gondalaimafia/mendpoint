@@ -164,45 +164,121 @@ jobs:
           FLY_API_TOKEN: ${{ env.SANDBOX_FLY_API_TOKEN }}
         run: |
           set -euo pipefail
+          # Bounded, transport-only retry for the NON-verdict flyctl calls in this
+          # step (cleanup list/destroy, the probe Machine create, the machine
+          # status read that alert #708 fired on). The verdict-bearing `flyctl
+          # machine exec` probes below and every jq assertion are NEVER routed
+          # through it: only the act of reaching the Fly API is retried, never the
+          # observed egress verdict. See scripts/flyctl-transport-retry.sh.
+          source scripts/flyctl-transport-retry.sh
           machine_name="egress-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           machine_id=""
+          # cleanup MUST run on every exit path (trap below and the explicit call
+          # at the end). Its list/destroy reads are non-verdict, so a transient
+          # transport blip while tearing the probe Machine down is retried rather
+          # than leaking an orphan.
           cleanup() {
             cleanup_id="$machine_id"
             if test -z "$cleanup_id"; then
-              cleanup_id="$(flyctl machine list --app "$MENDPOINT_SANDBOX_EGRESS_APP" --json \
-                | jq -r --arg name "$machine_name" '.[] | select(.name == $name) | .id' | head -n 1)"
+              fly_retry cleanup-list -- flyctl machine list --app "$MENDPOINT_SANDBOX_EGRESS_APP" --json || true
+              cleanup_id="$(jq -r --arg name "$machine_name" '.[] | select(.name == $name) | .id' <<<"${FLY_RETRY_STDOUT:-[]}" 2>/dev/null | head -n 1 || true)"
             fi
             if test -z "$cleanup_id"; then
               return 0
             fi
-            if ! flyctl machine destroy --force --app "$MENDPOINT_SANDBOX_EGRESS_APP" "$cleanup_id"; then
+            if ! fly_retry cleanup-destroy -- flyctl machine destroy --force --app "$MENDPOINT_SANDBOX_EGRESS_APP" "$cleanup_id"; then
               echo "sandbox_machine_not_destroyed: $cleanup_id"
               return 1
             fi
-            if ! flyctl machine list --app "$MENDPOINT_SANDBOX_EGRESS_APP" --json \
-              | jq -e --arg id "$cleanup_id" 'all(.[]; .id != $id)' >/dev/null; then
+            if ! fly_retry cleanup-verify -- flyctl machine list --app "$MENDPOINT_SANDBOX_EGRESS_APP" --json; then
+              echo "sandbox_machine_not_destroyed: $cleanup_id"
+              return 1
+            fi
+            if ! jq -e --arg id "$cleanup_id" 'all(.[]; .id != $id)' <<<"${FLY_RETRY_STDOUT:-[]}" >/dev/null; then
               echo "sandbox_machine_not_destroyed: $cleanup_id"
               return 1
             fi
             machine_id=""
           }
           trap 'cleanup || true' EXIT
-          launch_output="$(flyctl machine run "$SANDBOX_IMAGE_TAG" \
-            --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
-            --region iad \
-            --name "$machine_name" \
-            --detach \
-            --restart no \
-            --vm-cpu-kind shared \
-            --vm-cpus 1 \
-            --vm-memory 512 \
-            --autostop=off)"
-          machine_id="$(printf '%s\n' "$launch_output" | awk '/Machine ID:/ {print $3; exit}')"
+          # probe-machine-create-begin (mutation drops the pre-retry orphan
+          # destroy to prove it is load-bearing: a retry after a create that
+          # landed server-side would then leave a second orphaned probe Machine).
+          # The Machine name is deterministic (egress-RUNID-ATTEMPT), so an attempt
+          # that created the Machine but transport-failed on the response leaves a
+          # Machine by this exact name; before each retry we destroy any such
+          # Machine, so a retry never leaves a second orphaned probe Machine. This
+          # is NOT a verdict -- only reaching the API to create the Machine is
+          # retried, at most 3 attempts with a short backoff.
+          create_attempt=1
+          create_max=3
+          create_backoff="${FLY_RETRY_BACKOFF_SECONDS:-5}"
+          create_out="$(mktemp)"
+          create_err="$(mktemp)"
+          while :; do
+            set +e
+            flyctl machine run "$SANDBOX_IMAGE_TAG" \
+              --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
+              --region iad \
+              --name "$machine_name" \
+              --detach \
+              --restart no \
+              --vm-cpu-kind shared \
+              --vm-cpus 1 \
+              --vm-memory 512 \
+              --autostop=off >"$create_out" 2>"$create_err"
+            create_status=$?
+            set -e
+            cat "$create_err" >&2
+            if [ "$create_status" -eq 0 ]; then
+              machine_id="$(awk '/Machine ID:/ {print $3; exit}' "$create_out")"
+              rm -f "$create_out" "$create_err"
+              break
+            fi
+            if ! fly_is_transport_failure "$create_err" "$create_out"; then
+              echo "probe Machine create failed with a non-transport error (exit ${create_status}); not retrying." >&2
+              rm -f "$create_out" "$create_err"
+              exit 1
+            fi
+            if [ "$create_attempt" -ge "$create_max" ]; then
+              echo "probe Machine create hit a transport error on all ${create_max} attempts; failing loudly." >&2
+              rm -f "$create_out" "$create_err"
+              exit 1
+            fi
+            # probe-orphan-destroy-begin (mutation strips this to prove it is
+            # load-bearing: without it a retry after a create that landed
+            # server-side leaves a second orphaned probe Machine running).
+            # Idempotency: destroy any Machine the failed attempt may have created
+            # before retrying, so no orphaned second probe Machine is left running.
+            # If we cannot list machines, or cannot destroy the orphan we found,
+            # even after fly_retry's own bounded attempts, FAIL LOUDLY here rather
+            # than retry the create blind: a blind retry can mint a receipt with an
+            # orphaned probe Machine still running (compound-fault leak). The EXIT
+            # trap then attempts cleanup by name, and the failure() alert fires.
+            if ! fly_retry create-orphan-list -- flyctl machine list --app "$MENDPOINT_SANDBOX_EGRESS_APP" --json; then
+              echo "probe Machine create: could not list machines to clean up a possible orphan before retrying; failing loudly rather than retrying the create blind." >&2
+              rm -f "$create_out" "$create_err"
+              exit 1
+            fi
+            orphan_id="$(jq -r --arg name "$machine_name" '.[] | select(.name == $name) | .id' <<<"${FLY_RETRY_STDOUT:-[]}" 2>/dev/null | head -n 1 || true)"
+            if [ -n "$orphan_id" ]; then
+              if ! fly_retry create-orphan-destroy -- flyctl machine destroy --force --app "$MENDPOINT_SANDBOX_EGRESS_APP" "$orphan_id"; then
+                echo "probe Machine create: could not destroy orphan ${orphan_id} left by a failed create attempt; failing loudly rather than retrying the create blind." >&2
+                rm -f "$create_out" "$create_err"
+                exit 1
+              fi
+            fi
+            # probe-orphan-destroy-end
+            echo "probe Machine create hit a transient transport blip on attempt ${create_attempt} of ${create_max}; retrying after a short backoff." >&2
+            sleep "$((create_attempt * create_backoff))"
+            create_attempt=$((create_attempt + 1))
+          done
           test -n "$machine_id"
-          flyctl machine status "$machine_id" \
+          # probe-machine-create-end
+          fly_retry machine-status -- flyctl machine status "$machine_id" \
             --app "$MENDPOINT_SANDBOX_EGRESS_APP" \
-            --display-config \
-            >test-results/sandbox-egress/machine-config.json
+            --display-config
+          printf '%s\n' "$FLY_RETRY_STDOUT" >test-results/sandbox-egress/machine-config.json
           expected_digest="${MENDPOINT_SANDBOX_EGRESS_IMAGE#*@}"
           jq -e --arg digest "$expected_digest" \
             '.image | endswith("@" + $digest)' \
@@ -298,6 +374,15 @@ jobs:
           FLY_API_TOKEN: ${{ env.ROTATION_FLY_API_TOKEN }}
         run: |
           set -euo pipefail
+          # Same transport-only retry as the probe step, applied to the
+          # rotation's top-level non-verdict reads (the app inventory and the
+          # per-app pre-flight Machine list) that gate the whole rotation. A
+          # transient blip on either aborted the renewal with no retry, the same
+          # #708 failure shape. Mutating calls (machine update, secrets set) and
+          # the containment reads keep their existing fail-closed / fail-loud
+          # semantics and are never routed through here. See
+          # scripts/flyctl-transport-retry.sh.
+          source scripts/flyctl-transport-retry.sh
           attestation="$(jq -r '.attestationBase64' test-results/sandbox-egress/receipt.json)"
           public_key="$(jq -r '.publicKeySpkiBase64' test-results/sandbox-egress/receipt.json)"
           key_id="$(jq -r '.keyId' test-results/sandbox-egress/receipt.json)"
@@ -312,7 +397,8 @@ jobs:
           # one app). A newly provisioned customer app matching the convention is
           # covered without editing anything here. The sandbox image app is
           # excluded: it IS the isolation boundary and must never carry a receipt.
-          apps_json="$(flyctl apps list --json)"
+          fly_retry apps-list -- flyctl apps list --json
+          apps_json="$FLY_RETRY_STDOUT"
           targets="$(APPS_JSON="$apps_json" node --import tsx --input-type=module -e '
             import { parseFlyAppListing, resolveSandboxEgressRotationTargets } from "@mendpoint/ops";
             const apps = parseFlyAppListing(process.env.APPS_JSON ?? "");
@@ -350,7 +436,8 @@ jobs:
             # attached. Require an existing Launch process group before rotating
             # anything, preserve that group while updating the exact Machines,
             # and prove Launch v2 ownership before deploying the vault generation.
-            machines_json="$(flyctl machine list --app "$app" --json)"
+            fly_retry preflight-list -- flyctl machine list --app "$app" --json
+            machines_json="$FLY_RETRY_STDOUT"
             jq -e 'length > 0 and all(.[];
               .state == "started"
               and (.image_ref.registry | type == "string" and length > 0)
