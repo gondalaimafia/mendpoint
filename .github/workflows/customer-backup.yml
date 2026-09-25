@@ -231,33 +231,44 @@ jobs:
           #
           # Budget arithmetic against the delivery controller's
           # DELIVERY_MAX_ACTIVE_AGE_SECONDS=1200 (measured production maxima). With
-          # INSTANT flyctl reads the path is:
-          #     preamble, the steps before this one     PREAMBLE_SECONDS=107
-          #   + total settle across BOTH windows (this cap)       720s
-          #   + two backup attempts at up to 51s each             102s
-          #   -----------------------------------------------------------
-          #   = 929s of active age, 271s under 1200.
-          # Slow-but-succeeding settle reads stretch that worst SUCCESSFUL path:
-          # the reviewer measured 929s at 0s per read, 969s at 2s, 1109s at 30s
-          # and 1199s at 45s. A read that HITS the SETTLE_READ_TIMEOUT_SECONDS bound
-          # times out to `unknown` and falls open, which SHORTENS the run, so the
-          # worst readable read is just under the bound. The extra cost over the
-          # instant path is a deadline overrun: the success check runs before the
-          # deadline check, so each of the two settle windows can overshoot by one
-          # poll plus its two reads. So the worst SUCCESSFUL path is
+          # INSTANT flyctl reads the path is preamble (PREAMBLE_SECONDS=107) + the
+          # 720s settle cap + two 51s backup attempts = 929s, 271s under 1200.
+          #
+          # Slow-but-succeeding settle reads stretch that worst SUCCESSFUL path. A
+          # read that HITS the SETTLE_READ_TIMEOUT_SECONDS bound times out to
+          # `unknown` and falls open, which SHORTENS the run, so the worst readable
+          # read is just under the bound. With reads of VARYING latency (not one
+          # constant), the extra cost over the instant path is, following the
+          # actual shape of the worst path:
+          #   - settle window 1 overruns the shared deadline by ONE poll plus its
+          #     two reads (the success check runs before the deadline check, and
+          #     the last deadline check can land just before the deadline);
+          #   - then backup attempt 1 (dropped);
+          #   - then the post-failure confirm read (2 reads);
+          #   - then settle window 2's first read settles (2 reads, success before
+          #     any deadline check -- so NO second poll overrun);
+          #   - then backup attempt 2.
+          # So the reads number 2 (settle-1 overrun) + 2 (confirm) + 2 (settle-2
+          # first read) = (2*ATTEMPTS + 2), and the poll appears ONCE, not per
+          # window. The worst SUCCESSFUL path is therefore
           #     PREAMBLE_SECONDS
           #   + SETTLE_MAX_SECONDS
-          #   + ATTEMPTS * (SETTLE_POLL_SECONDS + 2 * SETTLE_READ_TIMEOUT_SECONDS)
+          #   + SETTLE_POLL_SECONDS
+          #   + (2 * ATTEMPTS + 2) * SETTLE_READ_TIMEOUT_SECONDS
           #   + ATTEMPTS * BACKUP_ATTEMPT_SECONDS
           # with the shipped knobs (720/30/30), ATTEMPTS=2 (the retry cap below)
           # and the measured constants PREAMBLE_SECONDS=107, BACKUP_ATTEMPT_SECONDS=51:
-          #     107 + 720 + 2*(30 + 2*30) + 2*51
-          #   = BACKUP_WORST_CASE_ACTIVE_AGE_SECONDS = 1109, still 91s under 1200.
+          #     107 + 720 + 30 + (2*2 + 2)*30 + 2*51
+          #   = 107 + 720 + 30 + 180 + 102
+          #   = BACKUP_WORST_CASE_ACTIVE_AGE_SECONDS = 1139, still 61s under 1200
+          # (the reviewer measured 1132s with a 1x20s/17x27s/29s latency mix, and
+          # 1197s at 40s reads -- both bounded by this formula at their timeout).
           # customer-backup-watchdog.yml's remediation observe window is tied to
           # this: a test recomputes it from these shipped knobs (not from this
-          # comment) and asserts window >= worst case + margin AND worst case <
-          # 1200, so raising SETTLE_MAX_SECONDS or SETTLE_READ_TIMEOUT_SECONDS fails
-          # the test rather than silently reporting a still-settling backup as hung.
+          # comment), reads the 1200 ceiling from customer-backup-delivery.yml, and
+          # asserts window >= worst case + margin AND worst case < the ceiling, so
+          # raising SETTLE_MAX_SECONDS or SETTLE_READ_TIMEOUT_SECONDS fails the test
+          # rather than silently reporting a still-settling backup as hung.
           # A single deploy's release phase is 34-81s (247s outlier), so the 720s
           # total absorbs even the outlier and still leaves the run under 1200s.
           settle_deadline="$(( $(date -u +%s) + SETTLE_MAX_SECONDS ))"

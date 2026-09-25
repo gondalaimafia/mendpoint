@@ -1272,17 +1272,19 @@ exit 0
     // and SETTLE_READ_TIMEOUT_SECONDS 30->120 push the real worst case past 1200
     // with every test green (issue #722 re-review, finding 1). The formula is the
     // one documented in customer-backup.yml's budget comment:
-    //   preamble + settleMax + attempts*(poll + 2*readTimeout) + attempts*backup
+    //   preamble + settleMax + poll + (2*attempts + 2)*readTimeout + attempts*backup
     // A read that HITS the timeout falls open and shortens the run, so the worst
-    // readable read is just under the bound; each of the `attempts` settle windows
-    // can overrun the shared deadline by one poll plus its two reads.
+    // readable read is just under the bound. With VARYING read latency the worst
+    // path is: settle 1 overruns by ONE poll + 2 reads; attempt 1; a confirm read
+    // (2 reads); settle 2's first read settles (2 reads, no second poll); attempt
+    // 2. So one poll and (2*attempts + 2) reads, not one overrun per window.
     const backupSource = readFileSync(
       resolve(root, ".github/workflows/customer-backup.yml"),
       "utf8",
     );
-    const num = (re: RegExp, what: string): number => {
-      const m = re.exec(backupSource);
-      if (!m) throw new Error(`could not parse ${what} from customer-backup.yml`);
+    const num = (re: RegExp, what: string, source = backupSource): number => {
+      const m = re.exec(source);
+      if (!m) throw new Error(`could not parse ${what}`);
       return Number(m[1]);
     };
     // The tunable settle knobs, from their shell `:=` defaults (the mutation targets).
@@ -1294,9 +1296,17 @@ exit 0
     // The measured production constants, documented as named markers.
     const preamble = num(/PREAMBLE_SECONDS\s*=\s*(\d+)/, "PREAMBLE_SECONDS");
     const backupAttempt = num(/BACKUP_ATTEMPT_SECONDS\s*=\s*(\d+)/, "BACKUP_ATTEMPT_SECONDS");
+    // The controller's active-age ceiling comes from the SHIPPED delivery
+    // workflow env (the real value the controller enforces), never a comment or a
+    // literal here, so lowering it there is caught by this budget test too.
+    const deliverySource = readFileSync(
+      resolve(root, ".github/workflows/customer-backup-delivery.yml"),
+      "utf8",
+    );
     const controllerCeiling = num(
-      /DELIVERY_MAX_ACTIVE_AGE_SECONDS=(\d+)/,
+      /DELIVERY_MAX_ACTIVE_AGE_SECONDS:\s*"?(\d+)"?/,
       "DELIVERY_MAX_ACTIVE_AGE_SECONDS",
+      deliverySource,
     );
     const documentedWorstCase = num(
       /BACKUP_WORST_CASE_ACTIVE_AGE_SECONDS\s*=\s*(\d+)/,
@@ -1306,13 +1316,14 @@ exit 0
     const worstCase =
       preamble +
       settleMax +
-      attempts * (settlePoll + 2 * readTimeout) +
+      settlePoll +
+      (2 * attempts + 2) * readTimeout +
       attempts * backupAttempt;
 
-    // With the shipped knobs (720/30/30, attempts 2, 107/51) this is 1109, the
-    // reviewer's upper bound (~1087 measured at 29s reads). The comment's
-    // documented number must equal the formula, so the two cannot drift and a
-    // knob change that is not reflected in the budget comment fails here.
+    // With the shipped knobs (720/30/30, attempts 2, 107/51) this is 1139 (the
+    // reviewer measured 1132s with a varying-latency mix). The comment's documented
+    // number must equal the formula, so the two cannot drift and a knob change not
+    // reflected in the budget comment fails here.
     expect(worstCase).toBeGreaterThan(0);
     expect(documentedWorstCase).toBe(worstCase);
 
