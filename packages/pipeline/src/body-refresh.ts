@@ -97,6 +97,32 @@ export type RefreshOpenDraftBodiesInput = Readonly<{
   deliveryFor: RefreshDeliveryFor;
 }>;
 
+/**
+ * A token-free label for a caught error: its class name, plus a numeric HTTP
+ * status or code when present. NEVER the raw message — an octokit error text can
+ * carry a token or a URL — so the operator sees the SHAPE of the failure, not its
+ * free text (#730).
+ */
+function errorClass(error: unknown): string {
+  const e = error as { name?: unknown; status?: unknown; code?: unknown } | null;
+  const name = typeof e?.name === "string" && e.name ? e.name : "Error";
+  const status =
+    typeof e?.status === "number" ? e.status : typeof e?.code === "number" ? e.code : undefined;
+  return status === undefined ? name : `${name}:${status}`;
+}
+
+/** A `failed` entry: the PR URL (or the tenant when the URL is unknown) plus the
+ * token-free error class — never the raw error text (#730). */
+function failedRecord(subject: string, error: unknown): string {
+  return `${subject} (${errorClass(error)})`;
+}
+
+/** True when any draft failed (a revoked installation, a 403 reading a PR, ...),
+ * so the operator command exits non-zero and the failure is noticed (#730). */
+export function refreshHadFailures(result: RefreshOpenDraftBodiesResult): boolean {
+  return result.tenants.some((t) => t.failed.length > 0);
+}
+
 /** Does this LIVE body carry the tenant id or the server checkout path? */
 function leaksText(text: string, tenantId: string, reposDir?: string | null): boolean {
   if (containsTenantIdentity(tenantId, text)) return true;
@@ -135,44 +161,56 @@ export async function refreshOpenDraftBodies(
       const consumer = getConsumer(db, row.consumer_id, tenant.id);
       const repo = consumer ? getConsumerRepo(db, consumer.id, tenant.id) : undefined;
       if (!consumer || !repo || row.github_pr_number == null) continue;
-      const resolution = input.deliveryFor(tenant.id, consumer, repo);
       const ownerRepo = `${consumer.github_owner}/${consumer.github_repo}`;
       const url = row.github_pr_url ?? "";
 
-      // Detection reads the LIVE GitHub body, not the DB row (blocker 2). A PR that
-      // is closed/merged or gone on GitHub is not an affected open draft.
-      const live = resolution.delivery.getOpenPullRequest
-        ? await resolution.delivery.getOpenPullRequest(consumer.github_owner, consumer.github_repo, row.github_pr_number)
-        : undefined;
-      if (!live || live.state !== "open") continue;
-      if (!leaksText(live.body, tenant.id, input.reposDir)) continue;
+      // Isolate every consumer-scoped failure to THIS draft (#730). Building the
+      // delivery transport (a revoked installation throws here — the resolver is
+      // per-consumer, so this also covers a whole tenant whose install was revoked)
+      // and reading the LIVE PR body (a 403 on pulls.get throws here) once aborted
+      // the entire sweep for every tenant. Now each is caught, recorded as `failed`
+      // with the PR URL (or the tenant when the URL is unknown) and a token-free
+      // error class, and the sweep continues with the rest. The command still exits
+      // non-zero (refreshHadFailures) so an operator notices.
+      try {
+        const resolution = input.deliveryFor(tenant.id, consumer, repo);
 
-      acc.affected += 1;
-      if (dryRun) continue;
+        // Detection reads the LIVE GitHub body, not the DB row (blocker 2). A PR that
+        // is closed/merged or gone on GitHub is not an affected open draft.
+        const live = resolution.delivery.getOpenPullRequest
+          ? await resolution.delivery.getOpenPullRequest(consumer.github_owner, consumer.github_repo, row.github_pr_number)
+          : undefined;
+        if (!live || live.state !== "open") continue;
+        if (!leaksText(live.body, tenant.id, input.reposDir)) continue;
 
-      const outcome = await refreshOneDraft(input, tenant.id, row, consumer, repo, resolution, ownerRepo, live.body);
-      switch (outcome) {
-        case "updated":
-          acc.updated += 1;
-          break;
-        case "skipped_foreign_head":
-          acc.skippedForeignHead = [...acc.skippedForeignHead, url];
-          break;
-        case "skipped_closed":
-          acc.skippedClosed = [...acc.skippedClosed, url];
-          break;
-        case "skipped_human_edited":
-          acc.skippedHumanEdited = [...acc.skippedHumanEdited, url];
-          break;
-        case "skipped_no_artifact":
-          acc.skippedNoArtifact = [...acc.skippedNoArtifact, url];
-          break;
-        case "blocked":
-          acc.blocked = [...acc.blocked, url];
-          break;
-        case "failed":
-          acc.failed = [...acc.failed, url];
-          break;
+        acc.affected += 1;
+        if (dryRun) continue;
+
+        const outcome = await refreshOneDraft(input, tenant.id, row, consumer, repo, resolution, ownerRepo, live.body);
+        switch (outcome) {
+          case "updated":
+            acc.updated += 1;
+            break;
+          case "skipped_foreign_head":
+            acc.skippedForeignHead = [...acc.skippedForeignHead, url];
+            break;
+          case "skipped_closed":
+            acc.skippedClosed = [...acc.skippedClosed, url];
+            break;
+          case "skipped_human_edited":
+            acc.skippedHumanEdited = [...acc.skippedHumanEdited, url];
+            break;
+          case "skipped_no_artifact":
+            acc.skippedNoArtifact = [...acc.skippedNoArtifact, url];
+            break;
+          case "blocked":
+            acc.blocked = [...acc.blocked, url];
+            break;
+          // `failed` is never returned by refreshOneDraft: a genuine delivery
+          // failure throws and is recorded by the catch below with its error class.
+        }
+      } catch (error) {
+        acc.failed = [...acc.failed, failedRecord(url || tenant.id, error)];
       }
     }
     results.push(acc);
@@ -211,7 +249,9 @@ async function refreshOneDraft(
   const reRenderedTitle = renderPublicPrIdentity(artifact.title, tenantId, opts);
 
   const delivery: GitHubDelivery = resolution.delivery;
-  if (typeof delivery.deliverAdoptiveDraft !== "function") return "failed";
+  if (typeof delivery.deliverAdoptiveDraft !== "function") {
+    throw new Error("adoptive_delivery_unavailable");
+  }
   try {
     const result = await delivery.deliverAdoptiveDraft(
       {
@@ -261,6 +301,8 @@ async function refreshOneDraft(
   } catch (error) {
     const code = (error as { code?: string } | null)?.code;
     if (code === TENANT_IDENTITY_DELIVERY_ERROR) return "blocked";
-    return "failed";
+    // A genuine delivery failure: re-throw so the caller records it as `failed`
+    // with the PR URL and a token-free error class, then continues (#730).
+    throw error;
   }
 }
