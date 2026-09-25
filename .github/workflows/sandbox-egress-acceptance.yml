@@ -964,6 +964,16 @@ jobs:
                 exit 1
               fi
               attestation_digest_after="$(jq -r '.[] | select(.name == "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64") | .digest' <<<"$secret_list_after" 2>/dev/null | head -n1)"
+              if [ -z "$attestation_digest_after" ]; then
+                # An empty after-digest is not proof of a landing: the attestation
+                # secret is absent from the read-back, so we cannot tell landed
+                # from not-landed. Treat it as unreadable -> UNDETERMINED, no stop
+                # (never "changed", which would be a false success).
+                printf 'undetermined\t%s\n' "rotation_post_update_undetermined:secret_set_outcome_undeterminable" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                echo "UNDETERMINED (rotation_post_update_undetermined): secrets set for ${app} failed and the read-back has no attestation-secret digest, so landed cannot be told from not-landed. Leaving machines RUNNING and failing loudly." >&2
+                exit 1
+              fi
               if [ "$attestation_digest_after" = "$attestation_digest_before" ]; then
                 # NOT LANDED: the attestation secret is unchanged (the old
                 # generation, still listed and still Deployed). Fail loudly so the

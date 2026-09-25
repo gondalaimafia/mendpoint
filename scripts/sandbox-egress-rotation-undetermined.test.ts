@@ -160,7 +160,10 @@ function flyctlStub(callLog: string, mlist: string): string {
     '    read -ra __sb <<< "${SECRETS_LIST_BEHAVIOR:-ok}"; si=$((sc - 1)); [ "$si" -ge "${#__sb[@]}" ] && si=$(( ${#__sb[@]} - 1 ))',
     '    case "${__sb[$si]}" in',
     '      transport) echo "Error: could not retrieve secrets: read tcp 1->2:443: read: connection reset by peer" >&2; exit 1 ;;',
-    '      *) mk="old"; [ -f "$SECRETS_STATE" ] && mk="$(cat "$SECRETS_STATE")"; dg="sha256:old"; [ "$mk" = "new" ] && dg="sha256:new"; st="${SECRETS_STATUS:-Deployed}"; printf \'[{"name":"MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64","digest":"%s","status":"%s"},{"name":"MENDPOINT_SANDBOX_FLY_IMAGE","digest":"sha256:img","status":"%s"}]\\n\' "$dg" "$st" "$st"; exit 0 ;;',
+    // From SECRETS_ATTN_ABSENT_FROM onward (a 1-based call index; 0 = never) the
+    // attestation secret is omitted, so its digest reads empty in that call. This
+    // models "a failed set followed by a list that no longer lists the secret".
+    '      *) mk="old"; [ -f "$SECRETS_STATE" ] && mk="$(cat "$SECRETS_STATE")"; dg="sha256:old"; [ "$mk" = "new" ] && dg="sha256:new"; st="${SECRETS_STATUS:-Deployed}"; af="${SECRETS_ATTN_ABSENT_FROM:-0}"; if [ "$af" != "0" ] && [ "$sc" -ge "$af" ]; then printf \'[{"name":"MENDPOINT_SANDBOX_FLY_IMAGE","digest":"sha256:img","status":"%s"}]\\n\' "$st"; else printf \'[{"name":"MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64","digest":"%s","status":"%s"},{"name":"MENDPOINT_SANDBOX_FLY_IMAGE","digest":"sha256:img","status":"%s"}]\\n\' "$dg" "$st" "$st"; fi; exit 0 ;;',
     "    esac ;;",
     '  *"machine stop"*)',
     "    jq 'map(.state = \"stopped\")' \"$MLIST\" > \"$MLIST.t\" && mv \"$MLIST.t\" \"$MLIST\"; exit 0 ;;",
@@ -207,6 +210,7 @@ interface BodyOptions {
   secretsSetLanded?: boolean; // a transport-failed set still reached Fly (digest changes)
   livezBehavior?: string;
   secretsStatus?: string; // "Deployed" (default) | "Staged"
+  attnAbsentFrom?: number; // omit the attestation secret from `secrets list` at/after this 1-based call
   livezSeq?: string; // per-poll "ok"/"fail" sequence for /livez (last repeats)
   state?: "started" | "stopped";
   isProtected?: boolean;
@@ -221,6 +225,8 @@ interface BodyOptions {
   continueOnDeployedAlone?: boolean; // drop the digest-change check (status-only, the #729 blocker)
   neverResetBlocked?: boolean; // remove the blocked_by_read reset in the readable branch
   readinessReadOkInitTrue?: boolean; // initialise readiness_read_ok to true
+  fallthroughSnapshotUnreadable?: boolean; // drop the unreadable-snapshot UNDETERMINED exit (L961)
+  treatEmptyAfterAsChanged?: boolean; // drop the empty-after-digest UNDETERMINED guard (L967 nit)
 }
 
 interface BodyResult {
@@ -359,6 +365,26 @@ function runBody(opts: BodyOptions = {}): BodyResult {
     region = region.replace("readiness_read_ok=false", "readiness_read_ok=true");
     expect(region, "readinessReadOkInitTrue did not apply").not.toBe(before);
   }
+  if (opts.fallthroughSnapshotUnreadable) {
+    // Replace the unreadable-snapshot UNDETERMINED exit with a fall-through, so a
+    // failed set with no before-digest is judged only by the after-read.
+    const before = region;
+    region = region.replace(
+      /if \[ "\$digest_before_readable" != true \]; then\n[\s\S]*?exit 1\n\s*fi\n/,
+      "",
+    );
+    expect(region, "fallthroughSnapshotUnreadable did not apply").not.toBe(before);
+  }
+  if (opts.treatEmptyAfterAsChanged) {
+    // Remove the empty-after-digest guard, so an empty after-digest counts as
+    // "changed" (the L967 nit).
+    const before = region;
+    region = region.replace(
+      /if \[ -z "\$attestation_digest_after" \]; then\n[\s\S]*?exit 1\n\s*fi\n/,
+      "",
+    );
+    expect(region, "treatEmptyAfterAsChanged did not apply").not.toBe(before);
+  }
 
   const source = opts.deleteRotationSource ? "" : rotationSourceLine();
   const harness = [
@@ -395,6 +421,7 @@ function runBody(opts: BodyOptions = {}): BodyResult {
       SECRETS_STATE: secretsState,
       SECRETS_STATUS: opts.secretsStatus ?? "Deployed",
       SECRETS_SET_LANDED: opts.secretsSetLanded ? "true" : "false",
+      SECRETS_ATTN_ABSENT_FROM: String(opts.attnAbsentFrom ?? 0),
       LIST_BEHAVIOR: opts.listBehavior ?? "ok",
       SECRETS_LIST_BEHAVIOR: opts.secretsListBehavior ?? "ok",
       SECRETS_SET_BEHAVIOR: opts.secretsSetBehavior ?? "ok",
@@ -575,6 +602,22 @@ describe("egress rotation #729 review — a failed `secrets set` is resolved by 
     expect(r.stderr).toContain("rotation_post_update_undetermined");
     expect(r.recovery).toContain("secret_set_outcome_unreadable");
   }, 60_000);
+
+  it("pre-set snapshot unreadable, then the set fails without landing: UNDETERMINED, never green, no stop", () => {
+    // snapshot fly_retry burns 3 reads (all transport), then the read-back reads.
+    const r = runBody({ secretsSetBehavior: "transport", secretsSetLanded: false, secretsListBehavior: "transport transport transport ok" });
+    expect(r.status, "no before-digest to compare: must never read as success").not.toBe(0);
+    expect(r.stopCalls.length, "undeterminable outcome must not stop the app").toBe(0);
+    expect(r.recovery).toContain("secret_set_outcome_undeterminable");
+  }, 60_000);
+
+  it("empty after-digest (attestation secret absent from the read-back): UNDETERMINED, no stop", () => {
+    // snapshot (call 1) lists the attestation secret; the read-back (call 2) omits it.
+    const r = runBody({ secretsSetBehavior: "transport", secretsSetLanded: false, secretsListBehavior: "ok", attnAbsentFrom: 2 });
+    expect(r.status, "an empty after-digest is not proof of a landing").not.toBe(0);
+    expect(r.stopCalls.length).toBe(0);
+    expect(r.recovery).toContain("secret_set_outcome_undeterminable");
+  }, 60_000);
 });
 
 describe("egress rotation #728 — mutations, each killed", () => {
@@ -666,6 +709,22 @@ describe("egress rotation #728 — mutations, each killed", () => {
     expect(control.stderr).toContain("rotation_post_update_undetermined");
     const mutated = runBody({ ...opts, readinessReadOkInitTrue: true });
     expect(mutated.stopCalls.length, "mutation: read_ok=true treats an unobserved window as failed").toBeGreaterThan(0);
+  }, 60_000);
+
+  it("(mutation) falling through the unreadable-snapshot exit brings back the false success", () => {
+    const opts = { secretsSetBehavior: "transport", secretsSetLanded: false, secretsListBehavior: "transport transport transport ok" } as const;
+    const control = runBody(opts);
+    expect(control.status, "shipped: no before-digest -> UNDETERMINED, not green").not.toBe(0);
+    const mutated = runBody({ ...opts, fallthroughSnapshotUnreadable: true });
+    expect(mutated.status, "mutation: judges by the after-read alone and reports success").toBe(0);
+  }, 60_000);
+
+  it("(mutation) treating an empty after-digest as changed brings back the false success", () => {
+    const opts = { secretsSetBehavior: "transport", secretsSetLanded: false, secretsListBehavior: "ok", attnAbsentFrom: 2 } as const;
+    const control = runBody(opts);
+    expect(control.status, "shipped: empty after-digest -> UNDETERMINED, not green").not.toBe(0);
+    const mutated = runBody({ ...opts, treatEmptyAfterAsChanged: true });
+    expect(mutated.status, "mutation: empty != old-digest counts as changed -> success").toBe(0);
   }, 60_000);
 
   it("(mutation) deleting the rotation `source` line breaks the shipped step", () => {
