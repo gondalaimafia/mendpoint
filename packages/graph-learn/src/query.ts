@@ -1102,8 +1102,15 @@ export function formatQueryForPlanner(r: GraphQueryResult): string {
  * labels — those stay unchanged. The customer body must not, so this returns a projected COPY
  * whose every rendered string field (summary, each node's id and label, each row value) has been
  * passed through `project`. The projection is applied at the STRUCTURED source (per node / per
- * field), not by post-processing the rendered markdown, so a tenant id cannot survive in the
- * customer body even if a new node field is later rendered. Render the returned copy with
+ * field), not by post-processing the rendered markdown.
+ *
+ * This is NOT fail-closed. `project` (`publicGraphToken`) is anchored to whole `:`-separated
+ * identifier segments, so a tenant id that is not a whole segment — embedded in free text
+ * (`owner <tenantId> x`) or in a value this projector does not reach (a `coverage.reason`, a
+ * nested row value, or a node field added upstream after this was written) — can pass through.
+ * The fail-closed backstop is the tenant-identity guard at the GitHub write boundary (#724,
+ * `packages/github/src/tenant-identity-guard.ts`), which refuses any customer-facing write whose
+ * text contains the tenant id as a substring. Render the returned copy with
  * {@link formatQueryForPlanner}.
  */
 export function projectGraphResultForDisplay(

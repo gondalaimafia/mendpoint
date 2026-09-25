@@ -26,10 +26,13 @@ import {
 } from "@mendpoint/db";
 import {
   AdoptiveDraftBlockedError,
+  assertNoTenantIdentity,
+  TENANT_IDENTITY_DELIVERY_ERROR,
   type GitHubDelivery,
   type AdoptiveDraftResult,
 } from "@mendpoint/github";
 import { isValidGitBranchName } from "@mendpoint/generation";
+import { renderPublicPrIdentity } from "./public-pr-identity.js";
 
 /** ~7-day cap on retrying a stuck delivery before it abandons (D10). */
 export const GITHUB_DELIVERY_ABANDON_AFTER_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -170,6 +173,25 @@ export async function deliverConsumerDraft(
     let recorded: { prNumber: number; prUrl: string; status: string; deliveredBaseSha: string | null; deliveredHeadSha: string | null };
     if (params.revisionKind === "content_manifest") {
       // No git history: keep main's legacy create/commit/open path (no adoption).
+      // The adoptive transport carries the fail-closed guard (#724) on its wrapped
+      // octokit; this legacy path builds the branch/commit/PR through the shared
+      // GitHubDelivery methods, so guard the same customer-facing strings here —
+      // the lowest choke point this path passes through before any API write.
+      assertNoTenantIdentity(
+        params.tenantId,
+        "content_manifest",
+        [
+          { kind: "title", value: params.title },
+          { kind: "body", value: params.body },
+          { kind: "branch", value: params.branchName },
+          { kind: "commit", value: params.title },
+          ...params.files.flatMap((f) => [
+            { kind: "file" as const, value: f.path },
+            { kind: "file" as const, value: f.content },
+          ]),
+        ],
+        () => new AdoptiveDraftBlockedError(TENANT_IDENTITY_DELIVERY_ERROR),
+      );
       const github = resolution.delivery;
       await github.createBranch(consumer.github_owner, consumer.github_repo, params.branchName, params.defaultBranch);
       params.assertActive();
@@ -202,6 +224,9 @@ export async function deliverConsumerDraft(
           expectedBaseSha: params.baseSha,
           branch: params.branchName,
           deliveryKey: params.deliveryKey,
+          // #724: threads the fail-closed tenant-identity guard onto the adoptive
+          // transport so every customer-facing write is refused if it carries the id.
+          tenantId: params.tenantId,
           title: params.title,
           commitDate: params.commitDate,
           files: params.files.map((f) => ({ path: f.path, content: f.content, mode: "100644" as const })),
@@ -377,11 +402,16 @@ export async function retryConsumerDelivery(
     deliveryKey,
     // The row's stored branch (D8) — a main-era branch is adopted, not duplicated.
     branchName: pr.branch_name,
-    title: artifact.title,
+    // #724: a main-era artifact stored the tenant id and server checkout path in
+    // its title/body. Re-project them to public identity at retry time rather than
+    // re-sending the pre-upgrade text. Adoption identity is the commit trailer/tree
+    // and the branch — never the body bytes — so re-rendering the body is safe and
+    // ADOPT converges it. The branch is the delivery identity and is left as-is; if
+    // it somehow carried the id the fail-closed guard blocks the write.
+    title: renderPublicPrIdentity(artifact.title, tenantId),
     risk: pr.risk,
     patch: pr.patch_unified,
-    // Reuse the artifact's body (the persisted delivery), not a regenerated one.
-    body: artifact.body,
+    body: renderPublicPrIdentity(artifact.body, tenantId),
     files,
     // Base = the refreshed remote head when available, else the artifact's base.
     baseSha: input.refreshedHeadSha ?? artifact.parentSha,

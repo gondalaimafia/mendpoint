@@ -774,6 +774,15 @@ export {
 export { adoptiveDraftOperationDigest } from "./app-runtime.js";
 
 export {
+  guardGitHubWrites,
+  containsTenantIdentity,
+  assertNoTenantIdentity,
+  TENANT_IDENTITY_DELIVERY_ERROR,
+  type CustomerWriteKind,
+  type TenantIdentityLeak,
+} from "./tenant-identity-guard.js";
+
+export {
   parseWebhookHeaders,
   verifyGitHubSignature,
   normalizeGitHubEvent,

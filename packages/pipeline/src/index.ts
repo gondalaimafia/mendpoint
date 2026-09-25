@@ -71,6 +71,13 @@ export {
   type RetryConsumerDeliveryResult,
   type DeliveryResolution,
 } from "./delivery.js";
+export { renderPublicPrIdentity } from "./public-pr-identity.js";
+export {
+  refreshOpenDraftBodies,
+  type RefreshOpenDraftBodiesInput,
+  type RefreshOpenDraftBodiesResult,
+  type RefreshTenantResult,
+} from "./body-refresh.js";
 import { filterRepairEdits } from "./repair-policy.js";
 import {
   applyBrandPack,
