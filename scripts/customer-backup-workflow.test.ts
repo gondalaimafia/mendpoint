@@ -365,6 +365,8 @@ const FLYCTL_SETTLE = [
   '      complete-noage) printf \'[{"Version":10,"Status":"complete"}]\' ;;',
   '      stale-complete) printf \'[{"Version":10,"Status":"complete","CreatedAt":"2020-01-01T00:00:00Z"}]\' ;;',
   '      none) printf \'[]\' ;;',
+  '      garbage) printf \'not json at all\' ;;',
+  '      noversion) printf \'[{"Status":"complete","CreatedAt":"%s"}]\' "$now" ;;',
   '      fail) echo "Error: unauthorized" >&2; exit 1 ;;',
   "    esac",
   "    exit 0 ;;",
@@ -690,6 +692,42 @@ describe("Run authenticated customer backup — settle wait under GitHub's shell
     });
     expect(result.status).toBe(7);
     expect(result.stderr).toContain("customer_backup_run_failed");
+    expect(result.stderr).toContain("no_deploy_confirmed");
+    // No retry: exactly one ssh attempt.
+    expect(result.sshCalls.length).toBe(1);
+  }, 60_000);
+
+  it("item 2: an empty (or garbage) read at settle falls OPEN, not treated as settled", () => {
+    // flyctl exits 0 with [] (or non-JSON) and the machine is started. An empty
+    // list is not proof of "no releases"; it is a read we cannot trust, so the
+    // release read is UNREADABLE and settle falls open and attempts the backup.
+    // The old code left release_readable=true and treated [] as "settled" (the
+    // comment/code mismatch, re-review finding 2); this proves the code now
+    // matches the comment and falls open.
+    for (const tok of ["none", "garbage"]) {
+      const result = runBackupStep({
+        releasesSeq: tok,
+        machinesSeq: "started",
+        sshSeq: "ok",
+      });
+      expect(result.status, `${tok}: ${result.stderr}`).toBe(0);
+      expect(result.stdout, tok).toContain("customer_backup_settle_flyctl_unreadable");
+      expect(result.sshCalls.length, tok).toBe(1);
+    }
+  }, 60_000);
+
+  it("nit: a newest release with no Version field is UNKNOWN (not a known -1), so a crash fails loudly", () => {
+    // Real flyctl 0.4.100 always emits Version, but if it were ever absent the jq
+    // default must map it to `unknown`, not a known -1: a -1 baseline plus a later
+    // readable v10 would count as "newer" and retry a crash into a green run
+    // (re-review finding 3). Settle sees a complete release on a started machine,
+    // so it settles; the crash then has an unknown baseline and fails loudly.
+    const result = runBackupStep({
+      releasesSeq: "noversion settled",
+      machinesSeq: "started started",
+      sshSeq: "crash ok",
+    });
+    expect(result.status).toBe(7);
     expect(result.stderr).toContain("no_deploy_confirmed");
     // No retry: exactly one ssh attempt.
     expect(result.sshCalls.length).toBe(1);

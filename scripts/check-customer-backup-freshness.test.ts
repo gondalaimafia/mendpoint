@@ -1264,34 +1264,71 @@ exit 0
     expect(freshness.permissions).toMatchObject({ "actions": "write", "issues": "write" });
   });
 
-  it("item 4: ties the remediation observe window to the backup's worst-case budget", () => {
-    // The window and the backup budget live in two files, so pin them TOGETHER:
-    // read the backup's documented worst-case active age from customer-backup.yml
-    // and the watchdog's observe deadline from customer-backup-watchdog.yml, and
-    // require the window to clear that worst case plus a margin. Shrinking the
-    // window below the budget (the mutation), or growing the backup budget past
-    // the window, fails here — which the two files' own text-only pins could not
-    // catch (issue #722, item 4a).
+  it("item 4: derives the backup worst case from the SHIPPED settle knobs and ties the window to it", () => {
+    // The window and the backup budget live in two files, so pin them TOGETHER.
+    // Crucially the backup worst case is COMPUTED from the shipped settle knobs
+    // (SETTLE_MAX_SECONDS, SETTLE_POLL_SECONDS, SETTLE_READ_TIMEOUT_SECONDS), NOT
+    // read from a comment: matching the comment let SETTLE_MAX_SECONDS 720->1100
+    // and SETTLE_READ_TIMEOUT_SECONDS 30->120 push the real worst case past 1200
+    // with every test green (issue #722 re-review, finding 1). The formula is the
+    // one documented in customer-backup.yml's budget comment:
+    //   preamble + settleMax + attempts*(poll + 2*readTimeout) + attempts*backup
+    // A read that HITS the timeout falls open and shortens the run, so the worst
+    // readable read is just under the bound; each of the `attempts` settle windows
+    // can overrun the shared deadline by one poll plus its two reads.
     const backupSource = readFileSync(
       resolve(root, ".github/workflows/customer-backup.yml"),
       "utf8",
     );
-    const worstCaseMatch = /BACKUP_WORST_CASE_ACTIVE_AGE_SECONDS\s*=\s*(\d+)/.exec(backupSource);
-    if (!worstCaseMatch) {
-      throw new Error("BACKUP_WORST_CASE_ACTIVE_AGE_SECONDS not documented in customer-backup.yml");
-    }
-    const backupWorstCase = Number(worstCaseMatch[1]);
+    const num = (re: RegExp, what: string): number => {
+      const m = re.exec(backupSource);
+      if (!m) throw new Error(`could not parse ${what} from customer-backup.yml`);
+      return Number(m[1]);
+    };
+    // The tunable settle knobs, from their shell `:=` defaults (the mutation targets).
+    const settleMax = num(/SETTLE_MAX_SECONDS:=(\d+)/, "SETTLE_MAX_SECONDS");
+    const settlePoll = num(/SETTLE_POLL_SECONDS:=(\d+)/, "SETTLE_POLL_SECONDS");
+    const readTimeout = num(/SETTLE_READ_TIMEOUT_SECONDS:=(\d+)/, "SETTLE_READ_TIMEOUT_SECONDS");
+    // The retry cap in the run loop is the number of settle windows AND attempts.
+    const attempts = num(/"\$attempt" -ge (\d+)/, "attempt retry cap");
+    // The measured production constants, documented as named markers.
+    const preamble = num(/PREAMBLE_SECONDS\s*=\s*(\d+)/, "PREAMBLE_SECONDS");
+    const backupAttempt = num(/BACKUP_ATTEMPT_SECONDS\s*=\s*(\d+)/, "BACKUP_ATTEMPT_SECONDS");
+    const controllerCeiling = num(
+      /DELIVERY_MAX_ACTIVE_AGE_SECONDS=(\d+)/,
+      "DELIVERY_MAX_ACTIVE_AGE_SECONDS",
+    );
+    const documentedWorstCase = num(
+      /BACKUP_WORST_CASE_ACTIVE_AGE_SECONDS\s*=\s*(\d+)/,
+      "BACKUP_WORST_CASE_ACTIVE_AGE_SECONDS",
+    );
+
+    const worstCase =
+      preamble +
+      settleMax +
+      attempts * (settlePoll + 2 * readTimeout) +
+      attempts * backupAttempt;
+
+    // With the shipped knobs (720/30/30, attempts 2, 107/51) this is 1109, the
+    // reviewer's upper bound (~1087 measured at 29s reads). The comment's
+    // documented number must equal the formula, so the two cannot drift and a
+    // knob change that is not reflected in the budget comment fails here.
+    expect(worstCase).toBeGreaterThan(0);
+    expect(documentedWorstCase).toBe(worstCase);
 
     const windowMatch = /REMEDIATION_OBSERVE_DEADLINE_SECONDS:=(\d+)/.exec(shippedStep(REMEDIATE).run);
     if (!windowMatch) {
       throw new Error("REMEDIATION_OBSERVE_DEADLINE_SECONDS default not found in the remediate step");
     }
     const observeWindow = Number(windowMatch[1]);
-
     // The same 300s the delivery controller uses for its observation margin.
     const MARGIN = 300;
-    expect(backupWorstCase).toBeGreaterThan(0);
-    expect(observeWindow).toBeGreaterThanOrEqual(backupWorstCase + MARGIN);
+
+    // The worst case must stay under the controller's active-age ceiling, and the
+    // watchdog observe window must clear it plus margin. Raising SETTLE_MAX_SECONDS
+    // or SETTLE_READ_TIMEOUT_SECONDS grows `worstCase` and fails BOTH assertions.
+    expect(worstCase).toBeLessThan(controllerCeiling);
+    expect(observeWindow - MARGIN).toBeGreaterThanOrEqual(worstCase);
   });
 
   it("item 4d: a dispatched backup still hung at the observe deadline is reported, not passed", () => {

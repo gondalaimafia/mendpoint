@@ -230,23 +230,34 @@ jobs:
           # window and double the wait.
           #
           # Budget arithmetic against the delivery controller's
-          # DELIVERY_MAX_ACTIVE_AGE_SECONDS=1200 (measured production maxima):
-          #     preamble, the steps before this one          up to 107s
+          # DELIVERY_MAX_ACTIVE_AGE_SECONDS=1200 (measured production maxima). With
+          # INSTANT flyctl reads the path is:
+          #     preamble, the steps before this one     PREAMBLE_SECONDS=107
           #   + total settle across BOTH windows (this cap)       720s
           #   + two backup attempts at up to 51s each             102s
           #   -----------------------------------------------------------
-          #   = 929s of active age with INSTANT flyctl reads, 271s under 1200.
+          #   = 929s of active age, 271s under 1200.
           # Slow-but-succeeding settle reads stretch that worst SUCCESSFUL path:
           # the reviewer measured 929s at 0s per read, 969s at 2s, 1109s at 30s
-          # and 1199s at 45s. The SETTLE_READ_TIMEOUT_SECONDS=30 bound above caps a
-          # read at 30s, so the worst path a slow-but-readable flyctl can produce
-          # is about 1109s, still 91s under the 1200s ceiling; a read that would
-          # take longer (the 1199s/45s row) times out to `unknown` instead of
-          # lengthening the run. This worst case is what the backup-freshness
-          # watchdog's remediation observe window is tied to:
-          #   BACKUP_WORST_CASE_ACTIVE_AGE_SECONDS = 1109
-          # (see customer-backup-watchdog.yml, whose observe window must clear this
-          # plus margin, or a still-settling backup would be reported as failed).
+          # and 1199s at 45s. A read that HITS the SETTLE_READ_TIMEOUT_SECONDS bound
+          # times out to `unknown` and falls open, which SHORTENS the run, so the
+          # worst readable read is just under the bound. The extra cost over the
+          # instant path is a deadline overrun: the success check runs before the
+          # deadline check, so each of the two settle windows can overshoot by one
+          # poll plus its two reads. So the worst SUCCESSFUL path is
+          #     PREAMBLE_SECONDS
+          #   + SETTLE_MAX_SECONDS
+          #   + ATTEMPTS * (SETTLE_POLL_SECONDS + 2 * SETTLE_READ_TIMEOUT_SECONDS)
+          #   + ATTEMPTS * BACKUP_ATTEMPT_SECONDS
+          # with the shipped knobs (720/30/30), ATTEMPTS=2 (the retry cap below)
+          # and the measured constants PREAMBLE_SECONDS=107, BACKUP_ATTEMPT_SECONDS=51:
+          #     107 + 720 + 2*(30 + 2*30) + 2*51
+          #   = BACKUP_WORST_CASE_ACTIVE_AGE_SECONDS = 1109, still 91s under 1200.
+          # customer-backup-watchdog.yml's remediation observe window is tied to
+          # this: a test recomputes it from these shipped knobs (not from this
+          # comment) and asserts window >= worst case + margin AND worst case <
+          # 1200, so raising SETTLE_MAX_SECONDS or SETTLE_READ_TIMEOUT_SECONDS fails
+          # the test rather than silently reporting a still-settling backup as hung.
           # A single deploy's release phase is 34-81s (247s outlier), so the 720s
           # total absorbs even the outlier and still leaves the run under 1200s.
           settle_deadline="$(( $(date -u +%s) + SETTLE_MAX_SECONDS ))"
@@ -283,11 +294,15 @@ jobs:
             local newest_created_at=""
             if [ "$release_readable" = true ]; then
               local newest_line=""
+              # A newest release with NO version field maps to the "unknown"
+              # sentinel (not a known -1): a -1 baseline plus a later real version
+              # would count as "newer" and retry a crash into a green run. Real
+              # flyctl always emits Version, so this only hardens the edge.
               newest_line="$(printf '%s' "$releases_json" | jq -r '
                 if (type == "array" and length > 0) then
                   (sort_by(.Version // .version // 0) | last) as $r
                   | ((($r.Status // $r.status // "") | ascii_downcase)
-                     + "\u0001" + (($r.Version // $r.version // -1) | tostring)
+                     + "\u0001" + (($r.Version // $r.version // "unknown") | tostring)
                      + "\u0001" + ($r.CreatedAt // $r.created_at // ""))
                 else "" end' 2>/dev/null || true)"
               if [ -n "$newest_line" ]; then
@@ -295,6 +310,15 @@ jobs:
                 local rest="${newest_line#*$'\x01'}"
                 newest_version="${rest%%$'\x01'*}"
                 newest_created_at="${rest#*$'\x01'}"
+              else
+                # flyctl exited 0 but produced no well-formed non-empty release
+                # list (a non-array, an empty list, or non-JSON). This app always
+                # has releases, so this is a read we cannot trust, not proof of
+                # "none": mark it unreadable so settle falls OPEN (like any other
+                # unknown) rather than treating an empty answer as "settled", and
+                # so a post-crash confirm has an `unknown` baseline and fails
+                # loudly. This makes the code match the doc above.
+                release_readable=false
               fi
             fi
             newest_age_seconds=999999
