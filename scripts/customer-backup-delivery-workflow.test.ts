@@ -1,9 +1,9 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { delimiter, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { runFixtureShellStep } from "./workflow-fixture-shell.js";
 
 import { CORE_DISASTER_RECOVERY_POLICY } from "@mendpoint/ops";
 
@@ -248,11 +248,10 @@ return 0
   const run = (name: string, source: string) => {
     const script = join(dir, `${name}.sh`);
     writeFileSync(script, `${controllerHarness}\n${source}`, "utf8");
-    return spawnSync(
-      "bash",
-      ["--noprofile", "--norc", "-e", "-o", "pipefail", script.replaceAll("\\", "/")],
-      { cwd: root, encoding: "utf8", env },
-    );
+    // The stubs are shell functions prepended into the script (not PATH
+    // executables), so there is no fixture PATH to guard here; routed through the
+    // shared helper for the single set of GitHub `shell: bash` flags.
+    return runFixtureShellStep({ scriptPath: script, cwd: root, env });
   };
   const maintainResult = run("controller", step("Maintain continuous backup delivery").run);
   const handoff = steps.find((candidate) => candidate.name === "Hand off continuous backup delivery");
@@ -291,12 +290,15 @@ exit 0
   if (!check) throw new Error("execution gate check step not found");
   const script = join(dir, "execution-gate.sh");
   writeFileSync(script, check.run, "utf8");
-  const result = spawnSync("bash", ["--noprofile", "--norc", script.replaceAll("\\", "/")], {
+  // The execution-gate check drives gh; guard it so the host's gh cannot shadow
+  // the stub, and run under GitHub's exact flags via the shared helper.
+  const result = runFixtureShellStep({
+    scriptPath: script,
     cwd: root,
-    encoding: "utf8",
+    fixtureBin: bin,
+    guardTools: ["gh"],
     env: {
       ...process.env,
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
       GH_TOKEN: "not-a-real-token",
       GH_REPO: "mendpoint-tests/repository-that-does-not-exist",
       CURRENT_RUN_ID: "9001",

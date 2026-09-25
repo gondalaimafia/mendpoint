@@ -134,15 +134,18 @@ jobs:
     # summed because one run can hit all of them in order: ensure the machine is
     # up (list <=120s + start <=120s + lost-lease re-read <=60s + readiness
     # <=180s = <=8min) + read the evidence (<=5min) + judge (seconds) + remediate
-    # a stale backup (<=3min to observe the dispatched run + <=6min for it to
-    # finish + <=5min for the re-read = <=14min). With setup that is ~30min of
-    # bounded work, so 40 leaves real headroom rather than consuming it exactly.
-    # Those waits are bounded
+    # a stale backup (<=3min to observe the dispatched run + <=16min for it to
+    # finish + <=5min for the re-read = <=24min). The dispatched backup now waits
+    # out an in-progress deploy (up to its ~929s settle budget), so the observe
+    # window below grew from 6min to 16min and this timeout grew with it. With
+    # setup that is ~40min of bounded work, so 50 leaves real headroom rather than
+    # consuming it exactly, and stays under the hourly schedule so runs never
+    # overlap. Those waits are bounded
     # INSIDE their steps on purpose: a wait that ran into this job timeout would
     # cancel the job, and `if: failure()` alert steps do not run on a cancelled
     # job — the machine-start recovery and the remediation would have muted the
     # very alarm they exist to protect.
-    timeout-minutes: 40
+    timeout-minutes: 50
     environment: customer-production-backup
     permissions:
       contents: read
@@ -640,9 +643,14 @@ jobs:
             exit 1
           fi
 
-          # <=6min. Observed backup runs complete in about 40 seconds.
+          # <=16min. A backup that waits out an in-progress customer deploy now
+          # runs up to its settle budget before it takes the backup: preamble +
+          # 720s total settle + two 51s attempts = ~929s (see the budget comment
+          # in customer-backup.yml). Below that the run is still healthy and
+          # settling, so a shorter window would report failure on a run that then
+          # succeeds; only past it is the run genuinely hung. 96 * 10s = 960s.
           conclusion=""
-          for _ in $(seq 1 36); do
+          for _ in $(seq 1 96); do
             observed="$(gh run view "$run_id" --repo "$GH_REPO" --json status,conclusion \
               --jq '.status + " " + (.conclusion // "")' || true)"
             if [ "${observed%% *}" = "completed" ]; then

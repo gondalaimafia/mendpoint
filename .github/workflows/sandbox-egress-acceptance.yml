@@ -370,50 +370,114 @@ jobs:
               # by that guard, never started or stopped here.
               printf '%s\n' "$machines_json" \
                 >"test-results/sandbox-egress/rotation-before-${app}.json"
-              # (b) Install the receipt file INSIDE the machine over ssh. flyctl
-              # word-splits --command and execs without a shell, so the base64
-              # attestation is the single trailing argument (argv[2] to the script).
-              # Bounded by timeout so a hung ssh session can never wedge the
-              # 6-hourly renewal.
-              if ! install_json="$(timeout 120 flyctl ssh console --app "$app" --pty=false \
-                  --command "node --import tsx /app/scripts/sandbox-egress-attestation-install.ts $attestation" </dev/null)"; then
+              # (b) Install the receipt file INSIDE the machine over ssh, with
+              # bounded retries. flyctl word-splits --command and execs without a
+              # shell, so the base64 attestation is the single trailing argument
+              # (argv[2] to the script). The hang is the flyctl ssh CONNECTION, not
+              # the install itself (measured on production: tsx start ~120ms, install
+              # module load ~300ms, 4 performance CPUs). Runs 35921243289 and
+              # 36029373235 hit the old single `timeout 120` cap ("ssh shell: session
+              # forcibly closed; the remote process may still be running"), failed
+              # loudly, and opened alert #708 while production kept the previous
+              # receipt. So cap each attempt at `timeout 45` and retry up to 3 times
+              # with a short backoff. The install script verifies before writing and
+              # writes atomically, so repeating it is idempotent. A protected app is
+              # NEVER machine-updated, restarted, or secrets-deployed to recover;
+              # only this file install plus the staged env fallback below.
+              read_egress_ready() {
+                # (c) One bounded in-machine /ready read (the API listens on
+                # 127.0.0.1:3001). The reader JS has NO spaces and uses backtick
+                # string literals; single-quote the --command so bash never treats
+                # the backticks as command substitution and flyctl passes them
+                # through to node unchanged. Sets ready_ok/ready_source/ready_expires
+                # from the sandbox_egress_receipt check, and ready_conclusive=false
+                # only when the read produced nothing (a hung/timed-out ssh).
+                local ready_out ready_line
+                ready_out="$(timeout 45 flyctl ssh console --app "$app" --pty=false \
+                  --command 'node -e fetch(`http://127.0.0.1:3001/ready`).then(r=>r.json()).then(j=>process.stdout.write(JSON.stringify((j.checks||[]).find(c=>c.name===`sandbox_egress_receipt`)||{}))).catch(()=>process.stdout.write(`{}`))' </dev/null \
+                  || true)"
+                ready_line="$(printf '%s\n' "$ready_out" | grep -E '"sandbox_egress_receipt"' | tail -n1 || true)"
+                if [ -z "$ready_line" ]; then ready_line='{}'; fi
+                printf '%s\n' "$ready_line" \
+                  >"test-results/sandbox-egress/ready-${app}.json"
+                ready_ok="$(jq -r '.ok // false' <<<"$ready_line" 2>/dev/null || echo false)"
+                ready_source="$(jq -r 'try ((.detail|fromjson|.source) // "") catch ""' <<<"$ready_line" 2>/dev/null || echo "")"
+                ready_expires="$(jq -r 'try ((.detail|fromjson|.expiresAt) // "") catch ""' <<<"$ready_line" 2>/dev/null || echo "")"
+                if [ "$ready_line" = '{}' ]; then ready_conclusive=false; else ready_conclusive=true; fi
+              }
+              egress_ready_matches() {
+                [ "$ready_ok" = "true" ] && [ "$ready_source" = "file" ] && [ "$ready_expires" = "$expires_at" ]
+              }
+              install_confirmed=false
+              for install_attempt in 1 2 3; do
+                # A prior (possibly hung) attempt may have actually landed the
+                # install server-side. Before each retry, re-read /ready and stop
+                # early if the app is already serving the new receipt (matching
+                # expiresAt) -- so a hung session that completed costs no reinstall.
+                if [ "$install_attempt" -gt 1 ]; then
+                  read_egress_ready
+                  if egress_ready_matches; then
+                    printf 'protected_install_confirmed_after_hang\tapp=%s\tattempt=%s\n' \
+                      "$app" "$install_attempt" \
+                      >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                    install_confirmed=true
+                    break
+                  fi
+                  sleep 5
+                fi
+                if install_json="$(timeout 45 flyctl ssh console --app "$app" --pty=false \
+                    --command "node --import tsx /app/scripts/sandbox-egress-attestation-install.ts $attestation" </dev/null)"; then
+                  install_line="$(printf '%s\n' "$install_json" | grep -E '"installed"' | tail -n1 || true)"
+                  if [ -z "$install_line" ]; then install_line='{}'; fi
+                  printf '%s\n' "$install_line" \
+                    >"test-results/sandbox-egress/install-${app}.json"
+                  if jq -e '.installed == true' <<<"$install_line" >/dev/null 2>&1; then
+                    install_confirmed=true
+                    break
+                  fi
+                fi
+                printf 'protected_install_attempt_failed\tapp=%s\tattempt=%s\n' \
+                  "$app" "$install_attempt" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+              done
+              # post-loop-landed-check (mutation strips this to prove the final
+              # /ready read is load-bearing): the LAST attempt may have hung on the
+              # flyctl ssh connection yet actually landed the install server-side.
+              # Do the same /ready read used between attempts before failing, so a
+              # landed install after attempt 3 counts as success instead of opening
+              # a false renewal-failure alert (the same hang shape as #708).
+              if [ "$install_confirmed" != true ]; then
+                read_egress_ready
+                if egress_ready_matches; then
+                  printf 'protected_install_confirmed_after_hang\tapp=%s\tattempt=final\n' \
+                    "$app" \
+                    >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                  install_confirmed=true
+                fi
+              fi
+              # post-loop-landed-check-end
+              if [ "$install_confirmed" != true ]; then
                 printf 'protected_install_failed\tapp=%s\n' "$app" \
                   >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
-                echo "PROTECTED app ${app}: ssh receipt install failed or timed out; NOT containing. Failing loudly for the renewal-failure alert." >&2
+                echo "PROTECTED app ${app}: ssh receipt install failed or timed out after 3 attempts; NOT containing. Failing loudly for the renewal-failure alert." >&2
                 exit 1
               fi
-              install_line="$(printf '%s\n' "$install_json" | grep -E '"installed"' | tail -n1 || true)"
-              if [ -z "$install_line" ]; then install_line='{}'; fi
-              printf '%s\n' "$install_line" \
-                >"test-results/sandbox-egress/install-${app}.json"
-              if ! jq -e '.installed == true' <<<"$install_line" >/dev/null 2>&1; then
-                printf 'protected_install_not_confirmed\tapp=%s\n' "$app" \
-                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
-                echo "PROTECTED app ${app}: install did not report installed:true; NOT containing." >&2
-                exit 1
-              fi
-              # (c) Confirm from the app's OWN reader that it is now serving the
-              # file-sourced receipt: read /ready in-machine (the API listens on
-              # 127.0.0.1:3001) and require the egress check ok:true, source:file,
-              # and the exact new expiry. The reader JS has NO spaces and uses
-              # backtick string literals; single-quote the --command so bash never
-              # treats the backticks as command substitution and flyctl passes them
-              # through to node unchanged.
-              ready_out="$(timeout 120 flyctl ssh console --app "$app" --pty=false \
-                --command 'node -e fetch(`http://127.0.0.1:3001/ready`).then(r=>r.json()).then(j=>process.stdout.write(JSON.stringify((j.checks||[]).find(c=>c.name===`sandbox_egress_receipt`)||{}))).catch(()=>process.stdout.write(`{}`))' </dev/null \
-                || true)"
-              ready_line="$(printf '%s\n' "$ready_out" | grep -E '"sandbox_egress_receipt"' | tail -n1 || true)"
-              if [ -z "$ready_line" ]; then ready_line='{}'; fi
-              printf '%s\n' "$ready_line" \
-                >"test-results/sandbox-egress/ready-${app}.json"
+              # Confirm from the app's OWN reader that it is now serving the
+              # file-sourced receipt: require ok:true, source:file, and the exact new
+              # expiry. Bounded by the same timeout 45 and retried up to 3 times, but
+              # ONLY while the read is inconclusive (a hung/empty ssh read); a
+              # populated line that disagrees is a real disagreement and is not retried.
+              for ready_attempt in 1 2 3; do
+                read_egress_ready
+                if egress_ready_matches; then break; fi
+                if [ "$ready_conclusive" = true ]; then break; fi
+                sleep 5
+              done
               if ! after_machines_json="$(flyctl machine list --app "$app" --json)"; then
                 after_machines_json='[]'
               fi
               printf '%s\n' "$after_machines_json" \
                 >"test-results/sandbox-egress/rotation-after-${app}.json"
-              ready_ok="$(jq -r '.ok // false' <<<"$ready_line" 2>/dev/null || echo false)"
-              ready_source="$(jq -r 'try ((.detail|fromjson|.source) // "") catch ""' <<<"$ready_line" 2>/dev/null || echo "")"
-              ready_expires="$(jq -r 'try ((.detail|fromjson|.expiresAt) // "") catch ""' <<<"$ready_line" 2>/dev/null || echo "")"
               # readiness-confirmation-guard (mutation strips this if-fi to prove it is load-bearing)
               if [ "$ready_ok" != "true" ] || [ "$ready_source" != "file" ] || [ "$ready_expires" != "$expires_at" ]; then
                 reason="readiness_disagreed:ok=${ready_ok},source=${ready_source},expiresAt=${ready_expires}"

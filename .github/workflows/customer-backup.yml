@@ -109,7 +109,29 @@ jobs:
       contents: read
       issues: write
     steps:
+      # FIRST, so the evidence directory (and a file) always exist: run 35842783709
+      # failed at "Install Fly CLI" (a download blip), the job died before this
+      # step ran, and "Retain backup evidence" then errored with "No files were
+      # found" (if-no-files-found: error). Creating the evidence up front means the
+      # upload always has something to retain even when a later step fails.
+      - name: Initialize backup evidence
+        shell: bash
+        env:
+          CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/customer-backup
+          evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          printf 'run=%s attempt=%s app=%s revision=%s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$CUSTOMER_APP" "$GITHUB_SHA" > "$evidence"
+
       - name: Install Fly CLI
+        id: install_flyctl
+        # The setup action cannot retry its own download, and a transient CDN blip
+        # (run 35842783709) killed the whole backup. Allow this first attempt to
+        # fail without failing the job, then retry once below with the SAME pinned
+        # SHA and version. Only if BOTH fail does the job fail.
+        continue-on-error: true
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
         # Pinned: flyctl 0.4.101 and later answer "Error: unauthorized" to
         # `flyctl apps list --json` for an app-scoped token, which breaks the
@@ -122,16 +144,14 @@ jobs:
         with:
           version: "0.4.100"
 
-      - name: Initialize backup evidence
-        shell: bash
-        env:
-          CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
-        run: |
-          set -euo pipefail
-          mkdir -p test-results/customer-backup
-          evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
-          printf 'run=%s attempt=%s app=%s revision=%s\n' \
-            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$CUSTOMER_APP" "$GITHUB_SHA" > "$evidence"
+      - name: Install Fly CLI (retry once)
+        # Same pinned SHA and version; runs only when the first install failed, so
+        # a single download blip no longer fails the backup. A second failure here
+        # is NOT continue-on-error, so a genuinely broken install still fails loudly.
+        if: ${{ steps.install_flyctl.outcome == 'failure' }}
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+        with:
+          version: "0.4.100"
 
       - name: Validate app-scoped backup authority
         shell: bash
@@ -169,6 +189,7 @@ jobs:
           flyctl status --app "$CUSTOMER_APP" >/dev/null
 
       - name: Run authenticated customer backup
+        id: backup_run
         shell: bash
         env:
           FLY_API_TOKEN: ${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}
@@ -176,11 +197,214 @@ jobs:
         run: |
           set -euo pipefail
           evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
-          flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
-            --command "node --import tsx scripts/customer-backup.ts" 2>&1 | tee -a "$evidence"
-          grep -q '"backupId"' "$evidence"
-          grep -q '"manifestAuthentication"' "$evidence"
-          grep -q '"publication"' "$evidence"
+          # There is NO "deferred" outcome. A backup during a deploy window cannot
+          # run over ssh (run 35935775978 died with "has no started VMs", run
+          # 35933404692 with a severed ssh session), so instead of faking a green
+          # neutral state -- which the delivery controller and the execution-gate
+          # fence both read as "a backup was taken" -- we WAIT for the deploy to
+          # settle and then back up for real. Every path ends in exactly one honest
+          # state: a real verified backup (success) or a failure that alerts.
+          #
+          # The settle window is kept below the delivery controller's
+          # DELIVERY_MAX_ACTIVE_AGE_SECONDS (1200s) and well under the 3600s RPO, so
+          # a backup that waits out a deploy is never reported as a stalled active
+          # run, and a deploy that does not finish inside the window is genuinely
+          # stuck (deploy_did_not_settle) and must alert.
+          : "${SETTLE_MAX_SECONDS:=720}"
+          : "${SETTLE_POLL_SECONDS:=30}"
+          : "${SETTLE_RECENT_SECONDS:=300}"
+
+          # ONE deadline for BOTH settle windows (the pre-backup settle and the
+          # retry settle). Computed once here and shared by every settle_wait
+          # call, so the retry path cannot spend a SECOND fresh SETTLE_MAX_SECONDS
+          # window and double the wait.
+          #
+          # Budget arithmetic against the delivery controller's
+          # DELIVERY_MAX_ACTIVE_AGE_SECONDS=1200 (measured production maxima):
+          #     preamble, the steps before this one          up to 107s
+          #   + total settle across BOTH windows (this cap)       720s
+          #   + two backup attempts at up to 51s each             102s
+          #   -----------------------------------------------------------
+          #   = 929s of active age, 271s under the 1200s ceiling.
+          # A single deploy's release phase is 34-81s (247s outlier), so the 720s
+          # total absorbs even the outlier and still leaves the run under 1200s.
+          settle_deadline="$(( $(date -u +%s) + SETTLE_MAX_SECONDS ))"
+
+          read_deploy_state() {
+            # Reads the NEWEST release only (sorted by version descending -- never
+            # `any` over all releases, so one old stuck `running` release cannot
+            # wedge every backup forever) and the machine state. Sets:
+            #   release_readable / machines_readable  (false when flyctl errored)
+            #   newest_status (lowercased)
+            #   newest_version  "unknown" when flyctl could not answer, -1 when it
+            #     answered with NO releases, else the newest release's version.
+            #     These are three distinct values on purpose (FAILURE_MODES §1):
+            #     a failed read must never later read as "a newer release
+            #     appeared", which is exactly how an unreadable baseline used to
+            #     let a crash retry into a green run.
+            #   newest_age_seconds (age of newest release; large when unknown)
+            #   machine_started (true when at least one machine is started)
+            release_readable=true
+            local releases_json=""
+            if ! releases_json="$(flyctl releases --app "$CUSTOMER_APP" --json 2>/dev/null)"; then
+              release_readable=false
+            fi
+            newest_status=""
+            newest_version=unknown
+            local newest_created_at=""
+            if [ "$release_readable" = true ]; then
+              newest_version=-1
+              local newest_line=""
+              newest_line="$(printf '%s' "$releases_json" | jq -r '
+                if (type == "array" and length > 0) then
+                  (sort_by(.Version // .version // 0) | last) as $r
+                  | ((($r.Status // $r.status // "") | ascii_downcase)
+                     + "\u0001" + (($r.Version // $r.version // -1) | tostring)
+                     + "\u0001" + ($r.CreatedAt // $r.created_at // ""))
+                else "" end' 2>/dev/null || true)"
+              if [ -n "$newest_line" ]; then
+                newest_status="${newest_line%%$'\x01'*}"
+                local rest="${newest_line#*$'\x01'}"
+                newest_version="${rest%%$'\x01'*}"
+                newest_created_at="${rest#*$'\x01'}"
+              fi
+            fi
+            newest_age_seconds=999999
+            if [ -n "$newest_created_at" ]; then
+              local created_epoch=0
+              created_epoch="$(date -u -d "$newest_created_at" +%s 2>/dev/null || echo 0)"
+              if [ "$created_epoch" -gt 0 ]; then
+                newest_age_seconds="$(( $(date -u +%s) - created_epoch ))"
+              fi
+            fi
+            machines_readable=true
+            local machines_json=""
+            if ! machines_json="$(flyctl machine list --app "$CUSTOMER_APP" --json 2>/dev/null)"; then
+              machines_readable=false
+            fi
+            machine_started=false
+            if [ "$machines_readable" = true ]; then
+              if printf '%s' "$machines_json" \
+                | jq -e 'type == "array" and any(.[]; (.state // "") == "started")' >/dev/null 2>&1; then
+                machine_started=true
+              fi
+            fi
+          }
+
+          release_in_progress() {
+            case "$newest_status" in
+              running|pending|replacing|deploying) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          # Wait out any in-progress customer deploy. Returns 0 when the app is
+          # settled (newest release complete AND a machine started) or when flyctl
+          # cannot answer (fall open, attempt the backup -- unchanged from before).
+          # Exits the whole step non-zero -- failing loudly for the alert -- when a
+          # machine is stopped with NO deploy in progress (the #659 shape) or when a
+          # deploy never settles inside the window.
+          settle_wait() {
+            while true; do
+              read_deploy_state
+              if [ "$release_readable" != true ] || [ "$machines_readable" != true ]; then
+                echo "customer_backup_settle_flyctl_unreadable release_readable=$release_readable machines_readable=$machines_readable -- attempting the backup (fail open)"
+                return 0
+              fi
+              if [ "$machine_started" = true ] && ! release_in_progress; then
+                return 0
+              fi
+              if ! release_in_progress && [ "$machine_started" != true ]; then
+                # No deploy in progress and no started machine. A just-finished
+                # deploy may still be booting (newest release is recent) -- wait for
+                # it. Otherwise this is the #659 stopped-machine shape: fail loudly,
+                # exactly as main did; never wait and never defer.
+                if [ "$newest_age_seconds" -ge "$SETTLE_RECENT_SECONDS" ]; then
+                  echo "customer_backup_machine_stopped_no_deploy newest_status=${newest_status:-none} newest_age_seconds=$newest_age_seconds" >&2
+                  exit 1
+                fi
+              fi
+              if [ "$(date -u +%s)" -ge "$settle_deadline" ]; then
+                echo "customer_backup_deploy_did_not_settle newest_status=${newest_status:-none} machine_started=$machine_started settle_seconds=$SETTLE_MAX_SECONDS" >&2
+                exit 1
+              fi
+              echo "customer_backup_waiting_for_deploy newest_status=${newest_status:-none} machine_started=$machine_started"
+              sleep "$SETTLE_POLL_SECONDS"
+            done
+          }
+
+          run_backup_once() {
+            # $1 receives ONLY this attempt's output. The evidence check below
+            # greps THAT file, never the shared "$evidence" log: appending both
+            # attempts to one file let a partial first attempt satisfy the second
+            # attempt's evidence check, so a second run that exits 0 while
+            # printing only part of the manifest wrongly passed. The shared
+            # "$evidence" still gets every attempt (tee -a) for the retained
+            # artifact; the per-attempt file is what the run is judged on.
+            #
+            # `set +e` (then restore) so the ssh exit is captured, not fatal under
+            # -e; PIPESTATUS[0] is the ssh status, not tee's.
+            set +e
+            flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
+              --command "node --import tsx scripts/customer-backup.ts" 2>&1 \
+              | tee "$1" | tee -a "$evidence"
+            local status=${PIPESTATUS[0]}
+            set -e
+            return "$status"
+          }
+
+          # Settle, then back up. On an ssh failure, re-read the deploy state and
+          # retry EXACTLY ONCE (after settling) ONLY if a deploy is confirmed -- a
+          # release newer than the one seen before the backup, or the newest release
+          # now in progress. A crash or OOM (no deploy) fails loudly; it is never
+          # retried into a green run and never masked as a deferral.
+          #
+          # The baseline version is taken from settle_wait's OWN final read -- no
+          # second read afterwards. A second read could observe a deploy that
+          # started in the gap and record its version as the baseline, so the
+          # post-failure read would see the SAME version and miss the deploy that
+          # dropped the backup.
+          settle_wait
+          pre_backup_version="$newest_version"
+
+          attempt_output="$(mktemp)"
+          attempt=1
+          while true; do
+            ssh_status=0
+            run_backup_once "$attempt_output" || ssh_status=$?
+            if [ "$ssh_status" -eq 0 ]; then
+              grep -q '"backupId"' "$attempt_output"
+              grep -q '"manifestAuthentication"' "$attempt_output"
+              grep -q '"publication"' "$attempt_output"
+              break
+            fi
+            if [ "$attempt" -ge 2 ]; then
+              echo "customer_backup_run_failed status=$ssh_status attempts=$attempt" >&2
+              exit "$ssh_status"
+            fi
+            read_deploy_state || true
+            deploy_confirmed=false
+            # A deploy is confirmed ONLY when BOTH the baseline (from settle's final
+            # read) and this post-failure read are KNOWN. "unknown" on either side
+            # -- flyctl could not answer -- is NOT a deploy: a crash or OOM with an
+            # unreadable baseline must fail loudly, never retry into a green run
+            # (FAILURE_MODES §1 -- "unknown" is distinct from "no releases").
+            if [ "$pre_backup_version" != unknown ] && [ "$newest_version" != unknown ]; then
+              if [ "$newest_version" -gt "$pre_backup_version" ] 2>/dev/null; then
+                deploy_confirmed=true
+              elif release_in_progress; then
+                deploy_confirmed=true
+              fi
+            fi
+            if [ "$deploy_confirmed" != true ]; then
+              echo "customer_backup_run_failed status=$ssh_status reason=no_deploy_confirmed" >&2
+              exit "$ssh_status"
+            fi
+            echo "customer_backup_retry_after_confirmed_deploy pre_version=$pre_backup_version newest_version=$newest_version newest_status=${newest_status:-none}"
+            settle_wait
+            pre_backup_version="$newest_version"
+            attempt=$((attempt + 1))
+          done
 
       - name: Retain backup evidence
         if: ${{ always() }}
@@ -215,6 +439,10 @@ jobs:
           fi
 
       - name: Resolve backup failure alert
+        # Only a real, completed backup resolves the failure alert. There is no
+        # longer any deferred-but-green outcome: the job reaches success only after
+        # a verified backup, so a green run always means the backup actually
+        # recovered.
         if: ${{ success() }}
         shell: bash
         env:

@@ -207,6 +207,27 @@ describe("sandbox egress engine — rotation reaches every configured app", () =
     expect(rotate).toContain('contained-machines-${app}.json');
     expect(rotate).toContain('post_secret_machines_json="$(flyctl machine list --app "$app" --json)"');
   });
+
+  it("installs the protected receipt with bounded ssh retries, never a single long-timeout attempt", () => {
+    const rotate = step(
+      engine(),
+      "accept",
+      "Rotate the egress authority to every consuming app",
+    ).run as string;
+    // The install and the /ready read are each capped at `timeout 45` and retried
+    // (runs 35921243289 / 36029373235 hit the old single `timeout 120` cap and
+    // failed loudly, opening alert #708). The old single-shot cap is gone.
+    expect(rotate).toContain("for install_attempt in 1 2 3");
+    expect(rotate).toContain("for ready_attempt in 1 2 3");
+    expect(rotate).toContain(
+      'timeout 45 flyctl ssh console --app "$app" --pty=false',
+    );
+    expect(rotate).not.toContain("timeout 120 flyctl ssh console");
+    // A hung session that actually landed is detected via /ready and not
+    // reinstalled; all-attempts-fail still fails loudly for the alert path.
+    expect(rotate).toContain("protected_install_confirmed_after_hang");
+    expect(rotate).toContain("after 3 attempts");
+  });
 });
 
 describe("sandbox egress engine — failure visibility before expiry", () => {
