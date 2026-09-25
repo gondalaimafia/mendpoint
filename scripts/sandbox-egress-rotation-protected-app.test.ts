@@ -26,6 +26,11 @@ const SEP = process.platform === "win32" ? ";" : ":";
 function engineSource(): string {
   return readFileSync(resolve(root, ENGINE_PATH), "utf8");
 }
+// #728: the readiness read is now wrapped in fly_retry, so the extracted health
+// block needs the transport-retry helper in scope.
+function helperSource(): string {
+  return readFileSync(resolve(root, "scripts/flyctl-transport-retry.sh"), "utf8");
+}
 
 /** Slice a shell region out of the workflow, de-indented, failing loudly. */
 function extractRegion(startMarker: string, endMarker: string): string {
@@ -181,6 +186,8 @@ function runScenario(opts: ScenarioOptions): ScenarioResult {
     // The BEFORE snapshot the health block reads for started_before_ids.
     `machines_json='${JSON.stringify(opts.beforeMachines)}'`,
     "sleep() { :; }",
+    "export FLY_RETRY_BACKOFF_SECONDS=0",
+    helperSource(), // #728: fly_retry for the wrapped readiness read
     curlStub,
     determinationBlock(),
     containFn(opts.stripGuard),

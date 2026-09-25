@@ -875,7 +875,24 @@ jobs:
               (.config.image | mutable_image),
               .config.metadata.fly_process_group
             ] | @tsv' <<<"$machines_json")
-            updated_machines_json="$(flyctl machine list --app "$app" --json)"
+            # Post-mutation READ (#728, item 1). The `machine update` above is a
+            # mutation and stays unretried. Reading the machines back to VERIFY
+            # the update is a READ, so a transient Fly API blip must be retried,
+            # never recorded as a failed rotation. Three outcomes:
+            #   * read ok + invariant pass  -> VERIFIED OK, proceed;
+            #   * read ok + invariant fail  -> VERIFIED FAILED, roll back as before;
+            #   * read still failing after retries -> UNDETERMINED: the update
+            #     LANDED, so leave the machines RUNNING and fail loudly. Rolling
+            #     back or stopping on a read we could not complete is exactly what
+            #     stopped production before (run 33890068837); a read blip must
+            #     never masquerade as "the app is broken".
+            if ! fly_retry post-update-list -- flyctl machine list --app "$app" --json; then
+              printf 'undetermined\t%s\n' "rotation_post_update_undetermined:machine_list_after_update" \
+                >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+              echo "UNDETERMINED (rotation_post_update_undetermined): could not read the machine list for ${app} after the machine update, which succeeded. Leaving machines RUNNING and failing loudly; stopping on an unknown read is what caused past outages." >&2
+              exit 1
+            fi
+            updated_machines_json="$FLY_RETRY_STDOUT"
             if ! jq -e --argjson expected "$launch_groups_before" \
                 --argjson expected_images "$image_refs_before" '
                 ([.[] | {
@@ -901,12 +918,36 @@ jobs:
               contain_current_machines "secret_deploy_outcome_unknown"
               exit 1
             fi
-            if ! flyctl secrets list --app "$app" --json \
-                | jq -e 'length > 0 and all(.[]; .status == "Deployed")' >/dev/null; then
+            # Post-mutation READ (#728, item 1, the L891 case). `secrets set`
+            # above is a mutation and stays unretried / fail-closed. Reading the
+            # secret STATUS back is a READ: a transient blip must be retried, and
+            # if it still fails it is UNDETERMINED -- NOT "not deployed". The old
+            # `flyctl secrets list | jq` pipe collapsed a transport blip into a
+            # verified failure and called contain_current_machines, which STOPS a
+            # non-protected app's machines on a mere read blip. Split the read
+            # from the verdict: retry only the read, judge only its output.
+            if ! fly_retry post-secret-list-secrets -- flyctl secrets list --app "$app" --json; then
+              printf 'undetermined\t%s\n' "rotation_post_update_undetermined:secrets_list" \
+                >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+              echo "UNDETERMINED (rotation_post_update_undetermined): could not read the secrets list for ${app} after secrets set, which succeeded. Leaving machines RUNNING and failing loudly; a read blip must never trigger containment." >&2
+              exit 1
+            fi
+            if ! jq -e 'length > 0 and all(.[]; .status == "Deployed")' \
+                <<<"$FLY_RETRY_STDOUT" >/dev/null; then
               contain_current_machines "secret_generation_not_deployed"
               exit 1
             fi
-            post_secret_machines_json="$(flyctl machine list --app "$app" --json)"
+            # Post-mutation READ (#728, items 1/2): same three outcomes. A blip
+            # here previously aborted the step under set -e with the secret
+            # already deployed; now it is UNDETERMINED (leave running, fail loud),
+            # and only a completed read whose invariant fails contains as before.
+            if ! fly_retry post-secret-list -- flyctl machine list --app "$app" --json; then
+              printf 'undetermined\t%s\n' "rotation_post_update_undetermined:machine_list_after_secrets" \
+                >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+              echo "UNDETERMINED (rotation_post_update_undetermined): could not read the machine list for ${app} after secrets set, which succeeded. Leaving machines RUNNING and failing loudly." >&2
+              exit 1
+            fi
+            post_secret_machines_json="$FLY_RETRY_STDOUT"
             if ! jq -e --argjson expected "$launch_groups_before" \
                 --argjson expected_images "$image_refs_before" \
                 --arg expected_sandbox_image "$MENDPOINT_SANDBOX_EGRESS_IMAGE" '
@@ -973,9 +1014,21 @@ jobs:
             printf '%s\n' "$machines_json" \
               >"test-results/sandbox-egress/rotation-before-${app}.json"
             ready=false
+            # UNDETERMINED tracking (#728): stays false until at least one poll
+            # actually reads machine state. A window where no poll could ever read
+            # state (transport blips outliving their retries) ends as UNDETERMINED,
+            # not as a health failure that stops the app.
+            readiness_read_ok=false
             readiness_after_json='[]'
             for readiness_attempt in $(seq 1 "$readiness_attempts"); do
-              if ! readiness_after_json="$(flyctl machine list --app "$app" --json)"; then
+              # Post-mutation READ (#728, items 1/2): retry a transport blip on
+              # the per-poll machine-list read. A blip that outlives its retries
+              # leaves this attempt's read unavailable ('[]'); it never counts as
+              # a machine that turned unhealthy.
+              if fly_retry readiness-list -- flyctl machine list --app "$app" --json; then
+                readiness_after_json="$FLY_RETRY_STDOUT"
+                readiness_read_ok=true
+              else
                 readiness_after_json='[]'
               fi
               livez_ok=false
@@ -1009,10 +1062,26 @@ jobs:
               "https://${app}.fly.dev/healthz" || true)"
             echo "  /healthz -> http ${health_code} (diagnostic only -- rotation does NOT gate on this; see the note above)"
             if [ "$ready" != true ]; then
+              if [ "$readiness_read_ok" != true ]; then
+                # UNDETERMINED: not one poll in the whole window could read machine
+                # state (transport blips outlived their retries). We do NOT know the
+                # app is unhealthy, so we do NOT stop it -- leave machines running
+                # and fail loudly for the renewal-failure alert.
+                printf 'undetermined\t%s\n' "rotation_post_update_undetermined:readiness_reads_unavailable" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                echo "UNDETERMINED (rotation_post_update_undetermined): could not read machine state for ${app} during the entire readiness window. Leaving machines RUNNING and failing loudly; stopping on an unknown read is what caused past outages." >&2
+                exit 1
+              fi
+              # VERIFIED FAILED: at least one poll read machine state and/or /livez
+              # answered, and the app genuinely never became healthy. Contain
+              # exactly as before (protected app: start-not-stop, fail loud;
+              # non-protected: fail-closed stop).
               contain_current_machines "post_rotation_health_failed"
               echo "The app $app did not become healthy after receipt rotation"
               exit 1
             fi
+            # rotation-nonprotected-body-end (extraction sentinel for
+            # scripts/sandbox-egress-rotation-undetermined.test.ts; do not remove)
           done <<< "$targets"
       - name: Confirm the renewed receipt has healthy margin
         shell: bash
